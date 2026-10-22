@@ -41,7 +41,7 @@ One request to produce output from a Model in a chosen Mode with chosen Input va
 _Avoid_: job (queue mechanics), prompt (ComfyUI's word for one execution), run, render
 
 **Upload**:
-A file a user supplies as an Input value, such as a reference image, video or audio clip.
+A file a user supplies as an Input value, such as a reference image, video or audio clip. Trimming one makes a new Upload, trimmed from the original; a Generation uses the Uploads it actually sends.
 _Avoid_: reference (names the Input's purpose, not the file), attachment
 
 **Asset**:

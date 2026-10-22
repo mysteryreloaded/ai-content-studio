@@ -54,9 +54,13 @@ _Avoid_: history, library
 
 ### Administration
 
+**User**:
+A person who has signed in with Google. A user is pending (waiting for an Admin's approval), active, or disabled (barred from signing in, their running work stopped, their files kept).
+_Avoid_: account, member, customer
+
 **Admin**:
-A user allowed into the admin panel.
-_Avoid_: moderator, owner
+A user allowed into the admin panel. An Admin named in the operator's configuration is pinned: the admin panel cannot demote, disable or delete them.
+_Avoid_: moderator, owner, superuser
 
 **Audit entry**:
 A record of one save of something Admins control (a Model with its Inputs and Modes, a Backend, a user, the Site settings), made by an Admin or by the system: who, what, when, before and after.
@@ -67,5 +71,5 @@ An operational record (error, warning or info) about the app or a Backend, kept 
 _Avoid_: audit, event
 
 **Site settings**:
-The admin-editable branding of the site: title, logo and background image.
+The admin-editable site-wide settings: branding (title, logo, background image) and whether new users need an Admin's approval.
 _Avoid_: config, preferences

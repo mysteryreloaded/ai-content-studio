@@ -60,6 +60,10 @@ _Avoid_: output, result, media
 A user's own view of their past Generations and their Assets.
 _Avoid_: history, library
 
+**Cap**:
+A per-user limit on Generations: the daily cap limits how many a user submits in a rolling 24 hours, the concurrent cap how many they have under way at once. Each comes from the Site settings unless an Admin overrides it for that user.
+_Avoid_: quota, credits, limit (Upload limits are a different thing)
+
 ### Administration
 
 **Operator**:
@@ -83,7 +87,7 @@ An operational record (error, warning or info) about the app or a Backend, kept 
 _Avoid_: audit, event
 
 **Site settings**:
-The admin-editable site-wide settings: branding (title, logo, background image), whether new users need an Admin's approval, the contact (for reports and account questions) shown on every page, and the blocked words refused in prompts.
+The admin-editable site-wide settings: branding (title, logo, background image), whether new users need an Admin's approval, the default Caps, the contact (for reports and account questions) shown on every page, and the blocked words refused in prompts.
 _Avoid_: config, preferences
 
 **Site terms**:

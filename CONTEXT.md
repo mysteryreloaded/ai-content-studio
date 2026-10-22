@@ -7,7 +7,7 @@ An open-source web studio where signed-in users generate video, image and audio 
 ### Catalog
 
 **Model**:
-An admin-defined generation offering: exactly one Workflow, the Backends that can run it, its Inputs and its Modes. Users see a Model only while it is enabled.
+An admin-defined generation offering: exactly one Workflow, the Backends that can run it, its Inputs and its Modes, plus optional Model terms and Attribution. Users see a Model only while it is enabled.
 _Avoid_: engine, checkpoint (that is a weights file), template
 
 **Workflow**:
@@ -33,6 +33,14 @@ _Avoid_: feature, preset, tab, sub-workflow
 **Path**:
 The part of a Workflow that a Mode runs: the nodes that produce its Assets and every node they depend on. The rest of the Workflow plays no part in that Mode's Generations.
 _Avoid_: branch, route, sub-workflow
+
+**Model terms**:
+A Model's own terms and license link, which a user acknowledges before using that Model, and again when the Model terms change.
+_Avoid_: license note, disclaimer, EULA
+
+**Attribution**:
+A Model's credit line (for example "Powered by MiniMax H3"), shown with the Model and its Generations.
+_Avoid_: license note, credit, watermark
 
 ### Generating
 
@@ -63,7 +71,7 @@ A user allowed into the admin panel. An Admin named in the operator's configurat
 _Avoid_: moderator, owner, superuser
 
 **Audit entry**:
-A record of one save of something Admins control (a Model with its Inputs and Modes, a Backend, a user, the Site settings), made by an Admin, by the system, or by a user deleting their own account: who, what, when, before and after.
+A record of one save of something Admins control (a Model with its Inputs and Modes, a Backend, a user, the Site settings, a Removal), made by an Admin, by the system, or by a user deleting their own account: who, what, when, before and after.
 _Avoid_: log, history, changelog
 
 **Log entry**:
@@ -71,5 +79,13 @@ An operational record (error, warning or info) about the app or a Backend, kept 
 _Avoid_: audit, event
 
 **Site settings**:
-The admin-editable site-wide settings: branding (title, logo, background image) and whether new users need an Admin's approval.
+The admin-editable site-wide settings: branding (title, logo, background image), whether new users need an Admin's approval, the contact (for reports and account questions) shown on every page, and the blocked words refused in prompts.
 _Avoid_: config, preferences
+
+**Site terms**:
+The terms a user accepts before using the studio, when the operator has set them. Each acceptance records the version accepted.
+_Avoid_: ToS, agreement, policy (the privacy policy is a separate page)
+
+**Removal**:
+An Admin deleting a user's Generation or Upload for breaking the rules. Unlike a user's own delete, the owner sees that it was removed.
+_Avoid_: takedown, moderation, ban

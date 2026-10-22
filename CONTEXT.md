@@ -63,7 +63,7 @@ A user allowed into the admin panel. An Admin named in the operator's configurat
 _Avoid_: moderator, owner, superuser
 
 **Audit entry**:
-A record of one save of something Admins control (a Model with its Inputs and Modes, a Backend, a user, the Site settings), made by an Admin or by the system: who, what, when, before and after.
+A record of one save of something Admins control (a Model with its Inputs and Modes, a Backend, a user, the Site settings), made by an Admin, by the system, or by a user deleting their own account: who, what, when, before and after.
 _Avoid_: log, history, changelog
 
 **Log entry**:

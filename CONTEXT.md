@@ -15,7 +15,7 @@ The ComfyUI graph, in API format, that a Model runs. LTX 2.5's Workflow is "all-
 _Avoid_: pipeline, graph, flow
 
 **Node field**:
-One named entry in a Workflow node's `inputs`; the place an Input's value is written.
+One named entry in a Workflow node's `inputs` that holds a value rather than a link from another node; the place an Input's value is written.
 _Avoid_: node input, param, widget
 
 **Backend**:
@@ -23,7 +23,7 @@ A ComfyUI server, reached at an address (with credentials when the network in fr
 _Avoid_: node (means a Workflow node), worker, machine, server
 
 **Input**:
-An admin-defined field on a Model's page whose value is written into one or more Node fields. Blank unless the admin sets a default.
+An admin-defined field of a Model whose value is written into one or more Node fields; a select writes its own value for each field. Each Mode shows it (optional or required), hides it, or fixes its value. It starts blank unless the admin sets a default, and when it is blank or hidden, its Node fields keep the Workflow's own values.
 _Avoid_: parameter, control, option
 
 **Mode**:

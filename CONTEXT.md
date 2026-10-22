@@ -59,11 +59,11 @@ A user allowed into the admin panel.
 _Avoid_: moderator, owner
 
 **Audit entry**:
-A record of one change made through the admin panel: who, what, when, before and after.
+A record of one save of something Admins control (a Model with its Inputs and Modes, a Backend, a user, the Site settings), made by an Admin or by the system: who, what, when, before and after.
 _Avoid_: log, history, changelog
 
 **Log entry**:
-An operational record (error or warning) from the app or a Backend, kept for diagnosis. Distinct from Audit entries.
+An operational record (error, warning or info) about the app or a Backend, kept for diagnosis. Distinct from Audit entries.
 _Avoid_: audit, event
 
 **Site settings**:

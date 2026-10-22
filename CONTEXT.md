@@ -62,12 +62,16 @@ _Avoid_: history, library
 
 ### Administration
 
+**Operator**:
+The person or organisation who runs an instance of the studio: deploys it, owns its configuration and the GPU machines behind its Backends, and answers for the Models it offers. Often an Admin too, but the role is outside the app.
+_Avoid_: self-hoster, host, owner
+
 **User**:
 A person who has signed in with Google. A user is pending (waiting for an Admin's approval), active, or disabled (barred from signing in, their running work stopped, their files kept).
 _Avoid_: account, member, customer
 
 **Admin**:
-A user allowed into the admin panel. An Admin named in the operator's configuration is pinned: the admin panel cannot demote, disable or delete them.
+A user allowed into the admin panel. An Admin named in the Operator's configuration is pinned: the admin panel cannot demote, disable or delete them.
 _Avoid_: moderator, owner, superuser
 
 **Audit entry**:
@@ -83,7 +87,7 @@ The admin-editable site-wide settings: branding (title, logo, background image),
 _Avoid_: config, preferences
 
 **Site terms**:
-The terms a user accepts before using the studio, when the operator has set them. Each acceptance records the version accepted.
+The terms a user accepts before using the studio, when the Operator has set them. Each acceptance records the version accepted.
 _Avoid_: ToS, agreement, policy (the privacy policy is a separate page)
 
 **Removal**:

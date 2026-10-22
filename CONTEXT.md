@@ -27,7 +27,7 @@ An admin-defined field on a Model's page whose value is written into one or more
 _Avoid_: parameter, control, option
 
 **Mode**:
-A named preset of a Model (for example first/last frame, character replace) that chooses which Inputs appear and fixes the values that steer the Workflow down one path.
+A named preset of a Model (for example first/last frame, character replace) that chooses which Inputs appear and fixes the values that steer the Workflow down one path. Modes differ in which Uploads they ask for: a variant that keeps the same Uploads (for example which motion guide to follow) is an Input within a Mode, not a separate Mode. Several Modes may share one path and differ only in the values they fix.
 _Avoid_: feature, preset, tab, sub-workflow
 
 ### Generating

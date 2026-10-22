@@ -19,7 +19,7 @@ One named entry in a Workflow node's `inputs`; the place an Input's value is wri
 _Avoid_: node input, param, widget
 
 **Backend**:
-A ComfyUI server, reached at an address with credentials, that can run a Model's Workflow.
+A ComfyUI server, reached at an address with credentials, that runs the Workflows of one or more Models, one Generation at a time.
 _Avoid_: node (means a Workflow node), worker, machine, server
 
 **Input**:

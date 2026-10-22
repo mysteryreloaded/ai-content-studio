@@ -10,6 +10,10 @@ An open-source web studio where signed-in users generate video, image and audio 
 An admin-defined generation offering: exactly one Workflow, the Backends that can run it, its Inputs and its Modes, plus optional Model terms and Attribution. Users see a Model only while it is enabled.
 _Avoid_: engine, checkpoint (that is a weights file), template
 
+**Model revision**:
+One saved state of a Model's Workflow, Inputs and Modes. Each save of any of them makes a new one. A Generation runs with the Model revision current when it was submitted, and keeps showing the settings it ran with even after the Model changes.
+_Avoid_: version (Model terms and Site terms have versions), draft
+
 **Workflow**:
 The ComfyUI graph, in API format, that a Model runs. LTX 2.5's Workflow is "all-in-one": one graph covering many Modes.
 _Avoid_: pipeline, graph, flow
@@ -45,8 +49,12 @@ _Avoid_: license note, credit, watermark
 ### Generating
 
 **Generation**:
-One request to produce output from a Model in a chosen Mode with chosen Input values. A multi-generation request creates several Generations that differ only by seed.
+One request to produce output from a Model in a chosen Mode with chosen Input values. A Submission creates one or more Generations that differ only by seed.
 _Avoid_: job (queue mechanics), prompt (ComfyUI's word for one execution), run, render
+
+**Submission**:
+One press of Generate: it creates 1–4 Generations that share the Model revision, Mode and Input values and differ only by seed. A user can cancel or delete a whole Submission.
+_Avoid_: batch, multi-generation request, job
 
 **Upload**:
 A file a user supplies as an Input value, such as a reference image, video or audio clip. Trimming one makes a new Upload, trimmed from the original; a Generation uses the Uploads it actually sends.

@@ -49,7 +49,7 @@ _Avoid_: license note, credit, watermark
 ### Generating
 
 **Generation**:
-One request to produce output from a Model in a chosen Mode with chosen Input values. A Submission creates one or more Generations that differ only by seed. A test Generation is one an Admin runs from the Model editor to try a Mode, even on a disabled Model; it doesn't count toward Caps.
+One request to produce output from a Model in a chosen Mode with chosen Input values. A Submission creates one or more Generations that differ only by seed. A test Generation is one an Admin runs from the Model editor to try a Mode, even on a disabled Model; it doesn't count toward Caps. Its state moves `queued` → `starting` → `running` → `succeeded`, or to `failed` or `cancelled` from any of those; the Gallery's state filter groups these as Under way, Finished, and Failed or cancelled.
 _Avoid_: job (queue mechanics), prompt (ComfyUI's word for one execution), run, render
 
 **Submission**:

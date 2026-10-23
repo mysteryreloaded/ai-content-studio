@@ -53,6 +53,13 @@ export interface PathResult {
   nodeIds: Set<string>;
   /** Node ids named as output nodes that are missing from the Workflow. */
   missingOutputNodeIds: string[];
+  /**
+   * Switch node id -> the branch field whose link was pruned because that
+   * side's nodes aren't on the Path. ComfyUI's validate_inputs still follows
+   * such a link (lazy or not), so extractPath must drop the field itself
+   * rather than leave a link pointing outside the sub-Workflow.
+   */
+  prunedInputs: Map<string, "on_true" | "on_false">;
 }
 
 /** Computes the Path for a Mode: its output nodes plus every node they depend on. */
@@ -62,6 +69,7 @@ export function computePath(
 ): PathResult {
   const nodeIds = new Set<string>();
   const missingOutputNodeIds: string[] = [];
+  const prunedInputs = new Map<string, "on_true" | "on_false">();
   const queue: string[] = [];
 
   for (const id of outputNodeIds) {
@@ -93,6 +101,7 @@ export function computePath(
       isSwitch && known !== undefined
         ? SWITCH_BRANCH_FIELDS[known ? "false" : "true"]
         : undefined;
+    if (prunedBranchField) prunedInputs.set(id, prunedBranchField);
 
     for (const [field, value] of Object.entries(node.inputs)) {
       if (field === prunedBranchField) continue;
@@ -104,15 +113,27 @@ export function computePath(
     }
   }
 
-  return { nodeIds, missingOutputNodeIds };
+  return { nodeIds, missingOutputNodeIds, prunedInputs };
 }
 
-/** Builds the Path's own sub-Workflow: the same nodes, links untouched. */
+/**
+ * Builds the Path's own sub-Workflow: the same nodes, links untouched, except
+ * that a switch's pruned branch field is dropped rather than left pointing at
+ * a node outside the sub-Workflow (on_true/on_false are optional; the core
+ * ComfySwitchNode only needs one connected). The input Workflow is not mutated.
+ */
 export function extractPath(workflow: Workflow, path: PathResult): Workflow {
   const result: Workflow = {};
   for (const id of path.nodeIds) {
     const node = workflow[id];
-    if (node) result[id] = node;
+    if (!node) continue;
+    const prunedField = path.prunedInputs.get(id);
+    if (!prunedField) {
+      result[id] = node;
+      continue;
+    }
+    const { [prunedField]: _omitted, ...inputs } = node.inputs;
+    result[id] = { ...node, inputs };
   }
   return result;
 }

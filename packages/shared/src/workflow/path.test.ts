@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { computePath, extractPath } from "./path.js";
-import type { Workflow } from "./types.js";
+import { type Workflow, isNodeLink } from "./types.js";
 
 describe("computePath", () => {
   test("includes an output node and every node it depends on", () => {
@@ -181,5 +181,71 @@ describe("extractPath", () => {
 
     expect(Object.keys(sub).sort()).toEqual(["1", "2"]);
     expect(sub["2"]?.inputs.image).toEqual(["1", 0]);
+  });
+
+  test("drops a pruned switch's branch field so no link points outside the sub-Workflow, for a literal switch", () => {
+    const workflow: Workflow = {
+      trueBranch: { class_type: "LoadImage", inputs: {} },
+      falseBranch: { class_type: "LoadImage", inputs: {} },
+      sw: {
+        class_type: "ComfySwitchNode",
+        inputs: {
+          switch: true,
+          on_true: ["trueBranch", 0],
+          on_false: ["falseBranch", 0],
+        },
+      },
+      out: { class_type: "SaveImage", inputs: { image: ["sw", 0] } },
+    };
+    const original = structuredClone(workflow);
+
+    const path = computePath(workflow, ["out"]);
+    const sub = extractPath(workflow, path);
+
+    expect(Object.keys(sub).sort()).toEqual(["out", "sw", "trueBranch"]);
+    for (const node of Object.values(sub)) {
+      for (const value of Object.values(node.inputs)) {
+        if (isNodeLink(value)) expect(sub[value[0]]).toBeDefined();
+      }
+    }
+    expect(sub.sw?.inputs.on_false).toBeUndefined();
+    expect(sub.sw?.inputs.on_true).toEqual(["trueBranch", 0]);
+    expect(workflow).toEqual(original);
+  });
+
+  test("drops a pruned switch's branch field so no link points outside the sub-Workflow, for a primitive-fed switch", () => {
+    const workflow: Workflow = {
+      trueBranch: { class_type: "LoadImage", inputs: {} },
+      falseBranch: { class_type: "LoadImage", inputs: {} },
+      prim: { class_type: "PrimitiveBoolean", inputs: { value: false } },
+      sw: {
+        class_type: "ComfySwitchNode",
+        inputs: {
+          switch: ["prim", 0],
+          on_true: ["trueBranch", 0],
+          on_false: ["falseBranch", 0],
+        },
+      },
+      out: { class_type: "SaveImage", inputs: { image: ["sw", 0] } },
+    };
+    const original = structuredClone(workflow);
+
+    const path = computePath(workflow, ["out"]);
+    const sub = extractPath(workflow, path);
+
+    expect(Object.keys(sub).sort()).toEqual([
+      "falseBranch",
+      "out",
+      "prim",
+      "sw",
+    ]);
+    for (const node of Object.values(sub)) {
+      for (const value of Object.values(node.inputs)) {
+        if (isNodeLink(value)) expect(sub[value[0]]).toBeDefined();
+      }
+    }
+    expect(sub.sw?.inputs.on_true).toBeUndefined();
+    expect(sub.sw?.inputs.on_false).toEqual(["falseBranch", 0]);
+    expect(workflow).toEqual(original);
   });
 });

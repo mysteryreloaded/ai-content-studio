@@ -21,7 +21,7 @@ We chose this because it is the only option where another Mode's nodes never rea
 
 - Workflows must give each Mode its own output node(s). Shared merge points such as Any Switch → one save node, and side outputs such as a preview node on a loader, are not allowed.
 - A variant that changes which Uploads are needed is a separate Mode; a variant with the same Uploads is an Input steering a switch. Several Modes may share one Path.
-- The Model editor checks each Mode's Path through `checkModel`, a pure function of the Model and ComfyUI's `object_info` (ADR-0007), which absorbs and extends the Path-specific errors and warnings first decided here:
+- The Model editor checks each Mode's Path through `checkModel`, a pure function of the Model and ComfyUI's `object_info` (ADR-0049), which absorbs and extends the Path-specific errors and warnings first decided here:
   - no output node named, or a node that is not an output node (error);
   - an Upload loader on the Path with neither a visible Input nor a fixed value (error; Upload checks themselves land with their own ticket);
   - a visible Input that binds to nothing on the Path, a fixed value outside the Path, and duplicate Modes (warnings).

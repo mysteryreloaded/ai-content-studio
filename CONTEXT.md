@@ -91,8 +91,12 @@ A user allowed into the admin panel. An Admin named in the Operator's configurat
 _Avoid_: moderator, owner, superuser
 
 **Audit entry**:
-A record of one save of something Admins control (a Model with its Inputs and Modes, a Backend, a user, the Site settings, a Removal), made by an Admin, by the system, or by a user deleting their own account: who, what, when, before and after. Admins are named in it; a user who isn't an Admin appears without their name or email, so deleting the account leaves neither behind.
+A record of one save of something Admins control (a Model with its Inputs and Modes, a Backend, a user, the Site settings, a Removal), made by an Admin, by the system, or by a user deleting their own account: who, what, when, before and after. Before and after are snapshots of the changed fields, not a stored diff; see Audit page. Admins are named in it; a user who isn't an Admin appears without their name or email, so deleting the account leaves neither behind.
 _Avoid_: log, history, changelog
+
+**Audit page**:
+The admin panel page listing every Audit entry, newest first, filterable by actor, target type, target, action and date. It computes each entry's diff at display time from its stored before/after snapshots (ADR 0007), rendered per target type: a Backend's credentials show as set/changed/unchanged/cleared, never their value; a Model's Workflow shows by its id and hash, never its full graph; a Site terms save shows the full accepted text and whether it asked everyone to re-accept. An Admin actor is named; any other actor shows by id, with the name looked up live from the users table, reading "Deleted user" once the account is gone. A History link on the thing that changed (Site settings first; later a Model, a Backend, a user) opens the Audit page filtered to it.
+_Avoid_: log page, activity feed, changelog
 
 **Log entry**:
 An operational record (error, warning or info) about the app or a Backend, kept for diagnosis. Distinct from Audit entries.

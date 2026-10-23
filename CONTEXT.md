@@ -107,11 +107,11 @@ The admin-editable site-wide settings: branding (title, logo, which is also the 
 _Avoid_: config, preferences
 
 **Notice**:
-A short message an Admin writes in the Site settings, shown as a banner on every page to everyone, signed in or out: for example, a planned maintenance window. It shows whenever an Admin has set it, and always during a Pause, with a standard message when blank.
+A short message an Admin writes in the Site settings, shown as a banner on every page to everyone, signed in or out: for example, a planned maintenance window. It shows whenever an Admin has set it, and always during a Pause, with a standard message when blank. A user can dismiss it in their own browser until its text changes, but never while Paused.
 _Avoid_: announcement, alert (what the Operator's monitor sends), banner (that is how it is shown), notification (a browser's message about the user's own Submission)
 
 **Pause**:
-An Admin stopping generating across the whole studio for maintenance until an Admin resumes it. New Submissions are refused; queued Generations wait without failing; those already under way finish; only test Generations start. Signing in, browsing, Uploads and downloads carry on.
+An Admin stopping generating across the whole studio for maintenance until an Admin resumes it. New Submissions are refused; queued Generations wait without failing; those already under way finish; only test Generations start. Signing in, browsing, Uploads, trims, downloads, cancels, deletes and health checks carry on. A Pause survives a restart. Pausing and resuming are their own Audit actions, not a plain Site settings save, and Site settings show who paused and since when.
 _Avoid_: maintenance mode, freeze, lockdown, drain (draining is one Backend taking no new Generations)
 
 **Site terms**:

@@ -94,6 +94,10 @@ _Avoid_: log, history, changelog
 An operational record (error, warning or info) about the app or a Backend, kept for diagnosis. Distinct from Audit entries.
 _Avoid_: audit, event
 
+**Problem**:
+A condition the studio reports to Admins and to the Operator's outside monitor for as long as it lasts, such as a Model with no usable Backend or a disk running low. It clears itself when the condition ends; nobody acknowledges or closes it.
+_Avoid_: alert (what the Operator's monitor sends), incident, issue (a validation error)
+
 **Site settings**:
 The admin-editable site-wide settings: branding (title, logo, which is also the favicon, background image, and the landing text shown to signed-out visitors), whether new users need an Admin's approval, the default Caps, the contact (for reports and account questions) shown on every page, the blocked words refused in prompts, the Site terms, the Operator's part of the Privacy policy, and up to three extra footer links.
 _Avoid_: config, preferences

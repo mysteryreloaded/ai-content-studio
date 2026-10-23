@@ -72,6 +72,10 @@ _Avoid_: history, library
 A per-user limit on Generations: the daily cap limits how many a user submits in a rolling 24 hours, the concurrent cap how many they have under way at once. Each comes from the Site settings unless an Admin overrides it for that user.
 _Avoid_: quota, credits, limit (Upload limits are a different thing)
 
+**Notification**:
+A message a user's own browser shows when one of their Submissions ends, raised by an open studio tab once the user has turned notifications on in that browser.
+_Avoid_: alert (what the Operator's monitor sends), Notice (an Admin's banner to everyone), push
+
 ### Administration
 
 **Operator**:
@@ -104,7 +108,7 @@ _Avoid_: config, preferences
 
 **Notice**:
 A short message an Admin writes in the Site settings, shown as a banner on every page to everyone, signed in or out: for example, a planned maintenance window. It shows whenever an Admin has set it, and always during a Pause, with a standard message when blank.
-_Avoid_: announcement, alert (what the Operator's monitor sends), banner (that is how it is shown)
+_Avoid_: announcement, alert (what the Operator's monitor sends), banner (that is how it is shown), notification (a browser's message about the user's own Submission)
 
 **Pause**:
 An Admin stopping generating across the whole studio for maintenance until an Admin resumes it. New Submissions are refused; queued Generations wait without failing; those already under way finish; only test Generations start. Signing in, browsing, Uploads and downloads carry on.

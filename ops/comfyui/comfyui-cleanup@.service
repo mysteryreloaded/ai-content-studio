@@ -1,0 +1,7 @@
+[Unit]
+Description=Delete day-old studio files for ComfyUI Backend (GPU %i)
+Documentation=file:/opt/ai-content-studio/docs/ops/backend-kit.md
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/find /opt/comfyui/%i/input/studio /opt/comfyui/%i/output/studio -type f -mmin +1440 -delete

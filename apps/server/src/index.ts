@@ -26,7 +26,14 @@ async function main() {
   const { sql, db } = createDatabase(env.DATABASE_URL);
   const webDistDir = path.join(import.meta.dir, "..", "..", "web", "dist");
 
-  const app = createApp({ db, sql, clock: systemClock, logger, webDistDir });
+  const { app } = await createApp({
+    db,
+    sql,
+    clock: systemClock,
+    logger,
+    env,
+    webDistDir,
+  });
 
   logger.info("server listening", { port: env.PORT });
   Bun.serve({ port: env.PORT, fetch: app.fetch });

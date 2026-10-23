@@ -30,6 +30,10 @@ _Avoid_: node (means a Workflow node), worker, machine, server
 An admin-defined field of a Model whose value is written into one or more Node fields; a select writes its own value for each field. Each Mode shows it (optional or required), hides it, or fixes its value. It starts blank unless the admin sets a default, and when it is blank or hidden, its Node fields keep the Workflow's own values.
 _Avoid_: parameter, control, option
 
+**Seed**:
+A Model's own Input type, bound to one INT Node field, with no default: at most one per Model. Blank, the studio picks a random one; set, the user's own. A Seed bound on a Mode's Path turns on the Submission's 1–4 count, even when that Mode hides the Seed Input itself.
+_Avoid_: random seed, noise seed
+
 **Mode**:
 A named preset of a Model (for example first/last frame, character replace) that picks its Path by naming the Workflow nodes that produce its Assets, chooses which Inputs appear, and fixes values that steer choices inside the Path. Modes differ in which Uploads they ask for: a variant that keeps the same Uploads (for example which motion guide to follow) is an Input within a Mode, not a separate Mode. Several Modes may share one Path and differ only in the values they fix.
 _Avoid_: feature, preset, tab, sub-workflow

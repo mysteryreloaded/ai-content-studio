@@ -39,7 +39,7 @@ The part of a Workflow that a Mode runs: the nodes that produce its Assets and e
 _Avoid_: branch, route, sub-workflow
 
 **Model terms**:
-A Model's own terms and license link, which a user acknowledges before using that Model, and again when the Model terms change.
+A Model's own terms and license link, which a user acknowledges before using that Model, and again when the Model terms change. Markdown like Site terms, rendered by the same shared renderer.
 _Avoid_: license note, disclaimer, EULA
 
 **Attribution**:
@@ -83,7 +83,7 @@ The person or organisation who runs an instance of the studio: deploys it, owns 
 _Avoid_: self-hoster, host, owner
 
 **User**:
-A person who has signed in with Google. A user is pending (waiting for an Admin's approval), active, or disabled (barred from signing in, their running work stopped, their files kept).
+A person who has signed in with Google. A user is pending (waiting for an Admin's approval), active, or disabled (barred from signing in, their running work stopped, their files kept). An active user who hasn't accepted the current Site terms is routed to accept them before anything else, Admins included.
 _Avoid_: account, member, customer
 
 **Admin**:
@@ -115,11 +115,11 @@ An Admin stopping generating across the whole studio for maintenance until an Ad
 _Avoid_: maintenance mode, freeze, lockdown, drain (draining is one Backend taking no new Generations)
 
 **Site terms**:
-The terms a user accepts before using the studio, when an Admin has set them in the Site settings. Anyone can read them, signed in or not. Each acceptance records the version accepted.
+The terms a user accepts before using the studio, when an Admin has set them in the Site settings: Markdown (CommonMark, no raw HTML, no images), ≤ 50,000 characters, rendered by the shared legal-text renderer. Blank means no gate. Anyone can read them at `/terms`, signed in or not, dated by the current version. Setting them for the first time, or any save that ticks "Ask everyone to accept again", makes a new version that every user, Admins included, must accept before anything else; a quiet edit keeps the version and everyone's acceptance. Each acceptance records the version accepted.
 _Avoid_: ToS, agreement, policy (the Privacy policy is a separate page)
 
 **Privacy policy**:
-The public page telling visitors what the studio keeps about them: the Operator's own text from the Site settings, followed by a section the studio writes from its own configuration, which no Admin can edit. Nobody accepts it; it informs.
+The public page telling visitors what the studio keeps about them: the Operator's own Markdown text from the Site settings, rendered by the shared legal-text renderer, followed by a section the studio writes from its own configuration, which no Admin can edit. Nobody accepts it; it informs.
 _Avoid_: privacy notice, data policy, terms
 
 **Removal**:

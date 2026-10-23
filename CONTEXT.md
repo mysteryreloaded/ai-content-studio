@@ -73,8 +73,12 @@ A per-user limit on Generations: the daily cap limits how many a user submits in
 _Avoid_: quota, credits, limit (Upload limits are a different thing)
 
 **Notification**:
-A message a user's own browser shows when one of their Submissions ends, raised by an open studio tab once the user has turned notifications on in that browser.
+A desktop browser alert for one Submission, raised once by whichever studio tab a browser has elected to notify, once the user has turned notifications on in that browser (offered on their first Submission and from the account page; the choice is kept per browser, not on the account). It fires when the Submission's last Generation ends, only while no studio tab is visible; the user's own cancel and an Admin's Removal never raise one. Its title is the site title, its body names the counts, the Model and the Mode (never the prompt or files), and its icon is the site logo; clicking it opens the first succeeded Generation, or the first failed one if none succeeded.
 _Avoid_: alert (what the Operator's monitor sends), Notice (an Admin's banner to everyone), push
+
+**Tab cue**:
+A studio tab's own title and favicon, changed to say what a user away from the tab can't see: a count and the Model while Submissions run (for example "(2) LTX 2.5 · My Studio"), then a result summary and an accent or failure-coloured favicon dot once one ends while the tab is hidden (for example "✓ 3 ready · 1 failed · My Studio", or "✕ …" when none succeeded). It resets the moment the tab becomes visible again.
+_Avoid_: badge, title trick, favicon (that is only the icon the dot is drawn on)
 
 ### Administration
 

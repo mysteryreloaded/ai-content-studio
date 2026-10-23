@@ -1,0 +1,19 @@
+{
+  "name": "ai-content-studio",
+  "private": true,
+  "workspaces": ["packages/*", "apps/*"],
+  "scripts": {
+    "dev": "concurrently -n server,web -c blue,green \"bun run --filter @ai-content-studio/server dev\" \"bun run --filter @ai-content-studio/web dev\"",
+    "build": "bun run --filter @ai-content-studio/web build",
+    "test": "bun test",
+    "lint": "biome check .",
+    "typecheck": "tsc -b",
+    "db:check": "bun run --filter @ai-content-studio/server db:check"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "bun-types": "^1.4.4",
+    "concurrently": "^9.1.2",
+    "typescript": "^5.7.3"
+  }
+}

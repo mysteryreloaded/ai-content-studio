@@ -1,0 +1,3 @@
+[test]
+# Compiled output mirrors src/**/*.test.ts under dist/; never run those.
+pathIgnorePatterns = ["**/dist/**"]

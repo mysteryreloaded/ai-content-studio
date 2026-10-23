@@ -2,6 +2,10 @@
 
 Three variants of the user-facing Model page, switchable from a floating bar, for the ticket [How does a user drive a Model page and watch Generations?](https://github.com/mysteryreloaded/ai-content-studio/issues/20). This branch is the prototype's record; nothing here merges to `main`.
 
+## Verdict
+
+Settled with the user on 2026-10-23: **A · Workbench** wins, with Generate waiting for Uploads, values carrying across Modes, per-Mode Input labels, no queue position, and no frame-position setting. Full answer: [the ticket's resolution](https://github.com/mysteryreloaded/ai-content-studio/issues/20#issuecomment-6354093574).
+
 ## Run it
 
 - Open `index.html` in a browser (React loads from cdnjs), or

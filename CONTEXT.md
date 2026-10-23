@@ -119,8 +119,12 @@ The terms a user accepts before using the studio, when an Admin has set them in 
 _Avoid_: ToS, agreement, policy (the Privacy policy is a separate page)
 
 **Privacy policy**:
-The public page telling visitors what the studio keeps about them: the Operator's own text from the Site settings, followed by a section the studio writes from its own configuration, which no Admin can edit. Nobody accepts it; it informs.
+The public page at `/privacy`, which always exists. It shows the Operator's own Markdown from the Site settings with "Last updated" (that text's last save), then a studio-generated English section no Admin can edit, rendered from live configuration each time the page is served, tagged with the studio version. Nobody accepts it; it informs.
 _Avoid_: privacy notice, data policy, terms
+
+**Theme**:
+A visitor's or user's own System / Light / Dark display preference, kept in that browser's local storage and applied by an inline script before the page paints, so there is no flash of the wrong theme. Google's sign-in button is swapped to match it.
+_Avoid_: dark mode (one of three choices, not the feature), appearance, colour scheme (that's the Operator's accent colour, a Site settings choice everyone sees the same)
 
 **Removal**:
 An Admin deleting a user's Generation or Upload for breaking the rules. Unlike a user's own delete, the owner sees that it was removed.

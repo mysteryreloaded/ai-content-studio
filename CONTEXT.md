@@ -99,7 +99,7 @@ A condition the studio reports to Admins and to the Operator's outside monitor f
 _Avoid_: alert (what the Operator's monitor sends), incident, issue (a validation error)
 
 **Site settings**:
-The admin-editable site-wide settings: branding (title, logo, which is also the favicon, background image, and the landing text shown to signed-out visitors), whether new users need an Admin's approval, the default Caps, the contact (for reports and account questions) shown on every page, the blocked words refused in prompts, the Site terms, the Operator's part of the Privacy policy, and up to three extra footer links.
+The admin-editable site-wide settings: branding (title, logo, which is also the favicon, background image, an accent colour picked from a fixed palette, and the landing text shown to signed-out visitors), whether new users need an Admin's approval, the default Caps, the contact (for reports and account questions) shown on every page, the blocked words refused in prompts, the Site terms, the Operator's part of the Privacy policy, and up to three extra footer links.
 _Avoid_: config, preferences
 
 **Site terms**:

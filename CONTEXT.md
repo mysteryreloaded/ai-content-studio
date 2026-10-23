@@ -102,6 +102,10 @@ _Avoid_: audit, event
 A condition the studio reports to Admins and to the Operator's outside monitor for as long as it lasts, such as a Model with no usable Backend or a disk running low. It clears itself when the condition ends; nobody acknowledges or closes it.
 _Avoid_: alert (what the Operator's monitor sends), incident, issue (a validation error)
 
+**Issue**:
+One entry in the Model editor's rail, naming something wrong with the Model as currently edited: an error or a warning, found by `checkModel(model, objectInfo)`, a pure function run live as the Admin edits. Errors block enabling the Model, and block saving it while it is enabled; the editor offers "Save and disable" instead. A disabled Model can always be saved, errors and all. Warnings never block saving or enabling.
+_Avoid_: error (one severity of Issue; "warning" the other), Problem (a Problem is a run-time condition the studio reports on its own; an Issue is found by checking a Model's definition), validation error (names the mechanism, not the rail entry)
+
 **Site settings**:
 The admin-editable site-wide settings: branding (title, logo, which is also the favicon, background image, an accent colour picked from a fixed palette, and the landing text shown to signed-out visitors), whether new users need an Admin's approval, the default Caps, the contact (for reports and account questions) shown on every page, the blocked words refused in prompts, the Site terms, the Operator's part of the Privacy policy, up to three extra footer links, the Notice, and whether generating is Paused.
 _Avoid_: config, preferences

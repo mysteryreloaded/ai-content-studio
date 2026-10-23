@@ -56,6 +56,14 @@ _Avoid_: job (queue mechanics), prompt (ComfyUI's word for one execution), run, 
 One press of Generate: it creates 1–4 Generations that share the Model revision, Mode and Input values and differ only by seed. A user can cancel or delete a whole Submission.
 _Avoid_: batch, multi-generation request, job
 
+**Try**:
+One attempt to run a Generation on a Backend. A Generation gets at most 2: the first, and one retry after a Lost try. A real failure ends the Generation without a second Try.
+_Avoid_: attempt, run, retry (a retry is what happens between Tries, not a Try itself)
+
+**Lost try**:
+A Try that ended for a reason outside the Generation's own request, not a real failure: the Backend was unreachable while starting or for more than 2 minutes while running, the job 404s, or ComfyUI rejected it only for a missing node. It's retried on any Backend and logged as a warning, not an error.
+_Avoid_: dropped try, infra failure, crash
+
 **Upload**:
 A file a user supplies as an Input value, such as a reference image, video or audio clip. Trimming one makes a new Upload, trimmed from the original; a Generation uses the Uploads it actually sends.
 _Avoid_: reference (names the Input's purpose, not the file), attachment
@@ -113,6 +121,10 @@ _Avoid_: announcement, alert (what the Operator's monitor sends), banner (that i
 **Pause**:
 An Admin stopping generating across the whole studio for maintenance until an Admin resumes it. New Submissions are refused; queued Generations wait without failing; those already under way finish; only test Generations start. Signing in, browsing, Uploads and downloads carry on.
 _Avoid_: maintenance mode, freeze, lockdown, drain (draining is one Backend taking no new Generations)
+
+**Draining**:
+An Admin's per-Backend stop: that Backend takes no new Generations but finishes any Try already running on it. Unlike a Pause, the rest of the studio keeps dispatching to other Backends.
+_Avoid_: maintenance mode (that's a Pause, studio-wide), offline, cordon
 
 **Site terms**:
 The terms a user accepts before using the studio, when an Admin has set them in the Site settings. Anyone can read them, signed in or not. Each acceptance records the version accepted.

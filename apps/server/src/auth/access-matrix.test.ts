@@ -23,6 +23,7 @@ const TEST_ENV: Env = {
   GOOGLE_CLIENT_SECRET: "test-secret",
   ADMIN_EMAILS: ["admin@example.com"],
   OIDC_ISSUER: undefined,
+  DATA_DIR: "/tmp/ai-content-studio-test-data",
 };
 
 describe("every route's access level is declared and enforced", () => {
@@ -104,6 +105,14 @@ describe("every route's access level is declared and enforced", () => {
       admin: { active: 403, admin: 200 },
     };
 
+    // A route that needs a request body to do anything (e.g. a save)
+    // still enforces access before parsing it, but a bodyless call from
+    // an Admin fails validation rather than succeeding — that is a
+    // different test's job, so only its status code is overridden here.
+    const ADMIN_STATUS_OVERRIDES: Record<string, number> = {
+      "PUT /api/admin/site-settings": 400,
+    };
+
     for (const route of routes) {
       if (route.access === "status-token") continue;
 
@@ -142,8 +151,11 @@ describe("every route's access level is declared and enforced", () => {
             Cookie: await cookieFor(adminUser.id),
           },
         });
+        const expectedAdmin =
+          ADMIN_STATUS_OVERRIDES[`${route.method} ${route.path}`] ??
+          expected.admin;
         expect(`${context} admin -> ${adminRes.status}`).toBe(
-          `${context} admin -> ${expected.admin}`,
+          `${context} admin -> ${expectedAdmin}`,
         );
       }
     }

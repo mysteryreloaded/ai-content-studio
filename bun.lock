@@ -31,6 +31,7 @@
       "name": "@ai-content-studio/web",
       "version": "0.0.0",
       "dependencies": {
+        "@ai-content-studio/shared": "workspace:*",
         "react": "^19.3.1",
         "react-dom": "^19.3.1",
         "react-router-dom": "^7.18.4",
@@ -45,6 +46,9 @@
     "packages/shared": {
       "name": "@ai-content-studio/shared",
       "version": "0.0.0",
+      "dependencies": {
+        "zod": "^4.6.7",
+      },
     },
   },
   "packages": {

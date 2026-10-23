@@ -1,9 +1,11 @@
-import { useEffect, useState } from "react";
+import { type CSSProperties, useEffect, useState } from "react";
 import { Navigate } from "react-router-dom";
 import { useSession } from "./useSession.js";
 
 interface SiteSettings {
   title: string;
+  landingText: string;
+  hasBackground: boolean;
 }
 
 const AUTH_ERROR_MESSAGES: Record<string, string> = {
@@ -33,9 +35,20 @@ export function LandingPage() {
     return <Navigate to="/models" replace />;
   }
 
+  const backgroundStyle: CSSProperties = settings?.hasBackground
+    ? {
+        backgroundImage: "url(/api/site-settings/background)",
+        backgroundSize: "cover",
+      }
+    : {
+        background: "var(--landing-background)",
+        color: "var(--landing-foreground)",
+      };
+
   return (
-    <main>
+    <main style={backgroundStyle}>
       <h1>{settings?.title ?? "AI Content Studio"}</h1>
+      {settings?.landingText && <p>{settings.landingText}</p>}
       {bannerMessage && <p role="alert">{bannerMessage}</p>}
       <a href="/api/auth/google">Sign in with Google</a>
     </main>

@@ -1,0 +1,165 @@
+// One monitor per Backend, polling /system_stats every 30s. Unreachable
+// after 3 consecutive failures, reachable again after 1 success. Health,
+// version and VRAM live only in memory (issue #39).
+
+import type { Clock } from "./clock";
+import type { Logger } from "./logger";
+
+/** Thrown by a BackendTarget when the stored credentials can't be decrypted. */
+export class CredentialsNeedReentry extends Error {
+  constructor() {
+    super("re-enter credentials");
+  }
+}
+
+const POLL_INTERVAL_MS = 30_000;
+const FAILURE_THRESHOLD = 3;
+const SUCCESS_THRESHOLD = 1;
+
+export type Reachability = "unknown" | "reachable" | "unreachable";
+
+export interface BackendHealth {
+  reachability: Reachability;
+  comfyuiVersion: string | null;
+  vramTotal: number | null;
+  vramFree: number | null;
+  /** Set when the last decrypt of this Backend's credentials failed. */
+  credentialsError: boolean;
+}
+
+export interface SystemStats {
+  comfyuiVersion: string;
+  vramTotal: number;
+  vramFree: number;
+}
+
+export interface BackendTarget {
+  id: string;
+  name: string;
+  baseUrl: string;
+  fetchSystemStats(): Promise<SystemStats>;
+}
+
+const BLANK_HEALTH: BackendHealth = {
+  reachability: "unknown",
+  comfyuiVersion: null,
+  vramTotal: null,
+  vramFree: null,
+  credentialsError: false,
+};
+
+export class BackendMonitor {
+  private readonly health = new Map<string, BackendHealth>();
+  private readonly consecutiveFailures = new Map<string, number>();
+  private readonly consecutiveSuccesses = new Map<string, number>();
+  private readonly unreachableSince = new Map<string, Date>();
+  private readonly cancelers = new Map<string, () => void>();
+
+  constructor(
+    private readonly clock: Clock,
+    private readonly logger: Logger,
+  ) {}
+
+  healthFor(backendId: string): BackendHealth {
+    return this.health.get(backendId) ?? BLANK_HEALTH;
+  }
+
+  watch(target: BackendTarget): void {
+    this.health.set(target.id, { ...BLANK_HEALTH });
+    const cancel = this.clock.setInterval(() => {
+      void this.poll(target);
+    }, POLL_INTERVAL_MS);
+    this.cancelers.set(target.id, cancel);
+  }
+
+  unwatch(backendId: string): void {
+    this.cancelers.get(backendId)?.();
+    this.cancelers.delete(backendId);
+    this.health.delete(backendId);
+    this.consecutiveFailures.delete(backendId);
+    this.consecutiveSuccesses.delete(backendId);
+    this.unreachableSince.delete(backendId);
+  }
+
+  stopAll(): void {
+    for (const cancel of this.cancelers.values()) cancel();
+    this.cancelers.clear();
+  }
+
+  async poll(target: BackendTarget): Promise<void> {
+    try {
+      const stats = await target.fetchSystemStats();
+      await this.recordSuccess(target, stats);
+    } catch (err) {
+      await this.recordFailure(target, err);
+    }
+  }
+
+  private async recordSuccess(target: BackendTarget, stats: SystemStats): Promise<void> {
+    this.consecutiveFailures.set(target.id, 0);
+    const successes = (this.consecutiveSuccesses.get(target.id) ?? 0) + 1;
+    this.consecutiveSuccesses.set(target.id, successes);
+
+    const current = this.healthFor(target.id);
+    const wasUnreachable = current.reachability === "unreachable";
+
+    const becameReachable = successes >= SUCCESS_THRESHOLD && wasUnreachable;
+
+    this.health.set(target.id, {
+      reachability: successes >= SUCCESS_THRESHOLD ? "reachable" : current.reachability,
+      comfyuiVersion: stats.comfyuiVersion,
+      vramTotal: stats.vramTotal,
+      vramFree: stats.vramFree,
+      credentialsError: false,
+    });
+
+    if (becameReachable) {
+      const since = this.unreachableSince.get(target.id);
+      const downtimeMs = since ? this.clock.now().getTime() - since.getTime() : null;
+      this.unreachableSince.delete(target.id);
+      await this.logger.log({
+        level: "info",
+        message: `Backend "${target.name}" is reachable again`,
+        details: downtimeMs !== null ? `downtime_ms=${downtimeMs}` : undefined,
+        backendId: target.id,
+      });
+    }
+  }
+
+  private async recordFailure(target: BackendTarget, err: unknown): Promise<void> {
+    this.consecutiveSuccesses.set(target.id, 0);
+    const failures = (this.consecutiveFailures.get(target.id) ?? 0) + 1;
+    this.consecutiveFailures.set(target.id, failures);
+
+    const current = this.healthFor(target.id);
+    const wasReachable = current.reachability !== "unreachable";
+    const becameUnreachable = failures >= FAILURE_THRESHOLD && wasReachable;
+    const credentialsError = err instanceof CredentialsNeedReentry;
+
+    this.health.set(target.id, {
+      ...current,
+      reachability:
+        credentialsError || failures >= FAILURE_THRESHOLD ? "unreachable" : current.reachability,
+      credentialsError: credentialsError || current.credentialsError,
+    });
+
+    if (credentialsError) {
+      await this.logger.log({
+        level: "error",
+        message: `Backend "${target.name}": re-enter credentials`,
+        details: err instanceof Error ? err.message : String(err),
+        backendId: target.id,
+      });
+    }
+
+    if (becameUnreachable) {
+      this.unreachableSince.set(target.id, this.clock.now());
+      await this.logger.log({
+        level: "warning",
+        message: `Backend "${target.name}" became unreachable`,
+        details: err instanceof Error ? err.message : String(err),
+        backendId: target.id,
+      });
+    }
+  }
+}

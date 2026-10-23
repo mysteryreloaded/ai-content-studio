@@ -1,0 +1,10 @@
+{
+  "name": "@studio/backends",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "dependencies": {
+    "postgres": "^3.4.5"
+  }
+}

@@ -27,7 +27,7 @@ A ComfyUI server, reached at an address (with credentials when the network in fr
 _Avoid_: node (means a Workflow node), worker, machine, server
 
 **Input**:
-An admin-defined field of a Model whose value is written into one or more Node fields; a select writes its own value for each field. Each Mode shows it (optional or required), hides it, or fixes its value. It starts blank unless the admin sets a default, and when it is blank or hidden, its Node fields keep the Workflow's own values.
+An admin-defined field of a Model whose value is written into one or more Node fields; a select writes its own value for each field, and a Node field takes at most one Input. A toggle is a select with exactly two options, shown as a switch. Each Mode shows it (optional or required), hides it, or fixes its value. It starts blank unless the admin sets a default, and when it is blank or hidden, its Node fields keep the Workflow's own values. Users see Inputs grouped as Your files, Describe it and Settings, in the Admin's order.
 _Avoid_: parameter, control, option
 
 **Mode**:

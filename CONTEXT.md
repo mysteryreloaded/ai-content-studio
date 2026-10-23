@@ -57,8 +57,12 @@ One press of Generate: it creates 1–4 Generations that share the Model revisio
 _Avoid_: batch, multi-generation request, job
 
 **Upload**:
-A file a user supplies as an Input value, such as a reference image, video or audio clip. Trimming one makes a new Upload, trimmed from the original; a Generation uses the Uploads it actually sends.
+A file a user supplies as an Input value: a still image, a video (MP4, MOV, WebM or MKV; H.264, HEVC, VP8, VP9 or AV1) or an audio clip (WAV, MP3, FLAC, OGG/Opus or M4A/AAC). HEIC and SVG are refused outright. A video Upload has a thumbnail once it's complete; an audio Upload shows an icon instead. Trimming one makes a new Upload, trimmed from the original, recording the kept range; a Generation uses the Uploads it actually sends.
 _Avoid_: reference (names the Input's purpose, not the file), attachment
+
+**Video Upload** / **Audio Upload**:
+An Input type that takes a video or audio Upload, with a min/max duration and (for video) a max long side, and optionally trimmable. A video one binds to a loader flagged `video_upload` or to `VHS_LoadVideo`/`VHS_LoadVideoFFmpeg`; an audio one binds to a loader flagged `audio_upload`. Trimming happens on a local player before submit: one trim covers every Generation in the Submission, re-encoding the kept range to H.264/AAC MP4 at the original size and fps. An Upload the browser can't play passes through untrimmed when it already fits the Input's limits; it's refused if trimming or a points pick is needed, since there's no reliable way to preview a range the browser can't show.
+_Avoid_: clip picker, media Input
 
 **Asset**:
 A file a Generation produced (video, image or audio), owned by the user who requested it.

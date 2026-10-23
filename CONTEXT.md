@@ -91,11 +91,11 @@ The person or organisation who runs an instance of the studio: deploys it, owns 
 _Avoid_: self-hoster, host, owner
 
 **User**:
-A person who has signed in with Google. A user is pending (waiting for an Admin's approval), active, or disabled (barred from signing in, their running work stopped, their files kept).
+A person who has signed in with Google. A user is pending (shown the waiting page with the contact, once they've accepted the Site terms), active, or disabled (barred from signing in, their running work stopped, their files kept).
 _Avoid_: account, member, customer
 
 **Admin**:
-A user allowed into the admin panel. An Admin named in the Operator's configuration is pinned: the admin panel cannot demote, disable or delete them.
+A user allowed into the admin panel. An Admin named in the Operator's configuration is pinned: the admin panel cannot demote, disable or delete them; removing their email from the configuration unpins them without demoting them. Approving, promoting and demoting are each one Admin's action on a user other than themselves, written as an Audit entry; the admin panel hides these actions for pinned Admins and for the Admin's own row.
 _Avoid_: moderator, owner, superuser
 
 **Audit entry**:
@@ -111,8 +111,12 @@ A condition the studio reports to Admins and to the Operator's outside monitor f
 _Avoid_: alert (what the Operator's monitor sends), incident, issue (a validation error)
 
 **Site settings**:
-The admin-editable site-wide settings: branding (title, logo, which is also the favicon, background image, an accent colour picked from a fixed palette, and the landing text shown to signed-out visitors), whether new users need an Admin's approval, the default Caps, the contact (for reports and account questions) shown on every page, the blocked words refused in prompts, the Site terms, the Operator's part of the Privacy policy, up to three extra footer links, the Notice, and whether generating is Paused.
+The admin-editable site-wide settings: branding (title, logo, which is also the favicon, background image, an accent colour picked from a fixed palette, and the landing text shown to signed-out visitors), the sign-up mode, the default Caps, the contact (for reports and account questions) shown on every page, the blocked words refused in prompts, the Site terms, the Operator's part of the Privacy policy, up to three extra footer links, the Notice, and whether generating is Paused.
 _Avoid_: config, preferences
+
+**Sign-up mode**:
+A Site settings choice, open or approval, defaulting to approval: whether a new user is active from their first sign-in or starts pending until an Admin approves them. Switching the mode approves nobody; a user already pending stays pending until an Admin approves them, even after a switch to open.
+_Avoid_: registration mode, invite-only, approval mode (that's one of the two values)
 
 **Notice**:
 A short message an Admin writes in the Site settings, shown as a banner on every page to everyone, signed in or out: for example, a planned maintenance window. It shows whenever an Admin has set it, and always during a Pause, with a standard message when blank.

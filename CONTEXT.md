@@ -83,7 +83,7 @@ The person or organisation who runs an instance of the studio: deploys it, owns 
 _Avoid_: self-hoster, host, owner
 
 **User**:
-A person who has signed in with Google. A user is pending (waiting for an Admin's approval), active, or disabled (barred from signing in, their running work stopped, their files kept).
+A person who has signed in with Google. A user is pending (waiting for an Admin's approval), active, or disabled (barred from signing in, their running work cancelled, their files kept read-only, until an Admin re-enables them) with an optional Admin-only reason.
 _Avoid_: account, member, customer
 
 **Admin**:

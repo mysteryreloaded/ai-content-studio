@@ -4,6 +4,9 @@ import * as schema from "./schema.js";
 
 export type Database = ReturnType<typeof drizzle<typeof schema>>;
 
+/** The transaction object `Database#transaction`'s callback receives. */
+export type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
+
 export function createDatabase(databaseUrl: string): {
   sql: postgres.Sql;
   db: Database;

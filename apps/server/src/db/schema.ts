@@ -1,5 +1,7 @@
 import {
   boolean,
+  integer,
+  jsonb,
   pgEnum,
   pgTable,
   text,
@@ -9,17 +11,53 @@ import {
 
 /**
  * The single Site settings row. `singleton` is always `true` and is the
- * primary key, so the table can never hold more than one row.
+ * primary key, so the table can never hold more than one row. `version`
+ * guards a save against a concurrent one (a stale save gets 409).
  */
 export const siteSettings = pgTable("site_settings", {
   singleton: boolean("singleton").primaryKey().default(true),
+  version: integer("version").notNull().default(1),
   title: text("title").notNull().default("AI Content Studio"),
+  landingText: text("landing_text").notNull().default(""),
+  accent: text("accent").notNull().default("teal"),
+  logoKey: text("logo_key"),
+  logoContentType: text("logo_content_type"),
+  logoHash: text("logo_hash"),
+  logoSize: integer("logo_size"),
+  backgroundKey: text("background_key"),
+  backgroundContentType: text("background_content_type"),
+  backgroundHash: text("background_hash"),
+  backgroundSize: integer("background_size"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
+});
+
+/**
+ * ADR 0005: append-only, kept forever (enforced by a database trigger,
+ * see the migration). Actor is an Admin (email, IP, user agent, request
+ * id) or "system"; a target that isn't an Admin is named by id only.
+ */
+export const auditEntries = pgTable("audit_entries", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  actorType: text("actor_type").notNull(),
+  actorUserId: uuid("actor_user_id"),
+  actorEmail: text("actor_email"),
+  actorIp: text("actor_ip"),
+  actorUserAgent: text("actor_user_agent"),
+  actorRequestId: text("actor_request_id"),
+  targetType: text("target_type").notNull(),
+  targetId: text("target_id").notNull(),
+  action: text("action").notNull(),
+  before: jsonb("before"),
+  after: jsonb("after"),
+  images: jsonb("images"),
 });
 
 /** ADR 0003: two roles, no third status until approval sign-up lands. */

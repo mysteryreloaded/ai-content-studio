@@ -30,6 +30,7 @@ async function startTestServer() {
     GOOGLE_CLIENT_SECRET: "test-secret",
     ADMIN_EMAILS: ["admin@example.com"],
     OIDC_ISSUER: ISSUER,
+    DATA_DIR: "/tmp/ai-content-studio-test-data",
   };
 
   const { app } = await createApp({

@@ -125,3 +125,7 @@ _Avoid_: privacy notice, data policy, terms
 **Removal**:
 An Admin deleting a user's Generation or Upload for breaking the rules. Unlike a user's own delete, the owner sees that it was removed.
 _Avoid_: takedown, moderation, ban
+
+**Blocked-accounts list**:
+The Admin list of deleted accounts that were disabled at the time of deletion: a SHA-256 of the Google `sub`, the id, the disable and delete dates, and the disable reason. Its entries keep signing in refused for that Google account until an Admin clears one.
+_Avoid_: ban list, blocklist, denylist

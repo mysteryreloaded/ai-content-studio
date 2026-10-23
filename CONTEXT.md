@@ -65,7 +65,7 @@ A file a Generation produced (video, image or audio), owned by the user who requ
 _Avoid_: output, result, media
 
 **Gallery**:
-A user's own view of their past Generations and their Assets.
+A user's own view of all their Generations across every Model, under way or ended, shown by Submission with their Assets. A Model page shows only that Model's latest few.
 _Avoid_: history, library
 
 **Cap**:

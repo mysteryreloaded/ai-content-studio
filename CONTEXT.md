@@ -49,11 +49,11 @@ _Avoid_: license note, credit, watermark
 ### Generating
 
 **Generation**:
-One request to produce output from a Model in a chosen Mode with chosen Input values. A Submission creates one or more Generations that differ only by seed. A test Generation is one an Admin runs from the Model editor to try a Mode, even on a disabled Model; it doesn't count toward Caps.
+One request to produce output from a Model in a chosen Mode with chosen Input values. A Submission creates one or more Generations that differ only by seed. A test Generation is one an Admin runs from the Model editor to try a Mode, even on a disabled Model; it doesn't count toward Caps. Only the owning user cancels a Generation, never an Admin; a queued one cancels at once, a starting or running one shows cancelling until the Backend confirms the interrupt or the job is gone (see ADR 0007).
 _Avoid_: job (queue mechanics), prompt (ComfyUI's word for one execution), run, render
 
 **Submission**:
-One press of Generate: it creates 1–4 Generations that share the Model revision, Mode and Input values and differ only by seed. A user can cancel or delete a whole Submission.
+One press of Generate: it creates 1–4 Generations that share the Model revision, Mode and Input values and differ only by seed. A user can cancel or delete a whole Submission; cancelling it cancels each of its Generations.
 _Avoid_: batch, multi-generation request, job
 
 **Upload**:

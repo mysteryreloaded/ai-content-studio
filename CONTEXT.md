@@ -83,7 +83,7 @@ The person or organisation who runs an instance of the studio: deploys it, owns 
 _Avoid_: self-hoster, host, owner
 
 **User**:
-A person who has signed in with Google. A user is pending (waiting for an Admin's approval), active, or disabled (barred from signing in, their running work stopped, their files kept).
+A person who has signed in with Google. A user is pending (waiting for an Admin's approval), active, or disabled (barred from signing in, their running work stopped, their files kept). A user who isn't an Admin can delete their own account by retyping their email: their sessions end, their work under way is cancelled, every Generation and Upload goes as if they'd deleted it themselves, and their row is scrubbed to its id — unlike disabling, nothing of theirs is kept. Signing in again with the same Google account then makes a new user, unconnected to the old one.
 _Avoid_: account, member, customer
 
 **Admin**:

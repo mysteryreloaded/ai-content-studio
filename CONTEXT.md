@@ -39,7 +39,7 @@ The part of a Workflow that a Mode runs: the nodes that produce its Assets and e
 _Avoid_: branch, route, sub-workflow
 
 **Model terms**:
-A Model's own terms and license link, which a user acknowledges before using that Model, and again when the Model terms change.
+A Model's own terms and license link, versioned the way Site terms are. A user acknowledges the current version, in a blocking dialog, before using that Model, and again only when an Admin asks everyone to accept again. Each acknowledgement records the version acknowledged.
 _Avoid_: license note, disclaimer, EULA
 
 **Attribution**:

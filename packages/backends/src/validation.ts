@@ -54,14 +54,33 @@ export function validateBaseUrl(baseUrl: string): ValidationError | null {
   return null;
 }
 
-export function validateAuth(input: BackendInput): ValidationError[] {
+export interface ValidationContext {
+  /** True on an edit where this auth kind already has stored credentials, so a blank field keeps them. */
+  hasExistingCredentials?: boolean;
+}
+
+export function validateAuth(input: BackendInput, ctx: ValidationContext = {}): ValidationError[] {
   const errors: ValidationError[] = [];
+  const hasExisting = ctx.hasExistingCredentials ?? false;
+
   if (input.auth === "header") {
     const headerName = input.headerName ?? "";
-    if (headerName !== "" && !HEADER_NAME_RE.test(headerName)) {
+    if (headerName === "") {
+      errors.push({ field: "headerName", message: "is required for header auth" });
+    } else if (!HEADER_NAME_RE.test(headerName)) {
       errors.push({ field: "headerName", message: "must be a valid header name" });
     }
+    if (!input.headerValue && !hasExisting) {
+      errors.push({ field: "headerValue", message: "is required for header auth" });
+    }
   }
+
+  if (input.auth === "basic") {
+    if ((!input.basicUser || !input.basicPass) && !hasExisting) {
+      errors.push({ field: "basicUser", message: "username and password are required for basic auth" });
+    }
+  }
+
   return errors;
 }
 
@@ -69,12 +88,12 @@ export function validateAuth(input: BackendInput): ValidationError[] {
  * Validates a Backend's own fields (not uniqueness of name, which needs the
  * database and is checked by the repository).
  */
-export function validateBackendInput(input: BackendInput): ValidationError[] {
+export function validateBackendInput(input: BackendInput, ctx: ValidationContext = {}): ValidationError[] {
   const errors: ValidationError[] = [];
   const nameError = validateName(input.name);
   if (nameError) errors.push(nameError);
   const urlError = validateBaseUrl(input.baseUrl);
   if (urlError) errors.push(urlError);
-  errors.push(...validateAuth(input));
+  errors.push(...validateAuth(input, ctx));
   return errors;
 }

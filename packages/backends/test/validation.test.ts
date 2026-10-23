@@ -66,4 +66,56 @@ describe("validateBackendInput", () => {
     });
     expect(errors).toEqual([]);
   });
+
+  test("rejects header auth with a blank header name", () => {
+    const errors = validateBackendInput({
+      name: "n",
+      baseUrl: "http://x.com",
+      auth: "header",
+      headerValue: "v",
+    });
+    expect(errors.some((e) => e.field === "headerName")).toBe(true);
+  });
+
+  test("rejects header auth on create with no credential value supplied", () => {
+    const errors = validateBackendInput({
+      name: "n",
+      baseUrl: "http://x.com",
+      auth: "header",
+      headerName: "X-Api-Key",
+    });
+    expect(errors.some((e) => e.field === "headerValue")).toBe(true);
+  });
+
+  test("rejects basic auth on create with no user/pass supplied", () => {
+    const errors = validateBackendInput({ name: "n", baseUrl: "http://x.com", auth: "basic" });
+    expect(errors.some((e) => e.field === "basicUser")).toBe(true);
+  });
+
+  test("accepts basic auth with a user and pass", () => {
+    const errors = validateBackendInput({
+      name: "n",
+      baseUrl: "http://x.com",
+      auth: "basic",
+      basicUser: "u",
+      basicPass: "p",
+    });
+    expect(errors).toEqual([]);
+  });
+
+  test("blank header auth credentials are accepted when an existing credential is on file", () => {
+    const errors = validateBackendInput(
+      { name: "n", baseUrl: "http://x.com", auth: "header", headerName: "X-Api-Key" },
+      { hasExistingCredentials: true },
+    );
+    expect(errors).toEqual([]);
+  });
+
+  test("blank basic auth credentials are accepted when an existing credential is on file", () => {
+    const errors = validateBackendInput(
+      { name: "n", baseUrl: "http://x.com", auth: "basic" },
+      { hasExistingCredentials: true },
+    );
+    expect(errors).toEqual([]);
+  });
 });

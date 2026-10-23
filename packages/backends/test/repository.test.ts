@@ -52,6 +52,26 @@ describe("BackendRepository", () => {
     );
   });
 
+  test("rejects creating a header-auth Backend with no header name", async () => {
+    await expect(
+      repo.create({ name: "GPU 1", baseUrl: "http://a", auth: "header", headerValue: "v" }, SYSTEM),
+    ).rejects.toThrow(ValidationFailed);
+
+    expect(await repo.list()).toEqual([]);
+  });
+
+  test("rejects creating a header-auth Backend with no credential value", async () => {
+    await expect(
+      repo.create({ name: "GPU 1", baseUrl: "http://a", auth: "header", headerName: "X-Api-Key" }, SYSTEM),
+    ).rejects.toThrow(ValidationFailed);
+  });
+
+  test("rejects creating a basic-auth Backend with no user/pass", async () => {
+    await expect(repo.create({ name: "GPU 1", baseUrl: "http://a", auth: "basic" }, SYSTEM)).rejects.toThrow(
+      ValidationFailed,
+    );
+  });
+
   test("stores basic credentials encrypted and marks the audit entry 'set'", async () => {
     const record = await repo.create(
       { name: "GPU 1", baseUrl: "http://a", auth: "basic", basicUser: "u", basicPass: "p" },

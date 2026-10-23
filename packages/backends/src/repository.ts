@@ -64,10 +64,10 @@ function toRecord(row: Row): BackendRecord {
 }
 
 function credentialsPlaintext(input: BackendInput): string | null {
-  if (input.auth === "basic") {
+  if (input.auth === "basic" && (input.basicUser || input.basicPass)) {
     return JSON.stringify({ user: input.basicUser, pass: input.basicPass });
   }
-  if (input.auth === "header") {
+  if (input.auth === "header" && input.headerValue) {
     return JSON.stringify({ value: input.headerValue });
   }
   return null;
@@ -130,12 +130,13 @@ export class BackendRepository {
     expectedVersion: number,
     actor: Actor | "system",
   ): Promise<BackendRecord> {
-    const errors = validateBackendInput(input);
-    if (errors.length > 0) throw new ValidationFailed(errors);
-
     return await this.sql.begin(async (tx) => {
       const [before] = await tx<Row[]>`select * from backends where id = ${id} and deleted_at is null`;
       if (!before) throw new NotFound();
+
+      const hasExistingCredentials = Boolean(before.encrypted_credentials) && before.auth_kind === input.auth;
+      const errors = validateBackendInput(input, { hasExistingCredentials });
+      if (errors.length > 0) throw new ValidationFailed(errors);
 
       const nameClash = await tx<Row[]>`
         select id from backends where name = ${input.name} and deleted_at is null and id != ${id}

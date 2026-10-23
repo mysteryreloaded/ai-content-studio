@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily cleanup of ComfyUI studio files (GPU %i)
+Documentation=file:/opt/ai-content-studio/docs/ops/backend-kit.md
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=15m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

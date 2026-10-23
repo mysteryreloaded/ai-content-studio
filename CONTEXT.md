@@ -11,7 +11,7 @@ An admin-defined generation offering: exactly one Workflow, the Backends that ca
 _Avoid_: engine, checkpoint (that is a weights file), template
 
 **Model revision**:
-One saved state of a Model's Workflow, Inputs and Modes. Each save of any of them makes a new one. A Generation runs with the Model revision current when it was submitted, and keeps showing the settings it ran with even after the Model changes.
+One saved state of a Model's Workflow, Inputs and Modes. Each save of any of them makes a new, numbered one, and so does restoring an earlier one. A Generation runs with the Model revision current when it was submitted, and keeps showing the settings it ran with even after the Model changes. A test Generation instead runs with an unnumbered revision of the Admin's unsaved changes, which never becomes current.
 _Avoid_: version (Model terms and Site terms have versions), draft
 
 **Workflow**:
@@ -49,7 +49,7 @@ _Avoid_: license note, credit, watermark
 ### Generating
 
 **Generation**:
-One request to produce output from a Model in a chosen Mode with chosen Input values. A Submission creates one or more Generations that differ only by seed.
+One request to produce output from a Model in a chosen Mode with chosen Input values. A Submission creates one or more Generations that differ only by seed. A test Generation is one an Admin runs from the Model editor to try a Mode, even on a disabled Model; it doesn't count toward Caps.
 _Avoid_: job (queue mechanics), prompt (ComfyUI's word for one execution), run, render
 
 **Submission**:

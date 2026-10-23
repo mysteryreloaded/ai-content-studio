@@ -1,5 +1,6 @@
 import { Navigate } from "react-router-dom";
 import { useSession } from "../useSession.js";
+import { SiteSettingsForm } from "./SiteSettingsForm.js";
 
 export function AdminShell() {
   const { session } = useSession();
@@ -11,6 +12,7 @@ export function AdminShell() {
   return (
     <main>
       <h1>Admin</h1>
+      <SiteSettingsForm />
     </main>
   );
 }

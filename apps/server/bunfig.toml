@@ -1,0 +1,6 @@
+# Database-backed tests share one Postgres instance and create/drop their
+# own database by a fixed name per file (see src/test/database.ts), so they
+# rely on bun test's default of running test files sequentially in one
+# process rather than in parallel workers.
+[test]
+pathIgnorePatterns = ["**/dist/**"]

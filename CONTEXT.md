@@ -14,6 +14,14 @@ _Avoid_: engine, checkpoint (that is a weights file), template
 One saved state of a Model's Workflow, Inputs and Modes. Each save of any of them makes a new, numbered one, and so does restoring an earlier one. A Generation runs with the Model revision current when it was submitted, and keeps showing the settings it ran with even after the Model changes. A test Generation instead runs with an unnumbered revision of the Admin's unsaved changes, which never becomes current.
 _Avoid_: version (Model terms and Site terms have versions), draft
 
+**Model export**:
+A JSON file of one Model revision's definition, Workflow, Model terms and Attribution, downloaded from the Model editor's header (its current revision) or from any listed Model revision, for an Admin to move between studios. Never includes Backends or their credentials.
+_Avoid_: backup, dump, snapshot
+
+**Model import**:
+Uploading a Model export's JSON on the Models list to create a new, disabled Model that keeps the file's ids, under the same checks as re-uploading a Workflow; it writes an Audit entry.
+_Avoid_: restore (that brings back an earlier Model revision), upload (an Upload is a user's generation input)
+
 **Workflow**:
 The ComfyUI graph, in API format, that a Model runs. LTX 2.5's Workflow is "all-in-one": one graph covering many Modes.
 _Avoid_: pipeline, graph, flow

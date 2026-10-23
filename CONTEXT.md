@@ -91,7 +91,7 @@ A user allowed into the admin panel. An Admin named in the Operator's configurat
 _Avoid_: moderator, owner, superuser
 
 **Audit entry**:
-A record of one save of something Admins control (a Model with its Inputs and Modes, a Backend, a user, the Site settings, a Removal), made by an Admin, by the system, or by a user deleting their own account: who, what, when, before and after. Admins are named in it; a user who isn't an Admin appears without their name or email, so deleting the account leaves neither behind.
+A record of one save of something Admins control (a Model with its Inputs and Modes, a Backend, a user, the Site settings, a Removal), made by an Admin, by the system, or by a user deleting their own account: who, what, when, before and after. Admins are named in it; a user who isn't an Admin appears without their name or email, so deleting the account leaves neither behind. A Removal is the one exception to "before and after": it isn't a save of changed fields, so its entry instead holds the fixed, narrow set described under Removal (ADR 0007).
 _Avoid_: log, history, changelog
 
 **Log entry**:

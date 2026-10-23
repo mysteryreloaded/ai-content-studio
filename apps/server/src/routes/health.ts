@@ -1,14 +1,20 @@
 import type { Clock } from "@ai-content-studio/shared";
 import { Hono } from "hono";
 import type postgres from "postgres";
+import { type RouteEntry, guardedRoute } from "../auth/access.js";
+import type { AppEnv } from "../auth/app-env.js";
 
 const HEALTH_CHECK_TIMEOUT_MS = 2_000;
 
 /** `/healthz`: 200 when `SELECT 1` answers in time, else 503. */
-export function healthRoute(sql: postgres.Sql, clock: Clock): Hono {
-  const app = new Hono();
+export function healthRoute(
+  sql: postgres.Sql,
+  clock: Clock,
+  routes: RouteEntry[] = [],
+): Hono<AppEnv> {
+  const app = new Hono<AppEnv>();
 
-  app.get("/", async (c) => {
+  guardedRoute(app, routes, "/healthz", "get", "/", "public", async (c) => {
     const reachable = await isDatabaseReachable(sql, clock);
     if (!reachable) {
       return c.json({ status: "db_unreachable" }, 503);

@@ -7,7 +7,8 @@ import { type NodeLink, type Workflow, isNodeLink } from "./types.js";
  * that side only, so the other branch's nodes never reach the Backend.
  */
 const SWITCH_CLASS = "ComfySwitchNode";
-const SWITCH_BOOLEAN_FIELD = "boolean";
+// ComfyUI's core switch names its boolean input "switch" (comfy_extras/nodes_logic.py: io.Boolean.Input("switch")).
+const SWITCH_BOOLEAN_FIELD = "switch";
 const SWITCH_BRANCH_FIELDS = { true: "on_true", false: "on_false" } as const;
 
 const PRIMITIVE_CLASSES = new Set([
@@ -18,10 +19,11 @@ const PRIMITIVE_CLASSES = new Set([
   "PrimitiveStringMultiline",
 ]);
 
-/** Resolves a switch's boolean field to a known value, or undefined if it depends on an unresolved Input. */
+/** Resolves a switch's boolean field to a known value, or undefined if it's missing or depends on an unresolved Input. */
 function resolveKnownBoolean(
   workflow: Workflow,
-  value: NodeLink | boolean | number | string | null,
+  value: NodeLink | boolean | number | string | null | undefined,
+  seen: Set<string> = new Set(),
 ): boolean | undefined {
   if (!isNodeLink(value)) {
     if (typeof value === "boolean") return value;
@@ -29,11 +31,20 @@ function resolveKnownBoolean(
     return undefined;
   }
   const [sourceId] = value;
+  if (seen.has(sourceId)) return undefined;
+  seen.add(sourceId);
   const source = workflow[sourceId];
   if (!source || !PRIMITIVE_CLASSES.has(source.class_type)) return undefined;
   return resolveKnownBoolean(
     workflow,
-    source.inputs.value as NodeLink | boolean | number | string | null,
+    source.inputs.value as
+      | NodeLink
+      | boolean
+      | number
+      | string
+      | null
+      | undefined,
+    seen,
   );
 }
 

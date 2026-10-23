@@ -17,7 +17,7 @@ export interface WorkflowNode {
 export type Workflow = Record<string, WorkflowNode>;
 
 export function isNodeLink(
-  value: NodeLink | NodeFieldValue,
+  value: NodeLink | NodeFieldValue | undefined,
 ): value is NodeLink {
   return (
     Array.isArray(value) &&

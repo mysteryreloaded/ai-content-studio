@@ -47,7 +47,7 @@ describe("computePath", () => {
       sw: {
         class_type: "ComfySwitchNode",
         inputs: {
-          boolean: true,
+          switch: true,
           on_true: ["trueBranch", 0],
           on_false: ["falseBranch", 0],
         },
@@ -68,7 +68,7 @@ describe("computePath", () => {
       sw: {
         class_type: "ComfySwitchNode",
         inputs: {
-          boolean: ["prim", 0],
+          switch: ["prim", 0],
           on_true: ["trueBranch", 0],
           on_false: ["falseBranch", 0],
         },
@@ -81,6 +81,36 @@ describe("computePath", () => {
     expect(path.nodeIds).toEqual(new Set(["out", "sw", "prim", "falseBranch"]));
   });
 
+  test("resolves a switch's value through a cycle of primitives without overflowing", () => {
+    const workflow: Workflow = {
+      trueBranch: { class_type: "LoadImage", inputs: {} },
+      falseBranch: { class_type: "LoadImage", inputs: {} },
+      primA: {
+        class_type: "PrimitiveBoolean",
+        inputs: { value: ["primB", 0] },
+      },
+      primB: {
+        class_type: "PrimitiveBoolean",
+        inputs: { value: ["primA", 0] },
+      },
+      sw: {
+        class_type: "ComfySwitchNode",
+        inputs: {
+          switch: ["primA", 0],
+          on_true: ["trueBranch", 0],
+          on_false: ["falseBranch", 0],
+        },
+      },
+      out: { class_type: "SaveImage", inputs: { image: ["sw", 0] } },
+    };
+
+    const path = computePath(workflow, ["out"]);
+
+    expect(path.nodeIds).toEqual(
+      new Set(["out", "sw", "primA", "primB", "trueBranch", "falseBranch"]),
+    );
+  });
+
   test("keeps both sides when the switch's value isn't known before sending", () => {
     const workflow: Workflow = {
       trueBranch: { class_type: "LoadImage", inputs: {} },
@@ -90,7 +120,7 @@ describe("computePath", () => {
       sw: {
         class_type: "ComfySwitchNode",
         inputs: {
-          boolean: ["computed", 0],
+          switch: ["computed", 0],
           on_true: ["trueBranch", 0],
           on_false: ["falseBranch", 0],
         },
@@ -102,6 +132,27 @@ describe("computePath", () => {
 
     expect(path.nodeIds).toEqual(
       new Set(["out", "sw", "computed", "trueBranch", "falseBranch"]),
+    );
+  });
+
+  test("keeps both sides when the switch's boolean field is missing", () => {
+    const workflow: Workflow = {
+      trueBranch: { class_type: "LoadImage", inputs: {} },
+      falseBranch: { class_type: "LoadImage", inputs: {} },
+      sw: {
+        class_type: "ComfySwitchNode",
+        inputs: {
+          on_true: ["trueBranch", 0],
+          on_false: ["falseBranch", 0],
+        },
+      },
+      out: { class_type: "SaveImage", inputs: { image: ["sw", 0] } },
+    };
+
+    const path = computePath(workflow, ["out"]);
+
+    expect(path.nodeIds).toEqual(
+      new Set(["out", "sw", "trueBranch", "falseBranch"]),
     );
   });
 

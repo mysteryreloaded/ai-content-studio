@@ -91,7 +91,7 @@ A user allowed into the admin panel. An Admin named in the Operator's configurat
 _Avoid_: moderator, owner, superuser
 
 **Audit entry**:
-A record of one save of something Admins control (a Model with its Inputs and Modes, a Backend, a user, the Site settings, a Removal), made by an Admin, by the system, or by a user deleting their own account: who, what, when, before and after, written in the same transaction as the save it records. A changed image (the Site settings' logo or background) is kept by key, hash and size rather than inline. Nothing updates or deletes a row afterwards; a database trigger refuses both, so the table stays append-only even against a bug or a direct query.
+A record of one save of something Admins control (a Model with its Inputs and Modes, a Backend, a user, the Site settings, a Removal), made by an Admin, by the system, or by a user deleting their own account: who, what, when, before and after. Admins are named in it; a user who isn't an Admin appears without their name or email, so deleting the account leaves neither behind. A changed image (the Site settings' logo or background) is kept by key, hash and size rather than inline.
 _Avoid_: log, history, changelog
 
 **Log entry**:
@@ -103,7 +103,7 @@ A condition the studio reports to Admins and to the Operator's outside monitor f
 _Avoid_: alert (what the Operator's monitor sends), incident, issue (a validation error)
 
 **Site settings**:
-The admin-editable site-wide settings: branding (title, logo, which is also the favicon, background image, an accent colour from one of eight tuned palettes (Teal default), each a light/dark pair that passes WCAG AA, and the landing text shown to signed-out visitors), whether new users need an Admin's approval, the default Caps, the contact (for reports and account questions) shown on every page, the blocked words refused in prompts, the Site terms, the Operator's part of the Privacy policy, up to three extra footer links, the Notice, and whether generating is Paused. It carries its own row version; a save made against a stale version is refused, not merged.
+The admin-editable site-wide settings: branding (title, logo, which is also the favicon, background image, an accent colour from one of eight tuned palettes (Teal default), each a light/dark pair that passes WCAG AA, and the landing text shown to signed-out visitors), whether new users need an Admin's approval, the default Caps, the contact (for reports and account questions) shown on every page, the blocked words refused in prompts, the Site terms, the Operator's part of the Privacy policy, up to three extra footer links, the Notice, and whether generating is Paused.
 _Avoid_: config, preferences
 
 **Notice**:

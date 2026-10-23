@@ -18,3 +18,4 @@ The deciding reason is that Postgres already carries the Generations queue and m
 - `/data` must be on a volume the Operator backs up; the docs say so next to the Postgres backup instructions.
 - Saving new branding writes the file before the database row, and deletes the file the old key pointed to only after the transaction that replaces it commits, so a crash mid-save never leaves the Site settings pointing at a missing file.
 - Uploads and Assets (not yet built) are expected to reuse the same `storage` module rather than invent a second way to touch `/data`.
+- The old file is deleted once that commit lands, so an older Audit entry's image key may no longer resolve on disk; only its hash and size can still be trusted to describe what was there.

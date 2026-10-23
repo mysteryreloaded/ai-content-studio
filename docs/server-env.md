@@ -63,3 +63,10 @@ Overrides the OIDC issuer used for sign-in, for the in-repo mock issuer
 in dev and tests. Refused unless `PUBLIC_URL` points at `localhost` or
 `127.0.0.1`, so it can never be set in a real deployment. Leave unset to
 sign in against Google.
+
+## `data_dir`
+
+### `DATA_DIR`
+
+The directory the local-disk `storage` module writes to (Site settings'
+logo and background images today). Defaults to `/data`.

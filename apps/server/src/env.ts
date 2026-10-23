@@ -10,6 +10,7 @@ const DOCS_BY_KEY: Record<string, string> = {
   GOOGLE_CLIENT_SECRET: "docs/server-env.md#google_client_secret",
   ADMIN_EMAILS: "docs/server-env.md#admin_emails",
   OIDC_ISSUER: "docs/server-env.md#oidc_issuer",
+  DATA_DIR: "docs/server-env.md#data_dir",
 };
 
 function isLocalhost(url: string): boolean {
@@ -42,6 +43,7 @@ const envSchema = z
         message: "must list at least one email",
       }),
     OIDC_ISSUER: z.string().min(1).url().optional(),
+    DATA_DIR: z.string().min(1).default("/data"),
   })
   .superRefine((value, ctx) => {
     if (value.OIDC_ISSUER && !isLocalhost(value.PUBLIC_URL)) {
@@ -63,6 +65,7 @@ export const ENV_KEYS: readonly string[] = [
   "GOOGLE_CLIENT_SECRET",
   "ADMIN_EMAILS",
   "OIDC_ISSUER",
+  "DATA_DIR",
 ];
 
 export type Env = z.infer<typeof envSchema>;

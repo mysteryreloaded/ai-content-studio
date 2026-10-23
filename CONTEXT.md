@@ -87,7 +87,7 @@ A user allowed into the admin panel. An Admin named in the Operator's configurat
 _Avoid_: moderator, owner, superuser
 
 **Audit entry**:
-A record of one save of something Admins control (a Model with its Inputs and Modes, a Backend, a user, the Site settings, a Removal), made by an Admin, by the system, or by a user deleting their own account: who, what, when, before and after.
+A record of one save of something Admins control (a Model with its Inputs and Modes, a Backend, a user, the Site settings, a Removal), made by an Admin, by the system, or by a user deleting their own account: who, what, when, before and after. Admins are named in it; a user who isn't an Admin appears without their name or email, so deleting the account leaves neither behind.
 _Avoid_: log, history, changelog
 
 **Log entry**:
@@ -95,12 +95,16 @@ An operational record (error, warning or info) about the app or a Backend, kept 
 _Avoid_: audit, event
 
 **Site settings**:
-The admin-editable site-wide settings: branding (title, logo, background image), whether new users need an Admin's approval, the default Caps, the contact (for reports and account questions) shown on every page, and the blocked words refused in prompts.
+The admin-editable site-wide settings: branding (title, logo, which is also the favicon, background image, and the landing text shown to signed-out visitors), whether new users need an Admin's approval, the default Caps, the contact (for reports and account questions) shown on every page, the blocked words refused in prompts, the Site terms, the Operator's part of the Privacy policy, and up to three extra footer links.
 _Avoid_: config, preferences
 
 **Site terms**:
-The terms a user accepts before using the studio, when the Operator has set them. Each acceptance records the version accepted.
-_Avoid_: ToS, agreement, policy (the privacy policy is a separate page)
+The terms a user accepts before using the studio, when an Admin has set them in the Site settings. Anyone can read them, signed in or not. Each acceptance records the version accepted.
+_Avoid_: ToS, agreement, policy (the Privacy policy is a separate page)
+
+**Privacy policy**:
+The public page telling visitors what the studio keeps about them: the Operator's own text from the Site settings, followed by a section the studio writes from its own configuration, which no Admin can edit. Nobody accepts it; it informs.
+_Avoid_: privacy notice, data policy, terms
 
 **Removal**:
 An Admin deleting a user's Generation or Upload for breaking the rules. Unlike a user's own delete, the owner sees that it was removed.

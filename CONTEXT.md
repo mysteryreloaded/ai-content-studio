@@ -99,8 +99,16 @@ A condition the studio reports to Admins and to the Operator's outside monitor f
 _Avoid_: alert (what the Operator's monitor sends), incident, issue (a validation error)
 
 **Site settings**:
-The admin-editable site-wide settings: branding (title, logo, which is also the favicon, background image, an accent colour picked from a fixed palette, and the landing text shown to signed-out visitors), whether new users need an Admin's approval, the default Caps, the contact (for reports and account questions) shown on every page, the blocked words refused in prompts, the Site terms, the Operator's part of the Privacy policy, and up to three extra footer links.
+The admin-editable site-wide settings: branding (title, logo, which is also the favicon, background image, an accent colour picked from a fixed palette, and the landing text shown to signed-out visitors), whether new users need an Admin's approval, the default Caps, the contact (for reports and account questions) shown on every page, the blocked words refused in prompts, the Site terms, the Operator's part of the Privacy policy, up to three extra footer links, the Notice, and whether generating is Paused.
 _Avoid_: config, preferences
+
+**Notice**:
+A short message an Admin writes in the Site settings, shown as a banner on every page to everyone, signed in or out: for example, a planned maintenance window. It shows whenever an Admin has set it, and always during a Pause, with a standard message when blank.
+_Avoid_: announcement, alert (what the Operator's monitor sends), banner (that is how it is shown)
+
+**Pause**:
+An Admin stopping generating across the whole studio for maintenance until an Admin resumes it. New Submissions are refused; queued Generations wait without failing; those already under way finish; only test Generations start. Signing in, browsing, Uploads and downloads carry on.
+_Avoid_: maintenance mode, freeze, lockdown, drain (draining is one Backend taking no new Generations)
 
 **Site terms**:
 The terms a user accepts before using the studio, when an Admin has set them in the Site settings. Anyone can read them, signed in or not. Each acceptance records the version accepted.

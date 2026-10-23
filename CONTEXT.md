@@ -87,7 +87,7 @@ A person who has signed in with Google. A user is pending (waiting for an Admin'
 _Avoid_: account, member, customer
 
 **Admin**:
-A user allowed into the admin panel. An Admin named in the Operator's configuration is pinned: the admin panel cannot demote, disable or delete them.
+A user allowed into the admin panel. An Admin named in the Operator's configuration is pinned: the admin panel cannot demote, disable or delete them. No Admin, pinned or not, can delete their own account.
 _Avoid_: moderator, owner, superuser
 
 **Audit entry**:

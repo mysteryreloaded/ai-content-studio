@@ -123,5 +123,5 @@ The public page telling visitors what the studio keeps about them: the Operator'
 _Avoid_: privacy notice, data policy, terms
 
 **Removal**:
-An Admin deleting a user's Generation or Upload for breaking the rules. Unlike a user's own delete, the owner sees that it was removed.
+An Admin deleting a user's Generation or Upload for breaking the rules, with a required reason (500 characters or fewer) and no undo. Removing a Generation cancels it first if it is still active. Removing an Upload fails any still-active Generation that uses it, with "an Upload was removed by an administrator"; a Generation that had already ended keeps the Assets it made and shows the Upload as removed. Unlike a user's own delete, the owner sees a dismissable "Removed by an administrator" card, with no reason and no Reuse, including under All in the Gallery until they dismiss it. The Audit entry for a Removal holds only the Generation's id, owner, Model, Mode and the reason; the fuller detail it points at — values, prompt and Upload links — stays visible to Admins on the Generation itself until the owner's account is deleted.
 _Avoid_: takedown, moderation, ban

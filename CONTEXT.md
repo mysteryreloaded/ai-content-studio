@@ -98,8 +98,12 @@ _Avoid_: log, history, changelog
 An operational record (error, warning or info) about the app or a Backend, kept for diagnosis. Distinct from Audit entries.
 _Avoid_: audit, event
 
+**Overview**:
+The admin landing page: Problems, every Model's queue and usable Backends, every Backend's state, disk, errors, version and uptime, Pause/Resume and the Notice. Polls every 10 s; it is a page, not a push.
+_Avoid_: dashboard, home, status page (that is `/api/status`)
+
 **Problem**:
-A condition the studio reports to Admins and to the Operator's outside monitor for as long as it lasts, such as a Model with no usable Backend or a disk running low. It clears itself when the condition ends; nobody acknowledges or closes it.
+A condition the studio reports to Admins on the Overview and to the Operator's outside monitor at `/api/status`, held only in memory, for as long as it lasts: `db_unreachable`; `model_without_backend` (a Mode with no usable Backend, after 5 min); `backend_unreachable` (an enabled Backend, after 5 min, including one awaiting credentials); `backend_failing` (a Backend's last 3 finished tries all failed, timed out or were lost — cancels don't count); `disk_low` (free space under twice `MIN_FREE_DISK_GB`); `job_failed`; `generating_paused` (Paused for more than 4 h). `db_unreachable` and `model_without_backend` are suppressed while Paused, since both are expected then. It clears itself the moment its condition ends; nobody acknowledges or closes it.
 _Avoid_: alert (what the Operator's monitor sends), incident, issue (a validation error)
 
 **Site settings**:

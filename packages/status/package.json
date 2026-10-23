@@ -1,0 +1,10 @@
+{
+  "name": "@studio/status",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "dependencies": {
+    "hono": "^4.6.0"
+  }
+}

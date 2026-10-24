@@ -1,8 +1,13 @@
-// Runs one claimed Generation to completion (issue #44): submits to its
-// Backend, follows `/ws` and polls `/api/jobs/:id` for progress and the
-// terminal state, then saves its output files as Assets. Doesn't hold the
-// dispatcher's advisory lock — several runs go concurrently, one per
-// Backend.
+// Runs one claimed try of a Generation to completion (issue #44, #55):
+// submits to its Backend, follows `/ws` and polls `/api/jobs/:id` for
+// progress and the terminal state, then saves its output files as
+// Assets. Doesn't hold the dispatcher's advisory lock — several runs go
+// concurrently, one per Backend.
+//
+// Every write below passes `tries`, the try number this run claimed
+// (queue.ts's own concurrency token): if a watchdog sweep or boot
+// recovery has already moved the row on, the write no-ops and this run
+// quietly stops instead of clobbering whatever decided it.
 
 import type { Clock } from "@ai-content-studio/shared";
 import { comfyUiTarget } from "../backends/client.js";
@@ -11,35 +16,48 @@ import type {
   BackendRecord,
   BackendRepository,
 } from "../backends/repository.js";
+import type { BackendsService } from "../backends/service.js";
 import {
+  BackendUnreachable,
   ComfyUiSocket,
   type Job,
   type JobFile,
+  PayloadTooLarge,
   PromptRejected,
+  cancelJob,
   fetchView,
+  isMissingNodeError,
   readJob,
   submitPrompt,
 } from "../comfyui/client.js";
 import type { AssetsRepository } from "../generations/assets-repository.js";
 import type { GenerationEvents } from "../generations/events.js";
-import type {
-  GenerationState,
-  GenerationSummary,
-} from "../generations/repository.js";
+import type { GenerationSummary } from "../generations/repository.js";
 import type { C2paSignerConfig } from "../media/c2pa.js";
 import { finishAsset } from "../media/finish.js";
 import type { MediaRunner } from "../media/media.js";
 import type { Storage } from "../storage/storage.js";
+import { publishChange, reportFailure, reportLostTry } from "./outcomes.js";
 import { ProgressTracker } from "./progress.js";
 import type { DispatchQueue, RunDetail } from "./queue.js";
 
 const POLL_INTERVAL_MS = 1_000;
+/** Issue #55's AC: unreachable for more than this long while running is a lost try, not a wait-it-out. */
+const RUNNING_UNREACHABLE_LOST_MS = 2 * 60_000;
+/** Issue #55's AC: saving retries with backoff for this long before giving up for good. */
+const SAVING_BACKOFF_BUDGET_MS = 15 * 60_000;
+const SAVING_BACKOFF_BASE_MS = 2_000;
+const SAVING_BACKOFF_MAX_MS = 30_000;
 
 export interface RunnerDeps {
   queue: DispatchQueue;
   assetsRepository: AssetsRepository;
   storage: Storage;
   backendRepository: Pick<BackendRepository, "decryptedCredentials">;
+  backendsService: Pick<
+    BackendsService,
+    "healthFor" | "unreachableSince" | "invalidateNodeKnowledge"
+  >;
   generationEvents: GenerationEvents;
   logWriter: LogEntryWriter;
   clock: Clock;
@@ -47,6 +65,9 @@ export interface RunnerDeps {
   /** Wakes the dispatcher: the Backend just freed, or this run ended. */
   onFreed: () => void;
   pollIntervalMs?: number;
+  /** Test-only: shortens the saving backoff's own total budget below its 15-minute production default. */
+  savingBackoffBudgetMs?: number;
+  savingBackoffBaseMs?: number;
   /** Issue #45: runs ffmpeg/ffprobe for Asset finishing. */
   media: MediaRunner;
   /** Issue #45: named in a finished video's "AI-generated" comment tag, alongside the Model and Generation id. */
@@ -57,7 +78,7 @@ export interface RunnerDeps {
   getSiteTitle: () => Promise<string>;
 }
 
-function describeError(err: unknown): string {
+export function describeError(err: unknown): string {
   if (err instanceof PromptRejected) {
     return `${err.message}${err.nodeErrors ? `: ${JSON.stringify(err.nodeErrors)}` : ""}`;
   }
@@ -66,44 +87,6 @@ function describeError(err: unknown): string {
 
 function delay(clock: Clock, ms: number): Promise<void> {
   return new Promise((resolve) => clock.setTimeout(resolve, ms));
-}
-
-function toSummary(
-  detail: RunDetail,
-  backendId: string,
-  state: GenerationState,
-  error: string | null,
-  assets: GenerationSummary["assets"] = [],
-): GenerationSummary {
-  return {
-    id: detail.id,
-    modelId: detail.modelId,
-    revisionId: detail.revisionId,
-    modeId: detail.modeId,
-    modeName: detail.modeName,
-    userId: detail.userId,
-    submissionId: detail.submissionId,
-    state,
-    error,
-    submittedAt: detail.submittedAt,
-    modelSlug: detail.modelSlug,
-    modelName: detail.modelName,
-    assets,
-  };
-}
-
-async function publishChange(
-  deps: RunnerDeps,
-  detail: RunDetail,
-  backendId: string,
-  state: GenerationState,
-  error: string | null,
-  assets?: GenerationSummary["assets"],
-): Promise<void> {
-  deps.generationEvents.publish(detail.userId, {
-    type: "change",
-    generation: toSummary(detail, backendId, state, error, assets),
-  });
 }
 
 function publishProgress(
@@ -119,27 +102,6 @@ function publishProgress(
   });
 }
 
-async function fail(
-  deps: RunnerDeps,
-  detail: RunDetail,
-  backendId: string,
-  message: string,
-): Promise<void> {
-  deps.progress.discard(detail.id);
-  await deps.queue.markFailed(detail.id, message);
-  await deps.logWriter.log({
-    level: "error",
-    source: "backend",
-    message: `Generation failed: ${message}`,
-    backendId,
-    userId: detail.userId,
-    modelId: detail.modelId,
-    generationId: detail.id,
-  });
-  await publishChange(deps, detail, backendId, "failed", message);
-  deps.onFreed();
-}
-
 /** Only an output node's files whose ComfyUI `type` is `"output"` are kept (issue #44's AC). ComfyUI splits them across `images`/`gifs`/`audio`, not one `files` list. */
 function outputFilesFor(job: Job, nodeId: string): JobFile[] {
   const output = job.outputs?.[nodeId];
@@ -150,6 +112,10 @@ function outputFilesFor(job: Job, nodeId: string): JobFile[] {
     ...(output.audio ?? []),
   ];
   return files.filter((file) => file.type === "output");
+}
+
+export function allOutputFiles(detail: RunDetail, job: Job): JobFile[] {
+  return detail.outputNodes.flatMap((node) => outputFilesFor(job, node.nodeId));
 }
 
 async function saveAssets(
@@ -224,31 +190,168 @@ async function saveAssets(
   }
 }
 
+/** Retries `saveAssets` with backoff for up to the saving budget (issue #55's AC: 15 minutes), then gives up. */
+export async function saveWithBackoff(
+  target: Awaited<ReturnType<typeof comfyUiTarget>>,
+  detail: RunDetail,
+  job: Job,
+  deps: RunnerDeps,
+): Promise<{ ok: true } | { ok: false; error: unknown }> {
+  const budgetMs = deps.savingBackoffBudgetMs ?? SAVING_BACKOFF_BUDGET_MS;
+  const deadline = deps.clock.now().getTime() + budgetMs;
+  let delayMs = deps.savingBackoffBaseMs ?? SAVING_BACKOFF_BASE_MS;
+  let lastError: unknown;
+  while (true) {
+    try {
+      await saveAssets(target, detail, job, deps);
+      return { ok: true };
+    } catch (err) {
+      lastError = err;
+    }
+    if (deps.clock.now().getTime() + delayMs > deadline) {
+      return { ok: false, error: lastError };
+    }
+    await delay(deps.clock, delayMs);
+    delayMs = Math.min(delayMs * 2, SAVING_BACKOFF_MAX_MS);
+  }
+}
+
 export async function runClaimedGeneration(
   backend: BackendRecord,
   detail: RunDetail,
+  tries: number,
   deps: RunnerDeps,
 ): Promise<void> {
   const generationId = detail.id;
-  const pollIntervalMs = deps.pollIntervalMs ?? POLL_INTERVAL_MS;
   deps.progress.start(
     generationId,
     ProgressTracker.keyFor(detail.modelId, detail.modeId, backend.id),
   );
-  await publishChange(deps, detail, backend.id, "starting", null);
+  await publishChange(deps, detail, "starting", tries, null);
+
+  // Unreachable while starting (issue #55's AC): checked up front so an
+  // already-known-down Backend doesn't even get a submit attempt.
+  if (
+    deps.backendsService.healthFor(backend.id).reachability === "unreachable"
+  ) {
+    deps.progress.discard(generationId);
+    await reportLostTry(
+      deps,
+      detail,
+      backend.id,
+      tries,
+      "the Backend was unreachable",
+      "the GPU server couldn't run this",
+    );
+    deps.onFreed();
+    return;
+  }
 
   let target: Awaited<ReturnType<typeof comfyUiTarget>>;
   try {
     target = await comfyUiTarget(backend, deps.backendRepository);
     await submitPrompt(target, generationId, detail.builtPrompt);
   } catch (err) {
-    await fail(deps, detail, backend.id, describeError(err));
+    deps.progress.discard(generationId);
+    if (err instanceof BackendUnreachable) {
+      await reportLostTry(
+        deps,
+        detail,
+        backend.id,
+        tries,
+        err.message,
+        "the GPU server couldn't run this",
+      );
+    } else if (
+      err instanceof PromptRejected &&
+      isMissingNodeError(err.nodeErrors)
+    ) {
+      deps.backendsService.invalidateNodeKnowledge(backend.id);
+      await reportLostTry(
+        deps,
+        detail,
+        backend.id,
+        tries,
+        describeError(err),
+        "the GPU server couldn't run this",
+      );
+    } else if (err instanceof PayloadTooLarge) {
+      await reportFailure(
+        deps,
+        detail,
+        backend.id,
+        tries,
+        err.message,
+        err.message,
+      );
+    } else {
+      await reportFailure(
+        deps,
+        detail,
+        backend.id,
+        tries,
+        "the GPU server rejected this Generation",
+        describeError(err),
+      );
+    }
+    deps.onFreed();
     return;
   }
 
-  await deps.queue.markRunning(generationId);
-  await publishChange(deps, detail, backend.id, "running", null);
+  if (!(await deps.queue.markRunning(generationId, tries))) {
+    // Superseded (e.g. the watchdog's starting timeout) between submit
+    // and here. The prompt may still run on the Backend; nothing more
+    // to do from this side.
+    deps.progress.discard(generationId);
+    return;
+  }
+  await publishChange(deps, detail, "running", tries, null);
 
+  await pollUntilDone(backend, detail, tries, target, deps);
+}
+
+/**
+ * Reads a job's status, tolerating a poll blip (a timeout, a 5xx) the
+ * same way `pollUntilDone`'s own loop does: retries instead of losing
+ * the try at once, giving up only after `RUNNING_UNREACHABLE_LOST_MS`
+ * of continuous failure. Boot recovery's AC (issue #55): reattaching
+ * to a Backend that's briefly unreachable at startup resumes polling
+ * the same way, instead of marking the try lost on the first attempt.
+ */
+export async function readJobWithGrace(
+  target: Awaited<ReturnType<typeof comfyUiTarget>>,
+  generationId: string,
+  deps: Pick<RunnerDeps, "clock" | "pollIntervalMs">,
+): ReturnType<typeof readJob> {
+  const pollIntervalMs = deps.pollIntervalMs ?? POLL_INTERVAL_MS;
+  const deadlineMs = deps.clock.now().getTime() + RUNNING_UNREACHABLE_LOST_MS;
+  while (true) {
+    try {
+      return await readJob(target, generationId);
+    } catch (err) {
+      if (deps.clock.now().getTime() > deadlineMs) throw err;
+      await delay(deps.clock, pollIntervalMs);
+    }
+  }
+}
+
+/**
+ * Follows `/ws` and polls `/api/jobs/:id` for a Generation already
+ * `running` on `backend`, through to saving and succeeded/failed.
+ * Shared by the normal dispatch path (right after `markRunning`) and
+ * boot recovery (issue #55's AC: reattaching to a job still running
+ * resumes tracking it the same way, instead of treating the restart as
+ * a lost try).
+ */
+export async function pollUntilDone(
+  backend: BackendRecord,
+  detail: RunDetail,
+  tries: number,
+  target: Awaited<ReturnType<typeof comfyUiTarget>>,
+  deps: RunnerDeps,
+): Promise<void> {
+  const generationId = detail.id;
+  const pollIntervalMs = deps.pollIntervalMs ?? POLL_INTERVAL_MS;
   const socket = new ComfyUiSocket(target, generationId);
   const unsubscribe = socket.onMessage((event) => {
     if (event.promptId !== generationId) return;
@@ -258,62 +361,162 @@ export async function runClaimedGeneration(
     }
   });
 
+  type Outcome =
+    | { kind: "completed"; job: Job }
+    | { kind: "executionError"; message: string }
+    | { kind: "lost"; reason: string }
+    | { kind: "timedOut" };
+
   const deadlineMs =
     deps.clock.now().getTime() + detail.maxRunTimeMinutes * 60_000;
-  let job: Job | null = null;
-  let runError: string | null = null;
+  // A poll blip (a timeout, a 5xx) shouldn't lose the try at once: the
+  // GPU keeps running it regardless. Only continuous failure for as
+  // long as the health monitor's own "unreachable" grace gives up
+  // (issue #55's AC).
+  let pollFailureSinceMs: number | null = null;
+  let outcome: Outcome;
   try {
     while (true) {
-      job = await readJob(target, generationId);
+      const sinceUnreachable = deps.backendsService.unreachableSince(
+        backend.id,
+      );
+      if (
+        sinceUnreachable &&
+        deps.clock.now().getTime() - sinceUnreachable.getTime() >
+          RUNNING_UNREACHABLE_LOST_MS
+      ) {
+        outcome = { kind: "lost", reason: "the Backend was unreachable" };
+        break;
+      }
+
+      let job: Job | null;
+      try {
+        job = await readJob(target, generationId);
+      } catch (err) {
+        const nowMs = deps.clock.now().getTime();
+        if (pollFailureSinceMs === null) pollFailureSinceMs = nowMs;
+        if (nowMs - pollFailureSinceMs > RUNNING_UNREACHABLE_LOST_MS) {
+          outcome = { kind: "lost", reason: describeError(err) };
+          break;
+        }
+        await delay(deps.clock, pollIntervalMs);
+        continue;
+      }
+      pollFailureSinceMs = null;
+
+      if (job === null) {
+        outcome = {
+          kind: "lost",
+          reason: "the Backend no longer knew this job",
+        };
+        break;
+      }
       publishProgress(deps, detail.userId, generationId);
-      if (job?.status === "completed" || job?.status === "failed") break;
+      if (job.status === "completed") {
+        outcome = { kind: "completed", job };
+        break;
+      }
+      if (job.status === "failed") {
+        outcome = {
+          kind: "executionError",
+          message: job.error ?? "execution_error",
+        };
+        break;
+      }
       if (deps.clock.now().getTime() > deadlineMs) {
-        runError = "Generation exceeded its Model's max run time";
+        outcome = { kind: "timedOut" };
         break;
       }
       await delay(deps.clock, pollIntervalMs);
     }
   } catch (err) {
-    runError = describeError(err);
+    outcome = { kind: "lost", reason: describeError(err) };
   } finally {
     unsubscribe();
     socket.close();
   }
 
-  if (runError || job?.status === "failed") {
-    await fail(
+  if (outcome.kind === "timedOut") {
+    await cancelJob(target, generationId);
+    deps.progress.discard(generationId);
+    await reportFailure(deps, detail, backend.id, tries, "timed out");
+    deps.onFreed();
+    return;
+  }
+  if (outcome.kind === "lost") {
+    deps.progress.discard(generationId);
+    await reportLostTry(
       deps,
       detail,
       backend.id,
-      runError ?? job?.error ?? "the Backend reported failure",
+      tries,
+      outcome.reason,
+      "the GPU server couldn't run this",
     );
+    deps.onFreed();
     return;
   }
-  const completedJob = job as Job;
+  if (outcome.kind === "executionError") {
+    deps.progress.discard(generationId);
+    await reportFailure(
+      deps,
+      detail,
+      backend.id,
+      tries,
+      "the GPU server reported an error while running this",
+      outcome.message,
+    );
+    deps.onFreed();
+    return;
+  }
+
+  const completedJob = outcome.job;
+  if (allOutputFiles(detail, completedJob).length === 0) {
+    deps.progress.discard(generationId);
+    await reportFailure(
+      deps,
+      detail,
+      backend.id,
+      tries,
+      "the GPU server produced no usable output",
+    );
+    deps.onFreed();
+    return;
+  }
 
   // The run itself ended: free the Backend for the next start right away
   // (ADR: "saving overlaps the next start"), before touching any files.
-  await deps.queue.markSaving(generationId);
+  if (!(await deps.queue.markSaving(generationId, tries))) {
+    deps.progress.discard(generationId);
+    deps.onFreed();
+    return;
+  }
   deps.progress.finish(generationId);
-  await publishChange(deps, detail, backend.id, "saving", null);
+  await publishChange(deps, detail, "saving", tries, null);
   deps.onFreed();
 
-  try {
-    await saveAssets(target, detail, completedJob, deps);
-  } catch (err) {
-    await fail(deps, detail, backend.id, describeError(err));
+  const saved = await saveWithBackoff(target, detail, completedJob, deps);
+  if (!saved.ok) {
+    await reportFailure(
+      deps,
+      detail,
+      backend.id,
+      tries,
+      "could not save this Generation's output",
+      describeError(saved.error),
+    );
     return;
   }
 
-  await deps.queue.markSucceeded(generationId);
+  if (!(await deps.queue.markSucceeded(generationId, tries))) return;
   const assets = await deps.assetsRepository.listForGeneration(generationId);
   await publishChange(
     deps,
     detail,
-    backend.id,
     "succeeded",
+    tries,
     null,
-    assets.map((asset) => ({
+    assets.map((asset): GenerationSummary["assets"][number] => ({
       id: asset.id,
       nodeId: asset.nodeId,
       sortOrder: asset.sortOrder,

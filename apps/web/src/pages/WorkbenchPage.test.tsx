@@ -236,10 +236,11 @@ describe("WorkbenchPage", () => {
       modeName: "Default",
       submissionId: "s1",
       state: "queued",
+      tries: 0,
       submittedAt: "2026-01-01T00:00:00.000Z",
     });
 
-    expect(await view.findByText("Queued")).toBeTruthy();
+    expect(await view.findByText("Waiting for a GPU…")).toBeTruthy();
     expect(view.getByText("Default", { selector: "strong" })).toBeTruthy();
     expect(view.queryByText("No Submissions yet.")).toBeNull();
   });

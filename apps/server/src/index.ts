@@ -26,19 +26,20 @@ async function main() {
   const { sql, db } = createDatabase(env.DATABASE_URL);
   const webDistDir = path.join(import.meta.dir, "..", "..", "web", "dist");
 
-  const { app, backendsService, problemsMonitor, dispatcher } = await createApp(
-    {
+  const { app, backendsService, problemsMonitor, dispatcher, recover } =
+    await createApp({
       db,
       sql,
       clock: systemClock,
       logger,
       env,
       webDistDir,
-    },
-  );
+    });
 
   await backendsService.start();
   problemsMonitor.start();
+  logger.info("recovering in-flight Generations");
+  await recover();
   dispatcher.start();
 
   logger.info("server listening", { port: env.PORT });

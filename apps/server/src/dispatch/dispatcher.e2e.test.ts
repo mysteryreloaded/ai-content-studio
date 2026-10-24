@@ -8,6 +8,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { startFakeComfyUi } from "@ai-content-studio/fake-comfyui";
 import { buildFrozenPrompt, systemClock } from "@ai-content-studio/shared";
 import type { Workflow } from "@ai-content-studio/shared";
+import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import type { AuditActor } from "../audit/audit.js";
 import { createLogEntryWriter } from "../backends/log-entries.js";
@@ -365,7 +366,17 @@ describe("Dispatcher end-to-end against a fake ComfyUI", () => {
         );
       const generation = summaries[0]?.generations[0];
       expect(generation?.state).toBe("failed");
-      expect(generation?.error).toContain("boom");
+      expect(generation?.error).toBe(
+        "the GPU server reported an error while running this",
+      );
+
+      // ComfyUI's own raw error goes into the Log entry, not the card
+      // (issue #55's AC).
+      const [logEntry] = await db
+        .select()
+        .from(logEntries)
+        .where(eq(logEntries.generationId, generationId));
+      expect(logEntry?.details).toBe("boom");
     } finally {
       fake.stop();
       await Bun.$`rm -rf ${tmpDir}`.quiet();

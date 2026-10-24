@@ -137,6 +137,7 @@ describe("every route's access level is declared and enforced", () => {
       "PUT /api/admin/backends/:id": 404,
       "DELETE /api/admin/backends/:id": 404,
       "PATCH /api/admin/backends/:id/enabled": 404,
+      "PATCH /api/admin/backends/:id/draining": 404,
       "POST /api/admin/models": 400,
       "GET /api/admin/models/:id": 404,
       "PUT /api/admin/models/:id": 404,

@@ -17,6 +17,7 @@ function fakeBackend(overrides: Partial<BackendRecord> = {}): BackendRecord {
     auth: "none",
     headerName: null,
     enabled: true,
+    draining: false,
     version: 1,
     deletedAt: null,
     createdAt: new Date(),
@@ -34,6 +35,7 @@ function fakeGeneration(
     modeId: "mode-1",
     userId: "user-1",
     nodeTypes: ["KSampler"],
+    tries: 0,
     submittedAt: new Date("2026-01-01T00:00:00Z"),
     ...overrides,
   };

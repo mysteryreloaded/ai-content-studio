@@ -32,6 +32,8 @@ export interface GenerationRecord {
   userId: string;
   submissionId: string;
   state: GenerationState;
+  /** Issue #55: tries made so far (at most 2). A queued card with `tries > 0` is retrying, not waiting for its first try. */
+  tries: number;
   error: string | null;
   submittedAt: Date;
   assets: AssetSummary[];
@@ -90,6 +92,7 @@ function toRecord(
     userId: row.userId,
     submissionId: row.submissionId,
     state: row.state,
+    tries: row.tries,
     error: row.error,
     submittedAt: row.submittedAt,
     assets: [...assetRows]
@@ -132,6 +135,7 @@ export class GenerationsRepository {
         builtPrompt: input.builtPrompt,
         nodeTypes: input.nodeTypes,
         submittedAt: input.submittedAt,
+        queuedAt: input.submittedAt,
       })
       .returning();
     if (!row) throw new Error("insert returned no row");

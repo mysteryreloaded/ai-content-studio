@@ -3,6 +3,14 @@
 // and a 10s backstop; a Postgres advisory lock (held only around the
 // claim, not the run) keeps a second instance from dispatching alongside
 // this one.
+//
+// Issue #55 (reliable dispatch) adds the watchdog sweep: a periodic
+// safety net for tries no in-process runner is still polling — a
+// `starting` try stuck past its 10-minute cap, or a `queued` Generation
+// that's gone 15 minutes without a usable Backend for its Model. A
+// `running` try's own max-run-time timeout and "unreachable for > 2
+// min" check live in the runner instead, since that's where the active
+// poll loop already is.
 
 import type { Clock, Timer } from "@ai-content-studio/shared";
 import type postgres from "postgres";
@@ -17,13 +25,22 @@ import type { GenerationEvents } from "../generations/events.js";
 import type { Logger } from "../logger.js";
 import type { ModelBackendsRepository } from "../models/model-backends.js";
 import type { Storage } from "../storage/storage.js";
+import { reportFailure, reportLostTry } from "./outcomes.js";
 import { ProgressTracker } from "./progress.js";
 import type { DispatchQueue, QueuedGeneration } from "./queue.js";
+import { recoverInFlightGenerations } from "./recovery.js";
 import { runClaimedGeneration } from "./runner.js";
+import type { RunnerDeps } from "./runner.js";
 
 /** Distinct from the migration lock's key (db/migrate.ts), same lock-per-app-concern pattern (ADR 0002). */
 const DISPATCH_LOCK_KEY = 72_738_292;
 const BACKSTOP_INTERVAL_MS = 10_000;
+const WATCHDOG_INTERVAL_MS = 30_000;
+
+/** Issue #55's AC: a `starting` try past this cap is a lost try. */
+const STARTING_TIMEOUT_MS = 10 * 60_000;
+/** Issue #55's AC: a `queued` Generation without a usable Backend for this long fails outright. */
+const WAITING_FOR_BACKEND_TIMEOUT_MS = 15 * 60_000;
 
 export interface DispatcherDeps {
   sql: postgres.Sql;
@@ -40,11 +57,28 @@ export interface DispatcherDeps {
   generationEvents: GenerationEvents;
   /** Test-only: shortens the runner's `/api/jobs` poll cadence below its 1s production default. */
   pollIntervalMs?: number;
+  /** Test-only: shortens the runner's saving-retry budget below its 15-minute production default. */
+  savingBackoffBudgetMs?: number;
+  savingBackoffBaseMs?: number;
+  /** Test-only: shortens the watchdog's own timeouts below their production defaults. */
+  startingTimeoutMs?: number;
+  waitingForBackendTimeoutMs?: number;
 }
 
 interface ClaimPlan {
   generation: QueuedGeneration;
   backend: BackendRecord;
+}
+
+function isUniqueViolation(err: unknown): boolean {
+  const cause =
+    err && typeof err === "object" && "cause" in err ? err.cause : err;
+  return Boolean(
+    cause &&
+      typeof cause === "object" &&
+      "code" in cause &&
+      cause.code === "23505",
+  );
 }
 
 export class Dispatcher {
@@ -53,7 +87,10 @@ export class Dispatcher {
   private ticking = false;
   private pendingWake = false;
   private backstopTimer: Timer | null = null;
+  private watchdogTimer: Timer | null = null;
   private stopped = false;
+  /** Test-only: while `runUntilIdle`'s own loop is driving, `wake()` just flags it instead of also racing a real background tick against it. */
+  private manualDriveActive = false;
 
   constructor(private readonly deps: DispatcherDeps) {
     this.progress = new ProgressTracker(deps.clock);
@@ -61,12 +98,15 @@ export class Dispatcher {
 
   start(): void {
     this.scheduleBackstop();
+    this.scheduleWatchdog();
   }
 
   stop(): void {
     this.stopped = true;
     if (this.backstopTimer !== null)
       this.deps.clock.clearTimeout(this.backstopTimer);
+    if (this.watchdogTimer !== null)
+      this.deps.clock.clearTimeout(this.watchdogTimer);
   }
 
   private scheduleBackstop(): void {
@@ -76,22 +116,87 @@ export class Dispatcher {
     }, BACKSTOP_INTERVAL_MS);
   }
 
+  private scheduleWatchdog(): void {
+    this.watchdogTimer = this.deps.clock.setTimeout(() => {
+      void this.watchdogTick();
+      if (!this.stopped) this.scheduleWatchdog();
+    }, WATCHDOG_INTERVAL_MS);
+  }
+
   /** Call whenever something might make a Generation dispatchable: a submission, a Backend freeing, becoming reachable, or becoming enabled. */
   wake = (): void => {
     if (this.wakeScheduled) return;
     this.wakeScheduled = true;
+    // `runUntilIdle`'s own loop below will notice the flag itself on its
+    // next iteration; scheduling a real timer too would let that
+    // background tick fire mid-loop and race it for the same claim.
+    if (this.manualDriveActive) return;
     this.deps.clock.setTimeout(() => {
       this.wakeScheduled = false;
       void this.tick();
     }, 0);
   };
 
-  /** Test-only: claims whatever's claimable right now and waits for every run to finish, instead of production's fire-and-forget loop. */
+  /**
+   * Test-only: claims and runs everything claimable, synchronously
+   * looping on any wake a run triggers (e.g. a lost try requeuing, or a
+   * Backend freeing) until nothing's left to do — instead of production's
+   * fire-and-forget loop, where that next round comes back through a
+   * real (uncancellable) `setTimeout(0)` that would otherwise race a
+   * test's own next assertion.
+   */
   async runUntilIdle(): Promise<void> {
-    const claimed = await this.claimBatch();
-    await Promise.all(
-      claimed.map(({ generation, backend }) => this.run(generation, backend)),
-    );
+    this.manualDriveActive = true;
+    try {
+      while (true) {
+        this.wakeScheduled = false;
+        const claimed = await this.claimBatch();
+        await Promise.all(
+          claimed.map(({ generation, backend, tries }) =>
+            this.run(generation, backend, tries),
+          ),
+        );
+        if (claimed.length === 0 && !this.wakeScheduled) break;
+      }
+    } finally {
+      this.manualDriveActive = false;
+    }
+  }
+
+  /** Test-only: runs one watchdog sweep synchronously instead of waiting for its interval. */
+  async runWatchdogOnce(): Promise<void> {
+    this.manualDriveActive = true;
+    try {
+      await this.watchdogTick();
+    } finally {
+      this.manualDriveActive = false;
+    }
+  }
+
+  /** Boot recovery (issue #55's AC): reattaches every Generation left `starting`/`running`/`saving` from a previous process. Call once, before `start()`. */
+  async recover(): Promise<void> {
+    await recoverInFlightGenerations({
+      ...this.runnerDeps(),
+      backendRepository: this.deps.backendRepository,
+    });
+  }
+
+  private runnerDeps(): RunnerDeps {
+    return {
+      queue: this.deps.queue,
+      assetsRepository: this.deps.assetsRepository,
+      storage: this.deps.storage,
+      backendRepository: this.deps.backendRepository,
+      backendsService: this.deps.backendsService,
+      generationEvents: this.deps.generationEvents,
+      logWriter: this.deps.logWriter,
+      clock: this.deps.clock,
+      progress: this.progress,
+      onFreed: this.wake,
+      pollIntervalMs: this.deps.pollIntervalMs,
+      savingBackoffBudgetMs: this.deps.savingBackoffBudgetMs,
+      savingBackoffBaseMs: this.deps.savingBackoffBaseMs,
+    };
   }
 
   private async tick(): Promise<void> {
@@ -102,8 +207,8 @@ export class Dispatcher {
     this.ticking = true;
     try {
       const claimed = await this.claimBatch();
-      for (const { generation, backend } of claimed) {
-        void this.run(generation, backend);
+      for (const { generation, backend, tries } of claimed) {
+        void this.run(generation, backend, tries);
       }
     } catch (err) {
       await this.logFailure("dispatcher tick failed", err, {});
@@ -116,22 +221,15 @@ export class Dispatcher {
     }
   }
 
-  private async run(generation: QueuedGeneration, backend: BackendRecord) {
+  private async run(
+    generation: QueuedGeneration,
+    backend: BackendRecord,
+    tries: number,
+  ) {
     try {
       const detail = await this.deps.queue.detailForRun(generation.id);
       if (!detail) return;
-      await runClaimedGeneration(backend, detail, {
-        queue: this.deps.queue,
-        assetsRepository: this.deps.assetsRepository,
-        storage: this.deps.storage,
-        backendRepository: this.deps.backendRepository,
-        generationEvents: this.deps.generationEvents,
-        logWriter: this.deps.logWriter,
-        clock: this.deps.clock,
-        progress: this.progress,
-        onFreed: this.wake,
-        pollIntervalMs: this.deps.pollIntervalMs,
-      });
+      await runClaimedGeneration(backend, detail, tries, this.runnerDeps());
     } catch (err) {
       await this.logFailure("Generation run crashed", err, {
         backendId: backend.id,
@@ -146,8 +244,8 @@ export class Dispatcher {
    * Writes a failure Log entry, falling back to stdout when that write
    * itself fails (e.g. the DB `logWriter` writes to is down) — the same
    * swallow-and-fall-back error-logging.ts does for an unhandled route
-   * error. Never throws: a tick()/run() failure must never become an
-   * unhandled rejection that kills the process.
+   * error. Never throws: a tick()/run()/watchdogTick() failure must
+   * never become an unhandled rejection that kills the process.
    */
   private async logFailure(
     message: string,
@@ -174,11 +272,11 @@ export class Dispatcher {
   }
 
   /** Builds the match plan, then claims each pair inside one advisory-locked transaction. */
-  private async claimBatch(): Promise<ClaimPlan[]> {
+  private async claimBatch(): Promise<(ClaimPlan & { tries: number })[]> {
     const plan = await this.buildPlan();
     if (plan.length === 0) return [];
 
-    const claimed: ClaimPlan[] = [];
+    const claimed: (ClaimPlan & { tries: number })[] = [];
     await this.deps.sql.begin(async (tx) => {
       const [row] = await tx<{ locked: boolean }[]>`
         select pg_try_advisory_xact_lock(${DISPATCH_LOCK_KEY}) as locked
@@ -188,18 +286,19 @@ export class Dispatcher {
       for (const candidate of plan) {
         const rows = await tx
           .savepoint(async (sp) => {
-            return sp<{ id: string }[]>`
+            return sp<{ id: string; tries: number }[]>`
               update generations
-              set state = 'starting', backend_id = ${candidate.backend.id}, started_at = ${this.deps.clock.now().toISOString()}
+              set state = 'starting', backend_id = ${candidate.backend.id}, started_at = ${this.deps.clock.now().toISOString()}, tries = tries + 1
               where id = ${candidate.generation.id} and state = 'queued'
-              returning id
+              returning id, tries
             `;
           })
           .catch((err) => {
             if (isUniqueViolation(err)) return [];
             throw err;
           });
-        if (rows.length > 0) claimed.push(candidate);
+        const claimedRow = rows[0];
+        if (claimedRow) claimed.push({ ...candidate, tries: claimedRow.tries });
       }
     });
     return claimed;
@@ -219,6 +318,7 @@ export class Dispatcher {
     const free = allBackends.filter(
       (backend) =>
         backend.enabled &&
+        !backend.draining &&
         !busyBackendIds.has(backend.id) &&
         this.deps.backendsService.healthFor(backend.id).reachability ===
           "reachable",
@@ -260,15 +360,77 @@ export class Dispatcher {
     }
     return plan;
   }
-}
 
-function isUniqueViolation(err: unknown): boolean {
-  const cause =
-    err && typeof err === "object" && "cause" in err ? err.cause : err;
-  return Boolean(
-    cause &&
-      typeof cause === "object" &&
-      "code" in cause &&
-      cause.code === "23505",
-  );
+  /** Whether any Backend attached to `modelId` could, right now, take a Generation needing `nodeTypes` — enabled, not draining, reachable, and known to support them. */
+  private async hasUsableBackend(
+    modelId: string,
+    nodeTypes: readonly string[],
+  ): Promise<boolean> {
+    const attached =
+      await this.deps.modelBackendsRepository.listForModel(modelId);
+    for (const backend of attached) {
+      if (!backend.enabled || backend.draining) continue;
+      if (
+        this.deps.backendsService.healthFor(backend.id).reachability !==
+        "reachable"
+      ) {
+        continue;
+      }
+      const knownTypes = await this.deps.backendsService.nodeTypesFor(backend);
+      if (!knownTypes) continue;
+      if (nodeTypes.every((type) => knownTypes.has(type))) return true;
+    }
+    return false;
+  }
+
+  /** The periodic safety-net sweep (issue #55's AC): a stuck `starting` try, and a `queued` Generation that's run out of patience waiting for a usable Backend. */
+  private async watchdogTick(): Promise<void> {
+    try {
+      await this.recoverStuckStarting();
+      await this.failLongQueuedWithoutBackend();
+    } catch (err) {
+      await this.logFailure("dispatcher watchdog failed", err, {});
+    }
+  }
+
+  private async recoverStuckStarting(): Promise<void> {
+    const stuck = await this.deps.queue.listStuckStarting(
+      this.deps.startingTimeoutMs ?? STARTING_TIMEOUT_MS,
+      this.deps.clock.now(),
+    );
+    for (const stuckGeneration of stuck) {
+      const detail = await this.deps.queue.detailForRun(stuckGeneration.id);
+      if (!detail) continue;
+      await reportLostTry(
+        this.deps,
+        detail,
+        stuckGeneration.backendId,
+        stuckGeneration.tries,
+        "the Backend never confirmed it started this try",
+        "the GPU server couldn't run this",
+      );
+    }
+    if (stuck.length > 0) this.wake();
+  }
+
+  private async failLongQueuedWithoutBackend(): Promise<void> {
+    const longQueued = await this.deps.queue.listQueuedOlderThan(
+      this.deps.waitingForBackendTimeoutMs ?? WAITING_FOR_BACKEND_TIMEOUT_MS,
+      this.deps.clock.now(),
+    );
+    for (const candidate of longQueued) {
+      if (await this.hasUsableBackend(candidate.modelId, candidate.nodeTypes)) {
+        continue;
+      }
+      const detail = await this.deps.queue.detailForRun(candidate.id);
+      if (!detail) continue;
+      await reportFailure(
+        this.deps,
+        detail,
+        null,
+        candidate.tries,
+        "no server available for this Model",
+      );
+    }
+  }
 }

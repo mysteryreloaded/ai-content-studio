@@ -40,6 +40,7 @@ import { authRoute } from "./routes/auth.js";
 import { generationsRoute } from "./routes/generations.js";
 import { healthRoute } from "./routes/health.js";
 import { modelsRoute } from "./routes/models.js";
+import { privacyRoute } from "./routes/privacy.js";
 import { siteSettingsRoute } from "./routes/site-settings.js";
 import { statusRoute } from "./routes/status.js";
 import { termsRoute } from "./routes/terms.js";
@@ -141,12 +142,15 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
   });
 
   app.route("/healthz", healthRoute(deps.sql, deps.clock, routes));
-  app.route("/api/site-settings", siteSettingsRoute(deps.db, storage, routes));
+  const modelRepository = new ModelRepository(deps.db, deps.clock);
+  app.route(
+    "/api/site-settings",
+    siteSettingsRoute(deps.db, storage, modelRepository, routes),
+  );
   app.route(
     "/api/auth",
     authRoute({ db: deps.db, clock: deps.clock, env: deps.env }, routes),
   );
-  const modelRepository = new ModelRepository(deps.db, deps.clock);
   const modelBackendsRepository = new ModelBackendsRepository(
     deps.db,
     deps.clock,
@@ -248,6 +252,7 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
     ),
   );
   app.route("/api/status", statusRoute(problemsRegistry, routes));
+  app.route("/api/privacy", privacyRoute(deps.db, APP_VERSION, routes));
 
   if (deps.env.OIDC_ISSUER) {
     const issuerUrl = new URL(deps.env.OIDC_ISSUER);

@@ -2,12 +2,16 @@ import {
   ACCENT_PALETTES,
   BACKGROUND_MAX_BYTES,
   CONTACT_MAX_LENGTH,
+  FOOTER_LINKS_MAX_COUNT,
+  FOOTER_LINK_LABEL_MAX_LENGTH,
+  type FooterLink,
   LANDING_TEXT_MAX_LENGTH,
   LOGO_MAX_BYTES,
   type SignUpMode,
   TITLE_MAX_LENGTH,
   isAllowedImageContentType,
   isValidContact,
+  isValidFooterLinkUrl,
 } from "@ai-content-studio/shared";
 import { type FormEvent, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
@@ -19,6 +23,7 @@ interface AdminSiteSettings {
   accent: string;
   signUpMode: SignUpMode;
   contact: string;
+  footerLinks: FooterLink[];
   logo: { contentType: string; hash: string; size: number } | null;
   background: { contentType: string; hash: string; size: number } | null;
 }
@@ -28,6 +33,15 @@ type SaveState =
   | { status: "saving" }
   | { status: "error"; message: string }
   | { status: "saved" };
+
+/** A React-stable key, since `FooterLink` itself has none and array position isn't stable across edits. */
+interface EditableFooterLink extends FooterLink {
+  key: number;
+}
+
+function withKeys(links: FooterLink[], startKey: number): EditableFooterLink[] {
+  return links.map((link, index) => ({ ...link, key: startKey + index }));
+}
 
 function validateImage(
   file: File | null,
@@ -52,6 +66,8 @@ export function SiteSettingsForm() {
   const [accent, setAccent] = useState("teal");
   const [signUpMode, setSignUpMode] = useState<SignUpMode>("approval");
   const [contact, setContact] = useState("");
+  const [footerLinks, setFooterLinks] = useState<EditableFooterLink[]>([]);
+  const [nextFooterLinkKey, setNextFooterLinkKey] = useState(0);
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [backgroundFile, setBackgroundFile] = useState<File | null>(null);
   const [saveState, setSaveState] = useState<SaveState>({ status: "idle" });
@@ -66,6 +82,8 @@ export function SiteSettingsForm() {
         setAccent(data.accent);
         setSignUpMode(data.signUpMode);
         setContact(data.contact);
+        setFooterLinks(withKeys(data.footerLinks, 0));
+        setNextFooterLinkKey(data.footerLinks.length);
       })
       .catch(() => {});
   }, []);
@@ -85,12 +103,24 @@ export function SiteSettingsForm() {
   const contactError = !isValidContact(contact.trim())
     ? "Contact must be an email address or an http(s) URL"
     : null;
+  const footerLinksToSave = footerLinks.filter(
+    (link) => link.label.trim() !== "" || link.url.trim() !== "",
+  );
+  const footerLinksError = footerLinksToSave.some(
+    (link) =>
+      link.label.trim() === "" ||
+      link.label.length > FOOTER_LINK_LABEL_MAX_LENGTH ||
+      !isValidFooterLinkUrl(link.url.trim()),
+  )
+    ? `Each footer link needs a label (≤ ${FOOTER_LINK_LABEL_MAX_LENGTH} characters) and an http(s) URL`
+    : null;
   const canSave =
     !titleError &&
     !landingTextError &&
     !logoError &&
     !backgroundError &&
-    !contactError;
+    !contactError &&
+    !footerLinksError;
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -104,6 +134,15 @@ export function SiteSettingsForm() {
     body.set("accent", accent);
     body.set("signUpMode", signUpMode);
     body.set("contact", contact);
+    body.set(
+      "footerLinks",
+      JSON.stringify(
+        footerLinksToSave.map((link) => ({
+          label: link.label.trim(),
+          url: link.url.trim(),
+        })),
+      ),
+    );
     if (logoFile) body.set("logo", logoFile);
     if (backgroundFile) body.set("background", backgroundFile);
 
@@ -126,6 +165,8 @@ export function SiteSettingsForm() {
 
     const updated = (await res.json()) as AdminSiteSettings;
     setSettings(updated);
+    setFooterLinks(withKeys(updated.footerLinks, nextFooterLinkKey));
+    setNextFooterLinkKey(nextFooterLinkKey + updated.footerLinks.length);
     setLogoFile(null);
     setBackgroundFile(null);
     setSaveState({ status: "saved" });
@@ -207,6 +248,69 @@ export function SiteSettingsForm() {
         onChange={(event) => setContact(event.target.value)}
       />
       {contactError && <p role="alert">{contactError}</p>}
+
+      <fieldset>
+        <legend>Footer links (up to {FOOTER_LINKS_MAX_COUNT})</legend>
+        {footerLinks.map((link) => (
+          <div key={link.key}>
+            <label htmlFor={`footer-link-label-${link.key}`}>Label</label>
+            <input
+              id={`footer-link-label-${link.key}`}
+              value={link.label}
+              maxLength={FOOTER_LINK_LABEL_MAX_LENGTH}
+              onChange={(event) =>
+                setFooterLinks(
+                  footerLinks.map((item) =>
+                    item.key === link.key
+                      ? { ...item, label: event.target.value }
+                      : item,
+                  ),
+                )
+              }
+            />
+            <label htmlFor={`footer-link-url-${link.key}`}>URL</label>
+            <input
+              id={`footer-link-url-${link.key}`}
+              placeholder="https://example.com/imprint"
+              value={link.url}
+              onChange={(event) =>
+                setFooterLinks(
+                  footerLinks.map((item) =>
+                    item.key === link.key
+                      ? { ...item, url: event.target.value }
+                      : item,
+                  ),
+                )
+              }
+            />
+            <button
+              type="button"
+              onClick={() =>
+                setFooterLinks(
+                  footerLinks.filter((item) => item.key !== link.key),
+                )
+              }
+            >
+              Remove
+            </button>
+          </div>
+        ))}
+        {footerLinksError && <p role="alert">{footerLinksError}</p>}
+        {footerLinks.length < FOOTER_LINKS_MAX_COUNT && (
+          <button
+            type="button"
+            onClick={() => {
+              setFooterLinks([
+                ...footerLinks,
+                { key: nextFooterLinkKey, label: "", url: "" },
+              ]);
+              setNextFooterLinkKey(nextFooterLinkKey + 1);
+            }}
+          >
+            Add a footer link
+          </button>
+        )}
+      </fieldset>
 
       <label htmlFor="logo">
         Logo (also the favicon; PNG, JPEG or WebP, ≤ 1 MB)

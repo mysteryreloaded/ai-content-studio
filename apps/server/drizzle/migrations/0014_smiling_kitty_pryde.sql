@@ -1,0 +1,1 @@
+ALTER TABLE "model_revisions" ADD COLUMN "inputs" jsonb DEFAULT '[]'::jsonb NOT NULL;

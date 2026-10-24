@@ -4,13 +4,18 @@
 // per Model.
 
 import {
+  type BindingValidationContext,
+  type ComfyFieldSpec,
+  type InputDefinition,
   type OutsideServiceNote,
   type ResolvedOutputNode,
   type Workflow,
+  fieldKey,
   findMissingLinkTargets,
   findOutsideServiceNotes,
   parseApiFormatWorkflow,
   resolveModeOutputNodes,
+  validateInputDefinition,
   validateModeName,
 } from "@ai-content-studio/shared";
 import type { Clock } from "@ai-content-studio/shared";
@@ -112,6 +117,8 @@ export interface ModelDetail {
   nodes: Array<{ id: string; classType: string; title: string | null }>;
   outsideServiceNotes: OutsideServiceNote[];
   modes: ModeRecord[];
+  /** The current revision's Inputs, in the Admin's order (issue #46). */
+  inputs: InputDefinition[];
 }
 
 type ModeRow = typeof modes.$inferSelect;
@@ -603,6 +610,7 @@ export class ModelRepository {
       nodes: nodesFrom(workflow),
       outsideServiceNotes: findOutsideServiceNotes(workflow),
       modes: await listModesForRevision(this.db, revision.id),
+      inputs: revision.inputs as InputDefinition[],
     };
   }
 
@@ -704,6 +712,7 @@ export class ModelRepository {
           modelId: id,
           revisionNumber: newRevisionNumber,
           workflowHash: currentRevision.workflowHash,
+          inputs: currentRevision.inputs,
         })
         .returning();
       if (!newRevision) throw new Error("insert returned no row");
@@ -731,6 +740,132 @@ export class ModelRepository {
       });
 
       return { record: toRecord(row), modes: afterModes };
+    });
+  }
+
+  /**
+   * Replaces this Model's Inputs (issue #46), validating every binding
+   * against the current revision's Workflow and its Modes' output nodes
+   * (a named output's `filename_prefix` can't be bound). Always makes a
+   * new revision carrying the current Modes forward unchanged, same
+   * reasoning as {@link updateModes}.
+   */
+  async updateInputs(
+    id: string,
+    input: InputDefinition[],
+    expectedVersion: number,
+    actor: AuditActor,
+    fieldSpecs?: ReadonlyMap<string, Record<string, ComfyFieldSpec>>,
+  ): Promise<{ record: ModelRecord; inputs: InputDefinition[] }> {
+    return await this.db.transaction(async (tx) => {
+      const [before] = await tx
+        .select()
+        .from(models)
+        .where(and(eq(models.id, id), isNull(models.deletedAt)));
+      if (!before) throw new NotFound();
+
+      const [currentRevision] = await tx
+        .select()
+        .from(modelRevisions)
+        .where(
+          and(
+            eq(modelRevisions.modelId, id),
+            eq(modelRevisions.revisionNumber, before.currentRevision),
+          ),
+        );
+      if (!currentRevision) throw new Error("current revision missing");
+
+      const [workflowRow] = await tx
+        .select()
+        .from(workflows)
+        .where(eq(workflows.hash, currentRevision.workflowHash));
+      if (!workflowRow) throw new Error("Workflow missing for revision");
+      const workflow = workflowRow.json as Workflow;
+
+      const currentModes = await listModesForRevision(tx, currentRevision.id);
+      const outputNodeIds = new Set(
+        currentModes.flatMap((mode) =>
+          mode.outputNodes.map((node) => node.nodeId),
+        ),
+      );
+
+      const errors: ValidationError[] = [];
+      const usedFields = new Set<string>();
+      const labelsSoFar: string[] = [];
+      const idsSoFar: string[] = [];
+
+      input.forEach((def, index) => {
+        const ctx: BindingValidationContext = {
+          workflow,
+          outputNodeIds,
+          usedFields,
+          fieldSpecs,
+        };
+        const defErrors = validateInputDefinition(
+          def,
+          labelsSoFar,
+          ctx,
+          idsSoFar,
+        );
+        for (const message of defErrors) {
+          errors.push({ field: `inputs[${index}]`, message });
+        }
+        labelsSoFar.push(def.label);
+        idsSoFar.push(def.id);
+        for (const binding of def.bindings) {
+          usedFields.add(fieldKey(binding.nodeId, binding.field));
+        }
+      });
+
+      if (errors.length > 0) throw new ValidationFailed(errors);
+
+      const beforeInputs = currentRevision.inputs as InputDefinition[];
+
+      const newRevisionNumber = before.currentRevision + 1;
+      const [row] = await tx
+        .update(models)
+        .set({
+          currentRevision: newRevisionNumber,
+          version: before.version + 1,
+          updatedAt: this.clock.now(),
+        })
+        .where(and(eq(models.id, id), eq(models.version, expectedVersion)))
+        .returning();
+      if (!row) throw new StaleVersion();
+
+      const [newRevision] = await tx
+        .insert(modelRevisions)
+        .values({
+          modelId: id,
+          revisionNumber: newRevisionNumber,
+          workflowHash: currentRevision.workflowHash,
+          inputs: input,
+        })
+        .returning();
+      if (!newRevision) throw new Error("insert returned no row");
+
+      if (currentModes.length > 0) {
+        await tx.insert(modes).values(
+          currentModes.map((mode) => ({
+            revisionId: newRevision.id,
+            sortOrder: mode.sortOrder,
+            name: mode.name,
+            description: mode.description,
+            outputNodes: mode.outputNodes,
+          })),
+        );
+      }
+
+      await recordAuditEntry(tx, this.clock, {
+        actor,
+        targetType: "model",
+        targetId: id,
+        action: "update_inputs",
+        before: beforeInputs,
+        after: input,
+      });
+
+      return { record: toRecord(row), inputs: input };
     });
   }
 
@@ -808,5 +943,37 @@ export class ModelRepository {
       });
     }
     return summaries;
+  }
+
+  /**
+   * Issue #65: whether any Mode of any enabled Model makes something
+   * other than video (checked by each Mode's main Asset, its first
+   * output node), which switches the landing page's default text from
+   * "AI video models" to "AI models". A Mode with no output kind
+   * (unresolved, or an unrecognised save node) doesn't count as a
+   * reason to switch, since LTX/Wan's all-in-one Workflows are
+   * video-first.
+   */
+  async hasEnabledNonVideoModel(): Promise<boolean> {
+    const rows = await this.db
+      .select({ revision: modelRevisions })
+      .from(models)
+      .innerJoin(
+        modelRevisions,
+        and(
+          eq(modelRevisions.modelId, models.id),
+          eq(modelRevisions.revisionNumber, models.currentRevision),
+        ),
+      )
+      .where(and(eq(models.state, "enabled"), isNull(models.deletedAt)));
+
+    for (const row of rows) {
+      const modeRows = await listModesForRevision(this.db, row.revision.id);
+      for (const mode of modeRows) {
+        const kind = mode.outputNodes[0]?.kind;
+        if (kind && kind !== "video") return true;
+      }
+    }
+    return false;
   }
 }

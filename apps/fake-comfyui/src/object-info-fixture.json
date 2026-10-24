@@ -180,5 +180,22 @@
     "description": "",
     "category": "loaders",
     "output_node": false
+  },
+  "LTXVConditioning": {
+    "input": {
+      "required": {
+        "frame_rate_option": [
+          "COMBO",
+          { "options": ["24", "25", "30"], "default": "24" }
+        ]
+      }
+    },
+    "output": ["CONDITIONING"],
+    "output_name": ["CONDITIONING"],
+    "name": "LTXVConditioning",
+    "display_name": "LTXV Conditioning",
+    "description": "",
+    "category": "conditioning",
+    "output_node": false
   }
 }

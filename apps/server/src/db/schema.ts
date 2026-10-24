@@ -59,6 +59,19 @@ export const siteSettings = pgTable("site_settings", {
     withTimezone: true,
   }),
   termsRevision: integer("terms_revision").notNull().default(1),
+  /**
+   * Issue #65: the Privacy policy's Operator part. Unlike Site terms,
+   * there is no gate and nobody accepts it, so there is no version to
+   * track — only when it was last saved, shown as "Last updated" on
+   * `/privacy`. `privacyRevision` is its own optimistic-concurrency
+   * token, independent of `version` and `termsRevision`, so saving one
+   * form never races another into a spurious 409.
+   */
+  privacyBody: text("privacy_body").notNull().default(""),
+  privacyUpdatedAt: timestamp("privacy_updated_at", { withTimezone: true }),
+  privacyRevision: integer("privacy_revision").notNull().default(1),
+  /** Issue #65: up to 3 extra footer links, each `{ label, url }`. */
+  footerLinks: jsonb("footer_links").notNull().default([]),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -281,9 +294,11 @@ export const models = pgTable(
 );
 
 /**
- * One saved, immutable, numbered state of a Model's Workflow and Modes
- * (issue #40, #42; Inputs join this later). Never updated or deleted: a
- * save of either makes a new row with the next `revisionNumber`.
+ * One saved, immutable, numbered state of a Model's Workflow, Modes and
+ * Inputs (issue #40, #42, #46). Never updated or deleted: a save of any
+ * of the three makes a new row with the next `revisionNumber`. `inputs`
+ * is an ordered JSON array of `InputDefinition` (packages/shared); it
+ * carries forward unchanged when only Modes (or the reverse) are saved.
  */
 export const modelRevisions = pgTable(
   "model_revisions",
@@ -296,6 +311,7 @@ export const modelRevisions = pgTable(
     workflowHash: text("workflow_hash")
       .notNull()
       .references(() => workflows.hash),
+    inputs: jsonb("inputs").notNull().default([]),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

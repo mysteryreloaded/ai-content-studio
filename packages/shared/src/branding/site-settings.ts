@@ -33,6 +33,32 @@ export function isValidContact(value: string): boolean {
   }
 }
 
+/** Issue #65: up to 3 extra footer links, each a label and an http(s) URL. */
+export const FOOTER_LINK_LABEL_MAX_LENGTH = 30;
+export const FOOTER_LINKS_MAX_COUNT = 3;
+
+export function isValidFooterLinkUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+export const footerLinkSchema = z.object({
+  label: z.string().trim().min(1).max(FOOTER_LINK_LABEL_MAX_LENGTH),
+  url: z.string().trim().refine(isValidFooterLinkUrl, {
+    message: "must be an http(s) URL",
+  }),
+});
+
+export type FooterLink = z.infer<typeof footerLinkSchema>;
+
+export const footerLinksSchema = z
+  .array(footerLinkSchema)
+  .max(FOOTER_LINKS_MAX_COUNT);
+
 export const siteSettingsFieldsSchema = z.object({
   title: z.string().trim().min(1).max(TITLE_MAX_LENGTH),
   landingText: z.string().trim().max(LANDING_TEXT_MAX_LENGTH).default(""),
@@ -48,6 +74,7 @@ export const siteSettingsFieldsSchema = z.object({
     .refine(isValidContact, {
       message: "must be an email address or an http(s) URL",
     }),
+  footerLinks: footerLinksSchema.default([]),
 });
 
 export type SiteSettingsFields = z.infer<typeof siteSettingsFieldsSchema>;
@@ -61,6 +88,15 @@ export const siteTermsFieldsSchema = z.object({
 });
 
 export type SiteTermsFields = z.infer<typeof siteTermsFieldsSchema>;
+
+/** The Privacy policy's Operator part (issue #65): Markdown, same limit as Site terms, may be blank. */
+export const PRIVACY_MAX_LENGTH = 50_000;
+
+export const sitePrivacyFieldsSchema = z.object({
+  body: z.string().max(PRIVACY_MAX_LENGTH),
+});
+
+export type SitePrivacyFields = z.infer<typeof sitePrivacyFieldsSchema>;
 
 export function maxBytesFor(key: "logo" | "background"): number {
   return key === "logo" ? LOGO_MAX_BYTES : BACKGROUND_MAX_BYTES;

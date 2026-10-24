@@ -33,7 +33,7 @@ const MODEL = {
   name: "LTX 2.5",
   description: "Video generation",
   revision: 2,
-  modes: [{ id: "mode1", name: "Default", description: "" }],
+  modes: [{ id: "mode1", name: "Default", description: "", inputs: [] }],
 };
 
 class FakeEventSource {

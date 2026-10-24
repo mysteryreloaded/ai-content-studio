@@ -55,6 +55,18 @@ describe("MediaRunner.probeVideoUpload / probeAudioUpload", () => {
     expect(probe.ok).toBe(false);
   });
 
+  test("accepts an MP4 with embedded cover art (ffprobe's attached_pic video stream doesn't count against it)", async () => {
+    const media = new MediaRunner(2);
+    const probe = await media.probeVideoUpload(f("video-cover-art.mp4"), "mp4");
+    expect(probe.ok).toBe(true);
+    if (!probe.ok || probe.kind !== "video")
+      throw new Error("expected a video");
+    expect(probe.facts.codecName).toBe("h264");
+    expect(probe.facts.width).toBe(64);
+    expect(probe.facts.height).toBe(48);
+    expect(probe.facts.durationMs).toBeGreaterThan(0);
+  });
+
   test("a browser-unplayable (HEVC/MKV) video that fits is accepted, untrimmed (ADR 0007)", async () => {
     const media = new MediaRunner(2);
     const probe = await media.probeVideoUpload(

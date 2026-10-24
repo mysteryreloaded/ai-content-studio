@@ -577,6 +577,25 @@ describe("/api/uploads", () => {
     expect(upload.durationMs).toBeGreaterThan(0);
   });
 
+  test("an MP4 with embedded cover art completes (its attached_pic stream isn't treated as a second video stream)", async () => {
+    const { insertUser, as } = await setup();
+    const app = as(await insertUser("videocoverart@example.com"));
+
+    const res = await uploadFixture(
+      app,
+      "video-cover-art.mp4",
+      "clip.mp4",
+      "video/mp4",
+    );
+    expect(res.status).toBe(200);
+    const { upload } = (await res.json()) as {
+      upload: { status: string; kind: string; durationMs: number };
+    };
+    expect(upload.status).toBe("complete");
+    expect(upload.kind).toBe("video");
+    expect(upload.durationMs).toBeGreaterThan(0);
+  });
+
   test("complete refuses a wrong video codec, a truncated file and a misnamed container (issue #51's AC)", async () => {
     const { insertUser, as } = await setup();
     const app = as(await insertUser("wrongvideo@example.com"));

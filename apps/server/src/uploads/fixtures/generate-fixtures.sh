@@ -53,4 +53,15 @@ $FF -f lavfi -i "sine=frequency=440:sample_rate=8000" -i /tmp/cover.png -t 1 \
   audio-cover-art.mp3
 rm -f /tmp/cover.png
 
+# --- video: cover art (same attached_pic carve-out as above, but on an
+# MP4 that also carries a real H.264 video + AAC audio stream; no
+# -shortest, which would otherwise cut the real streams to the cover
+# image's own single frame) ---
+$FF -f lavfi -i "color=size=16x16:color=red" -frames:v 1 /tmp/cover.png
+$FF -f lavfi -i "testsrc=size=64x48:rate=5" -f lavfi -i "sine=frequency=440:sample_rate=8000" \
+  -i /tmp/cover.png -map 0:v -map 1:a -map 2:v -t 1 \
+  -c:v:0 libx264 -pix_fmt yuv420p -c:a aac -c:v:1 mjpeg -disposition:v:1 attached_pic \
+  video-cover-art.mp4
+rm -f /tmp/cover.png
+
 ls -la *.mp4 *.mkv *.wav *.mp3 2>/dev/null

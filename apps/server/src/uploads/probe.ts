@@ -209,7 +209,10 @@ function parseFrameRate(value: string | undefined): number {
  * stream in an accepted codec, its container matching `extension`'s own
  * family (so a misnamed file is refused). `browserPlayable` is false for
  * a variable frame rate or a combo this studio doesn't trust a browser's
- * `<video>` to play (ADR 0007).
+ * `<video>` to play (ADR 0007). A video stream that's just embedded
+ * cover art (ffprobe's `disposition.attached_pic`, e.g. an MP4/MOV's
+ * cover image) doesn't count against "exactly one video stream", the
+ * same carve-out {@link parseAudioProbeOutput} gives it.
  */
 export function parseVideoProbeOutput(
   stdout: string,
@@ -226,7 +229,9 @@ export function parseVideoProbeOutput(
   }
 
   const streams = parsed.streams ?? [];
-  const videoStreams = streams.filter((s) => s.codec_type === "video");
+  const videoStreams = streams.filter(
+    (s) => s.codec_type === "video" && !s.disposition?.attached_pic,
+  );
   const audioStream = streams.find((s) => s.codec_type === "audio");
   const stream = videoStreams[0];
   const formatName = parsed.format?.format_name ?? "";

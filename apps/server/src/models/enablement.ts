@@ -2,7 +2,10 @@
 // Backend, valid output nodes, and every Mode runnable on at least one
 // attached Backend (its Path's node types all installed there).
 
-import { computeModePath } from "@ai-content-studio/shared";
+import {
+  computeModePath,
+  visibleModeBoundFields,
+} from "@ai-content-studio/shared";
 import type { BackendRecord } from "../backends/repository.js";
 import type { BackendsService } from "../backends/service.js";
 import type { ModelDetail } from "./repository.js";
@@ -43,9 +46,19 @@ export async function checkEnableReadiness(
   );
 
   for (const mode of detail.modes) {
+    // issue #48: a switch steered by a field one of this Mode's visible
+    // Inputs binds keeps both branches on the Path, since the Admin
+    // can't know ahead of time which way a user will set it — both
+    // branches' node types must be covered by a Backend for the Mode
+    // to count as runnable.
+    const unresolvable = visibleModeBoundFields(
+      mode.inputSettings,
+      detail.inputs,
+    );
     const path = computeModePath(
       detail.workflow,
       mode.outputNodes.map((node) => node.nodeId),
+      unresolvable,
     );
     if (path.missingOutputNodeIds.length > 0) {
       reasons.push(

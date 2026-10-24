@@ -173,6 +173,83 @@ describe("checkEnableReadiness", () => {
     expect(result.reasons.some((r) => r.includes("needs a max"))).toBe(true);
   });
 
+  test("requires both of a visibly-switched branch's node types (issue #48)", async () => {
+    const switchWorkflow: Workflow = {
+      prim: { class_type: "PrimitiveBoolean", inputs: { value: true } },
+      switch: {
+        class_type: "ComfySwitchNode",
+        inputs: { switch: ["prim", 0], on_true: ["a", 0], on_false: ["b", 0] },
+      },
+      a: { class_type: "LoadImage", inputs: {} },
+      b: { class_type: "LoadVideo", inputs: {} },
+      out: { class_type: "SaveImage", inputs: { image: ["switch", 0] } },
+    };
+    const flagInput: InputDefinition = {
+      id: "flag-1",
+      kind: "select",
+      group: "settings",
+      label: "Flag",
+      help: "",
+      default: null,
+      options: [
+        { id: "off", label: "Off", values: [false] },
+        { id: "on", label: "On", values: [true] },
+      ],
+      bindings: [
+        {
+          nodeId: "prim",
+          field: "value",
+          classType: "PrimitiveBoolean",
+          title: null,
+        },
+      ],
+    };
+    const switchDetail: ModelDetail = {
+      model: detail([], []).model,
+      revisionId: "revision-1",
+      workflowHash: "hash",
+      workflow: switchWorkflow,
+      nodes: [],
+      outsideServiceNotes: [],
+      modes: [
+        {
+          id: "mode-1",
+          sortOrder: 0,
+          name: "Default",
+          description: "",
+          inputSettings: [],
+          outputNodes: [
+            {
+              nodeId: "out",
+              classType: "SaveImage",
+              title: null,
+              kind: "image",
+            },
+          ],
+        },
+      ],
+      inputs: [flagInput],
+    };
+
+    // The Backend only has LoadImage/SaveImage: "on_false" (LoadVideo) is
+    // unreachable, but since flag-1 is a visible Input, both branches are
+    // on the Path, so this Backend can't actually run the Mode.
+    const result = await checkEnableReadiness(
+      switchDetail,
+      [backend("b1")],
+      serviceWithNodeTypes({
+        b1: new Set([
+          "PrimitiveBoolean",
+          "ComfySwitchNode",
+          "LoadImage",
+          "SaveImage",
+        ]),
+      }),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.reasons.some((r) => r.includes('Mode "Default"'))).toBe(true);
+  });
+
   test("passes with a Seed Input that has a max set", async () => {
     const seedInput: InputDefinition = {
       id: "seed-1",

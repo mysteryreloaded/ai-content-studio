@@ -215,7 +215,18 @@ export async function submitGeneration(
     formInputs,
     requiredIds,
   );
-  const seedInput = relevant.find(isSeedInput);
+
+  // A hidden Input isn't submitted and has no fixed value either: it
+  // must leave its bound fields as the Workflow has them, not fall
+  // back to the Input's own default (applyInputValues does that for
+  // any Input it's handed with no value), so it's left out here. A
+  // hidden Seed must not enable the count picker either, or every
+  // Generation in the batch would draw the same seed.
+  const nonHiddenRelevant = relevant.filter(
+    (input) =>
+      modeInputSetting(mode.inputSettings, input.id).state !== "hidden",
+  );
+  const seedInput = nonHiddenRelevant.find(isSeedInput);
 
   // The count picker only exists when the Path holds a bound Seed Input
   // (issue #47's AC); otherwise every Submission makes exactly 1.
@@ -276,15 +287,6 @@ export async function submitGeneration(
       baseSeed = seedValue;
     }
   }
-
-  // A hidden Input isn't submitted and has no fixed value either: it
-  // must leave its bound fields as the Workflow has them, not fall
-  // back to the Input's own default (applyInputValues does that for
-  // any Input it's handed with no value), so it's left out here.
-  const nonHiddenRelevant = relevant.filter(
-    (input) =>
-      modeInputSetting(mode.inputSettings, input.id).state !== "hidden",
-  );
 
   const submissionId = crypto.randomUUID();
   const submittedAt = deps.clock.now();

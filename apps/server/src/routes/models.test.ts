@@ -183,6 +183,7 @@ describe("/api/models/:slug and :slug/generations", () => {
     adminHeaders: Record<string, string>,
     fakeUrl: string,
     max = 1000,
+    inputSettings: unknown[] = [],
   ) {
     const createRes = await app.request("/api/admin/models", {
       method: "POST",
@@ -246,7 +247,14 @@ describe("/api/models/:slug and :slug/generations", () => {
       headers: { ...adminHeaders, "content-type": "application/json" },
       body: JSON.stringify({
         version: afterInputs.version,
-        modes: [{ name: "Default", description: "", outputNodeIds: ["3"] }],
+        modes: [
+          {
+            name: "Default",
+            description: "",
+            outputNodeIds: ["3"],
+            inputSettings,
+          },
+        ],
       }),
     });
     const { record: afterModes, modes } = (await modesRes.json()) as {
@@ -921,6 +929,59 @@ describe("/api/models/:slug and :slug/generations", () => {
         expect(seeds[2]).toBe((seeds[0] as number) + 2);
         expect(seeds[0]).toBeGreaterThanOrEqual(0);
         expect(seeds[2]).toBeLessThan(Number.MAX_SAFE_INTEGER);
+
+        backendsService.stop();
+      } finally {
+        fake.stop();
+      }
+    });
+
+    test("a hidden Seed Input doesn't enable the count picker, and ignores a submitted count (issue #48)", async () => {
+      const fake = startFakeComfyUi({ port: 0 });
+      try {
+        const { app, backendsService } = await build();
+        const { db } = await testDb;
+        const { headers: adminHeaders } = await headersFor("admin");
+        const { slug, modeId, revision } = await buildEnabledModelWithSeed(
+          app,
+          adminHeaders,
+          fake.url,
+          1000,
+          [
+            {
+              inputId: "66666666-6666-6666-6666-666666666666",
+              state: "hidden",
+              fixedValue: null,
+              label: "",
+            },
+          ],
+        );
+
+        const { headers: userHeaders } = await headersFor("user");
+        const res = await app.request(`/api/models/${slug}/generations`, {
+          method: "POST",
+          headers: { ...userHeaders, "content-type": "application/json" },
+          body: JSON.stringify({ modeId, revision, count: 3 }),
+        });
+        expect(res.status).toBe(201);
+        const body = (await res.json()) as {
+          generations: Array<{ id: string }>;
+        };
+        // A hidden Seed must not enable the count picker (it's not on the
+        // Workbench to submit alongside a count): exactly 1 Generation,
+        // not 3.
+        expect(body.generations.length).toBe(1);
+
+        const [row] = await db
+          .select()
+          .from(generations)
+          .where(eq(generations.id, body.generations[0]?.id as string));
+        const prompt = row?.builtPrompt as Record<
+          string,
+          { inputs: Record<string, unknown> }
+        >;
+        // Hidden: leaves the Workflow's own seed value untouched.
+        expect(prompt["2"]?.inputs.seed).toBe(WORKFLOW["2"]?.inputs.seed);
 
         backendsService.stop();
       } finally {

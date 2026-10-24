@@ -41,6 +41,7 @@ import {
   ValidationFailed,
   slugify,
   validateModelDetails,
+  validateSlug,
 } from "./validation.js";
 import { hashWorkflow } from "./workflow-hash.js";
 
@@ -65,6 +66,13 @@ export class SlugTaken extends Error {
 export class NotFound extends Error {
   constructor() {
     super("Model not found");
+  }
+}
+
+/** Issue #73: an imported Model keeps its file's own id, which can already belong to a Model here. */
+export class IdTaken extends Error {
+  constructor() {
+    super("a Model with this id already exists");
   }
 }
 
@@ -217,6 +225,41 @@ function nodesFrom(
 export interface WorkflowUploadResult {
   record: ModelRecord;
   outsideServiceNotes: OutsideServiceNote[];
+}
+
+/** One Mode as it travels in a {@link ModelExport} file (issue #73). */
+export interface ModelExportMode {
+  id: string;
+  sortOrder: number;
+  name: string;
+  description: string;
+  outputNodes: ResolvedOutputNode[];
+  inputSettings: ModeInputSetting[];
+}
+
+/**
+ * A revision's definition, its Workflow, and the Model's terms and
+ * Attribution, moved between studios as one JSON file (issue #73).
+ * Deliberately excludes Backends and credentials, `state`, `sortOrder`
+ * and `version`/`currentRevision`: an import always lands as a fresh,
+ * disabled Model at revision 1, keeping only the file's own ids (the
+ * Model's and each Mode's) so re-importing the same file twice doesn't
+ * collide with itself by chance.
+ */
+export interface ModelExport {
+  exportVersion: 1;
+  id: string;
+  name: string;
+  slug: string;
+  description: string;
+  maxRunTimeMinutes: number;
+  termsBody: string;
+  licenseUrl: string;
+  attribution: string;
+  revisionNumber: number;
+  workflow: Workflow;
+  inputs: InputDefinition[];
+  modes: ModelExportMode[];
 }
 
 /**
@@ -1545,6 +1588,216 @@ export class ModelRepository {
       });
     }
     return summaries;
+  }
+
+  /**
+   * One revision's definition, Workflow, and this Model's terms and
+   * Attribution, for an Admin to move to another studio as one JSON file
+   * (issue #73): never Backends or credentials, which live outside a
+   * Model entirely. Defaults to the current revision; `revisionNumber`
+   * picks any other numbered (non-Test) one, e.g. from the Revisions
+   * section.
+   */
+  async exportRevision(
+    id: string,
+    revisionNumber?: number,
+  ): Promise<ModelExport | null> {
+    const [row] = await this.db
+      .select()
+      .from(models)
+      .where(and(eq(models.id, id), isNull(models.deletedAt)));
+    if (!row) return null;
+
+    const targetNumber = revisionNumber ?? row.currentRevision;
+    const [revision] = await this.db
+      .select()
+      .from(modelRevisions)
+      .where(
+        and(
+          eq(modelRevisions.modelId, id),
+          eq(modelRevisions.revisionNumber, targetNumber),
+          eq(modelRevisions.isTest, false),
+        ),
+      );
+    if (!revision) return null;
+
+    const [workflowRow] = await this.db
+      .select()
+      .from(workflows)
+      .where(eq(workflows.hash, revision.workflowHash));
+    if (!workflowRow) throw new Error("Workflow missing for revision");
+
+    const modeRecords = await listModesForRevision(this.db, revision.id);
+
+    return {
+      exportVersion: 1,
+      id: row.id,
+      name: row.name,
+      slug: row.slug,
+      description: row.description,
+      maxRunTimeMinutes: row.maxRunTimeMinutes,
+      termsBody: row.termsBody,
+      licenseUrl: row.licenseUrl,
+      attribution: row.attribution,
+      revisionNumber: targetNumber,
+      workflow: workflowRow.json as Workflow,
+      inputs: revision.inputs as InputDefinition[],
+      modes: modeRecords.map((mode) => ({
+        id: mode.id,
+        sortOrder: mode.sortOrder,
+        name: mode.name,
+        description: mode.description,
+        outputNodes: mode.outputNodes,
+        inputSettings: mode.inputSettings,
+      })),
+    };
+  }
+
+  /**
+   * Creates a disabled Model at revision 1 from an exported file (issue
+   * #73), keeping its own id and each Mode's id so re-exporting it later
+   * round-trips as the same rows, under the same Workflow checks
+   * `createFromWorkflow` runs (API-format, size, missing links, a still-
+   * set outside-service key). A taken id, name or slug fails the same
+   * way creating a Model from a Workflow does; the slug falls back to
+   * one derived from the name when the file's own slug isn't a valid
+   * one, then dedupes exactly like a fresh create.
+   */
+  async importModel(
+    payload: ModelExport,
+    actor: AuditActor,
+  ): Promise<WorkflowUploadResult> {
+    const errors: ValidationError[] = [];
+    if (payload.name.length < 1 || payload.name.length > 80) {
+      errors.push({ field: "name", message: "must be 1-80 characters" });
+    }
+
+    const size = Buffer.byteLength(JSON.stringify(payload.workflow));
+    if (size > MAX_WORKFLOW_BYTES) {
+      errors.push({ field: "workflow", message: "must be 10 MB or smaller" });
+    }
+
+    const parsed = parseApiFormatWorkflow(payload.workflow);
+    if (!parsed.ok) {
+      errors.push({ field: "workflow", message: parsed.error });
+      throw new ValidationFailed(errors);
+    }
+
+    const missing = findMissingLinkTargets(parsed.workflow);
+    if (missing.length > 0) {
+      errors.push({
+        field: "workflow",
+        message: `links to missing nodes: ${missing.join(", ")}`,
+      });
+    }
+
+    const notes = findOutsideServiceNotes(parsed.workflow);
+    for (const note of notes) {
+      if (note.keySet) {
+        errors.push({
+          field: "workflow",
+          message: `${note.classType} (node ${note.nodeId}) still has a key set; clear it before uploading`,
+        });
+      }
+    }
+
+    if (errors.length > 0) throw new ValidationFailed(errors);
+
+    try {
+      const record = await this.db.transaction(async (tx) => {
+        const [existing] = await tx
+          .select({ id: models.id })
+          .from(models)
+          .where(eq(models.id, payload.id));
+        if (existing) throw new IdTaken();
+
+        const hash = hashWorkflow(parsed.workflow);
+        await tx
+          .insert(workflows)
+          .values({
+            hash,
+            json: parsed.workflow,
+            nodeCount: Object.keys(parsed.workflow).length,
+            size,
+          })
+          .onConflictDoNothing();
+
+        const baseSlug =
+          validateSlug(payload.slug) === null
+            ? payload.slug
+            : slugify(payload.name);
+        const slug = await this.uniqueSlug(tx, baseSlug);
+
+        const [sortRow] = await tx
+          .select({ max: max(models.sortOrder) })
+          .from(models);
+        const sortOrder = (sortRow?.max ?? -1) + 1;
+
+        const now = this.clock.now();
+        const termsBody = payload.termsBody.trim();
+        const termsVersion = termsBody === "" ? null : 1;
+        const termsVersionCreatedAt = termsBody === "" ? null : now;
+
+        const [row] = await tx
+          .insert(models)
+          .values({
+            id: payload.id,
+            name: payload.name,
+            slug,
+            description: payload.description,
+            maxRunTimeMinutes: payload.maxRunTimeMinutes,
+            sortOrder,
+            termsBody,
+            licenseUrl: payload.licenseUrl,
+            attribution: payload.attribution,
+            termsVersion,
+            termsVersionCreatedAt,
+          })
+          .returning();
+        if (!row) throw new Error("insert returned no row");
+
+        const [newRevision] = await tx
+          .insert(modelRevisions)
+          .values({
+            modelId: row.id,
+            revisionNumber: 1,
+            workflowHash: hash,
+            inputs: payload.inputs,
+          })
+          .returning();
+        if (!newRevision) throw new Error("insert returned no row");
+
+        if (payload.modes.length > 0) {
+          await tx.insert(modes).values(
+            payload.modes.map((mode) => ({
+              id: mode.id,
+              revisionId: newRevision.id,
+              sortOrder: mode.sortOrder,
+              name: mode.name,
+              description: mode.description,
+              outputNodes: mode.outputNodes,
+              inputSettings: mode.inputSettings,
+            })),
+          );
+        }
+
+        await recordAuditEntry(tx, this.clock, {
+          actor,
+          targetType: "model",
+          targetId: row.id,
+          action: "import",
+          before: null,
+          after: snapshot(row, hash),
+        });
+
+        return toRecord(row);
+      });
+      return { record, outsideServiceNotes: notes };
+    } catch (err) {
+      if (isUniqueViolation(err, "models_name_unique")) throw new NameTaken();
+      if (isUniqueViolation(err, "models_slug_unique")) throw new SlugTaken();
+      throw err;
+    }
   }
 
   /**

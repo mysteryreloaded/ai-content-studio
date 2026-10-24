@@ -9,6 +9,7 @@ import { LogsPage } from "./LogsPage.js";
 import { ModelEditorPage } from "./ModelEditorPage.js";
 import { ModelsPage } from "./ModelsPage.js";
 import { OverviewPage } from "./OverviewPage.js";
+import { PauseNoticeForm } from "./PauseNoticeForm.js";
 import { SitePrivacyForm } from "./SitePrivacyForm.js";
 import { SiteSettingsForm } from "./SiteSettingsForm.js";
 import { SiteTermsForm } from "./SiteTermsForm.js";
@@ -117,6 +118,7 @@ export function AdminShell() {
             element={
               <>
                 <SiteSettingsForm />
+                <PauseNoticeForm />
                 <SiteTermsForm />
                 <SitePrivacyForm />
                 <BlockedWordsForm />

@@ -495,6 +495,49 @@ describe("/api/models/:slug and :slug/generations", () => {
     }
   });
 
+  test("refuses a submit with 503 paused while generating is Paused, and never queues anything", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const { app, backendsService } = await build();
+      const { db } = await testDb;
+      const { headers: adminHeaders } = await headersFor("admin");
+      const { slug, modeId } = await buildEnabledModel(
+        app,
+        adminHeaders,
+        fake.url,
+      );
+
+      const pauseRes = await app.request("/api/admin/site-settings/pause", {
+        method: "POST",
+        headers: adminHeaders,
+      });
+      expect(pauseRes.status).toBe(200);
+
+      const { headers: userHeaders } = await headersFor("user");
+      const res = await app.request(`/api/models/${slug}/generations`, {
+        method: "POST",
+        headers: { ...userHeaders, "content-type": "application/json" },
+        body: JSON.stringify({ modeId, revision: 2 }),
+      });
+      expect(res.status).toBe(503);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe("paused");
+
+      const rows = await db.select().from(generations);
+      expect(rows).toHaveLength(0);
+
+      const resumeRes = await app.request("/api/admin/site-settings/resume", {
+        method: "POST",
+        headers: adminHeaders,
+      });
+      expect(resumeRes.status).toBe(200);
+
+      backendsService.stop();
+    } finally {
+      fake.stop();
+    }
+  });
+
   test("refuses a submit with 409 model_changed when the revision is stale", async () => {
     const fake = startFakeComfyUi({ port: 0 });
     try {

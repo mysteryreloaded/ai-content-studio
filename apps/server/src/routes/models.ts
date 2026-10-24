@@ -24,6 +24,7 @@ import {
   ModelNotFound,
   ModelTermsRequired,
   NoBackend,
+  Paused,
   type SubmissionDeps,
   submitGeneration,
 } from "../generations/submission.js";
@@ -279,6 +280,9 @@ export function modelsRoute(
         );
         return c.json({ generations, prompt }, 201);
       } catch (err) {
+        if (err instanceof Paused) {
+          return c.json({ error: "paused", message: err.message }, 503);
+        }
         if (err instanceof ModelNotFound) {
           return c.json({ error: "not found" }, 404);
         }

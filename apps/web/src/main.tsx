@@ -1,7 +1,8 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { RouterProvider, createBrowserRouter } from "react-router-dom";
+import { Outlet, RouterProvider, createBrowserRouter } from "react-router-dom";
 import { LandingPage } from "./LandingPage.js";
+import { NoticeBanner } from "./NoticeBanner.js";
 import { RequireActive } from "./RequireActive.js";
 import { RequireTermsAccepted } from "./RequireTermsAccepted.js";
 import { AccountPage } from "./pages/AccountPage.js";
@@ -15,52 +16,67 @@ import { WorkbenchPage } from "./pages/WorkbenchPage.js";
 const root = document.getElementById("root");
 if (!root) throw new Error("missing #root element");
 
+/** The Notice/Pause banner (issue #59) on every page, signed in or out. */
+function RootLayout() {
+  return (
+    <>
+      <NoticeBanner />
+      <Outlet />
+    </>
+  );
+}
+
 // A data router (rather than <BrowserRouter>) so the Model editor can use
 // useBlocker to guard every in-app navigation away from unsaved changes,
 // not just the ones it wires up by hand (issue #40 follow-up). AdminShell
 // keeps its own nested <Routes>, which still works under a data router.
 const router = createBrowserRouter([
-  { path: "/", element: <LandingPage /> },
   {
-    path: "/models",
-    element: (
-      <RequireTermsAccepted>
-        <RequireActive>
-          <ModelsHome />
-        </RequireActive>
-      </RequireTermsAccepted>
-    ),
-  },
-  {
-    path: "/models/:slug",
-    element: (
-      <RequireTermsAccepted>
-        <RequireActive>
-          <WorkbenchPage />
-        </RequireActive>
-      </RequireTermsAccepted>
-    ),
-  },
-  { path: "/account", element: <AccountPage /> },
-  {
-    path: "/admin/*",
-    element: (
-      <RequireTermsAccepted>
-        <RequireActive>
-          <AdminShell />
-        </RequireActive>
-      </RequireTermsAccepted>
-    ),
-  },
-  { path: "/terms", element: <TermsPage /> },
-  { path: "/privacy", element: <PrivacyPage /> },
-  {
-    path: "/waiting",
-    element: (
-      <RequireTermsAccepted>
-        <WaitingPage />
-      </RequireTermsAccepted>
-    ),
+    element: <RootLayout />,
+    children: [
+      { path: "/", element: <LandingPage /> },
+      {
+        path: "/models",
+        element: (
+          <RequireTermsAccepted>
+            <RequireActive>
+              <ModelsHome />
+            </RequireActive>
+          </RequireTermsAccepted>
+        ),
+      },
+      {
+        path: "/models/:slug",
+        element: (
+          <RequireTermsAccepted>
+            <RequireActive>
+              <WorkbenchPage />
+            </RequireActive>
+          </RequireTermsAccepted>
+        ),
+      },
+      { path: "/account", element: <AccountPage /> },
+      {
+        path: "/admin/*",
+        element: (
+          <RequireTermsAccepted>
+            <RequireActive>
+              <AdminShell />
+            </RequireActive>
+          </RequireTermsAccepted>
+        ),
+      },
+      { path: "/terms", element: <TermsPage /> },
+      { path: "/privacy", element: <PrivacyPage /> },
+      {
+        path: "/waiting",
+        element: (
+          <RequireTermsAccepted>
+            <WaitingPage />
+          </RequireTermsAccepted>
+        ),
+      },
+    ],
   },
 ]);
 

@@ -32,6 +32,13 @@ import {
   promptFor,
 } from "./repository.js";
 
+/** Generating is paused for maintenance (issue #59: 503 `paused`). */
+export class Paused extends Error {
+  constructor() {
+    super("paused");
+  }
+}
+
 export class ModelNotFound extends Error {
   constructor() {
     super("Model not found");
@@ -116,6 +123,8 @@ export interface SubmissionDeps {
   logWriter: LogEntryWriter;
   /** The Admin's blocked words list, current as of this call (issue #66). */
   getBlockedWords: () => Promise<string[]>;
+  /** Whether generating is currently Paused (issue #59), current as of this call. */
+  isPaused: () => Promise<boolean>;
   /** Wakes the dispatcher (issue #44): a fresh queued Generation may be dispatchable right away. */
   onGenerationQueued?: () => void;
 }
@@ -154,6 +163,10 @@ export async function submitGeneration(
   params: SubmitGenerationParams,
   deps: SubmissionDeps,
 ): Promise<SubmissionResult> {
+  // Checked before anything else (issue #59's AC): a Pause refuses every
+  // submit outright, regardless of the Model/Mode it names.
+  if (await deps.isPaused()) throw new Paused();
+
   const detail = await deps.modelRepository.getBySlug(params.slug);
   if (!detail) throw new ModelNotFound();
 

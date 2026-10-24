@@ -3,6 +3,7 @@ import {
   maxBytesFor,
   parseBlockedWordsList,
   siteBlockedWordsFieldsSchema,
+  siteNoticeFieldsSchema,
   sitePrivacyFieldsSchema,
   siteSettingsFieldsSchema,
   siteTermsFieldsSchema,
@@ -14,10 +15,14 @@ import { z } from "zod";
 import { adminActorFrom } from "../audit/actor.js";
 import { type RouteEntry, guardedRoute } from "../auth/access.js";
 import type { AppEnv } from "../auth/app-env.js";
+import type { NoticeEvents } from "../branding/notice-events.js";
 import {
   type SiteSettingsUpdateImage,
   getSiteSettings,
+  pauseGenerating,
+  resumeGenerating,
   updateSiteBlockedWords,
+  updateSiteNotice,
   updateSitePrivacy,
   updateSiteSettings,
   updateSiteTerms,
@@ -62,6 +67,9 @@ export function adminSiteSettingsRoute(
   db: Database,
   clock: Clock,
   storage: Storage,
+  noticeEvents: NoticeEvents,
+  /** Wakes the dispatcher (issue #59): a Resume may make queued Generations dispatchable right away. */
+  wakeDispatcher: () => void,
   routes: RouteEntry[],
 ): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
@@ -277,6 +285,82 @@ export function adminSiteSettingsRoute(
       return c.json(result.settings);
     },
   );
+
+  guardedRoute(app, routes, basePath, "put", "/notice", "admin", async (c) => {
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "invalid JSON body" }, 400);
+    }
+
+    const revisionResult = versionSchema.safeParse(
+      (body as Record<string, unknown> | null)?.revision,
+    );
+    if (!revisionResult.success) {
+      return c.json({ error: "revision is required" }, 400);
+    }
+
+    const fieldsResult = siteNoticeFieldsSchema.safeParse({
+      text: (body as Record<string, unknown> | null)?.text,
+    });
+    if (!fieldsResult.success) {
+      return c.json(
+        { error: "invalid notice", issues: fieldsResult.error.issues },
+        400,
+      );
+    }
+
+    const result = await updateSiteNotice(db, clock, adminActorFrom(c), {
+      revision: revisionResult.data,
+      text: fieldsResult.data.text,
+    });
+
+    if (!result.ok) {
+      return c.json({ error: "changed by someone else, reload" }, 409);
+    }
+
+    noticeEvents.publish({
+      paused: result.settings.paused,
+      notice: result.settings.notice,
+    });
+    return c.json(result.settings);
+  });
+
+  guardedRoute(app, routes, basePath, "post", "/pause", "admin", async (c) => {
+    const session = c.get("session");
+    if (!session) return c.json({ error: "unauthorized" }, 401);
+
+    const result = await pauseGenerating(
+      db,
+      clock,
+      adminActorFrom(c),
+      session.user.name,
+    );
+    if (!result.ok) {
+      return c.json({ error: "already paused" }, 409);
+    }
+
+    noticeEvents.publish({
+      paused: result.settings.paused,
+      notice: result.settings.notice,
+    });
+    return c.json(result.settings);
+  });
+
+  guardedRoute(app, routes, basePath, "post", "/resume", "admin", async (c) => {
+    const result = await resumeGenerating(db, clock, adminActorFrom(c));
+    if (!result.ok) {
+      return c.json({ error: "not paused" }, 409);
+    }
+
+    noticeEvents.publish({
+      paused: result.settings.paused,
+      notice: result.settings.notice,
+    });
+    wakeDispatcher();
+    return c.json(result.settings);
+  });
 
   return app;
 }

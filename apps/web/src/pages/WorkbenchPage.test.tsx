@@ -71,6 +71,14 @@ class FakeEventSource {
     this.listeners[type] = list;
   }
   close() {}
+  /** The Workbench also opens `usePauseNotice`'s shared stream; tests target the Generations one by its URL. */
+  static generationsStream(): FakeEventSource {
+    const source = FakeEventSource.instances.find((instance) =>
+      instance.url.includes("/api/generations/stream"),
+    );
+    if (!source) throw new Error("no Generations EventSource yet");
+    return source;
+  }
   emit(type: string, data: unknown) {
     for (const cb of this.listeners[type] ?? []) {
       cb({ data: JSON.stringify(data) });
@@ -169,8 +177,8 @@ describe("WorkbenchPage", () => {
     const view = renderWorkbench();
     await view.findByRole("heading", { name: "LTX 2.5" });
 
-    await waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
-    const source = FakeEventSource.instances[0] as FakeEventSource;
+    await waitFor(() => FakeEventSource.generationsStream());
+    const source = FakeEventSource.generationsStream();
     source.emit("snapshot", { generations: [{ id: "g1" }, { id: "g2" }] });
 
     expect(await view.findByText("2 under way")).toBeTruthy();
@@ -225,8 +233,8 @@ describe("WorkbenchPage", () => {
     await view.findByRole("heading", { name: "LTX 2.5" });
     expect(view.getByText("No Submissions yet.")).toBeTruthy();
 
-    await waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
-    const source = FakeEventSource.instances[0] as FakeEventSource;
+    await waitFor(() => FakeEventSource.generationsStream());
+    const source = FakeEventSource.generationsStream();
     source.emit("change", {
       id: "g1",
       modelId: "m1",

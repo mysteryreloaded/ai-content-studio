@@ -29,6 +29,19 @@ interface ModelDetail {
   outsideServiceNotes: OutsideServiceNote[];
 }
 
+interface AdminBackendSummary {
+  id: string;
+  name: string;
+  baseUrl: string;
+}
+
+interface AttachedBackendEntry {
+  backend: AdminBackendSummary;
+  reachable: boolean;
+  missingNodeTypes: string[] | null;
+  note: string | null;
+}
+
 interface DetailsForm {
   name: string;
   slug: string;
@@ -80,6 +93,17 @@ export function ModelEditorPage() {
   const [saving, setSaving] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [nodeFilter, setNodeFilter] = useState("");
+  const [attachedBackends, setAttachedBackends] = useState<
+    AttachedBackendEntry[] | null
+  >(null);
+  const [backendsLoadError, setBackendsLoadError] = useState<string | null>(
+    null,
+  );
+  const [allBackends, setAllBackends] = useState<AdminBackendSummary[] | null>(
+    null,
+  );
+  const [attachBackendId, setAttachBackendId] = useState("");
+  const [attachError, setAttachError] = useState<string | null>(null);
   // Set right before navigating away after a successful delete: `dirty`
   // is still computed from this render's (pre-setForm(null)) state when
   // the blocker runs, since state updates haven't flushed yet, so without
@@ -104,6 +128,69 @@ export function ModelEditorPage() {
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: reload only when the route's :id changes
   useEffect(load, [id]);
+
+  function loadAttachedBackends() {
+    if (!id) return;
+    fetch(`/api/admin/models/${id}/backends`)
+      .then((res) => {
+        if (!res.ok) throw new Error(`unexpected status ${res.status}`);
+        return res.json() as Promise<{ backends: AttachedBackendEntry[] }>;
+      })
+      .then((body) => {
+        setAttachedBackends(body.backends);
+        setBackendsLoadError(null);
+      })
+      .catch(() => setBackendsLoadError("could not load Backends"));
+  }
+
+  function loadAllBackends() {
+    fetch("/api/admin/backends")
+      .then((res) =>
+        res.ok
+          ? (res.json() as Promise<{ backends: AdminBackendSummary[] }>)
+          : null,
+      )
+      .then((body) => {
+        if (body) setAllBackends(body.backends);
+      })
+      .catch(() => {
+        /* the "attach" picker just stays empty */
+      });
+  }
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reload only when the route's :id changes
+  useEffect(() => {
+    loadAttachedBackends();
+    loadAllBackends();
+  }, [id]);
+
+  async function handleAttach(event: FormEvent) {
+    event.preventDefault();
+    if (!detail || !attachBackendId) return;
+    setAttachError(null);
+
+    const res = await fetch(`/api/admin/models/${detail.model.id}/backends`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ backendId: attachBackendId }),
+    });
+
+    if (!res.ok) {
+      setAttachError(await messageFrom(res, "could not attach this Backend"));
+      return;
+    }
+
+    setAttachBackendId("");
+    loadAttachedBackends();
+  }
+
+  async function handleDetach(backendId: string) {
+    if (!detail) return;
+    await fetch(`/api/admin/models/${detail.model.id}/backends/${backendId}`, {
+      method: "DELETE",
+    });
+    loadAttachedBackends();
+  }
 
   const dirty = Boolean(
     detail && form && !sameDetails(detailsFrom(detail), form),
@@ -265,6 +352,78 @@ export function ModelEditorPage() {
         </button>
         {saveError && <p role="alert">{saveError}</p>}
       </form>
+
+      <section>
+        <h3>Backends</h3>
+        {backendsLoadError && <p role="alert">{backendsLoadError}</p>}
+
+        {attachedBackends && attachedBackends.length > 0 && (
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Base URL</th>
+                <th>Missing node types</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {attachedBackends.map((entry) => (
+                <tr key={entry.backend.id}>
+                  <td>{entry.backend.name}</td>
+                  <td>{entry.backend.baseUrl}</td>
+                  <td>
+                    {entry.note
+                      ? entry.note
+                      : entry.missingNodeTypes &&
+                          entry.missingNodeTypes.length > 0
+                        ? entry.missingNodeTypes.join(", ")
+                        : "none"}
+                  </td>
+                  <td>
+                    <button
+                      type="button"
+                      onClick={() => void handleDetach(entry.backend.id)}
+                    >
+                      Detach
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {attachedBackends && attachedBackends.length === 0 && (
+          <p>No Backends attached.</p>
+        )}
+
+        <form onSubmit={(event) => void handleAttach(event)}>
+          <label htmlFor="attach-backend">Attach a Backend</label>
+          <select
+            id="attach-backend"
+            value={attachBackendId}
+            onChange={(event) => setAttachBackendId(event.target.value)}
+          >
+            <option value="">Choose a Backend…</option>
+            {(allBackends ?? [])
+              .filter(
+                (backend) =>
+                  !attachedBackends?.some(
+                    (entry) => entry.backend.id === backend.id,
+                  ),
+              )
+              .map((backend) => (
+                <option key={backend.id} value={backend.id}>
+                  {backend.name}
+                </option>
+              ))}
+          </select>
+          <button type="submit" disabled={!attachBackendId}>
+            Attach
+          </button>
+          {attachError && <p role="alert">{attachError}</p>}
+        </form>
+      </section>
 
       <section>
         <h3>Workflow</h3>

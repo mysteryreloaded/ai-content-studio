@@ -25,6 +25,20 @@ export interface SiteSettingsSnapshot {
   termsBody: string;
   termsVersion: number | null;
   termsVersionCreatedAt: Date | null;
+  termsRevision: number;
+}
+
+/**
+ * The terms version a user must accept, or `null` when none are
+ * required. `termsVersion` itself isn't that signal: it's kept (not
+ * nulled) across a blank `termsBody` so a later save can keep counting
+ * up instead of reusing a number an earlier acceptance already points
+ * at (see the `siteSettings.termsVersion` column comment).
+ */
+export function activeTermsVersion(
+  settings: Pick<SiteSettingsSnapshot, "termsBody" | "termsVersion">,
+): number | null {
+  return settings.termsBody === "" ? null : settings.termsVersion;
 }
 
 export interface SiteSettingsUpdateImage {
@@ -78,6 +92,19 @@ function rowToSnapshot(
     termsBody: row.termsBody,
     termsVersion: row.termsVersion,
     termsVersionCreatedAt: row.termsVersionCreatedAt,
+    termsRevision: row.termsRevision,
+  };
+}
+
+/** The branding fields alone, excluding Site terms' (up to 50,000 chars) from the Audit entry below. */
+function brandingAuditSnapshot(settings: SiteSettingsSnapshot) {
+  return {
+    version: settings.version,
+    title: settings.title,
+    landingText: settings.landingText,
+    accent: settings.accent,
+    logo: settings.logo,
+    background: settings.background,
   };
 }
 
@@ -165,8 +192,8 @@ export async function updateSiteSettings(
       targetType: "site_settings",
       targetId: "singleton",
       action: "update",
-      before,
-      after,
+      before: brandingAuditSnapshot(before),
+      after: brandingAuditSnapshot(after),
       images: images.length > 0 ? images : undefined,
     });
 
@@ -175,7 +202,8 @@ export async function updateSiteSettings(
 }
 
 export interface SiteTermsUpdateInput {
-  version: number;
+  /** `termsRevision`, terms' own optimistic-concurrency token — independent of branding's `version`, so saving one never races the other into a 409. */
+  revision: number;
   body: string;
   askAgain: boolean;
 }
@@ -185,12 +213,18 @@ export type SiteTermsUpdateResult =
   | { ok: false; reason: "stale" };
 
 /**
- * Saves the Site terms body and decides `termsVersion` (issue #60):
- * blank keeps/clears "no terms set"; a first non-blank body starts
- * version 1; `askAgain` bumps the version on top of that (new version,
- * every acceptance cleared); any other save keeps the version, so a
- * quiet text edit never re-asks anyone. The full before/after text and
- * `askAgain` are kept in the Audit entry (ADR 0005) forever.
+ * Saves the Site terms body and decides `termsVersion` (issue #60): a
+ * blank body clears the terms (the gate turns off — see
+ * `activeTermsVersion`) but keeps `termsVersion` as-is, so numbers are
+ * never reused; a first-ever non-blank body, or one that follows a
+ * blank body, always starts a new version (re-introducing terms must
+ * never silently satisfy an old acceptance); on top of an already
+ * non-blank body, `askAgain` bumps the version (every acceptance
+ * cleared) and any other save keeps it, so a quiet text edit never
+ * re-asks anyone. Guarded by `termsRevision`, not the branding
+ * `version`, so the two admin forms never race each other into a 409.
+ * The full before/after text and `askAgain` are kept in the Audit
+ * entry (ADR 0005) forever.
  */
 export async function updateSiteTerms(
   db: Database,
@@ -201,7 +235,7 @@ export async function updateSiteTerms(
   return db.transaction(async (tx) => {
     const [current] = await tx.select().from(siteSettings).limit(1);
     if (!current) throw new Error("site_settings row is missing");
-    if (current.version !== input.version) {
+    if (current.termsRevision !== input.revision) {
       return { ok: false, reason: "stale" };
     }
 
@@ -211,10 +245,8 @@ export async function updateSiteTerms(
 
     let termsVersion = current.termsVersion;
     let termsVersionCreatedAt = current.termsVersionCreatedAt;
-    if (body === "") {
-      termsVersion = null;
-      termsVersionCreatedAt = null;
-    } else if (current.termsVersion === null || input.askAgain) {
+    const wasBlank = current.termsBody === "";
+    if (body !== "" && (wasBlank || input.askAgain)) {
       termsVersion = (current.termsVersion ?? 0) + 1;
       termsVersionCreatedAt = now;
     }
@@ -222,7 +254,7 @@ export async function updateSiteTerms(
     const [updated] = await tx
       .update(siteSettings)
       .set({
-        version: current.version + 1,
+        termsRevision: current.termsRevision + 1,
         termsBody: body,
         termsVersion,
         termsVersionCreatedAt,

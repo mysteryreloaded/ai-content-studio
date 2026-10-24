@@ -43,6 +43,13 @@
       "when": 1792806544350,
       "tag": "0005_powerful_killmonger",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1792807758463,
+      "tag": "0006_skinny_lilith",
+      "breakpoints": true
     }
   ]
 }

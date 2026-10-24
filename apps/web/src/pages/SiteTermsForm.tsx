@@ -2,10 +2,10 @@ import { TERMS_MAX_LENGTH, renderMarkdown } from "@ai-content-studio/shared";
 import { type FormEvent, useEffect, useState } from "react";
 
 interface AdminSiteTerms {
-  version: number;
   termsBody: string;
   termsVersion: number | null;
   termsVersionCreatedAt: string | null;
+  termsRevision: number;
 }
 
 type SaveState =
@@ -46,7 +46,11 @@ export function SiteTermsForm() {
     const res = await fetch("/api/admin/site-settings/terms", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ version: settings.version, body, askAgain }),
+      body: JSON.stringify({
+        revision: settings.termsRevision,
+        body,
+        askAgain,
+      }),
     });
 
     if (res.status === 409) {
@@ -72,7 +76,7 @@ export function SiteTermsForm() {
     <form onSubmit={(event) => void handleSubmit(event)}>
       <h2>Site terms</h2>
       <p>
-        {settings.termsVersion === null
+        {settings.termsBody === ""
           ? "No terms are set: everyone can use the studio without accepting anything."
           : `Current version ${settings.termsVersion}, effective ${
               settings.termsVersionCreatedAt

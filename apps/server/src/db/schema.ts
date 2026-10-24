@@ -34,14 +34,23 @@ export const siteSettings = pgTable("site_settings", {
    * Issue #60: `termsBody` is the Markdown always shown on `/terms`, but
    * `termsVersion` only moves when it's first set or a save ticks "Ask
    * everyone to accept again" — a quiet text edit keeps everyone's
-   * acceptance. Null `termsVersion` means no terms are set, and the
-   * terms gate (`requireAccess`'s "active"/"admin" levels) is off.
+   * acceptance. `termsVersion` never moves backwards and is never
+   * reused, even across a blank (cleared) body, so a stale acceptance
+   * can never match a later, different version by numeric coincidence.
+   * A blank `termsBody` means "no terms are set" (the gate is off) —
+   * `termsVersion` itself is not the signal for that, since it's kept
+   * (not nulled) across a clear so the next save can keep counting up;
+   * see `activeTermsVersion` in `branding/site-settings-store.ts`.
+   * `termsRevision` is terms' own optimistic-concurrency token,
+   * independent of `version` (branding's), so saving one form never
+   * races the other into a spurious 409.
    */
   termsBody: text("terms_body").notNull().default(""),
   termsVersion: integer("terms_version"),
   termsVersionCreatedAt: timestamp("terms_version_created_at", {
     withTimezone: true,
   }),
+  termsRevision: integer("terms_revision").notNull().default(1),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

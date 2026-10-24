@@ -5,10 +5,23 @@ import { FakeClock } from "@ai-content-studio/shared";
 import { eq } from "drizzle-orm";
 import { createApp } from "../app.js";
 import { SESSION_COOKIE_NAME, createSession } from "../auth/session.js";
+import {
+  getSiteSettings,
+  updateSiteTerms,
+} from "../branding/site-settings-store.js";
 import { siteSettings, users } from "../db/schema.js";
 import type { Env } from "../env.js";
 import type { Logger } from "../logger.js";
 import { createTestDatabase } from "../test/database.js";
+
+const admin = {
+  type: "admin" as const,
+  userId: "00000000-0000-0000-0000-00000000000d",
+  email: "admin@example.com",
+  ip: "203.0.113.1",
+  userAgent: "test-agent",
+  requestId: "req-terms-route",
+};
 
 const silentLogger: Logger = {
   debug() {},
@@ -174,5 +187,68 @@ describe("/api/terms", () => {
       .from(users)
       .where(eq(users.id, user.id));
     expect(updatedUser?.termsAcceptedVersion).toBe(5);
+  });
+
+  test("a user who accepted v1, after it's cleared and replaced, is gated again under a new version (never the reused old one)", async () => {
+    const { app, db } = await build();
+
+    const initial = await getSiteSettings(db);
+    const firstSave = await updateSiteTerms(db, clock, admin, {
+      revision: initial.termsRevision,
+      body: "Original terms.",
+      askAgain: false,
+    });
+    expect(firstSave.ok).toBe(true);
+    if (!firstSave.ok) throw new Error("expected ok");
+    const firstVersion = firstSave.settings.termsVersion;
+    expect(firstVersion).toBe(1);
+
+    const [user] = await db
+      .insert(users)
+      .values({
+        googleSub: "sub-reuse",
+        email: "reuse@example.com",
+        name: "Reuse",
+        role: "user",
+        status: "active",
+      })
+      .returning();
+    if (!user) throw new Error("failed to insert test user");
+    const session = await createSession(db, clock, user.id);
+    const cookie = `${SESSION_COOKIE_NAME}=${session.cookieValue}`;
+
+    const acceptRes = await app.request("/api/terms/accept", {
+      method: "POST",
+      headers: { ...SAME_ORIGIN_HEADERS, Cookie: cookie },
+    });
+    expect(acceptRes.status).toBe(200);
+
+    const okRes = await app.request("/api/models", {
+      headers: { ...SAME_ORIGIN_HEADERS, Cookie: cookie },
+    });
+    expect(okRes.status).toBe(200);
+
+    const cleared = await updateSiteTerms(db, clock, admin, {
+      revision: firstSave.settings.termsRevision,
+      body: "",
+      askAgain: false,
+    });
+    expect(cleared.ok).toBe(true);
+    if (!cleared.ok) throw new Error("expected ok");
+
+    const resumed = await updateSiteTerms(db, clock, admin, {
+      revision: cleared.settings.termsRevision,
+      body: "All-new terms.",
+      askAgain: false,
+    });
+    expect(resumed.ok).toBe(true);
+    if (!resumed.ok) throw new Error("expected ok");
+    expect(resumed.settings.termsVersion).not.toBe(firstVersion);
+
+    const blockedAgainRes = await app.request("/api/models", {
+      headers: { ...SAME_ORIGIN_HEADERS, Cookie: cookie },
+    });
+    expect(blockedAgainRes.status).toBe(403);
+    expect(await blockedAgainRes.json()).toEqual({ error: "terms_required" });
   });
 });

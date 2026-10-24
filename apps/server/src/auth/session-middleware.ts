@@ -1,6 +1,7 @@
 import type { Clock } from "@ai-content-studio/shared";
 import type { MiddlewareHandler } from "hono";
 import { getCookie } from "hono/cookie";
+import { activeTermsVersion } from "../branding/site-settings-store.js";
 import type { Database } from "../db/client.js";
 import { siteSettings } from "../db/schema.js";
 import type { AppEnv } from "./app-env.js";
@@ -24,10 +25,13 @@ export function sessionMiddleware(
 
     if (session) {
       const [row] = await db
-        .select({ termsVersion: siteSettings.termsVersion })
+        .select({
+          termsBody: siteSettings.termsBody,
+          termsVersion: siteSettings.termsVersion,
+        })
         .from(siteSettings)
         .limit(1);
-      c.set("termsVersion", row?.termsVersion ?? null);
+      c.set("termsVersion", row ? activeTermsVersion(row) : null);
     } else {
       c.set("termsVersion", null);
     }

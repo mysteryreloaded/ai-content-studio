@@ -3,7 +3,10 @@ import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { type RouteEntry, guardedRoute } from "../auth/access.js";
 import type { AppEnv } from "../auth/app-env.js";
-import { getSiteSettings } from "../branding/site-settings-store.js";
+import {
+  activeTermsVersion,
+  getSiteSettings,
+} from "../branding/site-settings-store.js";
 import type { Database } from "../db/client.js";
 import { users } from "../db/schema.js";
 
@@ -18,10 +21,14 @@ export function termsRoute(
 
   guardedRoute(app, routes, basePath, "get", "/", "public", async (c) => {
     const settings = await getSiteSettings(db);
+    const version = activeTermsVersion(settings);
     return c.json({
-      version: settings.termsVersion,
+      version,
       body: settings.termsBody,
-      versionDate: settings.termsVersionCreatedAt?.toISOString() ?? null,
+      versionDate:
+        version === null
+          ? null
+          : (settings.termsVersionCreatedAt?.toISOString() ?? null),
     });
   });
 
@@ -37,7 +44,8 @@ export function termsRoute(
       if (!session) return c.json({ error: "unauthorized" }, 401);
 
       const settings = await getSiteSettings(db);
-      if (settings.termsVersion === null) {
+      const version = activeTermsVersion(settings);
+      if (version === null) {
         return c.json({ error: "no_terms" }, 400);
       }
 
@@ -45,13 +53,13 @@ export function termsRoute(
       await db
         .update(users)
         .set({
-          termsAcceptedVersion: settings.termsVersion,
+          termsAcceptedVersion: version,
           termsAcceptedAt: now,
           updatedAt: now,
         })
         .where(eq(users.id, session.user.id));
 
-      return c.json({ ok: true, version: settings.termsVersion });
+      return c.json({ ok: true, version });
     },
   );
 

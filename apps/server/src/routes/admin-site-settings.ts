@@ -123,11 +123,11 @@ export function adminSiteSettingsRoute(
       return c.json({ error: "invalid JSON body" }, 400);
     }
 
-    const versionResult = versionSchema.safeParse(
-      (body as Record<string, unknown> | null)?.version,
+    const revisionResult = versionSchema.safeParse(
+      (body as Record<string, unknown> | null)?.revision,
     );
-    if (!versionResult.success) {
-      return c.json({ error: "version is required" }, 400);
+    if (!revisionResult.success) {
+      return c.json({ error: "revision is required" }, 400);
     }
 
     const fieldsResult = siteTermsFieldsSchema.safeParse({
@@ -142,7 +142,7 @@ export function adminSiteSettingsRoute(
     }
 
     const result = await updateSiteTerms(db, clock, adminActorFrom(c), {
-      version: versionResult.data,
+      revision: revisionResult.data,
       body: fieldsResult.data.body,
       askAgain: fieldsResult.data.askAgain,
     });

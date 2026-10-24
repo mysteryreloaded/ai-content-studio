@@ -2,15 +2,7 @@
 // chunks, from create through complete (or a refusal at complete).
 
 import type { Clock } from "@ai-content-studio/shared";
-import {
-  and,
-  desc,
-  eq,
-  inArray,
-  isNull,
-  notInArray,
-  sql,
-} from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import { type AuditActor, recordAuditEntry } from "../audit/audit.js";
 import type { Database } from "../db/client.js";
 import { generations, uploads } from "../db/schema.js";

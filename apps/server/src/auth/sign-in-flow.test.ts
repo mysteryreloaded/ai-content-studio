@@ -210,8 +210,21 @@ describe("sign-in flow against the mock OIDC issuer", () => {
   // account from signing up again as a brand-new user.
   test("a blocked Google sub gets auth_error=blocked and no user row is created", async () => {
     const { testDb } = await server;
+    const [blockedUser] = await testDb.db
+      .insert(users)
+      .values({
+        googleSub: sha256Hex("mock-blocked@example.com:deleted"),
+        email: "",
+        name: "Deleted user",
+        role: "user",
+        status: "disabled",
+        deletedAt: new Date(),
+      })
+      .returning();
+    if (!blockedUser) throw new Error("failed to insert test user");
     await testDb.db.insert(blockedAccounts).values({
       subHash: sha256Hex("mock-blocked@example.com"),
+      userId: blockedUser.id,
       reason: "Abusive prompts",
     });
 

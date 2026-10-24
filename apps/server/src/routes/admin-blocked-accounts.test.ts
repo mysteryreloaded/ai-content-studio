@@ -48,8 +48,8 @@ describe("/api/admin/blocked-accounts", () => {
 
   beforeEach(async () => {
     const { db } = await testDb;
-    await db.delete(users);
     await db.delete(blockedAccounts);
+    await db.delete(users);
   });
 
   async function build() {
@@ -82,19 +82,41 @@ describe("/api/admin/blocked-accounts", () => {
     return `${SESSION_COOKIE_NAME}=${session.cookieValue}`;
   }
 
+  /** A scrubbed "Deleted user" row, the kind a blocked account's `userId` points at. */
+  async function deletedUser() {
+    const { db } = await testDb;
+    const [user] = await db
+      .insert(users)
+      .values({
+        googleSub: crypto.randomUUID(),
+        email: "",
+        name: "Deleted user",
+        role: "user",
+        status: "disabled",
+        deletedAt: clock.now(),
+      })
+      .returning();
+    if (!user) throw new Error("failed to insert deleted user");
+    return user;
+  }
+
   test("lists blocked accounts newest first", async () => {
     const { app, db } = await build();
     const cookie = await adminCookie();
+    const first = await deletedUser();
+    const second = await deletedUser();
 
     clock.advance(1000);
     await db.insert(blockedAccounts).values({
       subHash: "hash-1",
+      userId: first.id,
       reason: "First",
       createdAt: clock.now(),
     });
     clock.advance(1000);
     await db.insert(blockedAccounts).values({
       subHash: "hash-2",
+      userId: second.id,
       reason: "Second",
       createdAt: clock.now(),
     });
@@ -115,10 +137,11 @@ describe("/api/admin/blocked-accounts", () => {
   test("DELETE clears an entry and records an Audit entry", async () => {
     const { app, db } = await build();
     const cookie = await adminCookie();
+    const user = await deletedUser();
 
     const [row] = await db
       .insert(blockedAccounts)
-      .values({ subHash: "hash-1", reason: "Spam" })
+      .values({ subHash: "hash-1", userId: user.id, reason: "Spam" })
       .returning();
     if (!row) throw new Error("failed to insert blocked account");
 

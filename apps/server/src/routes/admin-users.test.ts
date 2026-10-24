@@ -58,8 +58,8 @@ describe("/api/admin/users", () => {
   // Audit assertions from seeing another test's rows.
   beforeEach(async () => {
     const { db } = await testDb;
-    await db.delete(users);
     await db.delete(blockedAccounts);
+    await db.delete(users);
   });
 
   async function build(env: Env = TEST_ENV) {

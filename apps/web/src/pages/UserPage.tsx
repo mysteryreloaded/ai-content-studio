@@ -18,6 +18,7 @@ interface AdminUser {
   concurrentCapOverride: number | null;
   disabledReason: string | null;
   disabledAt: string | null;
+  deletedAt: string | null;
   createdAt: string;
 }
 
@@ -164,7 +165,10 @@ export function UserPage() {
   if (!user) return <p>Loading…</p>;
 
   const isSelf = session.status === "signed-in" && session.user.id === user.id;
-  const canAct = !user.pinned && !isSelf;
+  // Issue #64: a "Deleted user" row (deletedAt set) offers no action —
+  // the server refuses all of them 404, the same as a pinned or
+  // self-targeted row.
+  const canAct = !user.pinned && !isSelf && !user.deletedAt;
 
   return (
     <section>
@@ -184,13 +188,19 @@ export function UserPage() {
         </dd>
         <dt>Status</dt>
         <dd>{user.status}</dd>
-        {user.status === "disabled" && (
+        {user.status === "disabled" && !user.deletedAt && (
           <>
             <dt>Disabled</dt>
             <dd>
               {user.disabledAt && new Date(user.disabledAt).toLocaleString()}
               {user.disabledReason ? ` — ${user.disabledReason}` : ""}
             </dd>
+          </>
+        )}
+        {user.deletedAt && (
+          <>
+            <dt>Deleted</dt>
+            <dd>{new Date(user.deletedAt).toLocaleString()}</dd>
           </>
         )}
         <dt>Joined</dt>
@@ -274,37 +284,41 @@ export function UserPage() {
           </button>
         </form>
       )}
-      <form onSubmit={(event) => void saveCaps(event)}>
-        <h3>Cap overrides</h3>
-        <p>
-          Blank uses the Site default; 0 blocks this user from generating. Whole
-          numbers between {USER_CAP_OVERRIDE_MIN} and{" "}
-          {USER_CAP_OVERRIDE_MAX.toLocaleString()}.
-        </p>
-        <label htmlFor="daily-cap-override">Daily cap override</label>
-        <input
-          id="daily-cap-override"
-          type="number"
-          min={USER_CAP_OVERRIDE_MIN}
-          max={USER_CAP_OVERRIDE_MAX}
-          value={dailyCap}
-          onChange={(event) => setDailyCap(event.target.value)}
-        />
-        <label htmlFor="concurrent-cap-override">Concurrent cap override</label>
-        <input
-          id="concurrent-cap-override"
-          type="number"
-          min={USER_CAP_OVERRIDE_MIN}
-          max={USER_CAP_OVERRIDE_MAX}
-          value={concurrentCap}
-          onChange={(event) => setConcurrentCap(event.target.value)}
-        />
-        <button type="submit" disabled={capsSaving}>
-          Save
-        </button>
-        {capsError && <p role="alert">{capsError}</p>}
-        {capsSaved && <p>Saved.</p>}
-      </form>
+      {!user.deletedAt && (
+        <form onSubmit={(event) => void saveCaps(event)}>
+          <h3>Cap overrides</h3>
+          <p>
+            Blank uses the Site default; 0 blocks this user from generating.
+            Whole numbers between {USER_CAP_OVERRIDE_MIN} and{" "}
+            {USER_CAP_OVERRIDE_MAX.toLocaleString()}.
+          </p>
+          <label htmlFor="daily-cap-override">Daily cap override</label>
+          <input
+            id="daily-cap-override"
+            type="number"
+            min={USER_CAP_OVERRIDE_MIN}
+            max={USER_CAP_OVERRIDE_MAX}
+            value={dailyCap}
+            onChange={(event) => setDailyCap(event.target.value)}
+          />
+          <label htmlFor="concurrent-cap-override">
+            Concurrent cap override
+          </label>
+          <input
+            id="concurrent-cap-override"
+            type="number"
+            min={USER_CAP_OVERRIDE_MIN}
+            max={USER_CAP_OVERRIDE_MAX}
+            value={concurrentCap}
+            onChange={(event) => setConcurrentCap(event.target.value)}
+          />
+          <button type="submit" disabled={capsSaving}>
+            Save
+          </button>
+          {capsError && <p role="alert">{capsError}</p>}
+          {capsSaved && <p>Saved.</p>}
+        </form>
+      )}
     </section>
   );
 }

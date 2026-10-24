@@ -32,6 +32,8 @@ export function adminBlockedAccountsRoute(
     const rows = await db
       .select({
         id: blockedAccounts.id,
+        userId: blockedAccounts.userId,
+        disabledAt: blockedAccounts.disabledAt,
         reason: blockedAccounts.reason,
         createdAt: blockedAccounts.createdAt,
       })

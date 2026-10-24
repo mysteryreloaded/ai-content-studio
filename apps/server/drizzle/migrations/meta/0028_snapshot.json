@@ -1,5 +1,5 @@
 {
-  "id": "e8e4ae4e-7468-4456-8019-628ac9ce3c45",
+  "id": "9424036b-5ec0-419e-999f-381fd5b26dae",
   "prevId": "a58b5152-f1ad-469f-83ec-17e4932d1e07",
   "version": "7",
   "dialect": "postgresql",
@@ -379,6 +379,18 @@
           "primaryKey": false,
           "notNull": true
         },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "disabled_at": {
+          "name": "disabled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "reason": {
           "name": "reason",
           "type": "text",
@@ -394,7 +406,17 @@
         }
       },
       "indexes": {},
-      "foreignKeys": {},
+      "foreignKeys": {
+        "blocked_accounts_user_id_users_id_fk": {
+          "name": "blocked_accounts_user_id_users_id_fk",
+          "tableFrom": "blocked_accounts",
+          "tableTo": "users",
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "blocked_accounts_sub_hash_unique": {
@@ -1893,6 +1915,12 @@
         },
         "disabled_at": {
           "name": "disabled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "deleted_at": {
+          "name": "deleted_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false

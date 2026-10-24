@@ -124,6 +124,7 @@ export function scrubbedUserFields(
     concurrentCapOverride: null,
     disabledReason: null,
     disabledAt: null,
+    deletedAt: now,
     updatedAt: now,
   };
 }
@@ -140,7 +141,8 @@ export async function deleteOwnAccount(
   typedEmail: string,
 ): Promise<AccountDeletionResult> {
   const [user] = await deps.db.select().from(users).where(eq(users.id, userId));
-  if (!user) return { ok: false, reason: "forbidden" };
+  if (!user || user.deletedAt !== null)
+    return { ok: false, reason: "forbidden" };
   // Checked before the Admin refusal below, so a wrong email always
   // reads the same way regardless of role.
   if (user.email.toLowerCase() !== typedEmail.trim().toLowerCase()) {

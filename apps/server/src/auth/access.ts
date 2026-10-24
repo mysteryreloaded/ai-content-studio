@@ -9,13 +9,18 @@ import type { AppEnv } from "./app-env.js";
  * `active`, not `pending` (issue #62, ADR 0008) — terms always gate
  * first, so a pending user who hasn't accepted yet sees `terms_required`,
  * not `pending`. A route that must stay usable before either gate —
- * reading/accepting the terms, the current user, sign-out, account
- * delete, `/privacy`, `/terms` and the public landing data — is
- * `signed-in` or `public` instead, which skips both checks.
+ * reading/accepting the terms, the current user, account delete,
+ * `/privacy`, `/terms` and the public landing data — is `signed-in`
+ * instead, which skips both checks but still refuses a disabled user
+ * (issue #64: a session that somehow outlives the disable must not be
+ * able to self-delete and dodge the block, nor read `/me`). Sign-out
+ * alone is `signed-in-or-disabled`: the one signed-in action a disabled
+ * user keeps, so a lingering session can still be cleared.
  */
 export type AccessLevel =
   | "public"
   | "signed-in"
+  | "signed-in-or-disabled"
   | "active"
   | "admin"
   | "status-token"
@@ -105,7 +110,19 @@ export function requireAccess(access: AccessLevel): Handler<AppEnv> {
       return c.json({ error: "unauthorized" }, 401);
     }
 
-    if (access === "signed-in") return next();
+    if (access === "signed-in-or-disabled") return next();
+
+    if (access === "signed-in") {
+      // Issue #64: in practice a disabled user's sessions are deleted
+      // the moment they're disabled, so this never fires for a real
+      // request — it's the matrix row's own guarantee, not just the
+      // pending one's, in case a session outlives the disable somehow
+      // (a self-delete must not be a way to dodge the block).
+      if (session.user.status === "disabled") {
+        return c.json({ error: "disabled" }, 403);
+      }
+      return next();
+    }
 
     if (access === "active") {
       if (termsRequired(c)) return c.json({ error: "terms_required" }, 403);

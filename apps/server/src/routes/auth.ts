@@ -169,7 +169,7 @@ export function authRoute(
     basePath,
     "post",
     "/signout",
-    "signed-in",
+    "signed-in-or-disabled",
     async (c) => {
       const session = c.get("session");
       if (!session) return c.json({ error: "unauthorized" }, 401);

@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 
 interface BlockedAccount {
   id: string;
+  userId: string;
+  disabledAt: string | null;
   reason: string | null;
   createdAt: string;
 }
@@ -54,14 +57,24 @@ export function BlockedAccountsPage() {
       <table>
         <thead>
           <tr>
-            <th>Blocked</th>
-            <th>Reason</th>
+            <th>User</th>
+            <th>Disabled</th>
+            <th>Deleted</th>
+            <th>Reason (no name or email — that's gone with the account)</th>
             <th />
           </tr>
         </thead>
         <tbody>
           {rows.map((row) => (
             <tr key={row.id}>
+              <td>
+                <Link to={`/admin/users/${row.userId}`}>{row.userId}</Link>
+              </td>
+              <td>
+                {row.disabledAt
+                  ? new Date(row.disabledAt).toLocaleString()
+                  : "—"}
+              </td>
               <td>{new Date(row.createdAt).toLocaleString()}</td>
               <td>{row.reason || "—"}</td>
               <td>
@@ -73,7 +86,7 @@ export function BlockedAccountsPage() {
           ))}
           {rows.length === 0 && (
             <tr>
-              <td colSpan={3}>No blocked accounts.</td>
+              <td colSpan={5}>No blocked accounts.</td>
             </tr>
           )}
         </tbody>

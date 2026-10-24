@@ -138,10 +138,13 @@ export function isPinned(
 }
 
 /**
- * ADR 0008: a target that's pinned, or is the acting Admin themselves,
- * is refused 404 like a missing row, not 403 — so the row's existence
- * isn't leaked past what the Users page already shows, and the admin
- * panel can hide the same actions it would otherwise be refused.
+ * ADR 0008: a target that's pinned, is the acting Admin themselves, or
+ * is already deleted (issue #64: a scrubbed "Deleted user" row, kept
+ * only so an Audit entry or Generation that names its id still
+ * resolves) is refused 404 like a missing row, not 403 — so the row's
+ * existence isn't leaked past what the Users page already shows, and
+ * the admin panel can hide the same actions it would otherwise be
+ * refused.
  */
 async function applyUserAction(
   db: Database,
@@ -157,7 +160,11 @@ async function applyUserAction(
   return db.transaction(async (tx) => {
     const [user] = await tx.select().from(users).where(eq(users.id, targetId));
     if (!user) return { ok: false, reason: "not_found" };
-    if (targetId === actingUserId || isPinned(user.email, adminEmails)) {
+    if (
+      targetId === actingUserId ||
+      isPinned(user.email, adminEmails) ||
+      user.deletedAt !== null
+    ) {
       return { ok: false, reason: "not_found" };
     }
     if (!precondition(user)) return { ok: false, reason: "invalid_state" };

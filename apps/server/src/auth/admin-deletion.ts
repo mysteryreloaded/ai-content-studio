@@ -44,7 +44,11 @@ export async function adminDeleteUser(
     .from(users)
     .where(eq(users.id, targetId));
   if (!user) return { ok: false, reason: "not_found" };
-  if (targetId === actingUserId || isPinned(user.email, adminEmails)) {
+  if (
+    targetId === actingUserId ||
+    isPinned(user.email, adminEmails) ||
+    user.deletedAt !== null
+  ) {
     return { ok: false, reason: "not_found" };
   }
 
@@ -63,6 +67,8 @@ export async function adminDeleteUser(
         .insert(blockedAccounts)
         .values({
           subHash: sha256Hex(user.googleSub),
+          userId: targetId,
+          disabledAt: user.disabledAt,
           reason: reason ?? user.disabledReason,
           createdAt: now,
         })

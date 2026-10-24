@@ -57,6 +57,7 @@ function userJson(
     concurrentCapOverride: user.concurrentCapOverride,
     disabledReason: user.disabledReason,
     disabledAt: user.disabledAt,
+    deletedAt: user.deletedAt,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
   };
@@ -267,7 +268,11 @@ export function adminUsersRoute(
 
       const result = await db.transaction(async (tx) => {
         const [user] = await tx.select().from(users).where(eq(users.id, id));
-        if (!user) return { ok: false as const, reason: "not_found" as const };
+        // Issue #64: a deleted ("Deleted user") row is refused 404 like
+        // a missing row, the same as every other action here.
+        if (!user || user.deletedAt !== null) {
+          return { ok: false as const, reason: "not_found" as const };
+        }
 
         const [updated] = await tx
           .update(users)

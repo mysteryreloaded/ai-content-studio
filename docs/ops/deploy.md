@@ -11,7 +11,7 @@ Backend, see [backend-kit.md](backend-kit.md); that's a separate host.
 2. Copy `docker-compose.yml` and `.env.example` to that host, in the same
    directory.
 3. Copy `.env.example` to `.env` and fill it in: `STUDIO_VERSION` (a
-   released tag, from the
+   released version, from the
    [package's GHCR page](https://github.com/mysteryreloaded/ai-content-studio/pkgs/container/ai-content-studio) —
    never `latest`), `DOMAIN`, `PUBLIC_URL`, the Google OAuth credentials,
    `ADMIN_EMAILS`, and a `SECRET_KEY` from `openssl rand -base64 32`. See
@@ -25,8 +25,11 @@ Backend, see [backend-kit.md](backend-kit.md); that's a separate host.
 5. Point `DOMAIN`'s DNS `A`/`AAAA` record at the host, if you haven't
    already — Caddy needs it resolvable to issue the certificate.
 
-The image is multi-arch (`linux/amd64`, `linux/arm64`), built and pushed
-to `ghcr.io/mysteryreloaded/ai-content-studio` by CI.
+The image is multi-arch (`linux/amd64`, `linux/arm64`). Pushing a
+`vX.Y.Z` tag runs `.github/workflows/release.yml`, which builds and
+pushes `ghcr.io/mysteryreloaded/ai-content-studio:X.Y.Z` (and `:latest`,
+for browsing the package page only — pin `STUDIO_VERSION` to the numbered
+tag, never to `latest`).
 
 ## Upgrading
 

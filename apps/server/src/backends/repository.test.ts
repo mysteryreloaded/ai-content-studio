@@ -174,6 +174,54 @@ describe("BackendRepository", () => {
     expect(creds).toEqual({ user: "u", pass: "p" });
   });
 
+  test("update supplying only a new username keeps the stored password", async () => {
+    const repository = await repo();
+    const record = await repository.create(
+      {
+        name: "GPU 1",
+        baseUrl: "http://a",
+        auth: "basic",
+        basicUser: "u",
+        basicPass: "p",
+      },
+      SYSTEM,
+    );
+    await repository.update(
+      record.id,
+      { name: "GPU 1", baseUrl: "http://a", auth: "basic", basicUser: "u2" },
+      record.version,
+      SYSTEM,
+    );
+    expect(await repository.decryptedCredentials(record.id)).toEqual({
+      user: "u2",
+      pass: "p",
+    });
+  });
+
+  test("update supplying only a new password keeps the stored username", async () => {
+    const repository = await repo();
+    const record = await repository.create(
+      {
+        name: "GPU 1",
+        baseUrl: "http://a",
+        auth: "basic",
+        basicUser: "u",
+        basicPass: "p",
+      },
+      SYSTEM,
+    );
+    await repository.update(
+      record.id,
+      { name: "GPU 1", baseUrl: "http://a", auth: "basic", basicPass: "p2" },
+      record.version,
+      SYSTEM,
+    );
+    expect(await repository.decryptedCredentials(record.id)).toEqual({
+      user: "u",
+      pass: "p2",
+    });
+  });
+
   test("update with new credentials marks the audit entry 'changed'", async () => {
     const { db } = await testDb;
     const repository = await repo();

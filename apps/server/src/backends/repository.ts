@@ -69,6 +69,43 @@ function credentialsPlaintext(input: BackendInput): string | null {
   return null;
 }
 
+function decryptStoredCredentials(
+  before: Row,
+  secretKey: string,
+  id: string,
+): { user?: string; pass?: string; value?: string } | null {
+  if (!before.encryptedCredentials) return null;
+  return JSON.parse(
+    decryptCredentials(before.encryptedCredentials, secretKey, id),
+  );
+}
+
+/**
+ * Like {@link credentialsPlaintext}, but for an update to the *same* auth
+ * kind a basic-auth edit supplying only a username (or only a password)
+ * merges the other field in from the stored credential instead of
+ * wiping it — a save is never allowed to produce a half credential.
+ */
+function credentialsPlaintextForUpdate(
+  input: BackendInput,
+  before: Row,
+  secretKey: string,
+  id: string,
+): string | null {
+  if (input.auth === "basic") {
+    let user = input.basicUser;
+    let pass = input.basicPass;
+    if ((!user || !pass) && before.authKind === "basic") {
+      const existing = decryptStoredCredentials(before, secretKey, id);
+      user ||= existing?.user;
+      pass ||= existing?.pass;
+    }
+    if (!user && !pass) return null;
+    return JSON.stringify({ user, pass });
+  }
+  return credentialsPlaintext(input);
+}
+
 /** Whether the input actually supplies new credentials, vs. leaving them blank to keep the existing ones. */
 function suppliesCredentials(input: BackendInput): boolean {
   if (input.auth === "basic")
@@ -210,7 +247,12 @@ export class BackendRepository {
               : null;
           credentialState = plaintext !== null ? "set" : "cleared";
         } else if (credentialsSupplied) {
-          const plaintext = credentialsPlaintext(input);
+          const plaintext = credentialsPlaintextForUpdate(
+            input,
+            before,
+            this.secretKey,
+            id,
+          );
           encrypted =
             plaintext !== null
               ? encryptCredentials(plaintext, this.secretKey, id)

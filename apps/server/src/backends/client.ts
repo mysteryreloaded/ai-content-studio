@@ -6,6 +6,13 @@ import { CredentialsNeedReentry } from "./monitor.js";
 import type { BackendTarget, SystemStats } from "./monitor.js";
 import type { BackendRecord, BackendRepository } from "./repository.js";
 
+const FETCH_TIMEOUT_MS = 10_000;
+
+/** Joins `baseUrl`'s own path (if any) with `/system_stats`, instead of `new URL` discarding it. */
+export function systemStatsUrl(baseUrl: string): string {
+  return `${baseUrl.replace(/\/+$/, "")}/system_stats`;
+}
+
 function authHeaders(
   auth: BackendRecord["auth"],
   headerName: string | null,
@@ -24,7 +31,8 @@ function authHeaders(
 
 export function backendTarget(
   backend: BackendRecord,
-  repository: BackendRepository,
+  repository: Pick<BackendRepository, "decryptedCredentials">,
+  timeoutMs: number = FETCH_TIMEOUT_MS,
 ): BackendTarget {
   return {
     id: backend.id,
@@ -39,9 +47,9 @@ export function backendTarget(
         throw err;
       }
 
-      const url = new URL("/system_stats", backend.baseUrl);
-      const res = await fetch(url, {
+      const res = await fetch(systemStatsUrl(backend.baseUrl), {
         headers: authHeaders(backend.auth, backend.headerName, creds),
+        signal: AbortSignal.timeout(timeoutMs),
       });
       if (!res.ok) throw new Error(`/system_stats returned ${res.status}`);
 

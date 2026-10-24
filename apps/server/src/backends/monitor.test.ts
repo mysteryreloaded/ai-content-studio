@@ -171,6 +171,77 @@ describe("BackendMonitor", () => {
     expect(error?.message).toContain("re-enter credentials");
   });
 
+  test("logs the re-enter-credentials error once, not on every poll", async () => {
+    const clock = new FakeClock();
+    const { logger, entries } = fakeLogger();
+    const monitor = new BackendMonitor(clock, logger);
+    const target: BackendTarget = {
+      id: "b3",
+      name: "T",
+      baseUrl: "http://x",
+      async fetchSystemStats() {
+        throw new CredentialsNeedReentry();
+      },
+    };
+    monitor.watch(target);
+
+    await monitor.poll(target);
+    await monitor.poll(target);
+    await monitor.poll(target);
+
+    expect(entries.filter((e) => e.level === "error")).toHaveLength(1);
+  });
+
+  test("a stale poll from before an unwatch+watch (an edit) doesn't corrupt the new watch", async () => {
+    const clock = new FakeClock();
+    const { logger } = fakeLogger();
+    const monitor = new BackendMonitor(clock, logger);
+
+    let resolveOldFetch: (stats: SystemStats) => void = () => {};
+    const oldTarget: BackendTarget = {
+      id: "b5",
+      name: "Old",
+      baseUrl: "http://old",
+      fetchSystemStats: () =>
+        new Promise((resolve) => {
+          resolveOldFetch = resolve;
+        }),
+    };
+    monitor.watch(oldTarget);
+
+    // Triggers the monitor's own scheduled poll, which starts the fetch
+    // above and leaves it pending - standing in for a slow Backend whose
+    // request is still in flight when it gets edited below.
+    clock.advance(30_000);
+
+    let newCalls = 0;
+    const newTarget: BackendTarget = {
+      id: "b5",
+      name: "New",
+      baseUrl: "http://new",
+      async fetchSystemStats() {
+        newCalls++;
+        return STATS;
+      },
+    };
+    monitor.unwatch("b5");
+    monitor.watch(newTarget);
+
+    // The stale request now resolves, after the edit replaced the watch.
+    resolveOldFetch({ comfyuiVersion: "stale", vramTotal: 1, vramFree: 1 });
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    // The stale result must not have overwritten the fresh watch's health.
+    expect(monitor.healthFor("b5").comfyuiVersion).not.toBe("stale");
+    expect(monitor.healthFor("b5").reachability).toBe("unknown");
+
+    // Only the new watch's own loop should still be running.
+    clock.advance(30_000);
+    await flushMicrotasks();
+    expect(newCalls).toBe(1);
+  });
+
   test("unwatch stops further polling", async () => {
     const clock = new FakeClock();
     const { logger } = fakeLogger();

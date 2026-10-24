@@ -54,6 +54,13 @@ export class BackendMonitor {
   private readonly consecutiveSuccesses = new Map<string, number>();
   private readonly unreachableSince = new Map<string, Date>();
   private readonly timers = new Map<string, Timer>();
+  /**
+   * One token per active watch. A poll started before an unwatch+watch
+   * (e.g. an edit) completes after the new watch has already replaced it;
+   * comparing against the current token drops that stale result instead
+   * of letting it reschedule a second, unclearable loop.
+   */
+  private readonly watchTokens = new Map<string, symbol>();
 
   constructor(
     private readonly clock: Clock,
@@ -65,11 +72,17 @@ export class BackendMonitor {
   }
 
   watch(target: BackendTarget): void {
+    const token = Symbol(target.id);
+    this.watchTokens.set(target.id, token);
     this.health.set(target.id, { ...BLANK_HEALTH });
-    this.scheduleNextPoll(target);
+    this.consecutiveFailures.delete(target.id);
+    this.consecutiveSuccesses.delete(target.id);
+    this.unreachableSince.delete(target.id);
+    this.scheduleNextPoll(target, token);
   }
 
   unwatch(backendId: string): void {
+    this.watchTokens.delete(backendId);
     const timer = this.timers.get(backendId);
     if (timer !== undefined) this.clock.clearTimeout(timer);
     this.timers.delete(backendId);
@@ -80,24 +93,43 @@ export class BackendMonitor {
   }
 
   stopAll(): void {
+    this.watchTokens.clear();
     for (const timer of this.timers.values()) this.clock.clearTimeout(timer);
     this.timers.clear();
   }
 
-  private scheduleNextPoll(target: BackendTarget): void {
+  private scheduleNextPoll(target: BackendTarget, token: symbol): void {
     const timer = this.clock.setTimeout(() => {
-      void this.poll(target).finally(() => {
-        if (this.timers.has(target.id)) this.scheduleNextPoll(target);
-      });
+      void this.pollTracked(target, token);
     }, POLL_INTERVAL_MS);
     this.timers.set(target.id, timer);
   }
 
-  async poll(target: BackendTarget): Promise<void> {
+  private async pollTracked(
+    target: BackendTarget,
+    token: symbol,
+  ): Promise<void> {
+    await this.poll(target, token);
+    if (this.watchTokens.get(target.id) === token) {
+      this.scheduleNextPoll(target, token);
+    }
+  }
+
+  /**
+   * Runs one poll. `token`, when given, must still be this Backend's
+   * current watch token for the result to be applied — a stale result
+   * from a watch that's since been replaced is silently dropped. Tests
+   * call this without a token to apply a manual poll unconditionally.
+   */
+  async poll(target: BackendTarget, token?: symbol): Promise<void> {
     try {
       const stats = await target.fetchSystemStats();
+      if (token !== undefined && this.watchTokens.get(target.id) !== token)
+        return;
       await this.recordSuccess(target, stats);
     } catch (err) {
+      if (token !== undefined && this.watchTokens.get(target.id) !== token)
+        return;
       await this.recordFailure(target, err);
     }
   }
@@ -160,7 +192,7 @@ export class BackendMonitor {
       credentialsError: credentialsError || current.credentialsError,
     });
 
-    if (credentialsError) {
+    if (credentialsError && !current.credentialsError) {
       await this.logger.log({
         level: "error",
         message: `Backend "${target.name}": re-enter credentials`,

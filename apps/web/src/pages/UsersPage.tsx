@@ -41,19 +41,30 @@ export function UsersPage() {
   const { session } = useSession();
   const [draft, setDraft] = useState<FilterState>(BLANK_FILTERS);
   const [applied, setApplied] = useState<FilterState>(BLANK_FILTERS);
-  const [data, setData] = useState<UsersResponse | null>(null);
+  const [users, setUsers] = useState<AdminUser[] | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
+  function fetchPage(cursor?: { createdAt: string; id: string }) {
+    const params = new URLSearchParams(queryStringFrom(applied));
+    if (cursor) {
+      params.set("beforeCreatedAt", cursor.createdAt);
+      params.set("beforeId", cursor.id);
+    }
+    const qs = params.toString();
+    return fetch(`/api/admin/users${qs ? `?${qs}` : ""}`).then((res) => {
+      if (!res.ok) throw new Error(`unexpected status ${res.status}`);
+      return res.json() as Promise<UsersResponse>;
+    });
+  }
+
   function load() {
-    const qs = queryStringFrom(applied);
-    fetch(`/api/admin/users${qs ? `?${qs}` : ""}`)
-      .then((res) => {
-        if (!res.ok) throw new Error(`unexpected status ${res.status}`);
-        return res.json() as Promise<UsersResponse>;
-      })
+    fetchPage()
       .then((body) => {
-        setData(body);
+        setUsers(body.users);
+        setHasMore(body.hasMore);
         setLoadError(null);
       })
       .catch(() => setLoadError("could not load users"));
@@ -61,6 +72,19 @@ export function UsersPage() {
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: load is re-created each render, applied is the actual dependency
   useEffect(load, [applied]);
+
+  function loadMore() {
+    const last = users?.[users.length - 1];
+    if (!last) return;
+    setLoadingMore(true);
+    fetchPage({ createdAt: last.createdAt, id: last.id })
+      .then((body) => {
+        setUsers((current) => [...(current ?? []), ...body.users]);
+        setHasMore(body.hasMore);
+      })
+      .catch(() => setLoadError("could not load older users"))
+      .finally(() => setLoadingMore(false));
+  }
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -134,9 +158,9 @@ export function UsersPage() {
 
       {loadError && <p role="alert">{loadError}</p>}
       {actionError && <p role="alert">{actionError}</p>}
-      {!data && !loadError && <p>Loading…</p>}
+      {!users && !loadError && <p>Loading…</p>}
 
-      {data && (
+      {users && (
         <table>
           <thead>
             <tr>
@@ -148,7 +172,7 @@ export function UsersPage() {
             </tr>
           </thead>
           <tbody>
-            {data.users.map((user) => {
+            {users.map((user) => {
               const isSelf = user.id === selfId;
               const canAct = !user.pinned && !isSelf;
               return (
@@ -199,13 +223,19 @@ export function UsersPage() {
                 </tr>
               );
             })}
-            {data.users.length === 0 && (
+            {users.length === 0 && (
               <tr>
                 <td colSpan={5}>No users match these filters.</td>
               </tr>
             )}
           </tbody>
         </table>
+      )}
+
+      {hasMore && (
+        <button type="button" onClick={loadMore} disabled={loadingMore}>
+          Load older
+        </button>
       )}
     </section>
   );

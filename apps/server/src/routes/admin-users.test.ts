@@ -141,6 +141,38 @@ describe("/api/admin/users", () => {
     expect(searchBody.users.map((u) => u.id)).toEqual([pending.id]);
   });
 
+  test("paginates with a keyset cursor and reports hasMore", async () => {
+    const { app } = await build();
+    const admin = await makeUser({ email: "admin@example.com", role: "admin" });
+    const first = await makeUser({ email: "first@example.com" });
+    const second = await makeUser({ email: "second@example.com" });
+    const third = await makeUser({ email: "third@example.com" });
+    const cookie = await cookieFor(admin.id);
+
+    const firstPage = await app.request("/api/admin/users?limit=2", {
+      headers: { ...SAME_ORIGIN_HEADERS, Cookie: cookie },
+    });
+    const firstBody = (await firstPage.json()) as {
+      users: { id: string; createdAt: string }[];
+      hasMore: boolean;
+    };
+    expect(firstBody.users.map((u) => u.id)).toEqual([third.id, second.id]);
+    expect(firstBody.hasMore).toBe(true);
+
+    const last = firstBody.users[1];
+    if (!last) throw new Error("expected a second user");
+    const secondPage = await app.request(
+      `/api/admin/users?limit=2&beforeCreatedAt=${encodeURIComponent(last.createdAt)}&beforeId=${last.id}`,
+      { headers: { ...SAME_ORIGIN_HEADERS, Cookie: cookie } },
+    );
+    const secondBody = (await secondPage.json()) as {
+      users: { id: string }[];
+      hasMore: boolean;
+    };
+    expect(secondBody.users.map((u) => u.id)).toEqual([first.id, admin.id]);
+    expect(secondBody.hasMore).toBe(false);
+  });
+
   test("pending-count counts only pending users", async () => {
     const { app } = await build();
     const admin = await makeUser({ email: "admin@example.com", role: "admin" });

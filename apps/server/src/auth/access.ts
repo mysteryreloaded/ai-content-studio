@@ -148,7 +148,7 @@ export function requireAccess(access: AccessLevel): Handler<AppEnv> {
  * The issue #60 terms gate: true when the Site terms are set and this
  * session's user hasn't accepted the current version. `termsVersion` is
  * set by `sessionMiddleware`. Checked before status (issue #62, ADR
- * 0007), so a pending user who hasn't accepted yet is asked for terms
+ * 0008), so a pending user who hasn't accepted yet is asked for terms
  * first, not told they're pending.
  */
 function termsRequired(c: Context<AppEnv>): boolean {

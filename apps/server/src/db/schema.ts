@@ -100,8 +100,10 @@ export const userStatus = pgEnum("user_status", [
 
 /**
  * A person who has signed in with Google, keyed on the Google `sub`.
- * `pinned` is set for every email in `ADMIN_EMAILS`: the admin panel must
- * never demote, disable or delete a pinned user.
+ * `pinned` is not authoritative and no guard or route reads it (ADR 0008):
+ * whether a user is pinned is always `isPinned(email, adminEmails)`,
+ * computed live against the current `ADMIN_EMAILS`, so removing an email
+ * unpins immediately without a write here.
  */
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),

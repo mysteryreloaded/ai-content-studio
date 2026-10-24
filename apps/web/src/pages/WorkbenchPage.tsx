@@ -19,6 +19,7 @@ type WorkbenchInput = {
   group: "describe" | "settings";
   label: string;
   help: string;
+  required: boolean;
   placeholder: string | number | boolean | null;
 } & (
   | {
@@ -94,6 +95,44 @@ function initialValuesFor(mode: WorkbenchMode): Record<string, string> {
   return values;
 }
 
+/** Whether `raw` parses for `input`'s own kind and constraints (mirrors `buildInputValuesSchema`'s per-field checks), blank always passing. */
+function valueParsesForInput(input: WorkbenchInput, raw: string): boolean {
+  if (raw === "") return true;
+  if (input.kind === "text") return raw.length <= input.maxLength;
+  if (input.kind === "number") {
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return false;
+    if (n < input.min || n > input.max) return false;
+    if (input.numberMode === "integer" && !Number.isInteger(n)) return false;
+    const steps = (n - input.min) / input.step;
+    return Math.abs(steps - Math.round(steps)) < 1e-9;
+  }
+  return input.options.some((option) => option.id === raw);
+}
+
+/**
+ * Carries `basis`'s values onto `mode`'s own Inputs (issue #48 AC6):
+ * an Input `mode` also shows keeps its value, the rest default. With
+ * `validate` (the 409 `model_changed` reload, where the Model's Inputs
+ * may have changed underneath the form), a carried value that no
+ * longer parses for that Input is dropped rather than kept to fail on
+ * the next submit.
+ */
+function carryValuesFor(
+  mode: WorkbenchMode,
+  basis: Record<string, string>,
+  validate = false,
+): Record<string, string> {
+  const next = initialValuesFor(mode);
+  for (const input of mode.inputs) {
+    const raw = basis[input.id];
+    if (raw === undefined) continue;
+    if (validate && !valueParsesForInput(input, raw)) continue;
+    next[input.id] = raw;
+  }
+  return next;
+}
+
 /** The submitted payload for `mode`'s Inputs: blank values are left out, a number is parsed. */
 function valuesPayload(
   mode: WorkbenchMode,
@@ -149,6 +188,13 @@ function toInputDefinition(input: WorkbenchInput): InputDefinition {
   };
 }
 
+/** `mode.inputs` ids marked `required` on the server (issue #48), for the client's own `parseInputValues` schema. */
+function requiredIdsFor(mode: WorkbenchMode): Set<string> {
+  return new Set(
+    mode.inputs.filter((input) => input.required).map((input) => input.id),
+  );
+}
+
 /** Live, client-side validation (issue #46): the same `parseInputValues` schema the server uses, so field issues show before submit. */
 function liveIssuesFor(
   revision: number,
@@ -159,6 +205,7 @@ function liveIssuesFor(
     String(revision),
     mode.id,
     mode.inputs.map(toInputDefinition),
+    requiredIdsFor(mode),
   );
   const result = schema.safeParse(valuesPayload(mode, values));
   if (result.success) return {};
@@ -525,7 +572,7 @@ export function WorkbenchPage() {
 
   const selectMode = useCallback((mode: WorkbenchMode) => {
     setSelectedModeId(mode.id);
-    setValues(initialValuesFor(mode));
+    setValues((current) => carryValuesFor(mode, current));
     setIssuesByInputId({});
   }, []);
 
@@ -682,7 +729,10 @@ export function WorkbenchPage() {
           const stillSelected = body.model.modes.find(
             (m) => m.id === selectedModeId,
           );
-          selectMode(stillSelected ?? body.model.modes[0] ?? mode);
+          const nextMode = stillSelected ?? body.model.modes[0] ?? mode;
+          setSelectedModeId(nextMode.id);
+          setValues((current) => carryValuesFor(nextMode, current, true));
+          setIssuesByInputId({});
           setSubmitState({
             status: "error",
             message:
@@ -743,7 +793,7 @@ export function WorkbenchPage() {
     } catch {
       setSubmitState({ status: "error", message: "could not submit" });
     }
-  }, [selectedModeId, values, selectMode]);
+  }, [selectedModeId, values]);
 
   if (session.status === "loading") return null;
   if (session.status === "signed-out") return <Navigate to="/" replace />;
@@ -994,7 +1044,10 @@ function InputField({ input, value, onChange, issue }: InputFieldProps) {
 
   return (
     <div>
-      <label htmlFor={`input-${input.id}`}>{input.label}</label>
+      <label htmlFor={`input-${input.id}`}>
+        {input.label}
+        {input.required && " (required)"}
+      </label>
       {input.help && <p id={helpId}>{input.help}</p>}
 
       {input.kind === "text" &&

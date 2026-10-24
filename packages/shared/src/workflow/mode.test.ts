@@ -12,6 +12,7 @@ import {
   modeMenuGroup,
   resolveModeInputs,
   resolveModeOutputNodes,
+  reviseModeInputSettings,
   validateModeInputSettings,
   validateModeName,
   visibleModeBoundFields,
@@ -252,6 +253,24 @@ describe("Mode × Input settings (issue #48)", () => {
       );
     });
 
+    test("refuses a fixed number value off its step", () => {
+      const settings: ModeInputSetting[] = [
+        { inputId: "steps", state: "fixed", fixedValue: 21, label: "" },
+      ];
+      const steppedInputs = [
+        textInput,
+        { ...numberInput, step: 5 },
+        selectInput,
+      ];
+      expect(validateModeInputSettings(settings, steppedInputs)).toEqual([]);
+      const offStep: ModeInputSetting[] = [
+        { inputId: "steps", state: "fixed", fixedValue: 22, label: "" },
+      ];
+      expect(validateModeInputSettings(offStep, steppedInputs)[0]).toContain(
+        "step",
+      );
+    });
+
     test("refuses a Mode label over 60 characters", () => {
       const settings: ModeInputSetting[] = [
         {
@@ -353,7 +372,7 @@ describe("Mode × Input settings (issue #48)", () => {
   });
 
   describe("modeMenuGroup", () => {
-    test("groups as prompt when no visible Input asks for an Upload", () => {
+    test("groups as prompt when no required Input asks for an Upload", () => {
       expect(modeMenuGroup(inputs, [])).toBe("prompt");
     });
 
@@ -367,6 +386,63 @@ describe("Mode × Input settings (issue #48)", () => {
         { inputId: "image", state: "hidden", fixedValue: null, label: "" },
       ];
       expect(modeMenuGroup([...inputs, uploadInput], settings)).toBe("prompt");
+    });
+
+    test("ignores an optional (not required) Upload-kind Input's group", () => {
+      const uploadInput = {
+        ...textInput,
+        id: "image",
+        kind: "image_upload",
+      } as unknown as TextInputDefinition;
+      const settings: ModeInputSetting[] = [
+        { inputId: "image", state: "optional", fixedValue: null, label: "" },
+      ];
+      expect(modeMenuGroup([...inputs, uploadInput], settings)).toBe("prompt");
+    });
+
+    test("groups by a required Upload-kind Input", () => {
+      const uploadInput = {
+        ...textInput,
+        id: "image",
+        kind: "image_upload",
+      } as unknown as TextInputDefinition;
+      const settings: ModeInputSetting[] = [
+        { inputId: "image", state: "required", fixedValue: null, label: "" },
+      ];
+      expect(modeMenuGroup([...inputs, uploadInput], settings)).toBe("images");
+    });
+  });
+
+  describe("reviseModeInputSettings", () => {
+    test("drops a setting for an Input that no longer exists", () => {
+      const settings: ModeInputSetting[] = [
+        { inputId: "prompt", state: "required", fixedValue: null, label: "" },
+        { inputId: "ghost", state: "hidden", fixedValue: null, label: "" },
+      ];
+      expect(reviseModeInputSettings(settings, inputs)).toEqual([
+        { inputId: "prompt", state: "required", fixedValue: null, label: "" },
+      ]);
+    });
+
+    test("reverts a fixed setting whose value no longer validates", () => {
+      const settings: ModeInputSetting[] = [
+        { inputId: "steps", state: "fixed", fixedValue: 40, label: "" },
+      ];
+      const narrowedInputs = [
+        textInput,
+        { ...numberInput, max: 30 },
+        selectInput,
+      ];
+      expect(reviseModeInputSettings(settings, narrowedInputs)).toEqual([
+        { inputId: "steps", state: "optional", fixedValue: null, label: "" },
+      ]);
+    });
+
+    test("keeps a fixed setting whose value still validates", () => {
+      const settings: ModeInputSetting[] = [
+        { inputId: "steps", state: "fixed", fixedValue: 20, label: "" },
+      ];
+      expect(reviseModeInputSettings(settings, inputs)).toEqual(settings);
     });
   });
 });

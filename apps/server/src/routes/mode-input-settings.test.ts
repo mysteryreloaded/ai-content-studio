@@ -258,6 +258,157 @@ describe("Mode × Input grid effects (issue #48)", () => {
     }
   });
 
+  test("a hidden Input's own default isn't written; the Workflow's own value stands (issue #48)", async () => {
+    // STEPS_ID has no default, so this bug (buildPrompt applying a
+    // hidden Input's default rather than leaving the field alone)
+    // can't show through it; a dedicated Input/Workflow with a
+    // non-blank default is needed to catch a regression here.
+    const HIDDEN_WORKFLOW = {
+      "1": {
+        class_type: "CLIPTextEncode",
+        inputs: { text: "a cat", seed: 7 },
+        _meta: { title: "Prompt" },
+      },
+      "2": { class_type: "KSampler", inputs: { steps: 20, model: ["1", 0] } },
+      "3": { class_type: "SaveImage", inputs: { images: ["2", 0] } },
+    };
+    const SEED_ID = "33333333-3333-3333-3333-333333333333";
+    const HIDDEN_INPUTS = [
+      INPUTS[0],
+      {
+        id: SEED_ID,
+        kind: "number",
+        group: "settings",
+        label: "Seed",
+        help: "",
+        default: 999,
+        numberMode: "integer",
+        min: 0,
+        max: 1000,
+        step: 1,
+        bindings: [
+          {
+            nodeId: "1",
+            field: "seed",
+            classType: "CLIPTextEncode",
+            title: null,
+          },
+        ],
+      },
+    ];
+
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const { app, backendsService } = await build();
+      const adminHeaders = await headersFor("admin");
+
+      const createRes = await app.request("/api/admin/models", {
+        method: "POST",
+        headers: { ...adminHeaders, "content-type": "application/json" },
+        body: JSON.stringify({ name: "LTX", workflow: HIDDEN_WORKFLOW }),
+      });
+      const { model } = (await createRes.json()) as {
+        model: { id: string; slug: string; version: number };
+      };
+
+      const backendRes = await app.request("/api/admin/backends", {
+        method: "POST",
+        headers: { ...adminHeaders, "content-type": "application/json" },
+        body: JSON.stringify({ name: "Fake", baseUrl: fake.url, auth: "none" }),
+      });
+      const backend = (await backendRes.json()) as { id: string };
+      await app.request(`/api/admin/models/${model.id}/backends`, {
+        method: "POST",
+        headers: { ...adminHeaders, "content-type": "application/json" },
+        body: JSON.stringify({ backendId: backend.id }),
+      });
+      clock.advance(30_000);
+      await flushMicrotasks();
+
+      const inputsRes = await app.request(
+        `/api/admin/models/${model.id}/inputs`,
+        {
+          method: "PUT",
+          headers: { ...adminHeaders, "content-type": "application/json" },
+          body: JSON.stringify({
+            version: model.version,
+            inputs: HIDDEN_INPUTS,
+          }),
+        },
+      );
+      const { record: afterInputs } = (await inputsRes.json()) as {
+        record: { version: number };
+      };
+
+      const modesRes = await app.request(
+        `/api/admin/models/${model.id}/modes`,
+        {
+          method: "PUT",
+          headers: { ...adminHeaders, "content-type": "application/json" },
+          body: JSON.stringify({
+            version: afterInputs.version,
+            modes: [
+              {
+                name: "Default",
+                description: "",
+                outputNodeIds: ["3"],
+                inputSettings: [
+                  {
+                    inputId: SEED_ID,
+                    state: "hidden",
+                    fixedValue: null,
+                    label: "",
+                  },
+                ],
+              },
+            ],
+          }),
+        },
+      );
+      const { record: afterModes, modes } = (await modesRes.json()) as {
+        record: { version: number };
+        modes: Array<{ id: string }>;
+      };
+
+      const enableRes = await app.request(
+        `/api/admin/models/${model.id}/enable`,
+        {
+          method: "POST",
+          headers: { ...adminHeaders, "content-type": "application/json" },
+          body: JSON.stringify({ version: afterModes.version }),
+        },
+      );
+      const enabled = (await enableRes.json()) as { currentRevision: number };
+
+      const { db } = await testDb;
+      const userHeaders = await headersFor("user");
+      const res = await app.request(`/api/models/${model.slug}/generations`, {
+        method: "POST",
+        headers: { ...userHeaders, "content-type": "application/json" },
+        body: JSON.stringify({
+          modeId: modes[0]?.id,
+          revision: enabled.currentRevision,
+          values: { [PROMPT_ID]: "dog" },
+        }),
+      });
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as { generation: { id: string } };
+      const [row] = await db
+        .select()
+        .from(generations)
+        .where(eq(generations.id, body.generation.id));
+      const prompt = row?.builtPrompt as Record<
+        string,
+        { inputs: Record<string, unknown> }
+      >;
+      expect(prompt["1"]?.inputs.seed).toBe(7);
+
+      backendsService.stop();
+    } finally {
+      fake.stop();
+    }
+  });
+
   test("a fixed Input's value is written regardless of what's submitted, and doesn't reach the Workbench", async () => {
     const fake = startFakeComfyUi({ port: 0 });
     try {

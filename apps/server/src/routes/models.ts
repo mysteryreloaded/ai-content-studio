@@ -5,6 +5,7 @@ import {
   relevantInputs,
   resolveModeInputs,
   toInputIssues,
+  visibleModeBoundFields,
 } from "@ai-content-studio/shared";
 import { Hono } from "hono";
 import type { Context } from "hono";
@@ -107,10 +108,19 @@ function toWorkbenchDetail(
     revision: detail.model.currentRevision,
     attribution: detail.model.attribution,
     modes: detail.modes.map((mode) => {
+      // issue #48: a switch steered by a field one of this Mode's
+      // visible Inputs binds keeps both branches on the Path, since
+      // the Admin can't know ahead of time which way a user will set
+      // it — their Input must reach the Workbench either way.
+      const unresolvable = visibleModeBoundFields(
+        mode.inputSettings,
+        detail.inputs,
+      );
       const relevant = relevantInputs(
         detail.inputs,
         detail.workflow,
         mode.outputNodes.map((node) => node.nodeId),
+        unresolvable,
       );
       const { formInputs, requiredIds } = resolveModeInputs(
         relevant,

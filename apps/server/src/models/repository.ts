@@ -16,6 +16,7 @@ import {
   findOutsideServiceNotes,
   parseApiFormatWorkflow,
   resolveModeOutputNodes,
+  reviseModeInputSettings,
   validateInputDefinition,
   validateModeInputSettings,
   validateModeName,
@@ -872,7 +873,7 @@ export class ModelRepository {
             name: mode.name,
             description: mode.description,
             outputNodes: mode.outputNodes,
-            inputSettings: mode.inputSettings,
+            inputSettings: reviseModeInputSettings(mode.inputSettings, input),
           })),
         );
       }

@@ -224,8 +224,10 @@ export function validateModeInputSettings(
         !Number.isInteger(setting.fixedValue)
       ) {
         errors.push(`"${input.label}"'s fixed value must be a whole number`);
+      } else if (!isOnStep(setting.fixedValue, input.min, input.step)) {
+        errors.push(`"${input.label}"'s fixed value must sit on its step`);
       }
-    } else {
+    } else if (input.kind === "select") {
       if (
         typeof setting.fixedValue !== "string" ||
         !input.options.some((option) => option.id === setting.fixedValue)
@@ -238,6 +240,12 @@ export function validateModeInputSettings(
   }
 
   return errors;
+}
+
+function isOnStep(value: number, min: number, step: number): boolean {
+  if (step <= 0) return true;
+  const steps = (value - min) / step;
+  return Math.abs(steps - Math.round(steps)) < 1e-9;
 }
 
 /**
@@ -302,9 +310,10 @@ export function resolveModeInputs(
 
 /**
  * Which Workbench Mode menu group a Mode falls under (issue #48),
- * grouped by what its visible/required Inputs ask the user to start
- * from. Upload Input kinds land in later issues (#50, #66); until then
- * every Mode groups as "prompt".
+ * grouped by what its *required* Inputs ask the user to start from (an
+ * optional Upload doesn't commit the user to that path). Upload Input
+ * kinds land in later issues (#50, #66); until then every Mode groups
+ * as "prompt".
  */
 export type ModeMenuGroup = "prompt" | "images" | "audio" | "video";
 
@@ -314,16 +323,47 @@ const UPLOAD_KIND_GROUPS: Record<string, ModeMenuGroup> = {
   video_upload: "video",
 };
 
-/** The Mode menu group this Mode's visible Inputs put it in; "prompt" when none ask for an Upload. */
+/** The Mode menu group this Mode's required Inputs put it in; "prompt" when none require an Upload. */
 export function modeMenuGroup(
   inputs: readonly InputDefinition[],
   settings: readonly ModeInputSetting[],
 ): ModeMenuGroup {
   for (const input of inputs) {
     const setting = modeInputSetting(settings, input.id);
-    if (setting.state === "hidden") continue;
+    if (setting.state !== "required") continue;
     const group = UPLOAD_KIND_GROUPS[input.kind as string];
     if (group) return group;
   }
   return "prompt";
+}
+
+/**
+ * Carries a Mode's `ModeInputSetting`s forward across an Inputs edit
+ * (issue #48): drops a setting whose Input no longer exists, and
+ * reverts a fixed setting whose value no longer validates against that
+ * Input's current options/range (e.g. an option or a wider range was
+ * narrowed away) to "optional" rather than leaving a stale, unchecked
+ * fixed value in place.
+ */
+export function reviseModeInputSettings(
+  settings: readonly ModeInputSetting[],
+  inputs: readonly InputDefinition[],
+): ModeInputSetting[] {
+  const byId = new Map(inputs.map((input) => [input.id, input]));
+  const revised: ModeInputSetting[] = [];
+  for (const setting of settings) {
+    if (!byId.has(setting.inputId)) continue;
+    if (setting.state !== "fixed") {
+      revised.push(setting);
+      continue;
+    }
+    const stillValid =
+      validateModeInputSettings([setting], inputs).length === 0;
+    revised.push(
+      stillValid
+        ? setting
+        : { ...setting, state: "optional", fixedValue: null },
+    );
+  }
+  return revised;
 }

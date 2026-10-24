@@ -241,6 +241,100 @@ describe("ModelRepository Inputs", () => {
     expect(detail?.inputs).toHaveLength(1);
   });
 
+  test("revalidates a carried fixed inputSetting against the narrowed Input, reverting it to optional (issue #48)", async () => {
+    const repository = await repo();
+    const { record: model } = await repository.createFromWorkflow(
+      "M1",
+      WORKFLOW,
+      SYSTEM,
+    );
+    const { record: afterInputs } = await repository.updateInputs(
+      model.id,
+      [promptInput({ maxLength: 2000 })],
+      model.version,
+      SYSTEM,
+    );
+
+    const { record: afterModes } = await repository.updateModes(
+      model.id,
+      [
+        {
+          name: "Default",
+          description: "",
+          outputNodeIds: ["3"],
+          inputSettings: [
+            {
+              inputId: promptInput().id,
+              state: "fixed",
+              fixedValue: "a".repeat(100),
+              label: "",
+            },
+          ],
+        },
+      ],
+      afterInputs.version,
+      SYSTEM,
+    );
+
+    await repository.updateInputs(
+      model.id,
+      [promptInput({ maxLength: 50 })],
+      afterModes.version,
+      SYSTEM,
+    );
+
+    const detail = await repository.get(model.id);
+    expect(detail?.modes[0]?.inputSettings).toEqual([
+      {
+        inputId: promptInput().id,
+        state: "optional",
+        fixedValue: null,
+        label: "",
+      },
+    ]);
+  });
+
+  test("drops a carried inputSetting whose Input was removed (issue #48)", async () => {
+    const repository = await repo();
+    const { record: model } = await repository.createFromWorkflow(
+      "M1",
+      WORKFLOW,
+      SYSTEM,
+    );
+    const { record: afterInputs } = await repository.updateInputs(
+      model.id,
+      [promptInput()],
+      model.version,
+      SYSTEM,
+    );
+
+    const { record: afterModes } = await repository.updateModes(
+      model.id,
+      [
+        {
+          name: "Default",
+          description: "",
+          outputNodeIds: ["3"],
+          inputSettings: [
+            {
+              inputId: promptInput().id,
+              state: "hidden",
+              fixedValue: null,
+              label: "",
+            },
+          ],
+        },
+      ],
+      afterInputs.version,
+      SYSTEM,
+    );
+
+    await repository.updateInputs(model.id, [], afterModes.version, SYSTEM);
+
+    const detail = await repository.get(model.id);
+    expect(detail?.modes[0]?.inputSettings).toEqual([]);
+  });
+
   test("updateModes carries the current Inputs forward unchanged onto the new revision", async () => {
     const repository = await repo();
     const { record: model } = await repository.createFromWorkflow(

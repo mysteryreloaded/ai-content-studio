@@ -6,7 +6,9 @@ import {
   isValidModelLicenseUrl,
   listBindableFields,
   modeInputSetting,
+  relevantInputs,
   renderMarkdown,
+  resolveModeInputs,
   visibleModeBoundFields,
 } from "@ai-content-studio/shared";
 import type {
@@ -387,6 +389,14 @@ export function ModelEditorPage() {
   // this it would ask "Discard unsaved changes?" a second time right
   // after the Admin already confirmed the delete itself.
   const bypassBlockerRef = useRef(false);
+  // issue #48 AC3: a new Model (no Inputs yet) opens on the Inputs
+  // section; one that already has Inputs opens on Modes instead, with
+  // its first Mode's sheet expanded. Only the first load of a given
+  // Model decides this — a reload after Save shouldn't yank the page
+  // back or collapse what the Admin has open.
+  const didInitialOpenRef = useRef(false);
+  const inputsHeadingRef = useRef<HTMLHeadingElement>(null);
+  const modesHeadingRef = useRef<HTMLHeadingElement>(null);
 
   function load() {
     if (!id) return;
@@ -415,6 +425,22 @@ export function ModelEditorPage() {
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: reload only when the route's :id changes
   useEffect(load, [id]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a different :id gets its own "open on" decision
+  useEffect(() => {
+    didInitialOpenRef.current = false;
+  }, [id]);
+
+  useEffect(() => {
+    if (!detail || didInitialOpenRef.current) return;
+    didInitialOpenRef.current = true;
+    if ((detail.inputs ?? []).length === 0) {
+      inputsHeadingRef.current?.scrollIntoView({ block: "start" });
+    } else {
+      setEditingModeIndex(detail.modes.length > 0 ? 0 : null);
+      modesHeadingRef.current?.scrollIntoView({ block: "start" });
+    }
+  }, [detail]);
 
   function loadAttachedBackends() {
     if (!id) return;
@@ -558,7 +584,11 @@ export function ModelEditorPage() {
       modesDraft.map((mode, i) => {
         if (i === sourceIndex) return mode;
         if (mode.outputNodeIds.length === 0) return mode;
-        const path = computeModePath(detail.workflow, mode.outputNodeIds);
+        const path = computeModePath(
+          detail.workflow,
+          mode.outputNodeIds,
+          visibleBoundFieldsFor(mode, detail.inputs ?? []),
+        );
         const onPath = [...nodeIds].some((id) => path.nodeIds.has(id));
         if (!onPath) return mode;
         return {
@@ -1055,7 +1085,7 @@ export function ModelEditorPage() {
       </section>
 
       <section>
-        <h3>Modes</h3>
+        <h3 ref={modesHeadingRef}>Modes</h3>
         {modesDraft?.map((mode, index) => (
           <fieldset key={mode.key}>
             <label htmlFor={`mode-name-${index}`}>Mode name</label>
@@ -1109,6 +1139,8 @@ export function ModelEditorPage() {
                 </li>
               ))}
             </ol>
+
+            {detail && <ModeSheetFacts mode={mode} detail={detail} />}
 
             <button
               type="button"
@@ -1240,7 +1272,7 @@ export function ModelEditorPage() {
       )}
 
       <section>
-        <h3>Inputs</h3>
+        <h3 ref={inputsHeadingRef}>Inputs</h3>
         {inputsDraft?.map((input, index) => (
           <fieldset key={input.id}>
             <p>Kind: {input.kind}</p>
@@ -1793,6 +1825,69 @@ function FixedValueEditor({
 }
 
 /**
+ * A Mode sheet's Path facts and live form preview (issue #48 AC3): what
+ * the Mode's Path resolves to against the current Workflow, and what
+ * its Workbench form would show right now (relevant Inputs, labelled
+ * and marked required per this Mode's own settings, with fixed ones
+ * called out separately), kept live as the Admin edits the grid.
+ */
+function ModeSheetFacts({
+  mode,
+  detail,
+}: {
+  mode: DraftMode;
+  detail: ModelDetail;
+}) {
+  if (mode.outputNodeIds.length === 0) {
+    return <p>Path: pick at least one output node to see its facts.</p>;
+  }
+
+  const inputs = detail.inputs ?? [];
+  const unresolvable = visibleModeBoundFields(mode.inputSettings ?? [], inputs);
+  const path = computeModePath(
+    detail.workflow,
+    mode.outputNodeIds,
+    unresolvable,
+  );
+  const relevant = relevantInputs(
+    inputs,
+    detail.workflow,
+    mode.outputNodeIds,
+    unresolvable,
+  );
+  const { formInputs, requiredIds, fixedValues } = resolveModeInputs(
+    relevant,
+    mode.inputSettings ?? [],
+  );
+
+  return (
+    <div>
+      <p>
+        Path: {path.nodeIds.size} node{path.nodeIds.size === 1 ? "" : "s"}
+        {path.missingOutputNodeIds.length > 0 &&
+          " — an output node is missing from the Workflow!"}
+      </p>
+      <h4>Form preview</h4>
+      {formInputs.length === 0 ? (
+        <p>No Inputs show on this Mode's form.</p>
+      ) : (
+        <ul>
+          {formInputs.map((input) => (
+            <li key={input.id}>
+              {input.label}
+              {requiredIds.has(input.id) && " (required)"}
+            </li>
+          ))}
+        </ul>
+      )}
+      {Object.keys(fixedValues).length > 0 && (
+        <p>{Object.keys(fixedValues).length} Input(s) fixed to a value.</p>
+      )}
+    </div>
+  );
+}
+
+/**
  * The Mode × Input grid (issue #48): a row per Input, a column per Mode,
  * each cell holding that Mode's state for that Input (hidden, optional,
  * required, or fixed with a value) plus an optional Mode-specific label.
@@ -1841,9 +1936,11 @@ function ModeInputGrid({
                 const onPath =
                   mode.outputNodeIds.length > 0 &&
                   [...boundNodeIds(input)].some((id) =>
-                    computeModePath(workflow, mode.outputNodeIds).nodeIds.has(
-                      id,
-                    ),
+                    computeModePath(
+                      workflow,
+                      mode.outputNodeIds,
+                      visibleBoundFieldsFor(mode, inputs),
+                    ).nodeIds.has(id),
                   );
                 const setting = modeInputSetting(mode.inputSettings, input.id);
                 return (

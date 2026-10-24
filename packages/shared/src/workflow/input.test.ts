@@ -589,6 +589,49 @@ describe("relevantInputs", () => {
       onPath,
     ]);
   });
+
+  test("keeps an Input on a branch only reachable via a visible Input's bound switch field (issue #48)", () => {
+    const switchWorkflow: Workflow = {
+      prim: { class_type: "PrimitiveBoolean", inputs: { value: true } },
+      switch: {
+        class_type: "ComfySwitchNode",
+        inputs: { switch: ["prim", 0], on_true: ["a", 0], on_false: ["b", 0] },
+      },
+      a: { class_type: "LoadImage", inputs: {} },
+      b: {
+        class_type: "LoadImage",
+        inputs: { strength: 1 },
+      },
+      out: { class_type: "SaveImage", inputs: { image: ["switch", 0] } },
+    };
+    const onFalseBranch: NumberInputDefinition = {
+      id: "strength",
+      kind: "number",
+      group: "settings",
+      label: "Strength",
+      help: "",
+      default: null,
+      numberMode: "decimal",
+      min: 0,
+      max: 1,
+      step: 0.1,
+      bindings: [
+        { nodeId: "b", field: "strength", classType: "LoadImage", title: null },
+      ],
+    };
+
+    expect(relevantInputs([onFalseBranch], switchWorkflow, ["out"])).toEqual(
+      [],
+    );
+    expect(
+      relevantInputs(
+        [onFalseBranch],
+        switchWorkflow,
+        ["out"],
+        new Set(["prim::value"]),
+      ),
+    ).toEqual([onFalseBranch]);
+  });
 });
 
 describe("applyInputValues / buildPrompt", () => {

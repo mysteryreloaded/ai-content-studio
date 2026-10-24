@@ -6,9 +6,11 @@ import {
   buildPrompt,
   computeModePath,
   findBlockedWord,
+  modeInputSetting,
   parseInputValues,
   relevantInputs,
   resolveModeInputs,
+  visibleModeBoundFields,
 } from "@ai-content-studio/shared";
 import type { Clock } from "@ai-content-studio/shared";
 import type { z } from "zod";
@@ -103,9 +105,14 @@ export interface SubmissionDeps {
 async function hasUsableBackend(
   detail: ModelDetail,
   modeOutputNodeIds: readonly string[],
+  unresolvableFields: ReadonlySet<string>,
   deps: SubmissionDeps,
 ): Promise<boolean> {
-  const path = computeModePath(detail.workflow, modeOutputNodeIds);
+  const path = computeModePath(
+    detail.workflow,
+    modeOutputNodeIds,
+    unresolvableFields,
+  );
   const pathClassTypes = [...path.nodeIds]
     .map((nodeId) => detail.workflow[nodeId]?.class_type)
     .filter((classType): classType is string => Boolean(classType));
@@ -148,13 +155,27 @@ export async function submitGeneration(
   if (!mode) throw new ModeNotFound();
 
   const outputNodeIds = mode.outputNodes.map((node) => node.nodeId);
-  const usable = await hasUsableBackend(detail, outputNodeIds, deps);
+  // issue #48: a switch steered by a field one of this Mode's visible
+  // Inputs binds keeps both branches on the Path everywhere the Path
+  // is computed, since the Admin can't know ahead of time which way a
+  // user will set it.
+  const unresolvable = visibleModeBoundFields(
+    mode.inputSettings,
+    detail.inputs,
+  );
+  const usable = await hasUsableBackend(
+    detail,
+    outputNodeIds,
+    unresolvable,
+    deps,
+  );
   if (!usable) throw new NoBackend();
 
   const relevant = relevantInputs(
     detail.inputs,
     detail.workflow,
     outputNodeIds,
+    unresolvable,
   );
   const { formInputs, requiredIds, fixedValues } = resolveModeInputs(
     relevant,
@@ -194,9 +215,17 @@ export async function submitGeneration(
     ...(parsedValues.data as Record<string, string | number | undefined>),
     ...(fixedValues as Record<string, string | number | undefined>),
   };
+  // A hidden Input isn't submitted and has no fixed value either: it
+  // must leave its bound fields as the Workflow has them, not fall
+  // back to the Input's own default (applyInputValues does that for
+  // any Input it's handed with no value), so it's left out here.
+  const nonHiddenRelevant = relevant.filter(
+    (input) =>
+      modeInputSetting(mode.inputSettings, input.id).state !== "hidden",
+  );
   const { prompt, nodeTypes } = buildPrompt(
     detail.workflow,
-    relevant,
+    nonHiddenRelevant,
     values,
     outputNodeIds,
     generationId,

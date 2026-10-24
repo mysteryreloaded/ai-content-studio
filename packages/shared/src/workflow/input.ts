@@ -320,8 +320,9 @@ export function relevantInputs(
   inputs: readonly InputDefinition[],
   workflow: Workflow,
   outputNodeIds: readonly string[],
+  unresolvableFields?: ReadonlySet<string>,
 ): InputDefinition[] {
-  const path = computePath(workflow, outputNodeIds);
+  const path = computePath(workflow, outputNodeIds, unresolvableFields);
   return inputs.filter((input) =>
     input.bindings.some((binding) => path.nodeIds.has(binding.nodeId)),
   );

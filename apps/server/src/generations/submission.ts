@@ -5,12 +5,14 @@
 import {
   buildPrompt,
   computeModePath,
+  findBlockedWord,
   parseInputValues,
   relevantInputs,
   resolveModeInputs,
 } from "@ai-content-studio/shared";
 import type { Clock } from "@ai-content-studio/shared";
 import type { z } from "zod";
+import type { LogEntryWriter } from "../backends/log-entries.js";
 import type { BackendsService } from "../backends/service.js";
 import type { ModelBackendsRepository } from "../models/model-backends.js";
 import {
@@ -66,6 +68,13 @@ export class InvalidInputValues extends Error {
   }
 }
 
+/** A text Input's value held a blocked word or phrase (400 `invalid`, issue #66). */
+export class BlockedWordSubmitted extends Error {
+  constructor(public readonly inputId: string) {
+    super("invalid");
+  }
+}
+
 export interface SubmitGenerationParams {
   slug: string;
   modeId: string;
@@ -83,6 +92,9 @@ export interface SubmissionDeps {
   generationsRepository: GenerationsRepository;
   generationEvents: GenerationEvents;
   clock: Clock;
+  logWriter: LogEntryWriter;
+  /** The Admin's blocked words list, current as of this call (issue #66). */
+  getBlockedWords: () => Promise<string[]>;
   /** Wakes the dispatcher (issue #44): a fresh queued Generation may be dispatchable right away. */
   onGenerationQueued?: () => void;
 }
@@ -156,6 +168,26 @@ export async function submitGeneration(
   );
   const parsedValues = schema.safeParse(params.values);
   if (!parsedValues.success) throw new InvalidInputValues(parsedValues.error);
+
+  const blockedWords = await deps.getBlockedWords();
+  if (blockedWords.length > 0) {
+    for (const input of relevant) {
+      if (input.kind !== "text") continue;
+      const value = (parsedValues.data as Record<string, unknown>)[input.id];
+      if (typeof value !== "string" || value === "") continue;
+      const word = findBlockedWord(value, blockedWords);
+      if (!word) continue;
+      await deps.logWriter.log({
+        level: "warning",
+        source: "app",
+        message: `Refused a submitted prompt holding a blocked word: "${word}"`,
+        details: word,
+        userId: params.userId,
+        modelId: detail.model.id,
+      });
+      throw new BlockedWordSubmitted(input.id);
+    }
+  }
 
   const generationId = crypto.randomUUID();
   const values = {

@@ -73,6 +73,15 @@ export const siteSettings = pgTable("site_settings", {
   privacyRevision: integer("privacy_revision").notNull().default(1),
   /** Issue #65: up to 3 extra footer links, each `{ label, url }`. */
   footerLinks: jsonb("footer_links").notNull().default([]),
+  /**
+   * Issue #66: words and phrases the studio refuses in prompts, already
+   * NFKC-normalised, case-folded and deduped (see
+   * `branding/blocked-words.ts`). `blockedWordsRevision` is its own
+   * optimistic-concurrency token, independent of the other Site settings
+   * forms', so saving one never races another into a spurious 409.
+   */
+  blockedWords: jsonb("blocked_words").notNull().default([]),
+  blockedWordsRevision: integer("blocked_words_revision").notNull().default(1),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

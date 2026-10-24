@@ -1,0 +1,379 @@
+// Inputs bound to Node fields (issue #46): an Admin turns a value-holding
+// field into a labelled Input; the Workbench collects a value per Input and
+// `buildPrompt` writes it back into every field the Input is bound to.
+
+import { z } from "zod";
+import { buildFrozenPrompt } from "./frozen-prompt.js";
+import { computePath } from "./path.js";
+import { type NodeFieldValue, type Workflow, isNodeLink } from "./types.js";
+
+export type InputGroup = "describe" | "settings";
+
+/** Where one Input writes: a Node field, snapshotted at save time (issue #46). */
+export interface InputBinding {
+  nodeId: string;
+  field: string;
+  classType: string;
+  title: string | null;
+}
+
+/** One option of a select Input: `values[i]` is written to `bindings[i]`. */
+export interface SelectOption {
+  id: string;
+  label: string;
+  values: NodeFieldValue[];
+}
+
+interface InputBase {
+  id: string;
+  group: InputGroup;
+  label: string;
+  help: string;
+  bindings: InputBinding[];
+}
+
+export interface TextInputDefinition extends InputBase {
+  kind: "text";
+  multiline: boolean;
+  /** 1-10,000; default 2,000. */
+  maxLength: number;
+  default: string;
+}
+
+export interface NumberInputDefinition extends InputBase {
+  kind: "number";
+  numberMode: "integer" | "decimal";
+  min: number;
+  max: number;
+  /** > 0; a submitted value must sit on `min + k*step`. */
+  step: number;
+  default: number | null;
+}
+
+export interface SelectInputDefinition extends InputBase {
+  kind: "select";
+  /** 2-50 options; exactly 2 is shown as a toggle on the Workbench. */
+  options: SelectOption[];
+  default: string | null;
+}
+
+export type InputDefinition =
+  | TextInputDefinition
+  | NumberInputDefinition
+  | SelectInputDefinition;
+
+export function isToggle(input: SelectInputDefinition): boolean {
+  return input.options.length === 2;
+}
+
+export function fieldKey(nodeId: string, field: string): string {
+  return `${nodeId}::${field}`;
+}
+
+/** One value-holding (not link-fed) field of a Workflow, a candidate to become an Input. */
+export interface BindableField {
+  nodeId: string;
+  field: string;
+  classType: string;
+  title: string | null;
+  valueType: "string" | "number" | "boolean";
+  value: NodeFieldValue;
+}
+
+export function listBindableFields(workflow: Workflow): BindableField[] {
+  const fields: BindableField[] = [];
+  for (const [nodeId, node] of Object.entries(workflow)) {
+    for (const [field, value] of Object.entries(node.inputs)) {
+      if (isNodeLink(value) || value === null || value === undefined) {
+        continue;
+      }
+      fields.push({
+        nodeId,
+        field,
+        classType: node.class_type,
+        title: node._meta?.title ?? null,
+        valueType: typeof value as "string" | "number" | "boolean",
+        value,
+      });
+    }
+  }
+  return fields;
+}
+
+export interface BindingValidationContext {
+  workflow: Workflow;
+  /** Node ids that are a Mode's named output (`filename_prefix` there can't be bound). */
+  outputNodeIds: ReadonlySet<string>;
+  /** `fieldKey` of every field already bound by another Input. */
+  usedFields: ReadonlySet<string>;
+}
+
+/** Refuses a link-fed field, a field already bound elsewhere, an output node's `filename_prefix`, and a type mismatch. */
+export function validateBinding(
+  kind: InputDefinition["kind"],
+  nodeId: string,
+  field: string,
+  ctx: BindingValidationContext,
+): string | null {
+  const node = ctx.workflow[nodeId];
+  if (!node) return `node "${nodeId}" is not in the Workflow`;
+
+  const value = node.inputs[field];
+  if (value === undefined) {
+    return `field "${field}" is not on node "${nodeId}"`;
+  }
+  if (isNodeLink(value)) {
+    return `field "${field}" on node "${nodeId}" is fed by a link and can't be an Input`;
+  }
+  if (field === "filename_prefix" && ctx.outputNodeIds.has(nodeId)) {
+    return `"filename_prefix" on an output node can't be bound`;
+  }
+  if (ctx.usedFields.has(fieldKey(nodeId, field))) {
+    return `field "${field}" on node "${nodeId}" is already bound to another Input`;
+  }
+  if (kind === "text" && typeof value !== "string") {
+    return `field "${field}" on node "${nodeId}" isn't a text field`;
+  }
+  if (kind === "number" && typeof value !== "number") {
+    return `field "${field}" on node "${nodeId}" isn't a number field`;
+  }
+  return null;
+}
+
+/** Validates one Input's own shape and every one of its bindings against `ctx`. */
+export function validateInputDefinition(
+  input: InputDefinition,
+  otherLabels: readonly string[],
+  ctx: BindingValidationContext,
+): string[] {
+  const errors: string[] = [];
+
+  if (input.label.length < 1 || input.label.length > 60) {
+    errors.push("label must be 1-60 characters");
+  }
+  const lowerLabel = input.label.toLowerCase();
+  if (otherLabels.some((label) => label.toLowerCase() === lowerLabel)) {
+    errors.push("label must be unique");
+  }
+  if (input.bindings.length === 0) {
+    errors.push("needs at least one bound field");
+  }
+  for (const binding of input.bindings) {
+    const error = validateBinding(
+      input.kind,
+      binding.nodeId,
+      binding.field,
+      ctx,
+    );
+    if (error) errors.push(error);
+  }
+
+  if (input.kind === "text") {
+    if (input.maxLength < 1 || input.maxLength > 10_000) {
+      errors.push("max length must be 1-10,000");
+    }
+    if (input.default.length > input.maxLength) {
+      errors.push("default is longer than max length");
+    }
+  } else if (input.kind === "number") {
+    if (!(input.max > input.min)) {
+      errors.push("max must be greater than min");
+    }
+    if (!(input.step > 0)) {
+      errors.push("step must be greater than 0");
+    }
+    if (
+      input.default !== null &&
+      (input.default < input.min || input.default > input.max)
+    ) {
+      errors.push("default must be between min and max");
+    }
+  } else {
+    if (input.options.length < 2 || input.options.length > 50) {
+      errors.push("needs 2-50 options");
+    }
+    for (const option of input.options) {
+      if (option.label.length < 1) {
+        errors.push("every option needs a label");
+      }
+      if (option.values.length !== input.bindings.length) {
+        errors.push(
+          `option "${option.label}" needs a value for each bound field`,
+        );
+      }
+    }
+    if (
+      input.default !== null &&
+      !input.options.some((option) => option.id === input.default)
+    ) {
+      errors.push("default must be one of the options");
+    }
+  }
+
+  return errors;
+}
+
+/** The Inputs relevant to a Mode: at least one binding on its Path. */
+export function relevantInputs(
+  inputs: readonly InputDefinition[],
+  workflow: Workflow,
+  outputNodeIds: readonly string[],
+): InputDefinition[] {
+  const path = computePath(workflow, outputNodeIds);
+  return inputs.filter((input) =>
+    input.bindings.some((binding) => path.nodeIds.has(binding.nodeId)),
+  );
+}
+
+function isOnStep(value: number, min: number, step: number): boolean {
+  const steps = (value - min) / step;
+  return Math.abs(steps - Math.round(steps)) < 1e-9;
+}
+
+/**
+ * The zod object a Mode's relevant Inputs resolve to: strict (an unknown
+ * key is a validation error), every Input optional (a blank one leaves its
+ * fields as the Workflow has them), a number must sit on `min + k*step`,
+ * and one-line text turns any line break into a space.
+ */
+export function buildInputValuesSchema(
+  inputs: readonly InputDefinition[],
+): z.ZodObject<Record<string, z.ZodTypeAny>> {
+  const shape: Record<string, z.ZodTypeAny> = {};
+
+  for (const input of inputs) {
+    if (input.kind === "text") {
+      let schema: z.ZodTypeAny = z.string().max(input.maxLength);
+      if (!input.multiline) {
+        schema = (schema as z.ZodString).transform((value) =>
+          value.replace(/\r\n|\r|\n/g, " "),
+        );
+      }
+      shape[input.id] = schema.optional();
+    } else if (input.kind === "number") {
+      shape[input.id] = z
+        .number()
+        .min(input.min)
+        .max(input.max)
+        .refine((value) => isOnStep(value, input.min, input.step), {
+          message: `must sit on ${input.min} plus a multiple of ${input.step}`,
+        })
+        .refine(
+          (value) => input.numberMode !== "integer" || Number.isInteger(value),
+          { message: "must be a whole number" },
+        )
+        .optional();
+    } else {
+      const ids = input.options.map((option) => option.id);
+      if (ids.length === 0) {
+        shape[input.id] = z.never().optional();
+        continue;
+      }
+      shape[input.id] = z.enum(ids as [string, ...string[]]).optional();
+    }
+  }
+
+  return z.object(shape).strict();
+}
+
+const schemaCache = new Map<
+  string,
+  z.ZodObject<Record<string, z.ZodTypeAny>>
+>();
+
+/**
+ * {@link buildInputValuesSchema}, cached per Model revision and Mode
+ * (issue #46): both the Workbench form resolver and the submit route call
+ * this with the same (revisionId, modeId) for a given page load, so the
+ * zod object is only built once. Revisions are immutable, so the cache is
+ * never invalidated.
+ */
+export function parseInputValues(
+  revisionId: string,
+  modeId: string,
+  inputs: readonly InputDefinition[],
+): z.ZodObject<Record<string, z.ZodTypeAny>> {
+  const key = `${revisionId}:${modeId}`;
+  const cached = schemaCache.get(key);
+  if (cached) return cached;
+
+  const schema = buildInputValuesSchema(inputs);
+  schemaCache.set(key, schema);
+  return schema;
+}
+
+export interface InputIssue {
+  path: string;
+  code: string;
+  message: string;
+}
+
+/** Maps a `buildInputValuesSchema` parse failure onto `{ path, code, message }`, per field. */
+export function toInputIssues(error: z.ZodError): InputIssue[] {
+  return error.issues.map((issue) => ({
+    path: issue.path.join("."),
+    code: issue.code,
+    message: issue.message,
+  }));
+}
+
+/** Writes each Input's submitted (or default) value into every field it's bound to; a blank/absent Input leaves its fields untouched. */
+export function applyInputValues(
+  workflow: Workflow,
+  inputs: readonly InputDefinition[],
+  values: Record<string, string | number | undefined>,
+): Workflow {
+  const result: Workflow = {};
+  for (const [nodeId, node] of Object.entries(workflow)) {
+    result[nodeId] = { ...node, inputs: { ...node.inputs } };
+  }
+
+  for (const input of inputs) {
+    const raw = values[input.id];
+    if (input.kind === "select") {
+      const optionId =
+        typeof raw === "string" && raw.length > 0 ? raw : input.default;
+      if (!optionId) continue;
+      const option = input.options.find((o) => o.id === optionId);
+      if (!option) continue;
+      input.bindings.forEach((binding, index) => {
+        const node = result[binding.nodeId];
+        if (!node) return;
+        node.inputs[binding.field] = option.values[index] ?? null;
+      });
+      continue;
+    }
+
+    const value =
+      raw === undefined || raw === ""
+        ? input.kind === "text"
+          ? input.default || undefined
+          : (input.default ?? undefined)
+        : raw;
+    if (value === undefined) continue;
+
+    for (const binding of input.bindings) {
+      const node = result[binding.nodeId];
+      if (!node) continue;
+      node.inputs[binding.field] = value;
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Builds the prompt a Generation sends (issue #46): each relevant Input's
+ * value (or, blank, the Workflow's own value) written into its bound
+ * fields, then frozen the same way `buildFrozenPrompt` always has been.
+ */
+export function buildPrompt(
+  workflow: Workflow,
+  inputs: readonly InputDefinition[],
+  values: Record<string, string | number | undefined>,
+  outputNodeIds: readonly string[],
+  generationId: string,
+) {
+  const applied = applyInputValues(workflow, inputs, values);
+  return buildFrozenPrompt(applied, outputNodeIds, generationId);
+}

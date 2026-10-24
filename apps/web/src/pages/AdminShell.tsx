@@ -7,6 +7,7 @@ import { LogsPage } from "./LogsPage.js";
 import { ModelEditorPage } from "./ModelEditorPage.js";
 import { ModelsPage } from "./ModelsPage.js";
 import { OverviewPage } from "./OverviewPage.js";
+import { SitePrivacyForm } from "./SitePrivacyForm.js";
 import { SiteSettingsForm } from "./SiteSettingsForm.js";
 import { SiteTermsForm } from "./SiteTermsForm.js";
 import { UserPage } from "./UserPage.js";
@@ -112,6 +113,7 @@ export function AdminShell() {
             <>
               <SiteSettingsForm />
               <SiteTermsForm />
+              <SitePrivacyForm />
               <BackendsPage />
             </>
           }

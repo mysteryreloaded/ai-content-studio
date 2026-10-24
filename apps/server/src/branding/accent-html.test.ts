@@ -12,6 +12,12 @@ describe("injectBrandingIntoHtml", () => {
     expect(html.indexOf("--accent")).toBeLessThan(html.indexOf("</head>"));
   });
 
+  test('the dark palette also applies under an explicit data-theme="dark" (issue #65)', () => {
+    const html = injectBrandingIntoHtml(BASE_HTML, "rose", null);
+    expect(html).toContain('[data-theme="dark"]');
+    expect(html).toContain(':not([data-theme="light"])');
+  });
+
   test("falls back to teal for an unknown accent key", () => {
     const html = injectBrandingIntoHtml(BASE_HTML, "not-a-real-accent", null);
     expect(html).toContain("--accent: #0f766e");

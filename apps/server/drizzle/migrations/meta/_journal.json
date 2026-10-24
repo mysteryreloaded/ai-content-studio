@@ -85,6 +85,13 @@
       "when": 1792817265756,
       "tag": "0011_worthless_ted_forrester",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1792819062662,
+      "tag": "0012_brown_puppet_master",
+      "breakpoints": true
     }
   ]
 }

@@ -809,4 +809,35 @@ export class ModelRepository {
     }
     return summaries;
   }
+
+  /**
+   * Issue #65: whether any enabled Model's first Mode makes something
+   * other than video, which switches the landing page's default text
+   * from "AI video models" to "AI models". A Mode with no output kind
+   * (unresolved, or an unrecognised save node) doesn't count as a
+   * reason to switch, since LTX/Wan's all-in-one Workflows are
+   * video-first.
+   */
+  async hasEnabledNonVideoModel(): Promise<boolean> {
+    const rows = await this.db
+      .select({ revision: modelRevisions })
+      .from(models)
+      .innerJoin(
+        modelRevisions,
+        and(
+          eq(modelRevisions.modelId, models.id),
+          eq(modelRevisions.revisionNumber, models.currentRevision),
+        ),
+      )
+      .where(and(eq(models.state, "enabled"), isNull(models.deletedAt)));
+
+    for (const row of rows) {
+      const modeRows = await listModesForRevision(this.db, row.revision.id);
+      for (const mode of modeRows) {
+        const kind = mode.outputNodes[0]?.kind;
+        if (kind && kind !== "video") return true;
+      }
+    }
+    return false;
+  }
 }

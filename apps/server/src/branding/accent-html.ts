@@ -20,13 +20,26 @@ export function accentHeadSnippet(accentKey: string): string {
         --landing-background: ${light.background};
         --landing-foreground: ${light.foreground};
       }
+      /*
+       * Issue #65/#31: "system" (the default) follows the OS unless the
+       * visitor's own System/Light/Dark switch (useTheme.ts) has set
+       * data-theme="light" on <html>, which this media query must then
+       * leave alone; data-theme="dark" below always wins regardless of
+       * the OS.
+       */
       @media (prefers-color-scheme: dark) {
-        :root {
+        :root:not([data-theme="light"]) {
           --accent: ${dark.accent};
           --on-accent: ${dark.onAccent};
           --landing-background: ${dark.background};
           --landing-foreground: ${dark.foreground};
         }
+      }
+      :root[data-theme="dark"] {
+        --accent: ${dark.accent};
+        --on-accent: ${dark.onAccent};
+        --landing-background: ${dark.background};
+        --landing-foreground: ${dark.foreground};
       }
     </style>`;
 }

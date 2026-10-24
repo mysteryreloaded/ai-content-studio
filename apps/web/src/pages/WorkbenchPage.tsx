@@ -36,6 +36,8 @@ import {
   trimUpload,
   uploadResumable,
 } from "../lib/chunkedUpload.js";
+import { FirstSubmissionNotifyPrompt } from "../notifications/FirstSubmissionNotifyPrompt.js";
+import { markOwnCancel } from "../notifications/ownCancel.js";
 import { usePauseNotice } from "../usePauseNotice.js";
 import { useSession } from "../useSession.js";
 
@@ -1406,7 +1408,11 @@ export function WorkbenchPage() {
       const res = await fetch(`/api/submissions/${submissionId}/cancel`, {
         method: "POST",
       });
-      if (!res.ok) {
+      if (res.ok) {
+        // Issue #58: a cancel this tab made itself never raises a
+        // Notification, in this tab or any other.
+        markOwnCancel(submissionId);
+      } else {
         setCancelErrorSubmissionId(submissionId);
       }
     } catch {
@@ -1643,6 +1649,7 @@ export function WorkbenchPage() {
           <aside className="workbench-submissions" aria-label="Submissions">
             <h2>Submissions</h2>
             {submissions.length === 0 && <p>No Submissions yet.</p>}
+            {submissions.length > 0 && <FirstSubmissionNotifyPrompt />}
             <ul>
               {submissions.map((submission) => {
                 const hasUnfinished = submission.generations.some(

@@ -1,6 +1,7 @@
 import { type FormEvent, useState } from "react";
 import { Navigate } from "react-router-dom";
 import { Footer } from "../Footer.js";
+import type { DeleteAccountResult } from "../useSession.js";
 import { useSession } from "../useSession.js";
 
 function initials(name: string): string {
@@ -12,8 +13,13 @@ function initials(name: string): string {
     .join("");
 }
 
-function DeleteAccount({ email }: { email: string }) {
-  const { deleteAccount } = useSession();
+function DeleteAccount({
+  email,
+  deleteAccount,
+}: {
+  email: string;
+  deleteAccount: (email: string) => Promise<DeleteAccountResult>;
+}) {
   const [typedEmail, setTypedEmail] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -62,7 +68,7 @@ function DeleteAccount({ email }: { email: string }) {
 }
 
 export function AccountPage() {
-  const { session, signOut } = useSession();
+  const { session, signOut, deleteAccount } = useSession();
   const [pictureFailed, setPictureFailed] = useState(false);
 
   if (session.status === "loading") return null;
@@ -91,7 +97,9 @@ export function AccountPage() {
         <button type="button" onClick={() => void signOut()}>
           Sign out
         </button>
-        {user.role !== "admin" && <DeleteAccount email={user.email} />}
+        {user.role !== "admin" && (
+          <DeleteAccount email={user.email} deleteAccount={deleteAccount} />
+        )}
       </main>
       <Footer />
     </>

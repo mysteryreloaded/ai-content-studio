@@ -270,6 +270,208 @@
     "category": "conditioning",
     "output_node": false
   },
+  "EmptyImage": {
+    "input": {
+      "required": {
+        "width": [
+          "INT",
+          {
+            "default": 512,
+            "min": 1,
+            "max": 16384
+          }
+        ],
+        "height": [
+          "INT",
+          {
+            "default": 512,
+            "min": 1,
+            "max": 16384
+          }
+        ],
+        "batch_size": [
+          "INT",
+          {
+            "default": 1,
+            "min": 1,
+            "max": 4096
+          }
+        ],
+        "color": [
+          "INT",
+          {
+            "default": 0,
+            "min": 0,
+            "max": 16777215
+          }
+        ]
+      }
+    },
+    "output": ["IMAGE"],
+    "output_name": ["IMAGE"],
+    "name": "EmptyImage",
+    "display_name": "Empty Image",
+    "description": "",
+    "category": "image",
+    "output_node": false
+  },
+  "CreateVideo": {
+    "input": {
+      "required": {
+        "images": ["IMAGE", {}],
+        "fps": [
+          "FLOAT",
+          {
+            "default": 30.0,
+            "min": 1.0,
+            "max": 120.0
+          }
+        ]
+      },
+      "optional": {
+        "audio": ["AUDIO", {}]
+      }
+    },
+    "output": ["VIDEO"],
+    "output_name": ["VIDEO"],
+    "name": "CreateVideo",
+    "display_name": "Create Video",
+    "description": "",
+    "category": "video",
+    "output_node": false
+  },
+  "SaveVideo": {
+    "input": {
+      "required": {
+        "video": ["VIDEO", {}],
+        "filename_prefix": [
+          "STRING",
+          {
+            "default": "video/ComfyUI"
+          }
+        ],
+        "format": [
+          ["auto", "mp4", "webm"],
+          {
+            "default": "auto"
+          }
+        ],
+        "codec": [
+          ["auto", "h264", "vp9"],
+          {
+            "default": "auto"
+          }
+        ]
+      }
+    },
+    "output": [],
+    "output_name": [],
+    "name": "SaveVideo",
+    "display_name": "Save Video",
+    "description": "",
+    "category": "video",
+    "output_node": true
+  },
+  "EmptyAudio": {
+    "input": {
+      "required": {
+        "duration": [
+          "FLOAT",
+          {
+            "default": 60.0,
+            "min": 0.0
+          }
+        ],
+        "sample_rate": [
+          "INT",
+          {
+            "default": 44100,
+            "min": 1,
+            "max": 192000
+          }
+        ],
+        "channels": [
+          "INT",
+          {
+            "default": 2,
+            "min": 1,
+            "max": 2
+          }
+        ]
+      }
+    },
+    "output": ["AUDIO"],
+    "output_name": ["AUDIO"],
+    "name": "EmptyAudio",
+    "display_name": "Empty Audio",
+    "description": "",
+    "category": "audio",
+    "output_node": false
+  },
+  "SaveAudioAdvanced": {
+    "input": {
+      "required": {
+        "audio": ["AUDIO", {}],
+        "filename_prefix": [
+          "STRING",
+          {
+            "default": "audio/ComfyUI"
+          }
+        ],
+        "format": [
+          ["flac", "mp3", "opus"],
+          {
+            "default": "flac"
+          }
+        ]
+      }
+    },
+    "output": [],
+    "output_name": [],
+    "name": "SaveAudioAdvanced",
+    "display_name": "Save Audio (Advanced)",
+    "description": "",
+    "category": "audio",
+    "output_node": true
+  },
+  "TestSleep": {
+    "input": {
+      "required": {
+        "value": ["*", {}],
+        "seconds": [
+          "FLOAT",
+          {
+            "default": 1.0,
+            "min": 0.0,
+            "max": 9999.0
+          }
+        ]
+      }
+    },
+    "output": ["*"],
+    "output_name": ["*"],
+    "name": "TestSleep",
+    "display_name": "Test Sleep",
+    "description": "",
+    "category": "experimental",
+    "output_node": false
+  },
+  "ComfySwitchNode": {
+    "input": {
+      "required": {
+        "switch": ["BOOLEAN", {}],
+        "on_false": ["*", {}],
+        "on_true": ["*", {}]
+      }
+    },
+    "output": ["*"],
+    "output_name": ["output"],
+    "name": "ComfySwitchNode",
+    "display_name": "If/Else Switch",
+    "description": "",
+    "category": "utilities/logic",
+    "output_node": false
+  },
   "LoadVideoCustom": {
     "input": {
       "required": {

@@ -107,11 +107,14 @@ the real Workflow before relying on this list.
 
 - **Minimum: v0.26.0.** Earlier builds don't have `--disable-partner-nodes`,
   which every Backend needs (see above).
-- **Tested version (the contract pin): v0.26.3.** This is the exact build
+- **Tested version (the contract pin): v0.26.2.** This is the exact build
   the Workflows under `workflows/` were authored and tested against —
   install this version unless you're deliberately testing an upgrade.
   Bump this doc alongside the next Workflow update that's verified against
-  a newer ComfyUI.
+  a newer ComfyUI. The same pin is what CI's "ComfyUI contract" job
+  installs (CPU-only) to run the comfyui module's own contract suite
+  against (issue #79) — see
+  `apps/server/src/comfyui/contract.e2e.test.ts`.
 
 ## Remote-inference node packs: unsupported
 

@@ -158,6 +158,21 @@ export interface Job {
   error: string | null;
 }
 
+/**
+ * Real ComfyUI's own `/api/jobs/:id` reports `"pending"` (queued) and
+ * `"in_progress"` (executing) rather than this studio's `"running"`
+ * (verified against `comfy_execution/jobs.py`'s `JobStatus` at the pinned
+ * tag); this studio doesn't distinguish queued-on-the-Backend from
+ * executing, so both fold into `"running"` here, at the HTTP boundary,
+ * rather than renaming `JobStatus` throughout the dispatcher. The fake
+ * (apps/fake-comfyui) already reports `"running"` directly, so this is a
+ * no-op against it.
+ */
+function normalizeJobStatus(status: string): JobStatus {
+  if (status === "pending" || status === "in_progress") return "running";
+  return status as JobStatus;
+}
+
 /** Reads a job's current status. `null` when the Backend doesn't know this id (e.g. it restarted). */
 export async function readJob(
   target: ComfyUiTarget,
@@ -169,7 +184,8 @@ export async function readJob(
   });
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`/api/jobs/${promptId} returned ${res.status}`);
-  return (await res.json()) as Job;
+  const job = (await res.json()) as Job;
+  return { ...job, status: normalizeJobStatus(job.status) };
 }
 
 /** Fetches one output file's bytes from `/view`, as a streamable `Response` (issue #44: saved straight to a temp file). */

@@ -7,6 +7,7 @@ import type { Context } from "hono";
 import { z } from "zod";
 import { type RouteEntry, guardedRoute } from "../auth/access.js";
 import type { AppEnv } from "../auth/app-env.js";
+import { parseRange } from "../http/range.js";
 import type { Storage } from "../storage/storage.js";
 import type { UploadsRepository } from "../uploads/repository.js";
 import {
@@ -252,11 +253,22 @@ export function uploadsRoute(
     const upload = await viewable(c);
     if (!upload) return c.json({ error: "not found" }, 404);
 
+    const size = upload.size;
+    c.header("Accept-Ranges", "bytes");
     c.header("Content-Type", upload.contentType ?? "application/octet-stream");
-    c.header("Content-Length", String(upload.size));
     c.header("Content-Disposition", contentDisposition(upload.originalName));
     c.header("Cache-Control", "private, max-age=31536000, immutable");
-    return c.body(Bun.file(storage.absolutePath(upload.storageKey)).stream());
+
+    const file = Bun.file(storage.absolutePath(upload.storageKey));
+    const range = parseRange(c.req.header("range"), size);
+    if (!range) {
+      c.header("Content-Length", String(size));
+      return c.body(file.stream(), 200);
+    }
+
+    c.header("Content-Range", `bytes ${range.start}-${range.end}/${size}`);
+    c.header("Content-Length", String(range.end - range.start + 1));
+    return c.body(file.slice(range.start, range.end + 1).stream(), 206);
   });
 
   guardedRoute(

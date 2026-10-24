@@ -1072,6 +1072,28 @@ export function WorkbenchPage() {
         (range.startMs > 0 || range.endMs < upload.durationMs)
       );
     });
+    // CEO review round 6: a Video/Audio Input not being trimmed this time
+    // (its range was set back to the whole clip after an earlier trimmed
+    // Generate) must submit its own Upload id, not whatever trimmed id
+    // `values[id]` still holds from that earlier Generate.
+    const toTrimIds = new Set(toTrim.map((input) => input.id));
+    const untrimmedUpdates = Object.fromEntries(
+      mediaInputs
+        .filter((input) => !toTrimIds.has(input.id))
+        .map((input): readonly [string, string] | null => {
+          const upload = uploads[input.id];
+          return upload?.status === "complete"
+            ? [input.id, upload.uploadId]
+            : null;
+        })
+        .filter((entry): entry is readonly [string, string] => entry !== null),
+    );
+    if (Object.keys(untrimmedUpdates).length > 0) {
+      values = { ...values, ...untrimmedUpdates };
+      valuesRef.current = values;
+      setValues((v) => ({ ...v, ...untrimmedUpdates }));
+    }
+
     if (toTrim.length > 0) {
       setSubmitState({ status: "trimming" });
       try {

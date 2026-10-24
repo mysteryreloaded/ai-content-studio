@@ -1227,5 +1227,40 @@ describe("WorkbenchPage", () => {
         values: { [VIDEO_INPUT_ID]: UPLOAD_ID },
       });
     });
+
+    test("a trimmed Generate, then the range set back to the whole clip, submits the Upload's own id, not the stale trimmed one (Dule's round 6 review)", async () => {
+      const server = videoServer();
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await view.findByText("Your media");
+      await userEvent.upload(
+        view.getByLabelText("Clip"),
+        new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
+      );
+
+      const startInput = await view.findByLabelText("Start (s)");
+      await userEvent.clear(startInput);
+      await userEvent.type(startInput, "0.5");
+      await userEvent.click(view.getByRole("button", { name: "Generate" }));
+
+      await waitFor(() => expect(server.trimCalls).toHaveLength(1));
+      await waitFor(() => expect(server.posts).toHaveLength(1));
+      expect(server.posts[0]?.body).toMatchObject({
+        values: { [VIDEO_INPUT_ID]: TRIMMED_ID },
+      });
+
+      await userEvent.clear(startInput);
+      await userEvent.type(startInput, "0");
+      await userEvent.click(view.getByRole("button", { name: "Generate" }));
+
+      await waitFor(() => expect(server.posts).toHaveLength(2));
+      expect(server.trimCalls).toHaveLength(1);
+      expect(server.posts[1]?.body).toMatchObject({
+        values: { [VIDEO_INPUT_ID]: UPLOAD_ID },
+      });
+    });
   });
 });

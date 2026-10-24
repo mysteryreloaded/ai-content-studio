@@ -238,6 +238,35 @@ describe("/api/uploads", () => {
     expect(dims.trim()).toBe("160,80");
   });
 
+  test("an Upload is served with Range/206 support (ADR 0007, Dule's round 6 review)", async () => {
+    const { insertUser, as, dir } = await setup();
+    const app = as(await insertUser("ranged@example.com"));
+    const png = await makeImage(dir, "ranged.png", "64x64");
+
+    const created = await createUpload(app, {
+      name: "ranged.png",
+      size: png.length,
+      type: "image/png",
+    });
+    const { upload } = (await created.json()) as { upload: { id: string } };
+    await putChunk(app, upload.id, 0, png);
+    await app.request(`/api/uploads/${upload.id}/complete`, {
+      method: "POST",
+    });
+
+    const full = await app.request(`/api/uploads/${upload.id}`);
+    expect(full.status).toBe(200);
+    expect(full.headers.get("accept-ranges")).toBe("bytes");
+
+    const ranged = await app.request(`/api/uploads/${upload.id}`, {
+      headers: { range: "bytes=0-1" },
+    });
+    expect(ranged.status).toBe(206);
+    expect(ranged.headers.get("content-range")).toBe(`bytes 0-1/${png.length}`);
+    expect(ranged.headers.get("content-length")).toBe("2");
+    expect(new Uint8Array(await ranged.arrayBuffer())).toEqual(png.slice(0, 2));
+  });
+
   test("an Upload is served to its owner or an Admin, 404 for anyone else", async () => {
     const { insertUser, as, dir } = await setup();
     const ownerId = await insertUser("owner2@example.com");

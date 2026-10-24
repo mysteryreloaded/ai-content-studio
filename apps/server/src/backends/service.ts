@@ -5,10 +5,12 @@ import type { Clock } from "@ai-content-studio/shared";
 import { backendTarget } from "./client.js";
 import type { LogEntryWriter } from "./log-entries.js";
 import { BackendMonitor } from "./monitor.js";
+import { NodeKnowledge } from "./node-knowledge.js";
 import type { BackendRecord, BackendRepository } from "./repository.js";
 
 export class BackendsService {
   private readonly monitor: BackendMonitor;
+  private readonly nodeKnowledge: NodeKnowledge;
 
   constructor(
     private readonly repository: BackendRepository,
@@ -16,7 +18,10 @@ export class BackendsService {
     logger: LogEntryWriter,
     private readonly backendsEnabled: boolean,
   ) {
-    this.monitor = new BackendMonitor(clock, logger);
+    this.nodeKnowledge = new NodeKnowledge(repository, clock);
+    this.monitor = new BackendMonitor(clock, logger, (backendId) =>
+      this.nodeKnowledge.invalidate(backendId),
+    );
   }
 
   /** Admins see this banner whenever BACKENDS_ENABLED=false. */
@@ -39,10 +44,21 @@ export class BackendsService {
 
   unwatch(backendId: string): void {
     this.monitor.unwatch(backendId);
+    this.nodeKnowledge.invalidate(backendId);
   }
 
   healthFor(backendId: string) {
     return this.monitor.healthFor(backendId);
+  }
+
+  /**
+   * `backend`'s node class types from `/object_info` (issue #41), only
+   * while it's reachable. Returns `null` when it isn't, or the fetch
+   * otherwise fails, so the caller can skip it with a note.
+   */
+  async nodeTypesFor(backend: BackendRecord): Promise<Set<string> | null> {
+    if (this.healthFor(backend.id).reachability !== "reachable") return null;
+    return this.nodeKnowledge.nodeTypesFor(backend);
   }
 
   unreachableSince(backendId: string) {

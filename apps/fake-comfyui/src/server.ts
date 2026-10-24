@@ -1,6 +1,11 @@
-// A fake ComfyUI app: serves /system_stats like a real ComfyUI server and can
-// be scripted unreachable, so several instances can stand in for several
-// Backends in tests (see issue #39).
+// A fake ComfyUI app: serves /system_stats and a captured /object_info like
+// a real ComfyUI server, and can be scripted unreachable, so several
+// instances can stand in for several Backends in tests (see issue #39,
+// issue #41).
+
+import objectInfoFixture from "./object-info-fixture.json" with {
+  type: "json",
+};
 
 export interface FakeComfyUiOptions {
   port: number;
@@ -68,6 +73,14 @@ export function startFakeComfyUi(opts: FakeComfyUiOptions) {
         if (!isAuthorized(req, opts))
           return new Response("unauthorized", { status: 401 });
         return Response.json(systemStatsBody(opts));
+      }
+
+      if (url.pathname === "/object_info") {
+        if (unreachable)
+          return new Response("down for testing", { status: 503 });
+        if (!isAuthorized(req, opts))
+          return new Response("unauthorized", { status: 401 });
+        return Response.json(objectInfoFixture);
       }
 
       return new Response("not found", { status: 404 });

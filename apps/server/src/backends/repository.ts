@@ -45,7 +45,8 @@ type Row = typeof backends.$inferSelect;
 
 export type CredentialAuditState = "set" | "changed" | "unchanged" | "cleared";
 
-function toRecord(row: Row): BackendRecord {
+/** Exposed for model-backends.ts, which joins this table directly instead of going through the repository. */
+export function toRecord(row: Row): BackendRecord {
   return {
     id: row.id,
     name: row.name,

@@ -65,6 +65,8 @@ export class BackendMonitor {
   constructor(
     private readonly clock: Clock,
     private readonly logger: LogEntryWriter,
+    /** Called when a Backend transitions to reachable (issue #41: forces a node-knowledge refetch). */
+    private readonly onBecameReachable?: (backendId: string) => void,
   ) {}
 
   healthFor(backendId: string): BackendHealth {
@@ -161,6 +163,7 @@ export class BackendMonitor {
     });
 
     if (becameReachable) {
+      this.onBecameReachable?.(target.id);
       const since = this.unreachableSinceByBackend.get(target.id);
       const downtimeMs = since
         ? this.clock.now().getTime() - since.getTime()

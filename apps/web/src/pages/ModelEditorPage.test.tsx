@@ -59,10 +59,25 @@ const DETAIL = {
   outsideServiceNotes: [],
 };
 
+const NO_BACKENDS = { backends: [] };
+
+interface AttachedBackendEntry {
+  backend: { id: string; name: string; baseUrl: string };
+  reachable: boolean;
+  missingNodeTypes: string[] | null;
+  note: string | null;
+}
+
 interface FetchCall {
   method: string;
   url: string;
   body: Record<string, unknown> | null;
+}
+
+/** `/api/admin/models/m1` gets the Model detail; every other GET (the Backends section's own two lookups) gets an empty list. */
+function respondGet(url: string): Response {
+  if (url.endsWith("/api/admin/models/m1")) return Response.json(DETAIL);
+  return Response.json(NO_BACKENDS);
 }
 
 function mockFetch(handler: (call: FetchCall) => Response | Promise<Response>) {
@@ -112,7 +127,7 @@ afterEach(() => {
 describe("ModelEditorPage", () => {
   test("a taken slug on save shows the server's own message, not the generic reload one", async () => {
     mockFetch((call) => {
-      if (call.method === "GET") return Response.json(DETAIL);
+      if (call.method === "GET") return respondGet(call.url);
       if (call.method === "PUT") {
         return Response.json(
           { error: "a Model with this slug already exists" },
@@ -137,7 +152,7 @@ describe("ModelEditorPage", () => {
 
   test("a stale version on save shows the reload message", async () => {
     mockFetch((call) => {
-      if (call.method === "GET") return Response.json(DETAIL);
+      if (call.method === "GET") return respondGet(call.url);
       if (call.method === "PUT") {
         return Response.json(
           { error: "changed by someone else, reload" },
@@ -161,7 +176,7 @@ describe("ModelEditorPage", () => {
 
   test("clicking a nav link while dirty asks first, and staying cancels the navigation", async () => {
     mockFetch((call) => {
-      if (call.method === "GET") return Response.json(DETAIL);
+      if (call.method === "GET") return respondGet(call.url);
       throw new Error(`unexpected ${call.method}`);
     });
     let confirmed = false;
@@ -183,7 +198,7 @@ describe("ModelEditorPage", () => {
 
   test("confirming the nav-link prompt navigates away", async () => {
     mockFetch((call) => {
-      if (call.method === "GET") return Response.json(DETAIL);
+      if (call.method === "GET") return respondGet(call.url);
       throw new Error(`unexpected ${call.method}`);
     });
     window.confirm = () => true;
@@ -200,7 +215,7 @@ describe("ModelEditorPage", () => {
 
   test("delete with unsaved Details changes confirms exactly once, not a second time for the navigation", async () => {
     const calls = mockFetch((call) => {
-      if (call.method === "GET") return Response.json(DETAIL);
+      if (call.method === "GET") return respondGet(call.url);
       if (call.method === "DELETE") return new Response(null, { status: 204 });
       throw new Error(`unexpected ${call.method}`);
     });
@@ -227,7 +242,7 @@ describe("ModelEditorPage", () => {
 
   test("delete shows the server's error on a stale version and stays put", async () => {
     mockFetch((call) => {
-      if (call.method === "GET") return Response.json(DETAIL);
+      if (call.method === "GET") return respondGet(call.url);
       if (call.method === "DELETE")
         return Response.json(
           { error: "changed by someone else, reload" },
@@ -247,5 +262,101 @@ describe("ModelEditorPage", () => {
       await view.findByText("changed by someone else, reload"),
     ).toBeTruthy();
     expect(view.queryByText("Models list")).toBeNull();
+  });
+
+  test("Backends section lists an attached Backend's missing node types, and attaches another one", async () => {
+    const BACKEND_A = { id: "b1", name: "GPU 1", baseUrl: "http://gpu1" };
+    const BACKEND_B = { id: "b2", name: "GPU 2", baseUrl: "http://gpu2" };
+    let attached: AttachedBackendEntry[] = [
+      {
+        backend: BACKEND_A,
+        reachable: true,
+        missingNodeTypes: ["SomeNode"],
+        note: null,
+      },
+    ];
+
+    const calls = mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1"))
+        return Response.json(DETAIL);
+      if (
+        call.method === "GET" &&
+        call.url.endsWith("/api/admin/models/m1/backends")
+      )
+        return Response.json({ backends: attached });
+      if (call.method === "GET" && call.url.endsWith("/api/admin/backends"))
+        return Response.json({ backends: [BACKEND_A, BACKEND_B] });
+      if (call.method === "POST" && call.url.includes("/backends")) {
+        attached = [
+          ...attached,
+          {
+            backend: BACKEND_B,
+            reachable: false,
+            missingNodeTypes: null,
+            note: "unreachable; can't check for missing node types",
+          },
+        ];
+        return new Response(null, { status: 204 });
+      }
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+
+    expect(await view.findByText("GPU 1")).toBeTruthy();
+    expect(view.getByText("SomeNode")).toBeTruthy();
+
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await userEvent.selectOptions(
+      view.getByLabelText("Attach a Backend"),
+      "b2",
+    );
+    await userEvent.click(view.getByText("Attach"));
+
+    expect(
+      await view.findByText("unreachable; can't check for missing node types"),
+    ).toBeTruthy();
+    expect(
+      calls.some((c) => c.method === "POST" && c.body?.backendId === "b2"),
+    ).toBe(true);
+  });
+
+  test("detaching the only Backend empties the Backends section", async () => {
+    const BACKEND_A = { id: "b1", name: "GPU 1", baseUrl: "http://gpu1" };
+    let attached = [
+      {
+        backend: BACKEND_A,
+        reachable: true,
+        missingNodeTypes: [],
+        note: null,
+      },
+    ];
+
+    const calls = mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1"))
+        return Response.json(DETAIL);
+      if (
+        call.method === "GET" &&
+        call.url.endsWith("/api/admin/models/m1/backends")
+      )
+        return Response.json({ backends: attached });
+      if (call.method === "GET" && call.url.endsWith("/api/admin/backends"))
+        return Response.json({ backends: [BACKEND_A] });
+      if (call.method === "DELETE" && call.url.includes("/backends/")) {
+        attached = [];
+        return new Response(null, { status: 204 });
+      }
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+
+    expect(await view.findByText("GPU 1")).toBeTruthy();
+
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await userEvent.click(view.getByText("Detach"));
+
+    expect(await view.findByText("No Backends attached.")).toBeTruthy();
+    expect(calls.some((c) => c.method === "DELETE")).toBe(true);
   });
 });

@@ -156,6 +156,7 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
     sql: deps.sql,
     clock: deps.clock,
     logWriter,
+    logger: deps.logger,
     backendRepository,
     backendsService,
     modelBackendsRepository,

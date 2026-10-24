@@ -236,3 +236,81 @@ describe("Dispatcher.buildPlan", () => {
     expect(plan).toEqual([]);
   });
 });
+
+describe("Dispatcher resilience to a DB outage", () => {
+  test("tick() settles without rejecting when both the Log write and the query that failed also fail, and a later wake() still ticks", async () => {
+    let listQueuedCalls = 0;
+    let logCalls = 0;
+    let loggerErrorCalls = 0;
+
+    const deps: Partial<DispatcherDeps> = {
+      clock: {
+        now: () => new Date("2026-01-01T00:00:00Z"),
+        setTimeout: (cb: () => void) => {
+          cb();
+          return 0 as unknown as ReturnType<
+            DispatcherDeps["clock"]["setTimeout"]
+          >;
+        },
+        clearTimeout: () => {},
+      } as unknown as DispatcherDeps["clock"],
+      queue: {
+        listQueued: async () => {
+          listQueuedCalls += 1;
+          throw new Error("connection terminated");
+        },
+        activeCountsByUser: async () => new Map(),
+        busyBackendIds: async () => new Set(),
+      } as unknown as DispatcherDeps["queue"],
+      backendRepository: {
+        list: async () => [],
+      } as unknown as DispatcherDeps["backendRepository"],
+      backendsService: {
+        healthFor: () => ({
+          reachability: "reachable" as const,
+          comfyuiVersion: null,
+          vramTotal: null,
+          vramFree: null,
+          credentialsError: false,
+        }),
+        nodeTypesFor: async () => new Set<string>(),
+      } as unknown as DispatcherDeps["backendsService"],
+      modelBackendsRepository: {
+        listForModel: async () => [],
+      } as unknown as DispatcherDeps["modelBackendsRepository"],
+      logWriter: {
+        log: async () => {
+          logCalls += 1;
+          throw new Error("database is down");
+        },
+      } as unknown as DispatcherDeps["logWriter"],
+      logger: {
+        debug: () => {},
+        info: () => {},
+        warn: () => {},
+        error: () => {
+          loggerErrorCalls += 1;
+        },
+      },
+    };
+    const dispatcher = new Dispatcher(deps as DispatcherDeps);
+
+    // biome-ignore lint/suspicious/noExplicitAny: reaching into the private tick() under test
+    await expect((dispatcher as any).tick()).resolves.toBeUndefined();
+    expect(listQueuedCalls).toBe(1);
+    expect(logCalls).toBe(1);
+    expect(loggerErrorCalls).toBe(1);
+
+    // The DB is still down, but a later wake() must still attempt a tick
+    // instead of being stuck forever behind the first failure's `ticking`
+    // flag never resetting.
+    dispatcher.wake();
+    expect(listQueuedCalls).toBe(2);
+
+    // Let the second tick's own (also failing) claim and Log write settle,
+    // so neither leaves an unhandled rejection behind.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(logCalls).toBe(2);
+    expect(loggerErrorCalls).toBe(2);
+  });
+});

@@ -140,6 +140,7 @@ describe("Dispatcher end-to-end against a fake ComfyUI", () => {
       sql,
       clock: systemClock,
       logWriter,
+      logger: silentLogger(),
       backendRepository,
       backendsService,
       modelBackendsRepository,

@@ -14,6 +14,7 @@ import type {
 import type { BackendsService } from "../backends/service.js";
 import type { AssetsRepository } from "../generations/assets-repository.js";
 import type { GenerationEvents } from "../generations/events.js";
+import type { Logger } from "../logger.js";
 import type { ModelBackendsRepository } from "../models/model-backends.js";
 import type { Storage } from "../storage/storage.js";
 import { ProgressTracker } from "./progress.js";
@@ -28,6 +29,8 @@ export interface DispatcherDeps {
   sql: postgres.Sql;
   clock: Clock;
   logWriter: LogEntryWriter;
+  /** Fallback for a tick/run failure Log entry that itself can't be written (e.g. the DB is down). */
+  logger: Logger;
   backendRepository: BackendRepository;
   backendsService: BackendsService;
   modelBackendsRepository: ModelBackendsRepository;
@@ -103,13 +106,7 @@ export class Dispatcher {
         void this.run(generation, backend);
       }
     } catch (err) {
-      await this.deps.logWriter.log({
-        level: "error",
-        source: "app",
-        message: "dispatcher tick failed",
-        details:
-          err instanceof Error ? (err.stack ?? err.message) : String(err),
-      });
+      await this.logFailure("dispatcher tick failed", err, {});
     } finally {
       this.ticking = false;
       if (this.pendingWake) {
@@ -136,17 +133,43 @@ export class Dispatcher {
         pollIntervalMs: this.deps.pollIntervalMs,
       });
     } catch (err) {
-      await this.deps.logWriter.log({
-        level: "error",
-        source: "app",
-        message: "Generation run crashed",
+      await this.logFailure("Generation run crashed", err, {
         backendId: backend.id,
         generationId: generation.id,
-        details:
-          err instanceof Error ? (err.stack ?? err.message) : String(err),
       });
     } finally {
       this.wake();
+    }
+  }
+
+  /**
+   * Writes a failure Log entry, falling back to stdout when that write
+   * itself fails (e.g. the DB `logWriter` writes to is down) — the same
+   * swallow-and-fall-back error-logging.ts does for an unhandled route
+   * error. Never throws: a tick()/run() failure must never become an
+   * unhandled rejection that kills the process.
+   */
+  private async logFailure(
+    message: string,
+    err: unknown,
+    fields: { backendId?: string; generationId?: string },
+  ): Promise<void> {
+    const details =
+      err instanceof Error ? (err.stack ?? err.message) : String(err);
+    try {
+      await this.deps.logWriter.log({
+        level: "error",
+        source: "app",
+        message,
+        details,
+        ...fields,
+      });
+    } catch (logErr) {
+      this.deps.logger.error(message, {
+        details,
+        ...fields,
+        logError: logErr instanceof Error ? logErr.message : String(logErr),
+      });
     }
   }
 

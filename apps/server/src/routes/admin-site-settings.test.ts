@@ -2,10 +2,11 @@
 
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { FakeClock } from "@ai-content-studio/shared";
+import { desc, eq } from "drizzle-orm";
 import { createApp } from "../app.js";
 import { SESSION_COOKIE_NAME, createSession } from "../auth/session.js";
 import { getSiteSettings } from "../branding/site-settings-store.js";
-import { users } from "../db/schema.js";
+import { auditEntries, users } from "../db/schema.js";
 import type { Env } from "../env.js";
 import type { Logger } from "../logger.js";
 import { createTestDatabase } from "../test/database.js";
@@ -343,6 +344,112 @@ describe("/api/admin/site-settings", () => {
         body: JSON.stringify({
           revision: current.blockedWordsRevision + 1,
           text: "stale",
+        }),
+      });
+      expect(res.status).toBe(409);
+    });
+  });
+
+  describe("PUT /caps", () => {
+    test("200s, saving the new caps and recording an update-caps Audit entry with before/after", async () => {
+      const { app, db } = await build();
+      const cookie = await adminCookie();
+      const current = await getSiteSettings(db);
+
+      const res = await app.request("/api/admin/site-settings/caps", {
+        method: "PUT",
+        headers: {
+          ...SAME_ORIGIN_HEADERS,
+          Cookie: cookie,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          revision: current.capsRevision,
+          dailyCap: 30,
+          concurrentCap: 6,
+        }),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        dailyCap: number;
+        concurrentCap: number;
+        capsRevision: number;
+      };
+      expect(body.dailyCap).toBe(30);
+      expect(body.concurrentCap).toBe(6);
+      expect(body.capsRevision).toBe(current.capsRevision + 1);
+
+      const [entry] = await db
+        .select()
+        .from(auditEntries)
+        .where(eq(auditEntries.action, "update-caps"))
+        .orderBy(desc(auditEntries.createdAt))
+        .limit(1);
+      expect(entry).toBeDefined();
+      expect(entry?.targetType).toBe("site_settings");
+      expect(entry?.before).toEqual({
+        dailyCap: current.dailyCap,
+        concurrentCap: current.concurrentCap,
+      });
+      expect(entry?.after).toEqual({ dailyCap: 30, concurrentCap: 6 });
+    });
+
+    test.each([0, 1001, 2.5, true])(
+      "400s on an invalid dailyCap (%p)",
+      async (dailyCap) => {
+        const { app, db } = await build();
+        const cookie = await adminCookie();
+        const current = await getSiteSettings(db);
+
+        const res = await app.request("/api/admin/site-settings/caps", {
+          method: "PUT",
+          headers: {
+            ...SAME_ORIGIN_HEADERS,
+            Cookie: cookie,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            revision: current.capsRevision,
+            dailyCap,
+            concurrentCap: 4,
+          }),
+        });
+        expect(res.status).toBe(400);
+      },
+    );
+
+    test("400s on a missing revision", async () => {
+      const { app } = await build();
+      const cookie = await adminCookie();
+
+      const res = await app.request("/api/admin/site-settings/caps", {
+        method: "PUT",
+        headers: {
+          ...SAME_ORIGIN_HEADERS,
+          Cookie: cookie,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ dailyCap: 20, concurrentCap: 4 }),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    test("409s on a stale revision", async () => {
+      const { app, db } = await build();
+      const cookie = await adminCookie();
+      const current = await getSiteSettings(db);
+
+      const res = await app.request("/api/admin/site-settings/caps", {
+        method: "PUT",
+        headers: {
+          ...SAME_ORIGIN_HEADERS,
+          Cookie: cookie,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          revision: current.capsRevision + 1,
+          dailyCap: 20,
+          concurrentCap: 4,
         }),
       });
       expect(res.status).toBe(409);

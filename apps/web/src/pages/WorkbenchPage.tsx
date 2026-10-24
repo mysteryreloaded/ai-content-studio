@@ -1,9 +1,10 @@
 import {
+  capsFooterText,
   parseInputValues,
   renderMarkdown,
   toInputIssues,
 } from "@ai-content-studio/shared";
-import type { InputDefinition } from "@ai-content-studio/shared";
+import type { CapsStatus, InputDefinition } from "@ai-content-studio/shared";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, Navigate, useParams } from "react-router-dom";
 import { Footer } from "../Footer.js";
@@ -581,6 +582,17 @@ export function WorkbenchPage() {
   const [cancelErrorSubmissionId, setCancelErrorSubmissionId] = useState<
     string | null
   >(null);
+  /** This user's Caps and usage (issue #53), for the Workbench foot. */
+  const [capsStatus, setCapsStatus] = useState<CapsStatus | null>(null);
+
+  const refreshCaps = useCallback(() => {
+    fetch("/api/generations/caps")
+      .then((res) => (res.ok ? (res.json() as Promise<CapsStatus>) : null))
+      .then((status) => {
+        if (status) setCapsStatus(status);
+      })
+      .catch(() => {});
+  }, []);
 
   const [uploads, setUploads] = useState<Record<string, UploadState>>({});
   // Issue #50: each running Upload, by Input id, so Generate can wait for
@@ -770,6 +782,10 @@ export function WorkbenchPage() {
   }, [model, slug]);
 
   useEffect(() => {
+    refreshCaps();
+  }, [refreshCaps]);
+
+  useEffect(() => {
     const source = new EventSource("/api/generations/stream");
 
     source.addEventListener("snapshot", (event) => {
@@ -796,6 +812,9 @@ export function WorkbenchPage() {
         next.set(generation.id, generation.state);
         return next;
       });
+      // A Generation finishing (or starting) moves the concurrent Cap's
+      // own count, so the foot's "more at once" needs a fresh read.
+      if (DONE_STATES.has(generation.state)) refreshCaps();
       if (generation.modelSlug !== slug) return;
       setSubmissions((current) => upsertGeneration(current, generation));
     });
@@ -812,7 +831,7 @@ export function WorkbenchPage() {
     });
 
     return () => source.close();
-  }, [slug]);
+  }, [slug, refreshCaps]);
 
   const handleGenerate = useCallback(async () => {
     // Issue #50: pressed early, Generate waits for running Uploads, then
@@ -863,7 +882,25 @@ export function WorkbenchPage() {
         const body = (await res.json()) as {
           error: string;
           model?: WorkbenchModel;
+          cap?: number;
+          remaining?: number;
         };
+        if (body.error === "daily_cap_exceeded") {
+          refreshCaps();
+          setSubmitState({
+            status: "error",
+            message: `You've reached today's Cap of ${body.cap}.`,
+          });
+          return;
+        }
+        if (body.error === "concurrent_cap_exceeded") {
+          refreshCaps();
+          setSubmitState({
+            status: "error",
+            message: `You already have ${body.cap} Generations at once; wait for one to finish.`,
+          });
+          return;
+        }
         if (body.error === "model_changed" && body.model) {
           setModel(body.model);
           const stillSelected = body.model.modes.find(
@@ -945,11 +982,12 @@ export function WorkbenchPage() {
         });
       }
 
+      refreshCaps();
       setSubmitState({ status: "idle" });
     } catch {
       setSubmitState({ status: "error", message: "could not submit" });
     }
-  }, [selectedModeId, count, selectMode]);
+  }, [selectedModeId, count, selectMode, refreshCaps]);
 
   const cancelWaiting = useCallback(() => {
     if (waitRef.current) waitRef.current.cancelled = true;
@@ -1200,6 +1238,11 @@ export function WorkbenchPage() {
         </div>
 
         <footer className="workbench-generate-bar">
+          {capsStatus && (
+            <span className="workbench-caps">
+              {capsFooterText(capsStatus, new Date())}
+            </span>
+          )}
           {activeCount > 0 && (
             <span className="workbench-chip">{activeCount} under way</span>
           )}
@@ -1528,6 +1571,11 @@ const WORKBENCH_STYLE = `
   gap: 1rem;
   padding: 1rem 0;
   border-top: 1px solid currentColor;
+}
+.workbench-caps {
+  margin-right: auto;
+  opacity: 0.8;
+  font-size: 0.9em;
 }
 @media (max-width: 640px) {
   .workbench-layout {

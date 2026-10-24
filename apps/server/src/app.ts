@@ -14,6 +14,7 @@ import { BackendsService } from "./backends/service.js";
 import { injectBrandingIntoHtml } from "./branding/accent-html.js";
 import {
   getBlockedWords,
+  getSiteCaps,
   getSiteSettings,
 } from "./branding/site-settings-store.js";
 import type { Database } from "./db/client.js";
@@ -215,6 +216,7 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
         clock: deps.clock,
         logWriter,
         getBlockedWords: () => getBlockedWords(deps.db),
+        getSiteCaps: () => getSiteCaps(deps.db),
         onGenerationQueued: dispatcher.wake,
         uploadsRepository,
         hasFreeDisk: diskHasRoom,
@@ -225,6 +227,7 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
   app.route(
     "/api/generations",
     generationsRoute(
+      deps.db,
       generationsRepository,
       generationEvents,
       deps.clock,

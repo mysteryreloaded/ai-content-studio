@@ -84,6 +84,14 @@ interface FetchCall {
   body: Record<string, unknown> | null;
 }
 
+const DEFAULT_CAPS_STATUS = {
+  dailyCap: 30,
+  dailyUsed: 8,
+  concurrentCap: 4,
+  concurrentUsed: 2,
+  oldestCountedSubmittedAt: null,
+};
+
 function mockFetch(handler: (call: FetchCall) => Response | Promise<Response>) {
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
@@ -93,7 +101,16 @@ function mockFetch(handler: (call: FetchCall) => Response | Promise<Response>) {
       url,
       body: typeof init?.body === "string" ? JSON.parse(init.body) : null,
     };
-    return handler(call);
+    try {
+      return await handler(call);
+    } catch (err) {
+      // Most tests don't care about the Caps footer (issue #53); one
+      // that does overrides `/api/generations/caps` in its own handler.
+      if (url.endsWith("/api/generations/caps")) {
+        return Response.json(DEFAULT_CAPS_STATUS);
+      }
+      throw err;
+    }
   }) as typeof fetch;
 }
 
@@ -550,6 +567,91 @@ describe("WorkbenchPage", () => {
       expect(await view.findByText("Be nice.")).toBeTruthy();
       expect(
         view.getByText("Accept this Model's terms to continue."),
+      ).toBeTruthy();
+    });
+  });
+
+  describe("Caps (issue #53)", () => {
+    test("the Workbench foot shows this user's Caps and usage", async () => {
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx")) {
+          return Response.json({ model: MODEL });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ submissions: [] });
+        }
+        if (call.url.endsWith("/api/generations/caps")) {
+          return Response.json(DEFAULT_CAPS_STATUS);
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+
+      expect(
+        await view.findByText("22 of 30 left today · 2 more at once"),
+      ).toBeTruthy();
+    });
+
+    test("names when the next daily slot frees once the remaining count is low", async () => {
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx")) {
+          return Response.json({ model: MODEL });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ submissions: [] });
+        }
+        if (call.url.endsWith("/api/generations/caps")) {
+          return Response.json({
+            dailyCap: 20,
+            dailyUsed: 19,
+            concurrentCap: 4,
+            concurrentUsed: 1,
+            oldestCountedSubmittedAt: new Date(
+              Date.now() - 20 * 60 * 60 * 1000,
+            ).toISOString(),
+          });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+
+      expect(await view.findByText(/next slot frees in/)).toBeTruthy();
+    });
+
+    test("shows a friendly message and refreshes Caps on a 409 daily_cap_exceeded", async () => {
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
+          return Response.json({ model: MODEL });
+        }
+        if (
+          call.url.endsWith("/api/models/ltx/generations") &&
+          call.method === "GET"
+        ) {
+          return Response.json({ submissions: [] });
+        }
+        if (
+          call.url.endsWith("/api/models/ltx/generations") &&
+          call.method === "POST"
+        ) {
+          return Response.json(
+            { error: "daily_cap_exceeded", cap: 30, remaining: 0 },
+            { status: 409 },
+          );
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+      await view.findByRole("button", { name: "Generate" });
+      await userEvent.click(view.getByRole("button", { name: "Generate" }));
+
+      expect(
+        await view.findByText("You've reached today's Cap of 30."),
       ).toBeTruthy();
     });
   });

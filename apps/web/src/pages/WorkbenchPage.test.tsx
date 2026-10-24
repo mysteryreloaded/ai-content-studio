@@ -462,4 +462,160 @@ describe("WorkbenchPage", () => {
       ).toBeTruthy();
     });
   });
+
+  describe("Image Upload Inputs (issue #50)", () => {
+    const UPLOAD_INPUT_ID = "66666666-6666-4666-8666-666666666666";
+    const UPLOAD_ID = "77777777-7777-4777-8777-777777777777";
+    // Its own Mode id: parseInputValues caches by (revision, Mode).
+    const UPLOAD_MODEL = {
+      ...MODEL,
+      modes: [
+        {
+          id: "mode-upload",
+          name: "Default",
+          description: "",
+          inputs: [
+            {
+              id: UPLOAD_INPUT_ID,
+              kind: "image_upload",
+              group: "describe",
+              label: "Start frame",
+              help: "",
+              placeholder: null,
+              maxSizeMb: 5,
+              maxLongSide: null,
+            },
+          ],
+        },
+      ],
+    };
+
+    /** Holds the chunk PUT open until `release()`, so Generate can be pressed mid-upload. */
+    function uploadServer() {
+      let release = () => {};
+      const chunkGate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const posts: FetchCall[] = [];
+      const calls: string[] = [];
+      mockFetch(async (call) => {
+        if (call.url.endsWith("/api/models/ltx")) {
+          return Response.json({ model: UPLOAD_MODEL });
+        }
+        if (
+          call.url.endsWith("/api/models/ltx/generations") &&
+          call.method === "GET"
+        ) {
+          return Response.json({ submissions: [] });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          posts.push(call);
+          return Response.json({ generation: { id: "g1" } }, { status: 201 });
+        }
+        if (call.url === "/api/uploads") {
+          calls.push("create");
+          expect(call.body).toMatchObject({
+            name: "frame.png",
+            type: "image/png",
+            modelId: "m1",
+            inputId: UPLOAD_INPUT_ID,
+          });
+          return Response.json(
+            { upload: { id: UPLOAD_ID, chunkSize: 16 * 1024 * 1024 } },
+            { status: 201 },
+          );
+        }
+        if (call.url.startsWith(`/api/uploads/${UPLOAD_ID}/chunk`)) {
+          calls.push("chunk");
+          await chunkGate;
+          return Response.json({ offset: 4 });
+        }
+        if (call.url === `/api/uploads/${UPLOAD_ID}/complete`) {
+          calls.push("complete");
+          return Response.json({
+            upload: { id: UPLOAD_ID, width: 10, height: 10 },
+          });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+      return { release: () => release(), posts, calls };
+    }
+
+    test("uploads on pick under Your files; Generate waits for it, then submits its id", async () => {
+      const server = uploadServer();
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      expect(await view.findByText("Your files")).toBeTruthy();
+      await userEvent.upload(
+        view.getByLabelText("Start frame"),
+        new File(["PNG!"], "frame.png", { type: "image/png" }),
+      );
+      expect(
+        await view.findByRole("progressbar", { name: "Uploading frame.png" }),
+      ).toBeTruthy();
+
+      await userEvent.click(view.getByRole("button", { name: "Generate" }));
+      expect(
+        await view.findByText("Waiting for your files to finish…"),
+      ).toBeTruthy();
+      expect(view.getByRole("button", { name: "Don't start" })).toBeTruthy();
+      expect(server.posts).toHaveLength(0);
+
+      server.release();
+      await waitFor(() => expect(server.posts).toHaveLength(1));
+      expect(server.posts[0]?.body).toMatchObject({
+        modeId: "mode-upload",
+        values: { [UPLOAD_INPUT_ID]: UPLOAD_ID },
+      });
+      expect(server.calls).toEqual(["create", "chunk", "complete"]);
+    });
+
+    test("Don't start cancels the waiting submit; the Upload still finishes", async () => {
+      const server = uploadServer();
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await view.findByText("Your files");
+      await userEvent.upload(
+        view.getByLabelText("Start frame"),
+        new File(["PNG!"], "frame.png", { type: "image/png" }),
+      );
+      await userEvent.click(view.getByRole("button", { name: "Generate" }));
+      await userEvent.click(
+        await view.findByRole("button", { name: "Don't start" }),
+      );
+      expect(view.getByRole("button", { name: "Generate" })).toBeTruthy();
+
+      server.release();
+      await waitFor(() => expect(server.calls).toContain("complete"));
+      expect(await view.findByText("frame.png")).toBeTruthy();
+      expect(server.posts).toHaveLength(0);
+    });
+
+    test("refuses the wrong kind on pick, sending nothing", async () => {
+      const server = uploadServer();
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await view.findByText("Your files");
+      const input = view.getByLabelText("Start frame") as HTMLInputElement;
+      // `accept` would filter this out in a real picker; a drop can still deliver it.
+      input.removeAttribute("accept");
+      await userEvent.upload(
+        input,
+        new File(["GIF89a"], "anim.gif", { type: "image/gif" }),
+      );
+      expect(
+        await view.findByText("anim.gif isn't a PNG, JPEG or WebP image."),
+      ).toBeTruthy();
+      expect(server.calls).toEqual([]);
+    });
+  });
 });

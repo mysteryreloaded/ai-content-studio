@@ -1,4 +1,12 @@
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  open,
+  readFile,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 
 export interface StorageStat {
@@ -18,6 +26,12 @@ export interface Storage {
    * the bytes written.
    */
   writeResponseBody(key: string, response: Response): Promise<number>;
+  /**
+   * Writes `data` at `offset`, first cutting the file back to `offset`
+   * (issue #50: an Upload chunk). A chunk written past the recorded
+   * offset by an interrupted earlier try is overwritten, never kept.
+   */
+  writeAt(key: string, offset: number, data: Uint8Array): Promise<void>;
   /** The absolute path for `key` (issue #44: Range-serving an Asset needs a real file, not just its bytes). */
   absolutePath(key: string): string;
 }
@@ -63,6 +77,18 @@ export function createLocalStorage(root: string): Storage {
       const bytesWritten = await Bun.write(tmpPath, response);
       await rename(tmpPath, filePath);
       return bytesWritten;
+    },
+
+    async writeAt(key, offset, data) {
+      const filePath = resolveKeyPath(root, key);
+      await mkdir(path.dirname(filePath), { recursive: true });
+      const handle = await open(filePath, offset === 0 ? "w" : "r+");
+      try {
+        await handle.truncate(offset);
+        await handle.write(data, 0, data.length, offset);
+      } finally {
+        await handle.close();
+      }
     },
 
     absolutePath(key) {

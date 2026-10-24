@@ -1,5 +1,5 @@
 {
-  "id": "77a8b7d2-b984-427d-92a8-a20037a567f9",
+  "id": "b634ba47-9072-4ee3-9105-52991e77d435",
   "prevId": "5208a8fc-927c-4a90-874c-24ac9060e0e8",
   "version": "7",
   "dialect": "postgresql",
@@ -448,13 +448,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "pending_backend_cancel": {
-          "name": "pending_backend_cancel",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
         "started_at": {
           "name": "started_at",
           "type": "timestamp with time zone",
@@ -553,7 +546,7 @@
             }
           ],
           "isUnique": true,
-          "where": "\"generations\".\"state\" in ('starting', 'running', 'cancelling') and \"generations\".\"backend_id\" is not null",
+          "where": "\"generations\".\"state\" in ('starting', 'running') and \"generations\".\"backend_id\" is not null",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -1405,6 +1398,39 @@
           "notNull": true,
           "default": 1
         },
+        "notice": {
+          "name": "notice",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "''"
+        },
+        "notice_revision": {
+          "name": "notice_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "paused": {
+          "name": "paused",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "paused_at": {
+          "name": "paused_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "paused_by_name": {
+          "name": "paused_by_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "daily_cap": {
           "name": "daily_cap",
           "type": "integer",
@@ -1782,9 +1808,7 @@
         "running",
         "saving",
         "succeeded",
-        "failed",
-        "cancelling",
-        "cancelled"
+        "failed"
       ]
     },
     "public.log_level": {

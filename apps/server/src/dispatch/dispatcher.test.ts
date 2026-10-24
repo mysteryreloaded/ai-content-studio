@@ -5,9 +5,10 @@
 // directly against fake deps, no database or network involved.
 
 import { describe, expect, test } from "bun:test";
+import { FakeClock } from "@ai-content-studio/shared";
 import type { BackendRecord } from "../backends/repository.js";
 import { Dispatcher, type DispatcherDeps } from "./dispatcher.js";
-import type { QueuedGeneration } from "./queue.js";
+import type { QueuedGeneration, RunDetail } from "./queue.js";
 
 function fakeBackend(overrides: Partial<BackendRecord> = {}): BackendRecord {
   return {
@@ -318,5 +319,118 @@ describe("Dispatcher resilience to a DB outage", () => {
     expect(listQueuedCalls).toBe(2);
     expect(logCalls).toBe(2);
     expect(loggerErrorCalls).toBe(2);
+  });
+});
+
+describe("Dispatcher Pause gating (issue #59)", () => {
+  test("claimBatch claims nothing while Paused, even with a free Backend", async () => {
+    const generation = fakeGeneration();
+    const backend = fakeBackend();
+    let listQueuedCalls = 0;
+
+    const deps: Partial<DispatcherDeps> = {
+      clock: new FakeClock(),
+      isPaused: async () => true,
+      queue: {
+        listQueued: async () => {
+          listQueuedCalls += 1;
+          return [generation];
+        },
+        activeCountsByUser: async () => new Map(),
+        busyBackendIds: async () => new Set(),
+      } as unknown as DispatcherDeps["queue"],
+      backendRepository: {
+        list: async () => [backend],
+      } as unknown as DispatcherDeps["backendRepository"],
+      backendsService: {
+        healthFor: () => ({
+          reachability: "reachable" as const,
+          comfyuiVersion: null,
+          vramTotal: null,
+          vramFree: null,
+          credentialsError: false,
+        }),
+        nodeTypesFor: async () => new Set(generation.nodeTypes),
+      } as unknown as DispatcherDeps["backendsService"],
+      modelBackendsRepository: {
+        listForModel: async () => [backend],
+      } as unknown as DispatcherDeps["modelBackendsRepository"],
+    };
+    const dispatcher = new Dispatcher(deps as DispatcherDeps);
+
+    // biome-ignore lint/suspicious/noExplicitAny: reaching into the private claimBatch() under test
+    const claimed = await (dispatcher as any).claimBatch();
+    expect(claimed).toEqual([]);
+    // Refused before even building a plan: not just "claimed nothing".
+    expect(listQueuedCalls).toBe(0);
+  });
+
+  test("the 15-minute no-usable-Backend wait freezes while Paused and resumes counting after", async () => {
+    const clock = new FakeClock();
+    const generation = fakeGeneration();
+    let paused = false;
+    let markFailedCalls = 0;
+    const detail = {
+      id: generation.id,
+      userId: generation.userId,
+      modelId: generation.modelId,
+    } as unknown as RunDetail;
+
+    const deps: Partial<DispatcherDeps> = {
+      clock,
+      isPaused: async () => paused,
+      waitingForBackendTimeoutMs: 10_000,
+      queue: {
+        listQueued: async () => [generation],
+        detailForRun: async () => detail,
+        markFailed: async () => {
+          markFailedCalls += 1;
+          return true;
+        },
+      } as unknown as DispatcherDeps["queue"],
+      modelBackendsRepository: {
+        // No Backend attached at all: never usable, so only the Paused
+        // clock matters for whether the 15-minute wait advances.
+        listForModel: async () => [],
+      } as unknown as DispatcherDeps["modelBackendsRepository"],
+      generationEvents: {
+        publish: () => {},
+      } as unknown as DispatcherDeps["generationEvents"],
+      logWriter: {
+        log: async () => {},
+      } as unknown as DispatcherDeps["logWriter"],
+    };
+    const dispatcher = new Dispatcher(deps as DispatcherDeps);
+    // biome-ignore lint/suspicious/noExplicitAny: reaching into the private watchdog sweep under test
+    const sweep = () => (dispatcher as any).failLongQueuedWithoutBackend();
+
+    await sweep(); // records "no usable Backend since" now (0ms elapsed)
+    clock.advance(6_000);
+    await sweep(); // 6s unpaused elapsed; below the 10s threshold
+    expect(markFailedCalls).toBe(0);
+
+    // The sweep that first observes Pause becoming true registers the
+    // transition at that instant (0ms elapsed so far this Pause), the
+    // same as a real ~30s-interval watchdog tick landing right as a
+    // Pause starts.
+    paused = true;
+    await sweep();
+    clock.advance(20_000); // 20s of wall time, entirely Paused
+    await sweep();
+    expect(markFailedCalls).toBe(0); // still 6s unpaused elapsed: frozen
+
+    clock.advance(20_000); // more wall time, still Paused: still frozen
+    await sweep();
+    expect(markFailedCalls).toBe(0);
+
+    paused = false;
+    await sweep(); // registers the Resume at this instant
+    clock.advance(3_000);
+    await sweep(); // 6s + 3s = 9s unpaused elapsed; still below 10s
+    expect(markFailedCalls).toBe(0);
+
+    clock.advance(2_000);
+    await sweep(); // 11s unpaused elapsed: past the 10s threshold
+    expect(markFailedCalls).toBe(1);
   });
 });

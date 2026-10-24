@@ -75,6 +75,8 @@ export interface DispatcherDeps {
   /** Test-only: shortens the watchdog's own timeouts below their production defaults. */
   startingTimeoutMs?: number;
   waitingForBackendTimeoutMs?: number;
+  /** Issue #59: whether generating is currently Paused. Defaults to never paused, so existing callers need no change. */
+  isPaused?: () => Promise<boolean>;
 }
 
 interface ClaimPlan {
@@ -103,8 +105,22 @@ export class Dispatcher {
   private stopped = false;
   /** Test-only: while `runUntilIdle`'s own loop is driving, `wake()` just flags it instead of also racing a real background tick against it. */
   private manualDriveActive = false;
-  /** Generation id -> when `failLongQueuedWithoutBackend` first found it with no usable Backend at all, continuously (issue #55's AC). */
-  private readonly noUsableBackendSince = new Map<string, number>();
+  /**
+   * Generation id -> when `failLongQueuedWithoutBackend` first found it
+   * with no usable Backend at all, continuously (issue #55's AC), and
+   * how much of the dispatcher's own Paused time (issue #59) had
+   * already piled up at that moment. The 15-minute wait counts unpaused
+   * time only, so elapsed time is `(now - since) - (pausedTotal(now) -
+   * pausedBaseline)`: while a Pause that started before `since` is still
+   * going, `pausedTotal(now)` grows in lockstep with `now - since`,
+   * freezing the elapsed figure exactly for its duration.
+   */
+  private readonly noUsableBackendSince = new Map<
+    string,
+    { sinceMs: number; pausedBaselineMs: number }
+  >();
+  private pausedMsTotal = 0;
+  private pausedSinceMs: number | null = null;
 
   constructor(private readonly deps: DispatcherDeps) {
     this.progress = new ProgressTracker(deps.clock);
@@ -291,8 +307,45 @@ export class Dispatcher {
     }
   }
 
+  private async isPaused(): Promise<boolean> {
+    return (await this.deps.isPaused?.()) ?? false;
+  }
+
+  /**
+   * Updates the Paused-time bookkeeping for this tick and returns
+   * whether generating is currently Paused. Called once per watchdog
+   * sweep (issue #59): a 30s granularity is already how this sweep
+   * tracks everything else, so it's plenty for a 15-minute threshold.
+   */
+  private async trackPaused(nowMs: number): Promise<boolean> {
+    const paused = await this.isPaused();
+    if (paused && this.pausedSinceMs === null) {
+      this.pausedSinceMs = nowMs;
+    } else if (!paused && this.pausedSinceMs !== null) {
+      this.pausedMsTotal += nowMs - this.pausedSinceMs;
+      this.pausedSinceMs = null;
+    }
+    return paused;
+  }
+
+  private pausedTotalMsAt(nowMs: number): number {
+    return (
+      this.pausedMsTotal +
+      (this.pausedSinceMs !== null ? nowMs - this.pausedSinceMs : 0)
+    );
+  }
+
   /** Builds the match plan, then claims each pair inside one advisory-locked transaction. */
   private async claimBatch(): Promise<(ClaimPlan & { tries: number })[]> {
+    // A Pause refuses every new claim outright (issue #59's AC): queued
+    // Generations wait untouched, while anything already `starting`/
+    // `running`/`saving` keeps going in the runner, which this never
+    // touches. `&&` short-circuits past the `await` entirely when no
+    // `isPaused` dep is wired (every production caller wires one; a few
+    // tests construct a bare DispatcherDeps and rely on tick()'s claim
+    // happening fully synchronously under a stubbed clock).
+    if (this.deps.isPaused && (await this.isPaused())) return [];
+
     const plan = await this.buildPlan();
     if (plan.length === 0) return [];
 
@@ -508,18 +561,26 @@ export class Dispatcher {
     const thresholdMs =
       this.deps.waitingForBackendTimeoutMs ?? WAITING_FOR_BACKEND_TIMEOUT_MS;
     const nowMs = this.deps.clock.now().getTime();
+    await this.trackPaused(nowMs);
 
     for (const candidate of queued) {
       if (await this.hasUsableBackend(candidate.modelId, candidate.nodeTypes)) {
         this.noUsableBackendSince.delete(candidate.id);
         continue;
       }
-      const since = this.noUsableBackendSince.get(candidate.id);
-      if (since === undefined) {
-        this.noUsableBackendSince.set(candidate.id, nowMs);
+      const entry = this.noUsableBackendSince.get(candidate.id);
+      if (entry === undefined) {
+        this.noUsableBackendSince.set(candidate.id, {
+          sinceMs: nowMs,
+          pausedBaselineMs: this.pausedTotalMsAt(nowMs),
+        });
         continue;
       }
-      if (nowMs - since < thresholdMs) continue;
+      const elapsedMs =
+        nowMs -
+        entry.sinceMs -
+        (this.pausedTotalMsAt(nowMs) - entry.pausedBaselineMs);
+      if (elapsedMs < thresholdMs) continue;
 
       const detail = await this.deps.queue.detailForRun(candidate.id);
       if (!detail) continue;

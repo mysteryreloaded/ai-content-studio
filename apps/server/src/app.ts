@@ -12,8 +12,10 @@ import { createLogEntryWriter } from "./backends/log-entries.js";
 import { BackendRepository } from "./backends/repository.js";
 import { BackendsService } from "./backends/service.js";
 import { injectBrandingIntoHtml } from "./branding/accent-html.js";
+import { NoticeEvents } from "./branding/notice-events.js";
 import {
   getBlockedWords,
+  getPauseNotice,
   getSiteCaps,
   getSiteSettings,
 } from "./branding/site-settings-store.js";
@@ -157,9 +159,18 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
 
   app.route("/healthz", healthRoute(deps.sql, deps.clock, routes));
   const modelRepository = new ModelRepository(deps.db, deps.clock);
+  const noticeEvents = new NoticeEvents();
+  const isPaused = async () => (await getPauseNotice(deps.db)).paused;
   app.route(
     "/api/site-settings",
-    siteSettingsRoute(deps.db, storage, modelRepository, routes),
+    siteSettingsRoute(
+      deps.db,
+      storage,
+      modelRepository,
+      noticeEvents,
+      deps.clock,
+      routes,
+    ),
   );
   app.route(
     "/api/auth",
@@ -199,6 +210,7 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
     siteName: new URL(deps.env.PUBLIC_URL).hostname,
     c2pa,
     getSiteTitle: async () => (await getSiteSettings(deps.db)).title,
+    isPaused,
   });
   wakeDispatcher = dispatcher.wake;
 
@@ -216,6 +228,7 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
         clock: deps.clock,
         logWriter,
         getBlockedWords: () => getBlockedWords(deps.db),
+        isPaused,
         getSiteCaps: () => getSiteCaps(deps.db),
         onGenerationQueued: dispatcher.wake,
         uploadsRepository,
@@ -268,7 +281,14 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
   app.route("/api/admin", adminRoute(routes));
   app.route(
     "/api/admin/site-settings",
-    adminSiteSettingsRoute(deps.db, deps.clock, storage, routes),
+    adminSiteSettingsRoute(
+      deps.db,
+      deps.clock,
+      storage,
+      noticeEvents,
+      () => wakeDispatcher(),
+      routes,
+    ),
   );
   app.route(
     "/api/admin/backends",

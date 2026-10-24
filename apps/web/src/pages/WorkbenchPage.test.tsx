@@ -71,6 +71,21 @@ class FakeEventSource {
     this.listeners[type] = list;
   }
   close() {}
+  /** The Workbench also opens `usePauseNotice`'s shared stream; tests target the Generations one by its URL. */
+  static generationsStream(): FakeEventSource {
+    const source = FakeEventSource.instances.find((instance) =>
+      instance.url.includes("/api/generations/stream"),
+    );
+    if (!source) throw new Error("no Generations EventSource yet");
+    return source;
+  }
+  static noticeStream(): FakeEventSource {
+    const source = FakeEventSource.instances.find((instance) =>
+      instance.url.includes("/api/site-settings/notice-stream"),
+    );
+    if (!source) throw new Error("no notice EventSource yet");
+    return source;
+  }
   emit(type: string, data: unknown) {
     for (const cb of this.listeners[type] ?? []) {
       cb({ data: JSON.stringify(data) });
@@ -186,8 +201,8 @@ describe("WorkbenchPage", () => {
     const view = renderWorkbench();
     await view.findByRole("heading", { name: "LTX 2.5" });
 
-    await waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
-    const source = FakeEventSource.instances[0] as FakeEventSource;
+    await waitFor(() => FakeEventSource.generationsStream());
+    const source = FakeEventSource.generationsStream();
     source.emit("snapshot", { generations: [{ id: "g1" }, { id: "g2" }] });
 
     expect(await view.findByText("2 under way")).toBeTruthy();
@@ -242,8 +257,8 @@ describe("WorkbenchPage", () => {
     await view.findByRole("heading", { name: "LTX 2.5" });
     expect(view.getByText("No Submissions yet.")).toBeTruthy();
 
-    await waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
-    const source = FakeEventSource.instances[0] as FakeEventSource;
+    await waitFor(() => FakeEventSource.generationsStream());
+    const source = FakeEventSource.generationsStream();
     source.emit("change", {
       id: "g1",
       modelId: "m1",
@@ -351,6 +366,79 @@ describe("WorkbenchPage", () => {
           .disabled,
       ).toBe(false);
     });
+  });
+
+  test("disables Generate and shows the Pause message only while Paused (issue #59)", async () => {
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/models/ltx")) {
+        return Response.json({ model: MODEL });
+      }
+      if (call.url.endsWith("/api/models/ltx/generations")) {
+        return Response.json({ submissions: [] });
+      }
+      throw new Error(`unexpected fetch ${call.url}`);
+    });
+
+    const view = renderWorkbench();
+    await view.findByRole("button", { name: "Generate" });
+
+    await waitFor(() => FakeEventSource.noticeStream());
+    const source = FakeEventSource.noticeStream();
+    const generateButton = () =>
+      view.getByRole("button", { name: "Generate" }) as HTMLButtonElement;
+
+    source.emit("notice", { paused: false, notice: "" });
+    await waitFor(() => expect(generateButton().disabled).toBe(false));
+    expect(view.queryByRole("status")).toBeNull();
+
+    source.emit("notice", { paused: true, notice: "" });
+    expect(
+      await view.findByText("Generating is paused for maintenance.", {
+        exact: false,
+      }),
+    ).toBeTruthy();
+    expect(generateButton().disabled).toBe(true);
+
+    source.emit("notice", { paused: false, notice: "" });
+    await waitFor(() => expect(generateButton().disabled).toBe(false));
+    expect(view.queryByRole("status")).toBeNull();
+  });
+
+  test('shows a queued Generation as "Queued · paused" while Paused (issue #59)', async () => {
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/models/ltx")) {
+        return Response.json({ model: MODEL });
+      }
+      if (call.url.endsWith("/api/models/ltx/generations")) {
+        return Response.json({ submissions: [] });
+      }
+      throw new Error(`unexpected fetch ${call.url}`);
+    });
+
+    const view = renderWorkbench();
+    await view.findByRole("heading", { name: "LTX 2.5" });
+
+    await waitFor(() => FakeEventSource.noticeStream());
+    FakeEventSource.noticeStream().emit("notice", {
+      paused: true,
+      notice: "",
+    });
+
+    await waitFor(() => FakeEventSource.generationsStream());
+    FakeEventSource.generationsStream().emit("change", {
+      id: "g1",
+      modelId: "m1",
+      modelSlug: "ltx",
+      modelName: "LTX 2.5",
+      modeId: "mode1",
+      modeName: "Default",
+      submissionId: "s1",
+      state: "queued",
+      tries: 0,
+      submittedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    expect(await view.findByText("Queued · paused")).toBeTruthy();
   });
 
   test('shows "no server available for this Model" on a 400 no_backend', async () => {

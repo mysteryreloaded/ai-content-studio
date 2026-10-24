@@ -136,6 +136,7 @@ describe("every route's access level is declared and enforced", () => {
       "PUT /api/admin/site-settings/terms": 400,
       "PUT /api/admin/site-settings/privacy": 400,
       "PUT /api/admin/site-settings/blocked-words": 400,
+      "PUT /api/admin/site-settings/notice": 400,
       "PUT /api/admin/site-settings/caps": 400,
       "POST /api/admin/backends": 400,
       "GET /api/admin/backends/:id": 404,

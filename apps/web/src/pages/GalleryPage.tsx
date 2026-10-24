@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, Navigate, useSearchParams } from "react-router-dom";
 import { Footer } from "../Footer.js";
+import { usePauseNotice } from "../usePauseNotice.js";
 import { useSession } from "../useSession.js";
 
 type GenerationState =
@@ -84,9 +85,10 @@ interface GalleryModelOption {
 
 const PAGE_LIMIT = 24;
 
-function stateLabel(state: GenerationState): string {
+function stateLabel(state: GenerationState, paused: boolean): string {
   switch (state) {
     case "queued":
+      if (paused) return "Queued · paused";
       return "Queued";
     case "starting":
       return "Starting…";
@@ -114,7 +116,13 @@ function thumbSrcFor(asset: AssetSummary): string | null {
   return null;
 }
 
-function GenerationCard({ generation }: { generation: GenerationSummary }) {
+function GenerationCard({
+  generation,
+  paused,
+}: {
+  generation: GenerationSummary;
+  paused: boolean;
+}) {
   const mainAsset = generation.assets[0];
   const extra = generation.assets.length - 1;
   const thumb = mainAsset ? thumbSrcFor(mainAsset) : null;
@@ -137,7 +145,7 @@ function GenerationCard({ generation }: { generation: GenerationSummary }) {
         </>
       ) : (
         <div className="gallery-card-state">
-          <span>{stateLabel(generation.state)}</span>
+          <span>{stateLabel(generation.state, paused)}</span>
           {generation.state === "failed" && generation.error && (
             <span role="alert">{generation.error}</span>
           )}
@@ -211,7 +219,13 @@ function groupByDay(submissions: GallerySubmission[], now: Date): DayGroup[] {
   return groups;
 }
 
-function SubmissionBlock({ submission }: { submission: GallerySubmission }) {
+function SubmissionBlock({
+  submission,
+  paused,
+}: {
+  submission: GallerySubmission;
+  paused: boolean;
+}) {
   return (
     <section className="gallery-submission" aria-label={submission.modeName}>
       <header className="gallery-submission-header">
@@ -225,7 +239,11 @@ function SubmissionBlock({ submission }: { submission: GallerySubmission }) {
       </header>
       <ul className="gallery-card-grid">
         {submission.generations.map((generation) => (
-          <GenerationCard key={generation.id} generation={generation} />
+          <GenerationCard
+            key={generation.id}
+            generation={generation}
+            paused={paused}
+          />
         ))}
       </ul>
     </section>
@@ -284,6 +302,7 @@ function queryFor(
 /** A user's own Gallery (issue #56): every Generation they've made, across every Model, grouped by day, filterable, live. */
 export function GalleryPage() {
   const { session } = useSession();
+  const { paused } = usePauseNotice();
   const [searchParams, setSearchParams] = useSearchParams();
   const modelFilter = searchParams.get("model");
   const stateFilter = toStateFilter(searchParams.get("state"));
@@ -528,6 +547,7 @@ export function GalleryPage() {
               <SubmissionBlock
                 key={submission.submissionId}
                 submission={submission}
+                paused={paused}
               />
             ))}
           </div>

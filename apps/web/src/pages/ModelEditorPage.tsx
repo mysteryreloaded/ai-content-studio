@@ -1806,6 +1806,8 @@ export function ModelEditorPage() {
         State: {detail.model.state} · Revision: {detail.model.currentRevision}
         {" · "}
         <a href={`/api/admin/models/${detail.model.id}/history`}>History</a>
+        {" · "}
+        <a href={`/api/admin/models/${detail.model.id}/export`}>Export</a>
       </p>
 
       <button
@@ -1853,6 +1855,11 @@ export function ModelEditorPage() {
                   <td>{revision.modeCount}</td>
                   <td>{revision.inputCount}</td>
                   <td>
+                    <a
+                      href={`/api/admin/models/${detail.model.id}/revisions/${revision.revisionNumber}/export`}
+                    >
+                      Export
+                    </a>{" "}
                     <button
                       type="button"
                       disabled={

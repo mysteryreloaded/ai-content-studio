@@ -3,14 +3,18 @@
 
 import {
   type CheckModelMode,
+  MODEL_ATTRIBUTION_MAX_LENGTH,
+  MODEL_TERMS_MAX_LENGTH,
   checkModel,
   hasBlockingErrors,
+  isValidModelLicenseUrl,
   modelTermsFieldsSchema,
   parseApiFormatWorkflow,
   reviseModeInputSettings,
   toInputIssues,
 } from "@ai-content-studio/shared";
 import type {
+  AssetKind,
   Clock,
   ComfyFieldSpec,
   InputDefinition,
@@ -48,6 +52,7 @@ import {
   toCheckModelBackends,
 } from "../models/object-info.js";
 import {
+  IdTaken,
   NameTaken,
   NotFound,
   SlugTaken,
@@ -57,6 +62,7 @@ import {
 import type {
   ModeInput,
   ModeRecord,
+  ModelExport,
   ModelRepository,
 } from "../models/repository.js";
 import { ValidationFailed } from "../models/validation.js";
@@ -229,6 +235,53 @@ const testSchema = z.object({
   backendId: z.string().regex(UUID_RE).nullable(),
 });
 
+const resolvedOutputNodeSchema = z.object({
+  nodeId: z.string(),
+  classType: z.string(),
+  title: z.string().nullable(),
+  kind: z
+    .enum(["video", "image", "audio"])
+    .nullable() satisfies z.ZodType<AssetKind | null>,
+});
+
+const exportModeSchema = z.object({
+  id: z.string().regex(UUID_RE),
+  sortOrder: z.number().int(),
+  name: z.string(),
+  description: z.string(),
+  outputNodes: z.array(resolvedOutputNodeSchema),
+  inputSettings: z.array(modeInputSettingSchema),
+});
+
+/** A Model export file (issue #73): accepted back on import. */
+const modelExportSchema = z.object({
+  exportVersion: z.literal(1),
+  id: z.string().regex(UUID_RE),
+  name: z.string().min(1).max(80),
+  slug: z.string(),
+  description: z.string(),
+  maxRunTimeMinutes: z.number(),
+  termsBody: z.string().max(MODEL_TERMS_MAX_LENGTH),
+  licenseUrl: z
+    .string()
+    .max(2000)
+    .refine(isValidModelLicenseUrl, { message: "must be an http(s) URL" }),
+  attribution: z.string().max(MODEL_ATTRIBUTION_MAX_LENGTH),
+  revisionNumber: z.number().int(),
+  workflow: z.unknown(),
+  inputs: z.array(inputDefinitionSchema),
+  modes: z.array(exportModeSchema),
+});
+
+function exportResponse(file: ModelExport): Response {
+  return new Response(JSON.stringify(file, null, 2), {
+    headers: {
+      "content-type": "application/json",
+      "content-disposition": `attachment; filename="${file.slug}-rev${file.revisionNumber}.json"`,
+    },
+  });
+}
+
 function idParam(c: Context<AppEnv>): string {
   const id = c.req.param("id");
   if (!id) throw new Error("id param missing");
@@ -289,6 +342,30 @@ export function adminModelsRoute(
           parsed.data.workflow,
           adminActorFrom(c),
         );
+      return c.json({ model: record, outsideServiceNotes }, 201);
+    } catch (err) {
+      return handleError(c, err);
+    }
+  });
+
+  // Issue #73: imports a Model moved from another studio as one exported
+  // JSON file, always landing as a fresh, disabled Model at revision 1.
+  guardedRoute(app, routes, basePath, "post", "/import", "admin", async (c) => {
+    const body = await readJsonBody(c);
+    if (body === null) return c.json({ error: "invalid JSON body" }, 400);
+
+    const parsed = modelExportSchema.safeParse(body);
+    if (!parsed.success)
+      return c.json(
+        { error: "invalid input", issues: parsed.error.issues },
+        400,
+      );
+
+    try {
+      const { record, outsideServiceNotes } = await repository.importModel(
+        parsed.data as ModelExport,
+        adminActorFrom(c),
+      );
       return c.json({ model: record, outsideServiceNotes }, 201);
     } catch (err) {
       return handleError(c, err);
@@ -963,6 +1040,49 @@ export function adminModelsRoute(
     },
   );
 
+  // Issue #73: from the editor header, exporting the current revision.
+  guardedRoute(
+    app,
+    routes,
+    basePath,
+    "get",
+    "/:id/export",
+    "admin",
+    async (c) => {
+      const id = idParam(c);
+      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+
+      const file = await repository.exportRevision(id);
+      if (!file) return c.json({ error: "not found" }, 404);
+      return exportResponse(file);
+    },
+  );
+
+  // Issue #73: from the Revisions section, exporting one specific revision.
+  guardedRoute(
+    app,
+    routes,
+    basePath,
+    "get",
+    "/:id/revisions/:number/export",
+    "admin",
+    async (c) => {
+      const id = idParam(c);
+      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+
+      const numberResult = z.coerce
+        .number()
+        .int()
+        .min(1)
+        .safeParse(c.req.param("number"));
+      if (!numberResult.success) return c.json({ error: "not found" }, 404);
+
+      const file = await repository.exportRevision(id, numberResult.data);
+      if (!file) return c.json({ error: "not found" }, 404);
+      return exportResponse(file);
+    },
+  );
+
   guardedRoute(
     app,
     routes,
@@ -1215,6 +1335,7 @@ function handleError(c: Context<AppEnv>, err: unknown) {
     return c.json({ errors: err.errors }, 400);
   if (err instanceof NameTaken) return c.json({ error: err.message }, 409);
   if (err instanceof SlugTaken) return c.json({ error: err.message }, 409);
+  if (err instanceof IdTaken) return c.json({ error: err.message }, 409);
   if (err instanceof StaleVersion) return c.json({ error: err.message }, 409);
   if (err instanceof NotFound) return c.json({ error: err.message }, 404);
   if (err instanceof BackendNotFound)

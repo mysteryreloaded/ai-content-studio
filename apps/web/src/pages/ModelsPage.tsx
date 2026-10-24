@@ -26,6 +26,10 @@ export function ModelsPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [notes, setNotes] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
 
   function load() {
     fetch("/api/admin/models")
@@ -114,6 +118,55 @@ export function ModelsPage() {
     }
   }
 
+  /** Issue #73: imports an exported Model as a disabled Model, keeping the file's ids. */
+  async function handleImport(event: FormEvent) {
+    event.preventDefault();
+    if (!importFile) {
+      setImportError("choose an exported Model file");
+      return;
+    }
+    setImporting(true);
+    setImportError(null);
+
+    try {
+      let exported: unknown;
+      try {
+        exported = await readFileAsJson(importFile);
+      } catch {
+        setImportError("that file isn't valid JSON");
+        return;
+      }
+
+      const res = await fetch("/api/admin/models/import", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(exported),
+      });
+
+      if (!res.ok) {
+        const payload = await res
+          .json()
+          .catch(() => ({ error: "import failed" }));
+        const issues = Array.isArray(payload.errors)
+          ? payload.errors
+              .map(
+                (e: { field: string; message: string }) =>
+                  `${e.field}: ${e.message}`,
+              )
+              .join(", ")
+          : null;
+        setImportError(issues ?? payload.error ?? "import failed");
+        return;
+      }
+
+      setImportOpen(false);
+      setImportFile(null);
+      load();
+    } finally {
+      setImporting(false);
+    }
+  }
+
   return (
     <section>
       <h2>Models</h2>
@@ -178,6 +231,11 @@ export function ModelsPage() {
           New Model
         </button>
       )}
+      {!importOpen && (
+        <button type="button" onClick={() => setImportOpen(true)}>
+          Import Model
+        </button>
+      )}
 
       {formOpen && (
         <form onSubmit={(event) => void handleSubmit(event)}>
@@ -206,6 +264,28 @@ export function ModelsPage() {
             Cancel
           </button>
           {formError && <p role="alert">{formError}</p>}
+        </form>
+      )}
+
+      {importOpen && (
+        <form onSubmit={(event) => void handleImport(event)}>
+          <h3>Import Model</h3>
+
+          <label htmlFor="model-import-file">Exported Model (JSON)</label>
+          <input
+            id="model-import-file"
+            type="file"
+            accept="application/json"
+            onChange={(event) => setImportFile(event.target.files?.[0] ?? null)}
+          />
+
+          <button type="submit" disabled={importing}>
+            Import
+          </button>
+          <button type="button" onClick={() => setImportOpen(false)}>
+            Cancel
+          </button>
+          {importError && <p role="alert">{importError}</p>}
         </form>
       )}
     </section>

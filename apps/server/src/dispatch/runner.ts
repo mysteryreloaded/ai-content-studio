@@ -8,6 +8,14 @@
 // (queue.ts's own concurrency token): if a watchdog sweep or boot
 // recovery has already moved the row on, the write no-ops and this run
 // quietly stops instead of clobbering whatever decided it.
+//
+// Issue #54 adds a second way a poll loop ends early: a `cancelling`
+// Generation (set by a user's own request, outside this loop) gets its
+// Backend's interrupt sent here, once, then waits for that to be
+// confirmed (the job's `cancelled` or gone) before finalizing as
+// `cancelled` — unless the Backend can't even be reached for the
+// interrupt, in which case it's cancelled anyway, `pendingBackendCancel`
+// set for the dispatcher to re-send that interrupt later.
 
 import type { Clock } from "@ai-content-studio/shared";
 import { comfyUiTarget } from "../backends/client.js";
@@ -27,6 +35,7 @@ import {
   cancelJob,
   fetchView,
   headInputFile,
+  interruptJob,
   isMissingNodeError,
   readJob,
   submitPrompt,
@@ -251,6 +260,76 @@ export async function saveWithBackoff(
   }
 }
 
+/**
+ * Finalizes a cancel (issue #54): confirmed by the Backend (its
+ * interrupt was reported, or the job's gone), or marked anyway when the
+ * Backend couldn't be reached — `pendingBackendCancel` then has the
+ * dispatcher re-send that interrupt before the Backend gets new work.
+ * Shared by `pollUntilDone` and boot recovery, the same way `reportFailure`
+ * and `reportLostTry` are.
+ */
+export async function finalizeCancelled(
+  deps: RunnerDeps,
+  detail: RunDetail,
+  backendId: string,
+  tries: number,
+  pendingBackendCancel: boolean,
+): Promise<boolean> {
+  const ok = await deps.queue.markCancelled(detail.id, tries, {
+    pendingBackendCancel,
+  });
+  if (!ok) return false;
+  if (pendingBackendCancel) {
+    await deps.logWriter.log({
+      level: "warning",
+      source: "backend",
+      message:
+        "Cancelled, but the Backend was unreachable; it'll be re-cancelled before it gets new work",
+      backendId,
+      userId: detail.userId,
+      modelId: detail.modelId,
+      generationId: detail.id,
+    });
+  }
+  await publishChange(deps, detail, "cancelled", tries, null);
+  return true;
+}
+
+/**
+ * Catches a cancel that raced a terminal write and lost (issue #54): the
+ * row moved to `cancelling` between this run's last look and the write
+ * that just no-op'd, so nothing else is coming to finish it — without
+ * this, it would sit `cancelling` with its Backend counted busy until a
+ * restart's boot recovery notices. Sends the Backend's own interrupt
+ * first when a target is given (the prompt was actually submitted;
+ * `null` means it never was, so there's nothing to interrupt), then
+ * finalizes the same way `pollUntilDone`'s own cancel path does. A
+ * no-op when the row moved on for any other reason (a watchdog sweep,
+ * a later try already claimed it).
+ */
+async function reconcileIfCancelling(
+  deps: RunnerDeps,
+  detail: RunDetail,
+  backendId: string,
+  tries: number,
+  target: Awaited<ReturnType<typeof comfyUiTarget>> | null,
+): Promise<boolean> {
+  const state = await deps.queue.currentState(detail.id);
+  if (state !== "cancelling") return false;
+  let pendingBackendCancel = false;
+  if (target) {
+    try {
+      await cancelJob(target, detail.id);
+    } catch {
+      pendingBackendCancel = true;
+    }
+  } else {
+    pendingBackendCancel = true;
+  }
+  await finalizeCancelled(deps, detail, backendId, tries, pendingBackendCancel);
+  return true;
+}
+
 export async function runClaimedGeneration(
   backend: BackendRecord,
   detail: RunDetail,
@@ -289,56 +368,69 @@ export async function runClaimedGeneration(
     await submitPrompt(target, generationId, detail.builtPrompt);
   } catch (err) {
     deps.progress.discard(generationId);
+    let stale = false;
     if (err instanceof BackendUnreachable) {
-      await reportLostTry(
-        deps,
-        detail,
-        backend.id,
-        tries,
-        err.message,
-        "the GPU server couldn't run this",
-      );
+      stale =
+        (await reportLostTry(
+          deps,
+          detail,
+          backend.id,
+          tries,
+          err.message,
+          "the GPU server couldn't run this",
+        )) === "stale";
     } else if (
       err instanceof PromptRejected &&
       isMissingNodeError(err.nodeErrors)
     ) {
       deps.backendsService.invalidateNodeKnowledge(backend.id);
-      await reportLostTry(
-        deps,
-        detail,
-        backend.id,
-        tries,
-        describeError(err),
-        "the GPU server couldn't run this",
-      );
+      stale =
+        (await reportLostTry(
+          deps,
+          detail,
+          backend.id,
+          tries,
+          describeError(err),
+          "the GPU server couldn't run this",
+        )) === "stale";
     } else if (err instanceof PayloadTooLarge) {
-      await reportFailure(
+      stale = !(await reportFailure(
         deps,
         detail,
         backend.id,
         tries,
         err.message,
         err.message,
-      );
+      ));
     } else {
-      await reportFailure(
+      stale = !(await reportFailure(
         deps,
         detail,
         backend.id,
         tries,
         "the GPU server rejected this Generation",
         describeError(err),
-      );
+      ));
+    }
+    if (stale) {
+      // Raced a cancel (issue #54): the submit itself never landed, so
+      // there's nothing on the Backend to interrupt.
+      await reconcileIfCancelling(deps, detail, backend.id, tries, null);
     }
     deps.onFreed();
     return;
   }
 
   if (!(await deps.queue.markRunning(generationId, tries))) {
-    // Superseded (e.g. the watchdog's starting timeout) between submit
-    // and here. The prompt may still run on the Backend; nothing more
-    // to do from this side.
+    // Superseded between submit and here: either a watchdog sweep (the
+    // prompt may still run on the Backend; nothing more to do from this
+    // side), or a cancel that raced in right here (issue #54) — the
+    // prompt *is* running, so reconcile sends its interrupt instead of
+    // leaving it `cancelling` with the Backend counted busy forever.
     deps.progress.discard(generationId);
+    if (await reconcileIfCancelling(deps, detail, backend.id, tries, target)) {
+      deps.onFreed();
+    }
     return;
   }
   await publishChange(deps, detail, "running", tries, null);
@@ -401,7 +493,8 @@ export async function pollUntilDone(
     | { kind: "completed"; job: Job }
     | { kind: "executionError"; message: string }
     | { kind: "lost"; reason: string }
-    | { kind: "timedOut" };
+    | { kind: "timedOut" }
+    | { kind: "cancelled"; pendingBackendCancel: boolean };
 
   const deadlineMs =
     deps.clock.now().getTime() + detail.maxRunTimeMinutes * 60_000;
@@ -410,9 +503,26 @@ export async function pollUntilDone(
   // long as the health monitor's own "unreachable" grace gives up
   // (issue #55's AC).
   let pollFailureSinceMs: number | null = null;
+  // Issue #54: set once this loop has sent the Backend a cancel's own
+  // interrupt (the row moved to `cancelling` outside this loop, noticed
+  // and acted on here, once).
+  let cancelSent = false;
   let outcome: Outcome;
   try {
     while (true) {
+      if (!cancelSent) {
+        const state = await deps.queue.currentState(generationId);
+        if (state === "cancelling") {
+          cancelSent = true;
+          try {
+            await cancelJob(target, generationId);
+          } catch {
+            outcome = { kind: "cancelled", pendingBackendCancel: true };
+            break;
+          }
+        }
+      }
+
       const sinceUnreachable = deps.backendsService.unreachableSince(
         backend.id,
       );
@@ -421,7 +531,9 @@ export async function pollUntilDone(
         deps.clock.now().getTime() - sinceUnreachable.getTime() >
           RUNNING_UNREACHABLE_LOST_MS
       ) {
-        outcome = { kind: "lost", reason: "the Backend was unreachable" };
+        outcome = cancelSent
+          ? { kind: "cancelled", pendingBackendCancel: true }
+          : { kind: "lost", reason: "the Backend was unreachable" };
         break;
       }
 
@@ -429,6 +541,14 @@ export async function pollUntilDone(
       try {
         job = await readJob(target, generationId);
       } catch (err) {
+        // A poll failure while cancelling is also a Backend
+        // reachability problem, not a run failure (issue #54's AC):
+        // cancel anyway rather than failing a Generation its own user
+        // asked to stop.
+        if (cancelSent) {
+          outcome = { kind: "cancelled", pendingBackendCancel: true };
+          break;
+        }
         const nowMs = deps.clock.now().getTime();
         if (pollFailureSinceMs === null) pollFailureSinceMs = nowMs;
         if (nowMs - pollFailureSinceMs > RUNNING_UNREACHABLE_LOST_MS) {
@@ -441,10 +561,9 @@ export async function pollUntilDone(
       pollFailureSinceMs = null;
 
       if (job === null) {
-        outcome = {
-          kind: "lost",
-          reason: "the Backend no longer knew this job",
-        };
+        outcome = cancelSent
+          ? { kind: "cancelled", pendingBackendCancel: false }
+          : { kind: "lost", reason: "the Backend no longer knew this job" };
         break;
       }
       publishProgress(deps, detail.userId, generationId);
@@ -459,8 +578,21 @@ export async function pollUntilDone(
         };
         break;
       }
+      if (job.status === "cancelled") {
+        outcome = { kind: "cancelled", pendingBackendCancel: false };
+        break;
+      }
       if (deps.clock.now().getTime() > deadlineMs) {
-        outcome = { kind: "timedOut" };
+        if (cancelSent) {
+          // The earlier `cancelJob` landed but the Backend never actually
+          // stopped the run: a best-effort hard interrupt, and
+          // `pendingBackendCancel` so the dispatcher keeps re-sending the
+          // cancel until it's confirmed, instead of assuming it worked.
+          await interruptJob(target, generationId);
+          outcome = { kind: "cancelled", pendingBackendCancel: true };
+        } else {
+          outcome = { kind: "timedOut" };
+        }
         break;
       }
       await delay(deps.clock, pollIntervalMs);
@@ -473,15 +605,29 @@ export async function pollUntilDone(
   }
 
   if (outcome.kind === "timedOut") {
-    await cancelJob(target, generationId);
+    await interruptJob(target, generationId);
     deps.progress.discard(generationId);
-    await reportFailure(deps, detail, backend.id, tries, "timed out");
+    if (!(await reportFailure(deps, detail, backend.id, tries, "timed out"))) {
+      await reconcileIfCancelling(deps, detail, backend.id, tries, target);
+    }
+    deps.onFreed();
+    return;
+  }
+  if (outcome.kind === "cancelled") {
+    deps.progress.discard(generationId);
+    await finalizeCancelled(
+      deps,
+      detail,
+      backend.id,
+      tries,
+      outcome.pendingBackendCancel,
+    );
     deps.onFreed();
     return;
   }
   if (outcome.kind === "lost") {
     deps.progress.discard(generationId);
-    await reportLostTry(
+    const result = await reportLostTry(
       deps,
       detail,
       backend.id,
@@ -489,12 +635,15 @@ export async function pollUntilDone(
       outcome.reason,
       "the GPU server couldn't run this",
     );
+    if (result === "stale") {
+      await reconcileIfCancelling(deps, detail, backend.id, tries, target);
+    }
     deps.onFreed();
     return;
   }
   if (outcome.kind === "executionError") {
     deps.progress.discard(generationId);
-    await reportFailure(
+    const ok = await reportFailure(
       deps,
       detail,
       backend.id,
@@ -502,6 +651,9 @@ export async function pollUntilDone(
       "the GPU server reported an error while running this",
       outcome.message,
     );
+    if (!ok) {
+      await reconcileIfCancelling(deps, detail, backend.id, tries, target);
+    }
     deps.onFreed();
     return;
   }
@@ -509,13 +661,16 @@ export async function pollUntilDone(
   const completedJob = outcome.job;
   if (allOutputFiles(detail, completedJob).length === 0) {
     deps.progress.discard(generationId);
-    await reportFailure(
+    const ok = await reportFailure(
       deps,
       detail,
       backend.id,
       tries,
       "the GPU server produced no usable output",
     );
+    if (!ok) {
+      await reconcileIfCancelling(deps, detail, backend.id, tries, target);
+    }
     deps.onFreed();
     return;
   }
@@ -524,6 +679,10 @@ export async function pollUntilDone(
   // (ADR: "saving overlaps the next start"), before touching any files.
   if (!(await deps.queue.markSaving(generationId, tries))) {
     deps.progress.discard(generationId);
+    // Raced a cancel landing right here (issue #54): the job already
+    // finished on the Backend, so its own `/cancel` just 404s — treated
+    // as confirmed the same way an already-gone job always is.
+    await reconcileIfCancelling(deps, detail, backend.id, tries, target);
     deps.onFreed();
     return;
   }

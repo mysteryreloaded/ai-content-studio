@@ -1,9 +1,15 @@
 // Caps (issue #53, ADR 0009 "Caps are checked in the locking
 // transaction"): the daily Cap counts the rolling 24h, excluding
-// failed Generations (cancelled-before-running isn't modeled yet —
-// #55's concern); the concurrent Cap counts queued through saving. A
-// user's effective Cap is their own override (0-1,000) when set,
-// otherwise the Site default.
+// failed Generations and excluding `cancelled` ones that never left
+// `queued` (state='cancelled' and tries=0: nothing was ever sent to a
+// Backend, so it cost nothing) — a `cancelled` Generation that did
+// start running still counts, since it occupied a Backend (ADR 0009's
+// own note, added once issue #54 gave `cancelled` that distinction).
+// The concurrent Cap counts queued through saving, excluding
+// `cancelled` too (issue #54's AC: a cancel gives the slot back), but
+// still counting `cancelling` (the Backend's interrupt isn't confirmed
+// yet). A user's effective Cap is their own override (0-1,000) when
+// set, otherwise the Site default.
 
 import {
   type CapsStatus,
@@ -11,9 +17,12 @@ import {
   effectiveCap,
 } from "@ai-content-studio/shared";
 import type { Clock } from "@ai-content-studio/shared";
-import { and, eq, gt, notInArray, sql } from "drizzle-orm";
+import { and, eq, gt, not, notInArray, sql } from "drizzle-orm";
 import type { Database, Transaction } from "../db/client.js";
 import { generations, siteSettings, users } from "../db/schema.js";
+
+/** Issue #54: a `cancelled` Generation counts toward the daily Cap unless it never left `queued`. */
+const CANCELLED_WHILE_QUEUED = sql`(${generations.state} = 'cancelled' and ${generations.tries} = 0)`;
 
 type Queryable = Database | Transaction;
 
@@ -53,7 +62,7 @@ export function effectiveCapsFor(
   };
 }
 
-/** Toward the daily Cap: this user's own Generations submitted since `since`, excluding failed ones. */
+/** Toward the daily Cap: this user's own Generations submitted since `since`, excluding failed ones and a cancel that never left `queued`. */
 export async function countDailyForUser(
   db: Queryable,
   userId: string,
@@ -67,12 +76,13 @@ export async function countDailyForUser(
         eq(generations.userId, userId),
         gt(generations.submittedAt, since),
         notInArray(generations.state, ["failed"]),
+        not(CANCELLED_WHILE_QUEUED),
       ),
     );
   return Number(row?.count ?? 0);
 }
 
-/** Toward the concurrent Cap: this user's own Generations still queued through saving. */
+/** Toward the concurrent Cap: this user's own Generations still queued through saving (a cancel frees its slot once it's `cancelled`, issue #54's AC). */
 export async function countConcurrentForUser(
   db: Queryable,
   userId: string,
@@ -83,7 +93,7 @@ export async function countConcurrentForUser(
     .where(
       and(
         eq(generations.userId, userId),
-        notInArray(generations.state, ["succeeded", "failed"]),
+        notInArray(generations.state, ["succeeded", "failed", "cancelled"]),
       ),
     );
   return Number(row?.count ?? 0);
@@ -103,6 +113,7 @@ export async function oldestCountedSubmittedAt(
         eq(generations.userId, userId),
         gt(generations.submittedAt, since),
         notInArray(generations.state, ["failed"]),
+        not(CANCELLED_WHILE_QUEUED),
       ),
     )
     .orderBy(generations.submittedAt)

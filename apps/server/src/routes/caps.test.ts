@@ -366,4 +366,104 @@ describe("Caps (issue #53)", () => {
       fake.stop();
     }
   });
+
+  test("cancelling a Generation frees its concurrent slot, so a submit at the Cap succeeds again (issue #54)", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    const { app, backendsService } = await build();
+    try {
+      const adminHeaders = (await headersFor("admin")).headers;
+      const { headers: userHeaders } = await headersFor("user", {
+        concurrentCapOverride: 1,
+      });
+
+      const { slug, modeId, revision } = await buildEnabledModel(
+        app,
+        adminHeaders,
+        fake.url,
+      );
+
+      const first = await submit(app, userHeaders, slug, modeId, revision);
+      expect(first.status).toBe(201);
+      const { generations: created } = (await first.json()) as {
+        generations: Array<{ submissionId: string }>;
+      };
+      const submissionId = created[0]?.submissionId as string;
+
+      const atCap = await submit(app, userHeaders, slug, modeId, revision);
+      expect(atCap.status).toBe(409);
+
+      const cancelRes = await app.request(
+        `/api/submissions/${submissionId}/cancel`,
+        { method: "POST", headers: userHeaders },
+      );
+      expect(cancelRes.status).toBe(200);
+
+      const afterCancel = await submit(
+        app,
+        userHeaders,
+        slug,
+        modeId,
+        revision,
+      );
+      expect(afterCancel.status).toBe(201);
+    } finally {
+      backendsService.stop();
+      fake.stop();
+    }
+  });
+
+  test("the daily Cap skips a Generation cancelled while still queued, but counts one cancelled after it started running (issue #54, ADR 0009)", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    const { app, backendsService } = await build();
+    try {
+      const { db } = await testDb;
+      const adminHeaders = (await headersFor("admin")).headers;
+      const { headers: userHeaders } = await headersFor("user");
+
+      const { slug, modeId, revision } = await buildEnabledModel(
+        app,
+        adminHeaders,
+        fake.url,
+      );
+
+      const cancelledQueued = await submit(
+        app,
+        userHeaders,
+        slug,
+        modeId,
+        revision,
+      );
+      const { generations: queuedGen } = (await cancelledQueued.json()) as {
+        generations: Array<{ id: string }>;
+      };
+      await db
+        .update(generations)
+        .set({ state: "cancelled", tries: 0 })
+        .where(eq(generations.id, queuedGen[0]?.id as string));
+
+      const cancelledRunning = await submit(
+        app,
+        userHeaders,
+        slug,
+        modeId,
+        revision,
+      );
+      const { generations: runningGen } = (await cancelledRunning.json()) as {
+        generations: Array<{ id: string }>;
+      };
+      await db
+        .update(generations)
+        .set({ state: "cancelled", tries: 1 })
+        .where(eq(generations.id, runningGen[0]?.id as string));
+
+      const res = await app.request("/api/generations/caps", {
+        headers: userHeaders,
+      });
+      const body = (await res.json()) as { dailyUsed: number };
+      expect(body.dailyUsed).toBe(1);
+    } finally {
+      backendsService.stop();
+      fake.stop();
+    }
+  });
 });

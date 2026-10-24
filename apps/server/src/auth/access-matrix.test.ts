@@ -185,6 +185,7 @@ describe("every route's access level is declared and enforced", () => {
       "GET /api/assets/:id/poster": 404,
       "GET /api/assets/:id/thumb": 404,
       "POST /api/models/:slug/terms/accept": 404,
+      "POST /api/submissions/:submissionId/cancel": 404,
       // Issue #50: a bodyless create fails validation; no Upload with
       // this fake id exists.
       "POST /api/uploads": 400,

@@ -5,6 +5,11 @@
 // failed fails it, and not found (or unreachable to ask) marks the try
 // lost, same as any other lost try. Runs once at startup, before the
 // Dispatcher starts claiming anything new.
+//
+// Issue #54: a Generation left `cancelling` is recovered the same way,
+// except a lost/unreachable/404 outcome finalizes it as `cancelled`
+// (optimistically if the Backend couldn't be reached) instead of a lost
+// try — a crash mid-cancel must never come back as still queued/running.
 
 import { comfyUiTarget } from "../backends/client.js";
 import type { BackendRepository } from "../backends/repository.js";
@@ -16,6 +21,7 @@ import {
   type RunnerDeps,
   allOutputFiles,
   describeError,
+  finalizeCancelled,
   pollUntilDone,
   readJobWithGrace,
   saveWithBackoff,
@@ -53,8 +59,15 @@ async function recoverOne(
   const detail = await deps.queue.detailForRun(item.id);
   if (!detail) return;
 
+  const cancelling = item.state === "cancelling";
+
   const backend = await deps.backendRepository.get(item.backendId);
   if (!backend) {
+    if (cancelling) {
+      // Nothing left to tell; cancel it anyway (issue #54's AC).
+      await finalizeCancelled(deps, detail, item.backendId, item.tries, true);
+      return;
+    }
     await reportLostTry(
       deps,
       detail,
@@ -72,7 +85,12 @@ async function recoverOne(
     job = await readJobWithGrace(target, item.id, deps);
   } catch (err) {
     // Still can't reach the Backend after resuming polling for a while
-    // (issue #55's AC): a lost try, same as a 404.
+    // (issue #55's AC): a lost try, same as a 404. Except while
+    // cancelling (issue #54), where it's cancelled anyway instead.
+    if (cancelling) {
+      await finalizeCancelled(deps, detail, backend.id, item.tries, true);
+      return;
+    }
     await reportLostTry(
       deps,
       detail,
@@ -85,6 +103,10 @@ async function recoverOne(
   }
 
   if (job === null) {
+    if (cancelling) {
+      await finalizeCancelled(deps, detail, backend.id, item.tries, false);
+      return;
+    }
     await reportLostTry(
       deps,
       detail,
@@ -93,6 +115,39 @@ async function recoverOne(
       "the Backend no longer knew this job",
       "the GPU server couldn't run this",
     );
+    return;
+  }
+
+  if (cancelling) {
+    if (job.status === "running") {
+      // Still running there and never actually interrupted before the
+      // crash: hand it back to the normal poll loop, which notices
+      // `cancelling` again on its own first iteration and re-sends the
+      // Backend's interrupt (issue #54).
+      deps.progress.start(
+        item.id,
+        ProgressTracker.keyFor(detail.modelId, detail.modeId, backend.id),
+      );
+      void pollUntilDone(backend, detail, item.tries, target, deps).catch(
+        (err) =>
+          deps.logWriter
+            .log({
+              level: "error",
+              source: "app",
+              message: "resumed Generation run crashed",
+              details: describeError(err),
+              backendId: backend.id,
+              generationId: item.id,
+            })
+            .catch(() => {}),
+      );
+      return;
+    }
+    // Whatever ComfyUI's own status says now — completed, failed or
+    // already cancelled — the user asked to cancel this, so it finishes
+    // as `cancelled` rather than falling into the normal save/fail path
+    // below, whose own writes no longer match a `cancelling` row anyway.
+    await finalizeCancelled(deps, detail, backend.id, item.tries, false);
     return;
   }
 

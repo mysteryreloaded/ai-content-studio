@@ -5,7 +5,19 @@
 
 import type { GenerationSummary } from "./repository.js";
 
-export type GenerationEvent = { type: "change"; generation: GenerationSummary };
+/** A Generation's live progress (issue #44): kept in memory only, never persisted, so it's always a separate, higher-frequency event from "change". */
+export interface GenerationProgress {
+  generationId: string;
+  elapsedMs: number;
+  /** The median of the last 10 successes for this Model/Mode/Backend, or `null` without enough history (indeterminate). */
+  estimateMs: number | null;
+  step: number | null;
+  totalSteps: number | null;
+}
+
+export type GenerationEvent =
+  | { type: "change"; generation: GenerationSummary }
+  | { type: "progress"; progress: GenerationProgress };
 
 export class GenerationEvents {
   private readonly subscribers = new Map<

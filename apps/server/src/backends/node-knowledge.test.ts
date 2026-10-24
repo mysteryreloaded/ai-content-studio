@@ -16,6 +16,7 @@ function record(
     baseUrl,
     auth: "none",
     headerName: null,
+    enabled: true,
     version: 1,
     deletedAt: null,
     createdAt: new Date(),

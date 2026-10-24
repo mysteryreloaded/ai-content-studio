@@ -136,6 +136,7 @@ describe("every route's access level is declared and enforced", () => {
       "GET /api/admin/backends/:id": 404,
       "PUT /api/admin/backends/:id": 404,
       "DELETE /api/admin/backends/:id": 404,
+      "PATCH /api/admin/backends/:id/enabled": 404,
       "POST /api/admin/models": 400,
       "GET /api/admin/models/:id": 404,
       "PUT /api/admin/models/:id": 404,
@@ -172,6 +173,8 @@ describe("every route's access level is declared and enforced", () => {
       "GET /api/models/:slug": 404,
       "GET /api/models/:slug/generations": 404,
       "POST /api/models/:slug/generations": 400,
+      // No Asset with this fake id exists in this test's database.
+      "GET /api/assets/:id": 404,
       "POST /api/models/:slug/terms/accept": 404,
     };
 

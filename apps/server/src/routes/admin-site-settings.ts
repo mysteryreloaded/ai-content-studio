@@ -3,6 +3,7 @@ import {
   maxBytesFor,
   parseBlockedWordsList,
   siteBlockedWordsFieldsSchema,
+  siteCapsFieldsSchema,
   siteNoticeFieldsSchema,
   sitePrivacyFieldsSchema,
   siteSettingsFieldsSchema,
@@ -22,6 +23,7 @@ import {
   pauseGenerating,
   resumeGenerating,
   updateSiteBlockedWords,
+  updateSiteCaps,
   updateSiteNotice,
   updateSitePrivacy,
   updateSiteSettings,
@@ -324,6 +326,45 @@ export function adminSiteSettingsRoute(
       paused: result.settings.paused,
       notice: result.settings.notice,
     });
+    return c.json(result.settings);
+  });
+
+  guardedRoute(app, routes, basePath, "put", "/caps", "admin", async (c) => {
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "invalid JSON body" }, 400);
+    }
+
+    const revisionResult = versionSchema.safeParse(
+      (body as Record<string, unknown> | null)?.revision,
+    );
+    if (!revisionResult.success) {
+      return c.json({ error: "revision is required" }, 400);
+    }
+
+    const fieldsResult = siteCapsFieldsSchema.safeParse({
+      dailyCap: (body as Record<string, unknown> | null)?.dailyCap,
+      concurrentCap: (body as Record<string, unknown> | null)?.concurrentCap,
+    });
+    if (!fieldsResult.success) {
+      return c.json(
+        { error: "invalid caps", issues: fieldsResult.error.issues },
+        400,
+      );
+    }
+
+    const result = await updateSiteCaps(db, clock, adminActorFrom(c), {
+      revision: revisionResult.data,
+      dailyCap: fieldsResult.data.dailyCap,
+      concurrentCap: fieldsResult.data.concurrentCap,
+    });
+
+    if (!result.ok) {
+      return c.json({ error: "changed by someone else, reload" }, 409);
+    }
+
     return c.json(result.settings);
   });
 

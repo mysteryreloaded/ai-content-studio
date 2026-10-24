@@ -39,6 +39,9 @@ export interface SiteSettingsSnapshot {
   paused: boolean;
   pausedAt: Date | null;
   pausedByName: string | null;
+  dailyCap: number;
+  concurrentCap: number;
+  capsRevision: number;
 }
 
 /**
@@ -122,6 +125,9 @@ function rowToSnapshot(
     paused: row.paused,
     pausedAt: row.pausedAt,
     pausedByName: row.pausedByName,
+    dailyCap: row.dailyCap,
+    concurrentCap: row.concurrentCap,
+    capsRevision: row.capsRevision,
   };
 }
 
@@ -172,6 +178,21 @@ export async function getBlockedWords(db: Database): Promise<string[]> {
     .from(siteSettings)
     .limit(1);
   return (row?.blockedWords as string[] | undefined) ?? [];
+}
+
+/** The Site's default Caps alone (issue #53), for a Submission's Cap check. */
+export async function getSiteCaps(
+  db: Database,
+): Promise<{ dailyCap: number; concurrentCap: number }> {
+  const [row] = await db
+    .select({
+      dailyCap: siteSettings.dailyCap,
+      concurrentCap: siteSettings.concurrentCap,
+    })
+    .from(siteSettings)
+    .limit(1);
+  if (!row) throw new Error("site_settings row is missing");
+  return row;
 }
 
 /**
@@ -505,6 +526,64 @@ export async function updateSiteNotice(
       action: "update-notice",
       before: { notice: before.notice },
       after: { notice: after.notice },
+    });
+
+    return { ok: true, settings: after };
+  });
+}
+
+export interface SiteCapsUpdateInput {
+  /** `capsRevision`, independent of the other Site settings forms', so saving one never races another into a 409. */
+  revision: number;
+  dailyCap: number;
+  concurrentCap: number;
+}
+
+export type SiteCapsUpdateResult =
+  | { ok: true; settings: SiteSettingsSnapshot }
+  | { ok: false; reason: "stale" };
+
+/** Saves the Site's default Caps (issue #53): already range-checked (1-1,000) by the caller. */
+export async function updateSiteCaps(
+  db: Database,
+  clock: Clock,
+  actor: AuditActor,
+  input: SiteCapsUpdateInput,
+): Promise<SiteCapsUpdateResult> {
+  return db.transaction(async (tx) => {
+    const [current] = await tx.select().from(siteSettings).limit(1);
+    if (!current) throw new Error("site_settings row is missing");
+    if (current.capsRevision !== input.revision) {
+      return { ok: false, reason: "stale" };
+    }
+
+    const before = rowToSnapshot(current);
+    const now = clock.now();
+
+    const [updated] = await tx
+      .update(siteSettings)
+      .set({
+        capsRevision: current.capsRevision + 1,
+        dailyCap: input.dailyCap,
+        concurrentCap: input.concurrentCap,
+        updatedAt: now,
+      })
+      .where(eq(siteSettings.singleton, true))
+      .returning();
+    if (!updated) throw new Error("site_settings update affected no row");
+
+    const after = rowToSnapshot(updated);
+
+    await recordAuditEntry(tx, clock, {
+      actor,
+      targetType: "site_settings",
+      targetId: "singleton",
+      action: "update-caps",
+      before: {
+        dailyCap: before.dailyCap,
+        concurrentCap: before.concurrentCap,
+      },
+      after: { dailyCap: after.dailyCap, concurrentCap: after.concurrentCap },
     });
 
     return { ok: true, settings: after };

@@ -16,6 +16,7 @@ import { NoticeEvents } from "./branding/notice-events.js";
 import {
   getBlockedWords,
   getPauseNotice,
+  getSiteCaps,
   getSiteSettings,
 } from "./branding/site-settings-store.js";
 import type { Database } from "./db/client.js";
@@ -227,6 +228,7 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
         logWriter,
         getBlockedWords: () => getBlockedWords(deps.db),
         isPaused,
+        getSiteCaps: () => getSiteCaps(deps.db),
         onGenerationQueued: dispatcher.wake,
         uploadsRepository,
         hasFreeDisk: diskHasRoom,
@@ -237,6 +239,7 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
   app.route(
     "/api/generations",
     generationsRoute(
+      deps.db,
       generationsRepository,
       generationEvents,
       deps.clock,

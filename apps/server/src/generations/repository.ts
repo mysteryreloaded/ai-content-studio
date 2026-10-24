@@ -2,10 +2,22 @@
 // This ticket only ever inserts `queued` rows; a later issue's
 // dispatcher moves them on.
 
-import type { InputDefinition, Workflow } from "@ai-content-studio/shared";
+import { DAY_MS } from "@ai-content-studio/shared";
+import type {
+  Clock,
+  InputDefinition,
+  Workflow,
+} from "@ai-content-studio/shared";
 import { and, desc, eq, inArray, lt, notInArray, or } from "drizzle-orm";
 import type { Database } from "../db/client.js";
 import { assets, generations, models, modes, users } from "../db/schema.js";
+import {
+  ConcurrentCapExceeded,
+  DailyCapExceeded,
+  countConcurrentForUser,
+  countDailyForUser,
+  effectiveCapsFor,
+} from "./caps.js";
 
 export type GenerationState =
   | "queued"
@@ -221,20 +233,53 @@ export class GenerationsRepository {
   }
 
   /**
-   * One Submission's 1-4 Generations (issue #47, ADR 0007): locks the
-   * submitting user's row before inserting every Generation, so two
-   * presses of Generate from the same user never interleave their draws.
+   * One Submission's 1-4 Generations (issue #47, ADR "Submission
+   * creation is one locked transaction"; issue #53, ADR "Caps are
+   * checked in the locking transaction"): locks the submitting user's
+   * row before inserting every Generation, so two presses of Generate
+   * from the same user never interleave their draws or their Cap
+   * checks. Caps are checked all-or-nothing against this one
+   * Submission's own count: a Submission that would exceed either Cap
+   * is refused whole, inserting nothing.
    */
   async createSubmission(
     userId: string,
     inputs: readonly CreateGenerationInput[],
+    siteCaps: { dailyCap: number; concurrentCap: number },
+    clock: Clock,
   ): Promise<GenerationRecord[]> {
     return await this.db.transaction(async (tx) => {
-      await tx
-        .select({ id: users.id })
+      const [userRow] = await tx
+        .select({
+          id: users.id,
+          dailyCapOverride: users.dailyCapOverride,
+          concurrentCapOverride: users.concurrentCapOverride,
+        })
         .from(users)
         .where(eq(users.id, userId))
         .for("update");
+      if (!userRow) throw new Error("user not found");
+
+      const caps = effectiveCapsFor(siteCaps, userRow);
+      const now = clock.now();
+      const since = new Date(now.getTime() - DAY_MS);
+      const [dailyUsed, concurrentUsed] = await Promise.all([
+        countDailyForUser(tx, userId, since),
+        countConcurrentForUser(tx, userId),
+      ]);
+
+      if (dailyUsed + inputs.length > caps.dailyCap) {
+        throw new DailyCapExceeded(
+          caps.dailyCap,
+          Math.max(0, caps.dailyCap - dailyUsed),
+        );
+      }
+      if (concurrentUsed + inputs.length > caps.concurrentCap) {
+        throw new ConcurrentCapExceeded(
+          caps.concurrentCap,
+          Math.max(0, caps.concurrentCap - concurrentUsed),
+        );
+      }
 
       const rows = await tx
         .insert(generations)

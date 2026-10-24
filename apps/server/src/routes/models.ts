@@ -16,6 +16,8 @@ import {
 } from "../generations/repository.js";
 import {
   BlockedWordSubmitted,
+  ConcurrentCapExceeded,
+  DailyCapExceeded,
   InvalidCount,
   InvalidInputValues,
   InvalidSeed,
@@ -344,6 +346,26 @@ export function modelsRoute(
         }
         if (err instanceof InvalidSeed) {
           return c.json({ error: "invalid_seed", message: err.message }, 400);
+        }
+        if (err instanceof DailyCapExceeded) {
+          return c.json(
+            {
+              error: "daily_cap_exceeded",
+              cap: err.cap,
+              remaining: err.remaining,
+            },
+            409,
+          );
+        }
+        if (err instanceof ConcurrentCapExceeded) {
+          return c.json(
+            {
+              error: "concurrent_cap_exceeded",
+              cap: err.cap,
+              remaining: err.remaining,
+            },
+            409,
+          );
         }
         if (err instanceof BlockedWordSubmitted) {
           return c.json(

@@ -5,7 +5,9 @@ import type { AuditActor } from "../audit/audit.js";
 import {
   auditEntries,
   modelRevisions,
+  modelTermsAcceptances,
   models,
+  users,
   workflows,
 } from "../db/schema.js";
 import { createTestDatabase } from "../test/database.js";
@@ -45,9 +47,11 @@ describe("ModelRepository", () => {
 
   beforeEach(async () => {
     const { db } = await testDb;
+    await db.delete(modelTermsAcceptances);
     await db.delete(modelRevisions);
     await db.delete(models);
     await db.delete(workflows);
+    await db.delete(users);
   });
 
   async function repo() {
@@ -296,5 +300,102 @@ describe("ModelRepository", () => {
         { id: "2", classType: "KSampler", title: null },
       ]),
     );
+  });
+
+  describe("updateTerms and acceptance (issue #61)", () => {
+    test("a first non-blank body starts version 1; a quiet edit keeps it; askAgain bumps it", async () => {
+      const repository = await repo();
+      const { record } = await repository.createFromWorkflow(
+        "LTX 2.5",
+        VALID_WORKFLOW,
+        SYSTEM,
+      );
+
+      const afterFirst = await repository.updateTerms(
+        record.id,
+        {
+          termsBody: "v1",
+          licenseUrl: "",
+          attribution: "",
+          askAgain: false,
+        },
+        record.termsRevision,
+        SYSTEM,
+      );
+      expect(afterFirst.termsVersion).toBe(1);
+
+      const afterQuietEdit = await repository.updateTerms(
+        record.id,
+        {
+          termsBody: "v1, reworded",
+          licenseUrl: "",
+          attribution: "",
+          askAgain: false,
+        },
+        afterFirst.termsRevision,
+        SYSTEM,
+      );
+      expect(afterQuietEdit.termsVersion).toBe(1);
+
+      const afterAskAgain = await repository.updateTerms(
+        record.id,
+        {
+          termsBody: "v2",
+          licenseUrl: "",
+          attribution: "",
+          askAgain: true,
+        },
+        afterQuietEdit.termsRevision,
+        SYSTEM,
+      );
+      expect(afterAskAgain.termsVersion).toBe(2);
+    });
+
+    test("409s a stale termsRevision", async () => {
+      const repository = await repo();
+      const { record } = await repository.createFromWorkflow(
+        "LTX 2.5",
+        VALID_WORKFLOW,
+        SYSTEM,
+      );
+
+      await expect(
+        repository.updateTerms(
+          record.id,
+          { termsBody: "v1", licenseUrl: "", attribution: "", askAgain: false },
+          record.termsRevision + 1,
+          SYSTEM,
+        ),
+      ).rejects.toThrow(StaleVersion);
+    });
+
+    test("tracks each user's accepted version separately, overwriting on re-accept", async () => {
+      const { db } = await testDb;
+      const repository = await repo();
+      const { record } = await repository.createFromWorkflow(
+        "LTX 2.5",
+        VALID_WORKFLOW,
+        SYSTEM,
+      );
+      const [user] = await db
+        .insert(users)
+        .values({ googleSub: "sub-1", email: "a@example.com", name: "A" })
+        .returning();
+      if (!user) throw new Error("failed to insert user");
+
+      expect(
+        await repository.getAcceptedTermsVersion(record.id, user.id),
+      ).toBeNull();
+
+      await repository.acceptTerms(record.id, user.id, 1);
+      expect(await repository.getAcceptedTermsVersion(record.id, user.id)).toBe(
+        1,
+      );
+
+      await repository.acceptTerms(record.id, user.id, 2);
+      expect(await repository.getAcceptedTermsVersion(record.id, user.id)).toBe(
+        2,
+      );
+    });
   });
 });

@@ -18,7 +18,13 @@ import { and, asc, eq, isNull, max } from "drizzle-orm";
 import type { AuditActor } from "../audit/audit.js";
 import { recordAuditEntry } from "../audit/audit.js";
 import type { Database, Transaction } from "../db/client.js";
-import { modelRevisions, models, modes, workflows } from "../db/schema.js";
+import {
+  modelRevisions,
+  modelTermsAcceptances,
+  models,
+  modes,
+  workflows,
+} from "../db/schema.js";
 import {
   MAX_WORKFLOW_BYTES,
   type ModelDetailsInput,
@@ -65,8 +71,22 @@ export interface ModelRecord {
   sortOrder: number;
   currentRevision: number;
   version: number;
+  /** Issue #61: Markdown shown in the terms dialog; blank means no terms are set. */
+  termsBody: string;
+  licenseUrl: string;
+  attribution: string;
+  termsVersion: number | null;
+  termsVersionCreatedAt: Date | null;
+  termsRevision: number;
   createdAt: Date;
   updatedAt: Date;
+}
+
+/** The terms version a user must accept for this Model, or `null` when none are required (issue #61). */
+export function activeModelTermsVersion(
+  model: Pick<ModelRecord, "termsBody" | "termsVersion">,
+): number | null {
+  return model.termsBody === "" ? null : model.termsVersion;
 }
 
 export interface ModeRecord {
@@ -129,6 +149,12 @@ function toRecord(row: ModelRow): ModelRecord {
     sortOrder: row.sortOrder,
     currentRevision: row.currentRevision,
     version: row.version,
+    termsBody: row.termsBody,
+    licenseUrl: row.licenseUrl,
+    attribution: row.attribution,
+    termsVersion: row.termsVersion,
+    termsVersionCreatedAt: row.termsVersionCreatedAt,
+    termsRevision: row.termsRevision,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -341,6 +367,113 @@ export class ModelRepository {
       if (isUniqueViolation(err, "models_slug_unique")) throw new SlugTaken();
       throw err;
     }
+  }
+
+  /**
+   * Saves this Model's terms, license link and Attribution, deciding
+   * `termsVersion` the same way `updateSiteTerms` does for Site terms: a
+   * first-ever non-blank body, or one that follows a blank body, always
+   * starts a new version; on top of an already non-blank body, `askAgain`
+   * bumps it (clearing every acceptance) and any other save keeps it.
+   * Guarded by `termsRevision`, not `version`, so saving Details/Modes
+   * never races a Terms save into a spurious 409.
+   */
+  async updateTerms(
+    id: string,
+    input: {
+      termsBody: string;
+      licenseUrl: string;
+      attribution: string;
+      askAgain: boolean;
+    },
+    expectedRevision: number,
+    actor: AuditActor,
+  ): Promise<ModelRecord> {
+    return await this.db.transaction(async (tx) => {
+      const [before] = await tx
+        .select()
+        .from(models)
+        .where(and(eq(models.id, id), isNull(models.deletedAt)));
+      if (!before) throw new NotFound();
+
+      const now = this.clock.now();
+      const termsBody = input.termsBody.trim();
+      let termsVersion = before.termsVersion;
+      let termsVersionCreatedAt = before.termsVersionCreatedAt;
+      const wasBlank = before.termsBody === "";
+      if (termsBody !== "" && (wasBlank || input.askAgain)) {
+        termsVersion = (before.termsVersion ?? 0) + 1;
+        termsVersionCreatedAt = now;
+      }
+
+      const [row] = await tx
+        .update(models)
+        .set({
+          termsBody,
+          licenseUrl: input.licenseUrl,
+          attribution: input.attribution,
+          termsVersion,
+          termsVersionCreatedAt,
+          termsRevision: before.termsRevision + 1,
+          updatedAt: now,
+        })
+        .where(
+          and(eq(models.id, id), eq(models.termsRevision, expectedRevision)),
+        )
+        .returning();
+      if (!row) throw new StaleVersion();
+
+      await recordAuditEntry(tx, this.clock, {
+        actor,
+        targetType: "model",
+        targetId: id,
+        action: "update_terms",
+        before: {
+          termsBody: before.termsBody,
+          licenseUrl: before.licenseUrl,
+          attribution: before.attribution,
+          termsVersion: before.termsVersion,
+        },
+        after: {
+          termsBody: row.termsBody,
+          licenseUrl: row.licenseUrl,
+          attribution: row.attribution,
+          termsVersion: row.termsVersion,
+          askAgain: input.askAgain,
+        },
+      });
+
+      return toRecord(row);
+    });
+  }
+
+  /** The version this user last accepted of this Model's terms, or `null` (issue #61). */
+  async getAcceptedTermsVersion(
+    modelId: string,
+    userId: string,
+  ): Promise<number | null> {
+    const [row] = await this.db
+      .select({ version: modelTermsAcceptances.version })
+      .from(modelTermsAcceptances)
+      .where(
+        and(
+          eq(modelTermsAcceptances.modelId, modelId),
+          eq(modelTermsAcceptances.userId, userId),
+        ),
+      );
+    return row?.version ?? null;
+  }
+
+  /** Records (or overwrites) this user's acceptance of this Model's current terms version. */
+  async acceptTerms(modelId: string, userId: string, version: number) {
+    const now = this.clock.now();
+    await this.db
+      .insert(modelTermsAcceptances)
+      .values({ modelId, userId, version, acceptedAt: now })
+      .onConflictDoUpdate({
+        target: [modelTermsAcceptances.modelId, modelTermsAcceptances.userId],
+        set: { version, acceptedAt: now },
+      });
   }
 
   async softDelete(
@@ -646,6 +779,7 @@ export class ModelRepository {
       name: string;
       description: string;
       modeCount: number;
+      attribution: string;
     }>
   > {
     const rows = await this.db
@@ -670,6 +804,7 @@ export class ModelRepository {
         name: row.model.name,
         description: row.model.description,
         modeCount: modeRows.length,
+        attribution: row.model.attribution,
       });
     }
     return summaries;

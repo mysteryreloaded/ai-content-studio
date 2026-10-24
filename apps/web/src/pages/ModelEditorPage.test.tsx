@@ -53,6 +53,12 @@ const DETAIL = {
     state: "disabled" as const,
     currentRevision: 1,
     version: 1,
+    termsBody: "",
+    licenseUrl: "",
+    attribution: "",
+    termsVersion: null,
+    termsVersionCreatedAt: null,
+    termsRevision: 1,
   },
   workflowHash: "hash1",
   workflow: {

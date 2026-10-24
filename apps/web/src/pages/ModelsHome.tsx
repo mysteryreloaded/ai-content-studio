@@ -8,6 +8,7 @@ interface EnabledModel {
   name: string;
   description: string;
   modeCount: number;
+  attribution: string;
 }
 
 /** The signed-in Models home: enabled Models, in Admin order (issue #42). */
@@ -59,6 +60,7 @@ export function ModelsHome() {
           <p>
             {model.modeCount} {model.modeCount === 1 ? "Mode" : "Modes"}
           </p>
+          {model.attribution && <p>{model.attribution}</p>}
         </article>
       ))}
     </main>

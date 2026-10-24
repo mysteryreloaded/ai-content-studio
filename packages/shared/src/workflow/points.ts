@@ -127,6 +127,43 @@ export function resolvePointsPixels(
 }
 
 /**
+ * The inverse of {@link pointToPixel} (Reuse these settings, issue #57's
+ * AC): a whole-pixel point in `targetWidth`x`targetHeight` crop space
+ * back to a fraction of the original `frameWidth`x`frameHeight` frame.
+ * Approximate, since the forward transform rounds to a whole pixel.
+ */
+export function pixelToPoint(
+  pixel: Point,
+  frameWidth: number,
+  frameHeight: number,
+  targetWidth: number,
+  targetHeight: number,
+): Point {
+  const crop = centerCropRegion(
+    frameWidth,
+    frameHeight,
+    targetWidth,
+    targetHeight,
+  );
+  const px = (pixel.x / targetWidth) * crop.width + crop.left;
+  const py = (pixel.y / targetHeight) * crop.height + crop.top;
+  return { x: px / frameWidth, y: py / frameHeight };
+}
+
+/** {@link pixelToPoint} for every point, in order. */
+export function resolvePointsFractions(
+  points: readonly Point[],
+  frameWidth: number,
+  frameHeight: number,
+  targetWidth: number,
+  targetHeight: number,
+): Point[] {
+  return points.map((point) =>
+    pixelToPoint(point, frameWidth, frameHeight, targetWidth, targetHeight),
+  );
+}
+
+/**
  * Why `points` (fractions of the first frame) can't be used, or null:
  * 1-10 points, each coordinate in [0, 1], each inside the crop
  * `targetWidth`/`targetHeight` would keep of `frameWidth`/`frameHeight`.

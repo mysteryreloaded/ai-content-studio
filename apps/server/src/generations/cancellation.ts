@@ -4,6 +4,7 @@
 // Backend (dispatch/runner.ts). Admin has no cancel (the AC); only the
 // owning user does, via the Submission block in the Workbench.
 
+import type { Clock } from "@ai-content-studio/shared";
 import type { DispatchQueue } from "../dispatch/queue.js";
 import type { GenerationEvents } from "./events.js";
 import type { GenerationsRepository } from "./repository.js";
@@ -20,6 +21,7 @@ export interface CancellationDeps {
   generationEvents: GenerationEvents;
   /** Wakes the dispatcher (issue #44/#54): a `cancelling` Generation's runner loop notices right away, and a Backend freed by a `queued` cancel may let something else dispatch. */
   wakeDispatcher: () => void;
+  clock: Clock;
 }
 
 async function publishCurrent(
@@ -50,7 +52,10 @@ export async function cancelGeneration(
   if (!row || row.userId !== userId) throw new GenerationNotFound();
 
   if (row.state === "queued") {
-    const cancelled = await deps.queue.cancelQueued(generationId);
+    const cancelled = await deps.queue.cancelQueued(
+      generationId,
+      deps.clock.now(),
+    );
     if (cancelled) {
       await publishCurrent(deps, generationId, userId);
       deps.wakeDispatcher();

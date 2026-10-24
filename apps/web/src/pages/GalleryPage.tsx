@@ -1,8 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, Navigate, useSearchParams } from "react-router-dom";
+import {
+  Link,
+  Navigate,
+  useNavigate,
+  useParams,
+  useSearchParams,
+} from "react-router-dom";
 import { Footer } from "../Footer.js";
 import { usePauseNotice } from "../usePauseNotice.js";
 import { useSession } from "../useSession.js";
+import { GenerationDetailOverlay } from "./GenerationDetailOverlay.js";
 
 type GenerationState =
   | "queued"
@@ -121,9 +128,11 @@ function thumbSrcFor(asset: AssetSummary): string | null {
 function GenerationCard({
   generation,
   paused,
+  onOpen,
 }: {
   generation: GenerationSummary;
   paused: boolean;
+  onOpen: (id: string) => void;
 }) {
   const mainAsset = generation.assets[0];
   const extra = generation.assets.length - 1;
@@ -131,6 +140,12 @@ function GenerationCard({
 
   return (
     <li className="gallery-card">
+      <button
+        type="button"
+        className="gallery-card-button"
+        onClick={() => onOpen(generation.id)}
+        aria-label={`Open Generation ${generation.id}`}
+      />
       {generation.isTest && <span className="gallery-card-test">Test</span>}
       {generation.state === "succeeded" && mainAsset ? (
         <>
@@ -225,9 +240,11 @@ function groupByDay(submissions: GallerySubmission[], now: Date): DayGroup[] {
 function SubmissionBlock({
   submission,
   paused,
+  onOpen,
 }: {
   submission: GallerySubmission;
   paused: boolean;
+  onOpen: (id: string) => void;
 }) {
   return (
     <section className="gallery-submission" aria-label={submission.modeName}>
@@ -246,6 +263,7 @@ function SubmissionBlock({
             key={generation.id}
             generation={generation}
             paused={paused}
+            onOpen={onOpen}
           />
         ))}
       </ul>
@@ -309,6 +327,8 @@ export function GalleryPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const modelFilter = searchParams.get("model");
   const stateFilter = toStateFilter(searchParams.get("state"));
+  const { id: openGenerationId } = useParams<{ id?: string }>();
+  const navigate = useNavigate();
 
   const [models, setModels] = useState<GalleryModelOption[] | null>(null);
   const [submissions, setSubmissions] = useState<GallerySubmission[] | null>(
@@ -463,6 +483,36 @@ export function GalleryPage() {
     [submissions, now],
   );
 
+  /** Every loaded Generation id in display order (issue #57's AC: ←/→ between Generations). Only this tab's already-loaded page, not the whole Gallery. */
+  const orderedIds = useMemo(
+    () =>
+      (submissions ?? []).flatMap((submission) =>
+        submission.generations.map((generation) => generation.id),
+      ),
+    [submissions],
+  );
+
+  function openGeneration(id: string) {
+    navigate(`/generations/${id}?${searchParams.toString()}`);
+  }
+
+  function closeOverlay() {
+    navigate(`/gallery?${searchParams.toString()}`);
+  }
+
+  function handleDeleted(deletedId: string) {
+    setSubmissions((current) =>
+      (current ?? [])
+        .map((submission) => ({
+          ...submission,
+          generations: submission.generations.filter(
+            (generation) => generation.id !== deletedId,
+          ),
+        }))
+        .filter((submission) => submission.generations.length > 0),
+    );
+  }
+
   if (session.status === "loading") return null;
   if (session.status === "signed-out") return <Navigate to="/" replace />;
 
@@ -474,6 +524,16 @@ export function GalleryPage() {
 
   return (
     <>
+      {openGenerationId && (
+        <GenerationDetailOverlay
+          id={openGenerationId}
+          prevId={orderedIds[orderedIds.indexOf(openGenerationId) - 1] ?? null}
+          nextId={orderedIds[orderedIds.indexOf(openGenerationId) + 1] ?? null}
+          onClose={closeOverlay}
+          onNavigate={openGeneration}
+          onDeleted={handleDeleted}
+        />
+      )}
       <main className="gallery">
         <style>{GALLERY_STYLE}</style>
         <h1>Gallery</h1>
@@ -551,6 +611,7 @@ export function GalleryPage() {
                 key={submission.submissionId}
                 submission={submission}
                 paused={paused}
+                onOpen={openGeneration}
               />
             ))}
           </div>
@@ -615,6 +676,17 @@ const GALLERY_STYLE = `
   display: flex;
   align-items: center;
   justify-content: center;
+}
+.gallery-card-button {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
 }
 .gallery-card-thumb {
   width: 100%;

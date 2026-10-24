@@ -8,11 +8,14 @@ import path from "node:path";
 import { FakeClock } from "@ai-content-studio/shared";
 import { Hono } from "hono";
 import { users } from "../db/schema.js";
+import { MediaRunner, MediaTimeoutError } from "../media/media.js";
 import { createLocalStorage } from "../storage/storage.js";
 import { createTestDatabase } from "../test/database.js";
 import { UploadsRepository } from "../uploads/repository.js";
 import { UploadsService } from "../uploads/service.js";
 import { uploadsRoute } from "./uploads.js";
+
+type UploadsServiceMedia = Pick<MediaRunner, "probeImage" | "makeThumbnail">;
 
 type FakeSession = {
   user: {
@@ -50,7 +53,7 @@ describe("/api/uploads", () => {
     hint = null;
   });
 
-  async function setup() {
+  async function setup(media: UploadsServiceMedia = new MediaRunner(2)) {
     const { db } = await testDb;
     const dir = await dirPromise;
     const storage = createLocalStorage(path.join(dir, "data"));
@@ -62,6 +65,7 @@ describe("/api/uploads", () => {
       maxUploadMb: 1,
       hasFreeDisk: async () => !diskFull,
       hintLimits: async () => hint,
+      media,
     });
     const insertUser = async (email: string) => {
       const [row] = await db
@@ -324,5 +328,83 @@ describe("/api/uploads", () => {
     expect(((await res.json()) as { message: string }).message).toBe(
       "is larger than 200 px on its long side",
     );
+  });
+
+  test("complete refuses a still over ~100 megapixels before making its thumbnail", async () => {
+    const { insertUser, as, dir } = await setup();
+    const app = as(await insertUser("huge@example.com"));
+    // 11000x10000 = 110 MP: `makeThumbnail` would otherwise decode the
+    // full frame to scale it (Dule's #140 review).
+    const huge = await makeImage(dir, "huge.png", "11000x10000");
+
+    const created = await createUpload(app, {
+      name: "huge.png",
+      size: huge.length,
+      type: "image/png",
+    });
+    const { upload } = (await created.json()) as { upload: { id: string } };
+    await putChunk(app, upload.id, 0, huge);
+    const res = await app.request(`/api/uploads/${upload.id}/complete`, {
+      method: "POST",
+    });
+    expect(res.status).toBe(422);
+    expect(((await res.json()) as { message: string }).message).toBe(
+      "has too many pixels to process",
+    );
+  });
+
+  test("a probe or thumbnail that times out refuses the Upload (422), not a 500 or a hang", async () => {
+    // A 1ms timeout: real ffprobe/ffmpeg can't finish that fast, so
+    // `MediaRunner` kills them, the same as it would a hung process on a
+    // hostile or huge file (Dule's #140 review).
+    const { insertUser, as, dir, repository } = await setup(
+      new MediaRunner(2, 1),
+    );
+    const app = as(await insertUser("timeout@example.com"));
+    const png = await makeImage(dir, "e.png", "32x32");
+
+    const created = await createUpload(app, {
+      name: "e.png",
+      size: png.length,
+      type: "image/png",
+    });
+    const { upload } = (await created.json()) as { upload: { id: string } };
+    await putChunk(app, upload.id, 0, png);
+
+    const res = await Promise.race([
+      app.request(`/api/uploads/${upload.id}/complete`, { method: "POST" }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("complete() never returned")), 5000),
+      ),
+    ]);
+    expect(res.status).toBe(422);
+    expect((await repository.get(upload.id))?.status).toBe("failed");
+  });
+
+  test("makeThumbnail timing out (not just probeImage) also refuses with 422, not a 500", async () => {
+    const timesOutOnThumbnail: UploadsServiceMedia = {
+      probeImage: (filePath) => new MediaRunner(2).probeImage(filePath),
+      makeThumbnail: () => {
+        throw new MediaTimeoutError("ffmpeg");
+      },
+    };
+    const { insertUser, as, dir, repository } =
+      await setup(timesOutOnThumbnail);
+    const app = as(await insertUser("thumb-timeout@example.com"));
+    const png = await makeImage(dir, "f.png", "32x32");
+
+    const created = await createUpload(app, {
+      name: "f.png",
+      size: png.length,
+      type: "image/png",
+    });
+    const { upload } = (await created.json()) as { upload: { id: string } };
+    await putChunk(app, upload.id, 0, png);
+
+    const res = await app.request(`/api/uploads/${upload.id}/complete`, {
+      method: "POST",
+    });
+    expect(res.status).toBe(422);
+    expect((await repository.get(upload.id))?.status).toBe("failed");
   });
 });

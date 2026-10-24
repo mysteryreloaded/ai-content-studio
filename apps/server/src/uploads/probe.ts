@@ -1,7 +1,9 @@
-// Probes an Upload with ffprobe and makes its thumbnail with ffmpeg
-// (issue #50), both already in the server image for Backend media. Only
-// PNG, JPEG and WebP stills are accepted here; the extension comes from
-// the probe, never from the file's own name.
+// Pure parsing of ffprobe's JSON output for an Upload still (issue #50).
+// Only PNG, JPEG and WebP are accepted; the extension comes from the
+// probe, never the file's own name. Actually running ffprobe/ffmpeg goes
+// through `MediaRunner` (media/media.ts), which bounds concurrency and
+// wall-clock time, so a hostile or huge file can't hang `/complete`
+// forever or starve the box Postgres shares.
 
 /** The probe facts kept on an accepted image Upload. */
 export interface ImageProbeFacts {
@@ -23,7 +25,7 @@ export type ProbeResult =
   | { ok: false; reason: string };
 
 /** ffprobe's own (format, codec) pair for each accepted still. */
-const ACCEPTED_STILLS: Record<
+export const ACCEPTED_STILLS: Record<
   string,
   { format: string; extension: string; contentType: string }
 > = {
@@ -32,19 +34,10 @@ const ACCEPTED_STILLS: Record<
   webp: { format: "webp_pipe", extension: "webp", contentType: "image/webp" },
 };
 
-const WRONG_KIND = "isn't a PNG, JPEG or WebP image";
+export const WRONG_KIND = "isn't a PNG, JPEG or WebP image";
 
-async function run(
-  command: string[],
-): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-  const proc = Bun.spawn(command, { stdout: "pipe", stderr: "pipe" });
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
-  return { exitCode, stdout, stderr };
-}
+/** `makeThumbnail` decodes the whole frame to scale it; above this, refuse before it does (issue #50). */
+export const MAX_IMAGE_MEGAPIXELS = 100_000_000;
 
 interface FfprobeOutput {
   streams?: Array<{
@@ -57,19 +50,8 @@ interface FfprobeOutput {
   format?: { format_name?: string };
 }
 
-export async function probeImage(filePath: string): Promise<ProbeResult> {
-  const { exitCode, stdout } = await run([
-    "ffprobe",
-    "-v",
-    "error",
-    "-print_format",
-    "json",
-    "-show_streams",
-    "-show_format",
-    filePath,
-  ]);
-  if (exitCode !== 0) return { ok: false, reason: WRONG_KIND };
-
+/** Parses ffprobe's `-show_streams -show_format` JSON for an accepted still, or says why not. */
+export function parseProbeOutput(stdout: string): ProbeResult {
   let parsed: FfprobeOutput;
   try {
     parsed = JSON.parse(stdout) as FfprobeOutput;
@@ -109,31 +91,4 @@ export async function probeImage(filePath: string): Promise<ProbeResult> {
       pixFmt: stream.pix_fmt ?? null,
     },
   };
-}
-
-/** Writes a WebP thumbnail of `inputPath`, its long side at most 160 px, to `outputPath`. */
-export async function makeThumbnail(
-  inputPath: string,
-  outputPath: string,
-): Promise<void> {
-  const { exitCode, stderr } = await run([
-    "ffmpeg",
-    "-v",
-    "error",
-    "-y",
-    "-i",
-    inputPath,
-    "-vf",
-    "scale=160:160:force_original_aspect_ratio=decrease",
-    "-frames:v",
-    "1",
-    "-c:v",
-    "libwebp",
-    "-f",
-    "webp",
-    outputPath,
-  ]);
-  if (exitCode !== 0) {
-    throw new Error(`ffmpeg thumbnail failed: ${stderr.trim()}`);
-  }
 }

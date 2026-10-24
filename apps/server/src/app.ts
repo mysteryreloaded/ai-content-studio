@@ -227,6 +227,7 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
       const input = detail?.inputs.find((i) => i.id === inputId);
       return input?.kind === "image_upload" ? input : null;
     },
+    media,
   });
   app.route(
     "/api/uploads",

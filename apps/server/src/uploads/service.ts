@@ -10,8 +10,9 @@ import {
   type ImageUploadInputDefinition,
   imageUploadLimitIssue,
 } from "@ai-content-studio/shared";
+import type { MediaRunner } from "../media/media.js";
 import type { Storage } from "../storage/storage.js";
-import { type ProbeResult, makeThumbnail, probeImage } from "./probe.js";
+import { MAX_IMAGE_MEGAPIXELS } from "./probe.js";
 import type { UploadRecord, UploadsRepository } from "./repository.js";
 
 export const CHUNK_BYTES = 16 * BYTES_PER_MB;
@@ -94,8 +95,14 @@ export interface UploadsServiceDeps {
     ImageUploadInputDefinition,
     "maxSizeMb" | "maxLongSide"
   > | null>;
-  probe?: (filePath: string) => Promise<ProbeResult>;
-  thumbnail?: (inputPath: string, outputPath: string) => Promise<void>;
+  /**
+   * ffprobe/ffmpeg for Upload completion (issue #50), bounded by
+   * `FFMPEG_CONCURRENCY` and a timeout: never the raw `uploads/probe.js`
+   * functions directly, so a flaky user's many `/complete` calls, or one
+   * huge-dimension still, can't OOM the box Postgres shares or hang this
+   * route forever.
+   */
+  media: Pick<MediaRunner, "probeImage" | "makeThumbnail">;
 }
 
 export class UploadsService {
@@ -198,9 +205,13 @@ export class UploadsService {
     }
 
     const filePath = this.deps.storage.absolutePath(upload.storageKey);
-    const probe = await (this.deps.probe ?? probeImage)(filePath);
+    const probe = await this.deps.media.probeImage(filePath);
     if (!probe.ok) await this.refuse(upload, probe.reason);
-    const accepted = probe as Extract<ProbeResult, { ok: true }>;
+    const accepted = probe as Extract<typeof probe, { ok: true }>;
+
+    if (accepted.facts.width * accepted.facts.height > MAX_IMAGE_MEGAPIXELS) {
+      await this.refuse(upload, "has too many pixels to process");
+    }
 
     if (upload.modelId && upload.inputId) {
       const limits = await this.deps.hintLimits(upload.modelId, upload.inputId);
@@ -219,7 +230,7 @@ export class UploadsService {
 
     const thumbnailKey = `uploads/${id}/thumb.webp`;
     try {
-      await (this.deps.thumbnail ?? makeThumbnail)(
+      await this.deps.media.makeThumbnail(
         filePath,
         this.deps.storage.absolutePath(thumbnailKey),
       );

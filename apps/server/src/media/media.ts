@@ -6,6 +6,11 @@
 // so a burst of saves can't starve the box.
 
 import { cpus } from "node:os";
+import {
+  type ProbeResult,
+  WRONG_KIND,
+  parseProbeOutput,
+} from "../uploads/probe.js";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 
@@ -213,6 +218,64 @@ export class MediaRunner {
       "-q:v",
       "3",
       output,
+    ]);
+  }
+
+  /**
+   * Probes an Upload still (issue #50), bounded the same as every other
+   * call here. Never throws: a non-image file, a timeout or any other
+   * ffprobe failure all come back as `{ ok: false }` so a caller can
+   * refuse the Upload (422) without a try/catch of its own.
+   */
+  async probeImage(filePath: string): Promise<ProbeResult> {
+    let stdout: string;
+    try {
+      stdout = await this.run([
+        "ffprobe",
+        "-v",
+        "error",
+        "-print_format",
+        "json",
+        "-show_streams",
+        "-show_format",
+        filePath,
+      ]);
+    } catch {
+      return { ok: false, reason: WRONG_KIND };
+    }
+    try {
+      return parseProbeOutput(stdout);
+    } catch {
+      return { ok: false, reason: WRONG_KIND };
+    }
+  }
+
+  /**
+   * Writes a WebP thumbnail of `inputPath`, its long side at most 160 px,
+   * to `outputPath` (issue #50). Bounded the same as every other call
+   * here, so a hung or oversized decode can't hang the caller forever;
+   * a timeout or ffmpeg error throws (`MediaTimeoutError`/
+   * `MediaCommandError`), for the caller to turn into a refusal.
+   */
+  async makeThumbnail(inputPath: string, outputPath: string): Promise<void> {
+    await this.run([
+      "ffmpeg",
+      "-v",
+      "error",
+      "-y",
+      "-threads",
+      String(this.threads),
+      "-i",
+      inputPath,
+      "-vf",
+      "scale=160:160:force_original_aspect_ratio=decrease",
+      "-frames:v",
+      "1",
+      "-c:v",
+      "libwebp",
+      "-f",
+      "webp",
+      outputPath,
     ]);
   }
 }

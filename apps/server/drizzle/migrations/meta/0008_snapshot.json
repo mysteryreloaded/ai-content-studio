@@ -274,12 +274,8 @@
           "name": "log_entries_backend_id_backends_id_fk",
           "tableFrom": "log_entries",
           "tableTo": "backends",
-          "columnsFrom": [
-            "backend_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["backend_id"],
+          "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         },
@@ -287,12 +283,8 @@
           "name": "log_entries_user_id_users_id_fk",
           "tableFrom": "log_entries",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         }
@@ -333,12 +325,8 @@
           "name": "model_backends_model_id_models_id_fk",
           "tableFrom": "model_backends",
           "tableTo": "models",
-          "columnsFrom": [
-            "model_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["model_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -346,12 +334,8 @@
           "name": "model_backends_backend_id_backends_id_fk",
           "tableFrom": "model_backends",
           "tableTo": "backends",
-          "columnsFrom": [
-            "backend_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["backend_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -359,10 +343,7 @@
       "compositePrimaryKeys": {
         "model_backends_model_id_backend_id_pk": {
           "name": "model_backends_model_id_backend_id_pk",
-          "columns": [
-            "model_id",
-            "backend_id"
-          ]
+          "columns": ["model_id", "backend_id"]
         }
       },
       "uniqueConstraints": {},
@@ -435,12 +416,8 @@
           "name": "model_revisions_model_id_models_id_fk",
           "tableFrom": "model_revisions",
           "tableTo": "models",
-          "columnsFrom": [
-            "model_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["model_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -448,12 +425,8 @@
           "name": "model_revisions_workflow_hash_workflows_hash_fk",
           "tableFrom": "model_revisions",
           "tableTo": "workflows",
-          "columnsFrom": [
-            "workflow_hash"
-          ],
-          "columnsTo": [
-            "hash"
-          ],
+          "columnsFrom": ["workflow_hash"],
+          "columnsTo": ["hash"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -640,12 +613,8 @@
           "name": "sessions_user_id_users_id_fk",
           "tableFrom": "sessions",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -899,9 +868,7 @@
         "users_google_sub_unique": {
           "name": "users_google_sub_unique",
           "nullsNotDistinct": false,
-          "columns": [
-            "google_sub"
-          ]
+          "columns": ["google_sub"]
         }
       },
       "policies": {},
@@ -957,61 +924,37 @@
     "public.backend_auth_kind": {
       "name": "backend_auth_kind",
       "schema": "public",
-      "values": [
-        "none",
-        "basic",
-        "header"
-      ]
+      "values": ["none", "basic", "header"]
     },
     "public.log_level": {
       "name": "log_level",
       "schema": "public",
-      "values": [
-        "error",
-        "warning",
-        "info"
-      ]
+      "values": ["error", "warning", "info"]
     },
     "public.log_source": {
       "name": "log_source",
       "schema": "public",
-      "values": [
-        "backend",
-        "app"
-      ]
+      "values": ["backend", "app"]
     },
     "public.model_state": {
       "name": "model_state",
       "schema": "public",
-      "values": [
-        "enabled",
-        "disabled"
-      ]
+      "values": ["enabled", "disabled"]
     },
     "public.sign_up_mode": {
       "name": "sign_up_mode",
       "schema": "public",
-      "values": [
-        "open",
-        "approval"
-      ]
+      "values": ["open", "approval"]
     },
     "public.user_role": {
       "name": "user_role",
       "schema": "public",
-      "values": [
-        "user",
-        "admin"
-      ]
+      "values": ["user", "admin"]
     },
     "public.user_status": {
       "name": "user_status",
       "schema": "public",
-      "values": [
-        "pending",
-        "active",
-        "disabled"
-      ]
+      "values": ["pending", "active", "disabled"]
     }
   },
   "schemas": {},

@@ -245,6 +245,97 @@ describe("WorkbenchPage", () => {
     expect(view.queryByText("No Submissions yet.")).toBeNull();
   });
 
+  describe("Cancel a Submission (issue #54)", () => {
+    const QUEUED_SUBMISSION = {
+      submissionId: "s1",
+      modeId: "mode1",
+      modeName: "Default",
+      submittedAt: "2026-01-01T00:00:00.000Z",
+      generations: [
+        {
+          id: "g1",
+          modelId: "m1",
+          modelSlug: "ltx",
+          modelName: "LTX 2.5",
+          modeId: "mode1",
+          modeName: "Default",
+          submissionId: "s1",
+          state: "queued",
+          tries: 0,
+          error: null,
+          submittedAt: "2026-01-01T00:00:00.000Z",
+          assets: [],
+        },
+      ],
+    };
+
+    test("posts to the cancel route and disables the button meanwhile", async () => {
+      let cancelCalls = 0;
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx")) {
+          return Response.json({ model: MODEL });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ submissions: [QUEUED_SUBMISSION] });
+        }
+        if (call.url.endsWith("/api/submissions/s1/cancel")) {
+          cancelCalls += 1;
+          return new Response(null, { status: 204 });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+      const cancelButton = await view.findByRole("button", {
+        name: "Cancel",
+      });
+      await userEvent.click(cancelButton);
+
+      expect(cancelCalls).toBe(1);
+      await waitFor(() =>
+        expect(
+          (view.getByRole("button", { name: "Cancel" }) as HTMLButtonElement)
+            .disabled,
+        ).toBe(false),
+      );
+    });
+
+    test("shows an error and leaves the button enabled when the cancel request fails", async () => {
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx")) {
+          return Response.json({ model: MODEL });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ submissions: [QUEUED_SUBMISSION] });
+        }
+        if (call.url.endsWith("/api/submissions/s1/cancel")) {
+          return new Response(null, { status: 500 });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+      const cancelButton = await view.findByRole("button", {
+        name: "Cancel",
+      });
+      await userEvent.click(cancelButton);
+
+      expect(
+        await view.findByText("Could not cancel. Please try again."),
+      ).toBeTruthy();
+      expect(
+        (view.getByRole("button", { name: "Cancel" }) as HTMLButtonElement)
+          .disabled,
+      ).toBe(false);
+    });
+  });
+
   test('shows "no server available for this Model" on a 400 no_backend', async () => {
     mockFetch((call) => {
       if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {

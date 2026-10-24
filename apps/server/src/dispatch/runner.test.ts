@@ -21,6 +21,7 @@ import {
   type RunnerDeps,
   pollUntilDone,
   readJobWithGrace,
+  runClaimedGeneration,
   saveWithBackoff,
 } from "./runner.js";
 
@@ -549,5 +550,134 @@ describe("boot recovery resumes polling instead of losing the try at once (issue
       await tick(clock, 10_000);
     }
     expect(calls.markSucceeded).toHaveLength(1);
+  });
+});
+
+describe("reconciling a cancel that raced a terminal write (issue #54)", () => {
+  let fake: ReturnType<typeof startFakeComfyUi> | null = null;
+
+  afterEach(() => {
+    fake?.stop();
+    fake = null;
+  });
+
+  test("markRunning losing to a cancel still sends the Backend's interrupt and finalizes, instead of sticking cancelling", async () => {
+    fake = startFakeComfyUi({ port: 0 });
+    const backend = fakeBackend({ baseUrl: fake.url });
+    const generationId = randomUUID();
+    const { prompt } = buildFrozenPrompt(WORKFLOW, ["2"], generationId);
+    const detail = fakeDetail(generationId, prompt);
+    // Hangs until /api/jobs/:id/cancel is called: the submit itself
+    // must succeed (and really reach the Backend) for this race to be
+    // the one at hand.
+    fake.script(generationId, { hang: true });
+
+    const clock = new FakeClock();
+    const markCancelledCalls: {
+      id: string;
+      tries: number;
+      pendingBackendCancel: boolean;
+    }[] = [];
+    const queue = {
+      markRunning: async () => false,
+      currentState: async () => "cancelling" as const,
+      markCancelled: async (
+        id: string,
+        tries: number,
+        opts: { pendingBackendCancel: boolean },
+      ) => {
+        markCancelledCalls.push({ id, tries, ...opts });
+        return true;
+      },
+    };
+    const deps = baseDeps(
+      clock,
+      // biome-ignore lint/suspicious/noExplicitAny: a hand-rolled fake standing in for DispatchQueue
+      queue as any,
+    );
+    const events: GenerationEvent[] = [];
+    deps.generationEvents.subscribe(detail.userId, (event) =>
+      events.push(event),
+    );
+
+    await runClaimedGeneration(backend, detail, 1, deps);
+
+    expect(markCancelledCalls).toEqual([
+      { id: generationId, tries: 1, pendingBackendCancel: false },
+    ]);
+    const change = [...events]
+      .reverse()
+      .find((event) => event.type === "change");
+    expect(change?.type === "change" && change.generation.state).toBe(
+      "cancelled",
+    );
+  });
+
+  test("markSaving losing to a cancel that raced the job finishing still confirms it, instead of sticking cancelling", async () => {
+    fake = startFakeComfyUi({ port: 0 });
+    const backend = fakeBackend({ baseUrl: fake.url });
+    const generationId = randomUUID();
+    const { prompt } = buildFrozenPrompt(WORKFLOW, ["2"], generationId);
+    const detail = fakeDetail(generationId, prompt);
+    fake.script(generationId, {
+      steps: 1,
+      stepIntervalMs: 10,
+      outputs: {
+        "2": { images: [{ filename: "a.png", subfolder: "", type: "output" }] },
+      },
+    });
+    await fetch(`${fake.url}/prompt`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        prompt,
+        prompt_id: generationId,
+        client_id: generationId,
+      }),
+    });
+
+    const clock = new FakeClock();
+    const markCancelledCalls: {
+      id: string;
+      tries: number;
+      pendingBackendCancel: boolean;
+    }[] = [];
+    const queue = {
+      // The row raced to `cancelling` between the job completing and
+      // this write, so it no-ops the same way a watchdog sweep would.
+      markSaving: async () => false,
+      currentState: async () => "cancelling" as const,
+      markCancelled: async (
+        id: string,
+        tries: number,
+        opts: { pendingBackendCancel: boolean },
+      ) => {
+        markCancelledCalls.push({ id, tries, ...opts });
+        return true;
+      },
+    };
+    const deps = baseDeps(
+      clock,
+      // biome-ignore lint/suspicious/noExplicitAny: a hand-rolled fake standing in for DispatchQueue
+      queue as any,
+    );
+    const events: GenerationEvent[] = [];
+    deps.generationEvents.subscribe(detail.userId, (event) =>
+      events.push(event),
+    );
+    const target = { baseUrl: fake.url, headers: {} };
+
+    const run = pollUntilDone(backend, detail, 1, target, deps);
+    await driveUntilSettled(clock, run, 1_000);
+
+    expect(markCancelledCalls).toEqual([
+      { id: generationId, tries: 1, pendingBackendCancel: false },
+    ]);
+    const change = [...events]
+      .reverse()
+      .find((event) => event.type === "change");
+    expect(change?.type === "change" && change.generation.state).toBe(
+      "cancelled",
+    );
   });
 });

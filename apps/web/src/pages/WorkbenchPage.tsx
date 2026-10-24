@@ -577,6 +577,10 @@ export function WorkbenchPage() {
   const [cancellingSubmissionIds, setCancellingSubmissionIds] = useState<
     Set<string>
   >(new Set());
+  /** Issue #54: which Submission's Cancel request most recently failed, so the button's user sees why it's still enabled. */
+  const [cancelErrorSubmissionId, setCancelErrorSubmissionId] = useState<
+    string | null
+  >(null);
 
   const [uploads, setUploads] = useState<Record<string, UploadState>>({});
   // Issue #50: each running Upload, by Input id, so Generate can wait for
@@ -955,13 +959,18 @@ export function WorkbenchPage() {
 
   const handleCancelSubmission = useCallback(async (submissionId: string) => {
     setCancellingSubmissionIds((current) => new Set(current).add(submissionId));
+    setCancelErrorSubmissionId(null);
     try {
-      await fetch(`/api/submissions/${submissionId}/cancel`, {
+      const res = await fetch(`/api/submissions/${submissionId}/cancel`, {
         method: "POST",
       });
+      if (!res.ok) {
+        setCancelErrorSubmissionId(submissionId);
+      }
     } catch {
       // The SSE stream carries the real outcome either way; a failed
       // request here just means this button stays enabled to retry.
+      setCancelErrorSubmissionId(submissionId);
     } finally {
       setCancellingSubmissionIds((current) => {
         const next = new Set(current);
@@ -1170,6 +1179,9 @@ export function WorkbenchPage() {
                       >
                         Cancel
                       </button>
+                    )}
+                    {cancelErrorSubmissionId === submission.submissionId && (
+                      <p role="alert">Could not cancel. Please try again.</p>
                     )}
                     <ul>
                       {submission.generations.map((generation) => (

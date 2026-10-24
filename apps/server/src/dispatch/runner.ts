@@ -295,6 +295,41 @@ export async function finalizeCancelled(
   return true;
 }
 
+/**
+ * Catches a cancel that raced a terminal write and lost (issue #54): the
+ * row moved to `cancelling` between this run's last look and the write
+ * that just no-op'd, so nothing else is coming to finish it — without
+ * this, it would sit `cancelling` with its Backend counted busy until a
+ * restart's boot recovery notices. Sends the Backend's own interrupt
+ * first when a target is given (the prompt was actually submitted;
+ * `null` means it never was, so there's nothing to interrupt), then
+ * finalizes the same way `pollUntilDone`'s own cancel path does. A
+ * no-op when the row moved on for any other reason (a watchdog sweep,
+ * a later try already claimed it).
+ */
+async function reconcileIfCancelling(
+  deps: RunnerDeps,
+  detail: RunDetail,
+  backendId: string,
+  tries: number,
+  target: Awaited<ReturnType<typeof comfyUiTarget>> | null,
+): Promise<boolean> {
+  const state = await deps.queue.currentState(detail.id);
+  if (state !== "cancelling") return false;
+  let pendingBackendCancel = false;
+  if (target) {
+    try {
+      await cancelJob(target, detail.id);
+    } catch {
+      pendingBackendCancel = true;
+    }
+  } else {
+    pendingBackendCancel = true;
+  }
+  await finalizeCancelled(deps, detail, backendId, tries, pendingBackendCancel);
+  return true;
+}
+
 export async function runClaimedGeneration(
   backend: BackendRecord,
   detail: RunDetail,
@@ -333,56 +368,69 @@ export async function runClaimedGeneration(
     await submitPrompt(target, generationId, detail.builtPrompt);
   } catch (err) {
     deps.progress.discard(generationId);
+    let stale = false;
     if (err instanceof BackendUnreachable) {
-      await reportLostTry(
-        deps,
-        detail,
-        backend.id,
-        tries,
-        err.message,
-        "the GPU server couldn't run this",
-      );
+      stale =
+        (await reportLostTry(
+          deps,
+          detail,
+          backend.id,
+          tries,
+          err.message,
+          "the GPU server couldn't run this",
+        )) === "stale";
     } else if (
       err instanceof PromptRejected &&
       isMissingNodeError(err.nodeErrors)
     ) {
       deps.backendsService.invalidateNodeKnowledge(backend.id);
-      await reportLostTry(
-        deps,
-        detail,
-        backend.id,
-        tries,
-        describeError(err),
-        "the GPU server couldn't run this",
-      );
+      stale =
+        (await reportLostTry(
+          deps,
+          detail,
+          backend.id,
+          tries,
+          describeError(err),
+          "the GPU server couldn't run this",
+        )) === "stale";
     } else if (err instanceof PayloadTooLarge) {
-      await reportFailure(
+      stale = !(await reportFailure(
         deps,
         detail,
         backend.id,
         tries,
         err.message,
         err.message,
-      );
+      ));
     } else {
-      await reportFailure(
+      stale = !(await reportFailure(
         deps,
         detail,
         backend.id,
         tries,
         "the GPU server rejected this Generation",
         describeError(err),
-      );
+      ));
+    }
+    if (stale) {
+      // Raced a cancel (issue #54): the submit itself never landed, so
+      // there's nothing on the Backend to interrupt.
+      await reconcileIfCancelling(deps, detail, backend.id, tries, null);
     }
     deps.onFreed();
     return;
   }
 
   if (!(await deps.queue.markRunning(generationId, tries))) {
-    // Superseded (e.g. the watchdog's starting timeout) between submit
-    // and here. The prompt may still run on the Backend; nothing more
-    // to do from this side.
+    // Superseded between submit and here: either a watchdog sweep (the
+    // prompt may still run on the Backend; nothing more to do from this
+    // side), or a cancel that raced in right here (issue #54) — the
+    // prompt *is* running, so reconcile sends its interrupt instead of
+    // leaving it `cancelling` with the Backend counted busy forever.
     deps.progress.discard(generationId);
+    if (await reconcileIfCancelling(deps, detail, backend.id, tries, target)) {
+      deps.onFreed();
+    }
     return;
   }
   await publishChange(deps, detail, "running", tries, null);
@@ -552,7 +600,9 @@ export async function pollUntilDone(
   if (outcome.kind === "timedOut") {
     await interruptJob(target, generationId);
     deps.progress.discard(generationId);
-    await reportFailure(deps, detail, backend.id, tries, "timed out");
+    if (!(await reportFailure(deps, detail, backend.id, tries, "timed out"))) {
+      await reconcileIfCancelling(deps, detail, backend.id, tries, target);
+    }
     deps.onFreed();
     return;
   }
@@ -570,7 +620,7 @@ export async function pollUntilDone(
   }
   if (outcome.kind === "lost") {
     deps.progress.discard(generationId);
-    await reportLostTry(
+    const result = await reportLostTry(
       deps,
       detail,
       backend.id,
@@ -578,12 +628,15 @@ export async function pollUntilDone(
       outcome.reason,
       "the GPU server couldn't run this",
     );
+    if (result === "stale") {
+      await reconcileIfCancelling(deps, detail, backend.id, tries, target);
+    }
     deps.onFreed();
     return;
   }
   if (outcome.kind === "executionError") {
     deps.progress.discard(generationId);
-    await reportFailure(
+    const ok = await reportFailure(
       deps,
       detail,
       backend.id,
@@ -591,6 +644,9 @@ export async function pollUntilDone(
       "the GPU server reported an error while running this",
       outcome.message,
     );
+    if (!ok) {
+      await reconcileIfCancelling(deps, detail, backend.id, tries, target);
+    }
     deps.onFreed();
     return;
   }
@@ -598,13 +654,16 @@ export async function pollUntilDone(
   const completedJob = outcome.job;
   if (allOutputFiles(detail, completedJob).length === 0) {
     deps.progress.discard(generationId);
-    await reportFailure(
+    const ok = await reportFailure(
       deps,
       detail,
       backend.id,
       tries,
       "the GPU server produced no usable output",
     );
+    if (!ok) {
+      await reconcileIfCancelling(deps, detail, backend.id, tries, target);
+    }
     deps.onFreed();
     return;
   }
@@ -613,6 +672,10 @@ export async function pollUntilDone(
   // (ADR: "saving overlaps the next start"), before touching any files.
   if (!(await deps.queue.markSaving(generationId, tries))) {
     deps.progress.discard(generationId);
+    // Raced a cancel landing right here (issue #54): the job already
+    // finished on the Backend, so its own `/cancel` just 404s — treated
+    // as confirmed the same way an already-gone job always is.
+    await reconcileIfCancelling(deps, detail, backend.id, tries, target);
     deps.onFreed();
     return;
   }

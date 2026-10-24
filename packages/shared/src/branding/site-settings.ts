@@ -22,6 +22,16 @@ export const siteSettingsFieldsSchema = z.object({
 
 export type SiteSettingsFields = z.infer<typeof siteSettingsFieldsSchema>;
 
+/** Site terms (issue #60): a blank body means "no terms set", not a 0-length version. */
+export const TERMS_MAX_LENGTH = 50_000;
+
+export const siteTermsFieldsSchema = z.object({
+  body: z.string().max(TERMS_MAX_LENGTH),
+  askAgain: z.boolean().default(false),
+});
+
+export type SiteTermsFields = z.infer<typeof siteTermsFieldsSchema>;
+
 export function maxBytesFor(key: "logo" | "background"): number {
   return key === "logo" ? LOGO_MAX_BYTES : BACKGROUND_MAX_BYTES;
 }

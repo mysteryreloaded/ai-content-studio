@@ -32,6 +32,7 @@ import { healthRoute } from "./routes/health.js";
 import { modelsRoute } from "./routes/models.js";
 import { siteSettingsRoute } from "./routes/site-settings.js";
 import { statusRoute } from "./routes/status.js";
+import { termsRoute } from "./routes/terms.js";
 import { createLocalStorage } from "./storage/storage.js";
 
 /** Tracks package.json's own version by hand; bump it alongside a release. */
@@ -142,6 +143,7 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
     ),
   );
   app.route("/api/admin/logs", adminLogsRoute(deps.db, deps.clock, routes));
+  app.route("/api/terms", termsRoute(deps.db, deps.clock, routes));
   const modelRepository = new ModelRepository(deps.db, deps.clock);
   app.route(
     "/api/admin/models",

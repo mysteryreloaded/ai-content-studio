@@ -1,7 +1,8 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { FakeClock } from "@ai-content-studio/shared";
+import { eq } from "drizzle-orm";
 import { createApp } from "../app.js";
-import { users } from "../db/schema.js";
+import { siteSettings, users } from "../db/schema.js";
 import type { Env } from "../env.js";
 import type { Logger } from "../logger.js";
 import { createTestDatabase } from "../test/database.js";
@@ -117,6 +118,7 @@ describe("every route's access level is declared and enforced", () => {
     // different test's job, so only its status code is overridden here.
     const ADMIN_STATUS_OVERRIDES: Record<string, number> = {
       "PUT /api/admin/site-settings": 400,
+      "PUT /api/admin/site-settings/terms": 400,
       "POST /api/admin/backends": 400,
       "GET /api/admin/backends/:id": 404,
       "PUT /api/admin/backends/:id": 404,
@@ -127,6 +129,13 @@ describe("every route's access level is declared and enforced", () => {
       "DELETE /api/admin/models/:id": 404,
       "POST /api/admin/models/:id/move-up": 404,
       "POST /api/admin/models/:id/move-down": 404,
+    };
+
+    // No Site terms are set in this test's database, so accepting them
+    // fails validation (400 "no_terms") before the access check matters
+    // — not a different status per role, so it overrides both columns.
+    const BOTH_STATUS_OVERRIDES: Record<string, number> = {
+      "POST /api/terms/accept": 400,
     };
 
     for (const route of routes) {
@@ -156,8 +165,11 @@ describe("every route's access level is declared and enforced", () => {
             Cookie: await cookieFor(activeUser.id),
           },
         });
+        const routeKey = `${route.method} ${route.path}`;
+        const expectedActive =
+          BOTH_STATUS_OVERRIDES[routeKey] ?? expected.active;
         expect(`${context} active -> ${activeRes.status}`).toBe(
-          `${context} active -> ${expected.active}`,
+          `${context} active -> ${expectedActive}`,
         );
 
         const adminRes = await app.request(route.path, {
@@ -168,12 +180,82 @@ describe("every route's access level is declared and enforced", () => {
           },
         });
         const expectedAdmin =
-          ADMIN_STATUS_OVERRIDES[`${route.method} ${route.path}`] ??
+          BOTH_STATUS_OVERRIDES[routeKey] ??
+          ADMIN_STATUS_OVERRIDES[routeKey] ??
           expected.admin;
         expect(`${context} admin -> ${adminRes.status}`).toBe(
           `${context} admin -> ${expectedAdmin}`,
         );
       }
+    }
+  });
+
+  test("active without terms: signed in and active, but Site terms are set and not yet accepted", async () => {
+    const { app, routes, db } = await build();
+
+    await db
+      .update(siteSettings)
+      .set({ termsBody: "Do not be evil.", termsVersion: 1 })
+      .where(eq(siteSettings.singleton, true));
+
+    const SAME_ORIGIN_HEADERS = { "Sec-Fetch-Site": "same-origin" };
+
+    // A fresh user (and so a fresh, unaccepted session) per request: this
+    // sweep calls every route, including `POST /api/terms/accept` itself
+    // (a `signed-in` route), which would otherwise accept the terms for
+    // one shared user partway through and make every later route in the
+    // list wrongly pass the gate for the rest of the sweep.
+    let nextUserSuffix = 0;
+    async function cookieFor(): Promise<string> {
+      nextUserSuffix += 1;
+      const [user] = await db
+        .insert(users)
+        .values({
+          googleSub: `sub-no-terms-${nextUserSuffix}`,
+          email: `no-terms-${nextUserSuffix}@example.com`,
+          name: "No Terms User",
+          role: "admin",
+          status: "active",
+        })
+        .returning();
+      if (!user) throw new Error("failed to insert test user");
+      const session = await createSession(db, clock, user.id);
+      return `${SESSION_COOKIE_NAME}=${session.cookieValue}`;
+    }
+
+    // Admin role is used here too: issue #60 requires "every user, Admins
+    // included" to accept, so even an admin route must be blocked.
+    const expectedByAccess: Record<string, number | null> = {
+      public: null, // varies; only checked for "not blocked" below
+      "signed-in": 200,
+      active: 403,
+      admin: 403,
+      "admin-or-status-token": 403,
+    };
+
+    for (const route of routes) {
+      if (route.access === "status-token") continue;
+      const context = `${route.method} ${route.path} (${route.access})`;
+
+      const res = await app.request(route.path, {
+        method: route.method,
+        headers: { ...SAME_ORIGIN_HEADERS, Cookie: await cookieFor() },
+      });
+
+      if (route.access === "public") {
+        expect([401, 403]).not.toContain(res.status);
+        continue;
+      }
+
+      if (route.access === "signed-in") {
+        expect(`${context} -> ${res.status}`).toBe(`${context} -> 200`);
+        continue;
+      }
+
+      const expected = expectedByAccess[route.access];
+      expect(`${context} -> ${res.status}`).toBe(`${context} -> ${expected}`);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe("terms_required");
     }
   });
 });

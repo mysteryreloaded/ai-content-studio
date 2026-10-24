@@ -6,3 +6,4 @@ export * from "./clock/clock.js";
 export * from "./clock/fake-clock.js";
 export * from "./branding/accent.js";
 export * from "./branding/site-settings.js";
+export * from "./markdown/markdown.js";

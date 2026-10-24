@@ -116,3 +116,33 @@ retention's own floor is hit. Defaults to `10`.
 The most ffmpeg/ffprobe processes Asset finishing (issue #45) runs at
 once; each also gets a share of the box's CPU threads, so a burst of
 saves can't starve it. Defaults to `2`.
+
+## `c2pa_cert_path`
+
+### `C2PA_CERT_PATH`
+
+Path (inside the container) to a PEM certificate chain used to sign
+every Asset's C2PA manifest after it's finished (issue #75): the
+end-entity certificate first, then any intermediates, ending before the
+root CA. Must be set together with `C2PA_KEY_PATH`; leave both unset to
+skip C2PA signing (Assets still get their existing "AI-generated" tag).
+`c2patool` has no arm64 Linux build, so signing is also skipped on an
+arm64 box, and for a file format `c2patool` doesn't support (notably
+`webm` video and `ogg`/`opus` audio).
+
+## `c2pa_key_path`
+
+### `C2PA_KEY_PATH`
+
+Path (inside the container) to the PEM private key matching
+`C2PA_CERT_PATH`'s end-entity certificate. Must be set together with it.
+
+## `c2pa_timestamp_url`
+
+### `C2PA_TIMESTAMP_URL`
+
+An optional RFC 3161 Time Authority URL (e.g.
+`http://timestamp.digicert.com`) `c2patool` uses so a signed manifest
+stays verifiable after the certificate expires. Requires
+`C2PA_CERT_PATH`/`C2PA_KEY_PATH` to be set; needs a live connection to
+that URL at signing time.

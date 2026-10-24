@@ -2,7 +2,8 @@
 // scratch dir (finishing writes/renames in place) and against bytes
 // ffmpeg/Bun.Image can't read — the fake Backend used elsewhere returns
 // exactly that, so finishing must degrade to "no extra facts" rather
-// than throw.
+// than throw. Also C2PA signing (issue #75), with real c2patool against
+// the c2pa-rs test chain fixtures/c2pa/.
 
 import { describe, expect, test } from "bun:test";
 import {
@@ -25,8 +26,17 @@ async function listFinishingTempFiles(dir: string): Promise<string[]> {
 }
 
 const FIXTURES = path.join(import.meta.dir, "fixtures");
+const C2PA_SIGNER = {
+  certPath: path.join(FIXTURES, "c2pa", "es256_certs.pem"),
+  keyPath: path.join(FIXTURES, "c2pa", "es256_private.key"),
+};
+const C2PA_INFO = {
+  modelName: "LTX 2.5",
+  siteTitle: "My Studio",
+  generationId: "gen-c2pa-1",
+};
 
-function harness(root: string) {
+function harness(root: string, c2pa: typeof C2PA_SIGNER | null = null) {
   const warnings: string[] = [];
   return {
     warnings,
@@ -39,8 +49,28 @@ function harness(root: string) {
         await writeFile(filePath, data);
       },
       onWarning: (message: string) => warnings.push(message),
+      c2pa,
     },
   };
+}
+
+async function c2paManifest(filePath: string): Promise<{
+  title?: string;
+  assertions: Array<{ label: string; data: unknown }>;
+}> {
+  const reportJson = await Bun.$`c2patool ${filePath}`.text();
+  const report = JSON.parse(reportJson) as {
+    active_manifest?: string;
+    manifests: Record<
+      string,
+      { title?: string; assertions: Array<{ label: string; data: unknown }> }
+    >;
+  };
+  const active = report.active_manifest
+    ? report.manifests[report.active_manifest]
+    : undefined;
+  if (!active) throw new Error(`no active manifest in ${filePath}`);
+  return active;
 }
 
 describe("finishAsset", () => {
@@ -227,5 +257,206 @@ describe("finishAsset", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  describe("C2PA signing (issue #75)", () => {
+    test("video: signs the remuxed file with the c2pa-rs test chain", async () => {
+      const root = await mkdtemp(path.join(tmpdir(), "finish-test-"));
+      try {
+        const storageKey = "assets/gen-c2pa-1/2/tiny.mp4";
+        await mkdir(path.dirname(path.join(root, storageKey)), {
+          recursive: true,
+        });
+        await writeFile(
+          path.join(root, storageKey),
+          await readFile(path.join(FIXTURES, "tiny.mp4")),
+        );
+
+        const { deps, warnings } = harness(root, C2PA_SIGNER);
+        const facts = await finishAsset(
+          deps,
+          "video",
+          storageKey,
+          "AI-generated with Test on localhost, Generation gen-c2pa-1",
+          C2PA_INFO,
+        );
+
+        expect(warnings).toEqual([]);
+        const absPath = path.join(root, storageKey);
+        const manifest = await c2paManifest(absPath);
+        expect(manifest.title).toBe("My Studio");
+        expect(manifest.assertions).toContainEqual({
+          label: "studio.ai-content-studio.generation",
+          data: {
+            model: "LTX 2.5",
+            site: "My Studio",
+            generationId: "gen-c2pa-1",
+          },
+        });
+
+        const finalSize = (await stat(absPath)).size;
+        expect(facts.size).toBe(finalSize);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+
+    test("image: signs in place", async () => {
+      const root = await mkdtemp(path.join(tmpdir(), "finish-test-"));
+      try {
+        const storageKey = "assets/gen-c2pa-2/2/tiny.png";
+        await mkdir(path.dirname(path.join(root, storageKey)), {
+          recursive: true,
+        });
+        await writeFile(
+          path.join(root, storageKey),
+          await readFile(path.join(FIXTURES, "tiny.png")),
+        );
+
+        const { deps, warnings } = harness(root, C2PA_SIGNER);
+        const facts = await finishAsset(
+          deps,
+          "image",
+          storageKey,
+          "unused",
+          C2PA_INFO,
+        );
+
+        expect(warnings).toEqual([]);
+        const absPath = path.join(root, storageKey);
+        const manifest = await c2paManifest(absPath);
+        expect(manifest.title).toBe("My Studio");
+
+        const finalSize = (await stat(absPath)).size;
+        expect(facts.size).toBe(finalSize);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+
+    test("audio: signs in place", async () => {
+      const root = await mkdtemp(path.join(tmpdir(), "finish-test-"));
+      try {
+        const storageKey = "assets/gen-c2pa-3/2/tiny.wav";
+        await mkdir(path.dirname(path.join(root, storageKey)), {
+          recursive: true,
+        });
+        await writeFile(
+          path.join(root, storageKey),
+          await readFile(path.join(FIXTURES, "tiny.wav")),
+        );
+
+        const { deps, warnings } = harness(root, C2PA_SIGNER);
+        const facts = await finishAsset(
+          deps,
+          "audio",
+          storageKey,
+          "unused",
+          C2PA_INFO,
+        );
+
+        expect(warnings).toEqual([]);
+        const absPath = path.join(root, storageKey);
+        const manifest = await c2paManifest(absPath);
+        expect(manifest.title).toBe("My Studio");
+        expect(facts.durationMs).toBeGreaterThanOrEqual(950);
+
+        const finalSize = (await stat(absPath)).size;
+        expect(facts.size).toBe(finalSize);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+
+    test("an unsupported format (c2patool has no webm/ogg support) keeps the Asset untouched, tag only", async () => {
+      const root = await mkdtemp(path.join(tmpdir(), "finish-test-"));
+      try {
+        const storageKey = "assets/gen-c2pa-4/2/tiny.ogg";
+        await mkdir(path.dirname(path.join(root, storageKey)), {
+          recursive: true,
+        });
+        const original = await readFile(path.join(FIXTURES, "tiny.wav"));
+        await writeFile(path.join(root, storageKey), original);
+
+        const { deps, warnings } = harness(root, C2PA_SIGNER);
+        const facts = await finishAsset(
+          deps,
+          "audio",
+          storageKey,
+          "unused",
+          C2PA_INFO,
+        );
+
+        expect(warnings).toEqual([]);
+        expect(facts.size).toBe(original.length);
+        const bytes = await readFile(path.join(root, storageKey));
+        expect(bytes).toEqual(original);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+
+    test("arm64 keeps the Asset untouched, tag only (c2patool has no arm64 Linux build)", async () => {
+      const root = await mkdtemp(path.join(tmpdir(), "finish-test-"));
+      const originalArch = process.arch;
+      Object.defineProperty(process, "arch", {
+        value: "arm64",
+        configurable: true,
+      });
+      try {
+        const storageKey = "assets/gen-c2pa-5/2/tiny.png";
+        await mkdir(path.dirname(path.join(root, storageKey)), {
+          recursive: true,
+        });
+        const original = await readFile(path.join(FIXTURES, "tiny.png"));
+        await writeFile(path.join(root, storageKey), original);
+
+        const { deps, warnings } = harness(root, C2PA_SIGNER);
+        const facts = await finishAsset(
+          deps,
+          "image",
+          storageKey,
+          "unused",
+          C2PA_INFO,
+        );
+
+        expect(warnings).toEqual([]);
+        expect(facts.size).toBe(original.length);
+        const bytes = await readFile(path.join(root, storageKey));
+        expect(bytes).toEqual(original);
+      } finally {
+        Object.defineProperty(process, "arch", {
+          value: originalArch,
+          configurable: true,
+        });
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+
+    test("no C2PA config (deps.c2pa unset) never attempts signing", async () => {
+      const root = await mkdtemp(path.join(tmpdir(), "finish-test-"));
+      try {
+        const storageKey = "assets/gen-c2pa-6/2/tiny.png";
+        await mkdir(path.dirname(path.join(root, storageKey)), {
+          recursive: true,
+        });
+        const original = await readFile(path.join(FIXTURES, "tiny.png"));
+        await writeFile(path.join(root, storageKey), original);
+
+        const { deps, warnings } = harness(root);
+        const facts = await finishAsset(
+          deps,
+          "image",
+          storageKey,
+          "unused",
+          C2PA_INFO,
+        );
+
+        expect(warnings).toEqual([]);
+        expect(facts.size).toBe(original.length);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
   });
 });

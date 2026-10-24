@@ -158,6 +158,14 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
   const assetsRepository = new AssetsRepository(deps.db);
   const dispatchQueue = new DispatchQueue(deps.db);
   const media = new MediaRunner(deps.env.FFMPEG_CONCURRENCY);
+  const c2pa =
+    deps.env.C2PA_CERT_PATH && deps.env.C2PA_KEY_PATH
+      ? {
+          certPath: deps.env.C2PA_CERT_PATH,
+          keyPath: deps.env.C2PA_KEY_PATH,
+          timestampUrl: deps.env.C2PA_TIMESTAMP_URL,
+        }
+      : null;
   const dispatcher = new Dispatcher({
     sql: deps.sql,
     clock: deps.clock,
@@ -172,6 +180,8 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
     generationEvents,
     media,
     siteName: new URL(deps.env.PUBLIC_URL).hostname,
+    c2pa,
+    getSiteTitle: async () => (await getSiteSettings(deps.db)).title,
   });
   wakeDispatcher = dispatcher.wake;
 

@@ -4,6 +4,8 @@ import { useSession } from "../useSession.js";
 import { AuditPage } from "./AuditPage.js";
 import { BackendsPage } from "./BackendsPage.js";
 import { LogsPage } from "./LogsPage.js";
+import { ModelEditorPage } from "./ModelEditorPage.js";
+import { ModelsPage } from "./ModelsPage.js";
 import { OverviewPage } from "./OverviewPage.js";
 import { SiteSettingsForm } from "./SiteSettingsForm.js";
 
@@ -60,6 +62,7 @@ export function AdminShell() {
       <nav>
         <Link to="/admin">Overview</Link>
         <Link to="/admin/settings">Settings</Link>
+        <Link to="/admin/models">Models</Link>
         <Link to="/admin/logs">Logs{errorCount ? ` (${errorCount})` : ""}</Link>
         <Link to="/admin/audit">Audit</Link>
       </nav>
@@ -75,6 +78,8 @@ export function AdminShell() {
             </>
           }
         />
+        <Route path="models" element={<ModelsPage />} />
+        <Route path="models/:id" element={<ModelEditorPage />} />
         <Route path="logs" element={<LogsPage />} />
         <Route path="audit" element={<AuditPage />} />
       </Routes>

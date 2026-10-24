@@ -1,0 +1,23 @@
+[Unit]
+Description=ComfyUI Backend (GPU %i)
+Documentation=file:/opt/ai-content-studio/docs/ops/backend-kit.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/comfyui/%i.env
+WorkingDirectory=/opt/comfyui/%i
+ExecStart=/opt/comfyui/%i/venv/bin/python main.py \
+  --listen ${BACKEND_IP} \
+  --port ${BACKEND_PORT} \
+  --cuda-device %i \
+  --max-upload-size ${MAX_UPLOAD_MB} \
+  --disable-partner-nodes
+Restart=on-failure
+RestartSec=5
+User=comfyui
+Group=comfyui
+
+[Install]
+WantedBy=multi-user.target

@@ -30,6 +30,10 @@ _Avoid_: node (means a Workflow node), worker, machine, server
 An admin-defined field of a Model whose value is written into one or more Node fields; a select writes its own value for each field. Each Mode shows it (optional or required), hides it, or fixes its value. It starts blank unless the admin sets a default, and when it is blank or hidden, its Node fields keep the Workflow's own values.
 _Avoid_: parameter, control, option
 
+**Seed**:
+A Model's own Input type, bound to one INT Node field, with no default: at most one per Model. Blank, the studio picks a random one; set, the user's own. A Seed bound on a Mode's Path turns on the Submission's 1–4 count, even when that Mode hides the Seed Input itself.
+_Avoid_: random seed, noise seed
+
 **Mode**:
 A named preset of a Model (for example first/last frame, character replace) that picks its Path by naming the Workflow nodes that produce its Assets, chooses which Inputs appear, and fixes values that steer choices inside the Path. Modes differ in which Uploads they ask for: a variant that keeps the same Uploads (for example which motion guide to follow) is an Input within a Mode, not a separate Mode. Several Modes may share one Path and differ only in the values they fix.
 _Avoid_: feature, preset, tab, sub-workflow
@@ -57,8 +61,12 @@ One press of Generate: it creates 1–4 Generations that share the Model revisio
 _Avoid_: batch, multi-generation request, job
 
 **Upload**:
-A file a user supplies as an Input value, such as a reference image, video or audio clip. Trimming one makes a new Upload, trimmed from the original; a Generation uses the Uploads it actually sends.
+A file a user supplies as an Input value: a still image, a video (MP4, MOV, WebM or MKV; H.264, HEVC, VP8, VP9 or AV1) or an audio clip (WAV, MP3, FLAC, OGG/Opus or M4A/AAC). HEIC and SVG are refused outright. A video Upload has a thumbnail once it's complete; an audio Upload shows an icon instead. Trimming one makes a new Upload, trimmed from the original, recording the kept range; a Generation uses the Uploads it actually sends.
 _Avoid_: reference (names the Input's purpose, not the file), attachment
+
+**Video Upload** / **Audio Upload**:
+An Input type that takes a video or audio Upload, with a min/max duration and (for video) a max long side, and optionally trimmable. A video one binds to a loader flagged `video_upload` or to `VHS_LoadVideo`/`VHS_LoadVideoFFmpeg`; an audio one binds to a loader flagged `audio_upload`. Trimming happens on a local player before submit: one trim covers every Generation in the Submission, re-encoding the kept range to H.264/AAC MP4 at the original size and fps. An Upload the browser can't play passes through untrimmed when it already fits the Input's limits; it's refused if trimming or a points pick is needed, since there's no reliable way to preview a range the browser can't show.
+_Avoid_: clip picker, media Input
 
 **Asset**:
 A file a Generation produced (video, image or audio), owned by the user who requested it.

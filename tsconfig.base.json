@@ -1,16 +1,14 @@
 {
   "compilerOptions": {
-    "target": "ESNext",
+    "target": "ES2022",
     "module": "ESNext",
-    "moduleResolution": "bundler",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022"],
     "strict": true,
+    "noUncheckedIndexedAccess": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "resolveJsonModule": true,
     "declaration": true,
-    "composite": true,
-    "noUncheckedIndexedAccess": true,
-    "lib": ["ESNext"],
-    "types": ["node", "bun"]
+    "composite": true
   }
 }

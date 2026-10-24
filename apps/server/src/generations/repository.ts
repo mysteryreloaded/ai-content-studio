@@ -637,6 +637,78 @@ export class GenerationsRepository {
     );
   }
 
+  /**
+   * Flags every one of this user's still-unfinished Generations with
+   * `deletedAt` (issue #63's account delete, round 4 fix): covers what
+   * cancelling can't reach — a `saving` Generation (can't be cancelled at
+   * all) and a `starting`/`running` one only moved to `cancelling`, not
+   * yet ended. The runner's own terminal write ({@link finalizeIfPendingDeletion})
+   * Tombstones each one for good the moment it actually ends, so nothing
+   * outlives the account that still owns it.
+   */
+  async markUnfinishedForPendingDeletion(
+    userId: string,
+    now: Date,
+  ): Promise<void> {
+    await this.db
+      .update(generations)
+      .set({ deletedAt: now })
+      .where(
+        and(
+          eq(generations.userId, userId),
+          isNull(generations.deletedAt),
+          notInArray(generations.state, [...ENDED_STATES]),
+        ),
+      );
+  }
+
+  /**
+   * Every Upload id still named by one of this user's own not-yet-ended
+   * Generations (issue #63's account delete, round 4 fix) — the ones
+   * {@link markUnfinishedForPendingDeletion} just flagged. The route
+   * keeps these out of its own blanket Upload sweep: deleting the file
+   * out from under a run still using it would break that run, and each
+   * one's own Generation sweeps it once it actually ends.
+   */
+  async listUploadIdsInUseForUser(userId: string): Promise<string[]> {
+    const rows = await this.db
+      .select({ uploadIds: generations.uploadIds })
+      .from(generations)
+      .where(
+        and(
+          eq(generations.userId, userId),
+          notInArray(generations.state, [...ENDED_STATES]),
+        ),
+      );
+    const ids = new Set<string>();
+    for (const row of rows) {
+      for (const uploadId of row.uploadIds) ids.add(uploadId);
+    }
+    return [...ids];
+  }
+
+  /**
+   * Finishes a Tombstone for a Generation that just reached a terminal
+   * state (issue #63's account delete, round 4 fix): a no-op unless
+   * {@link markUnfinishedForPendingDeletion} already flagged it (its
+   * owner self-deleted while it was still under way). Called right after
+   * the runner's own terminal write lands, so this never races a run
+   * still reading its Assets/Uploads.
+   */
+  async finalizeIfPendingDeletion(
+    generationId: string,
+    now: Date,
+  ): Promise<DeletedStorageKeys | null> {
+    const [row] = await this.db
+      .select({ deletedAt: generations.deletedAt, state: generations.state })
+      .from(generations)
+      .where(eq(generations.id, generationId));
+    if (!row || row.deletedAt === null || !ENDED_STATES.includes(row.state)) {
+      return null;
+    }
+    return this.finishDelete([generationId], now);
+  }
+
   /** One Generation, enriched like the SSE/submit events (issue #54: so a cancel's own "change" can be published straight away). */
   async getSummary(generationId: string): Promise<GenerationSummary | null> {
     const [row] = await this.db

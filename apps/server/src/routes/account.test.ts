@@ -21,7 +21,10 @@ import {
   workflows,
 } from "../db/schema.js";
 import type { Env } from "../env.js";
+import { deleteStorageFor } from "../generations/deletion.js";
+import { GenerationsRepository } from "../generations/repository.js";
 import type { Logger } from "../logger.js";
+import { createLocalStorage } from "../storage/storage.js";
 import { createTestDatabase } from "../test/database.js";
 
 const silentLogger: Logger = {
@@ -334,6 +337,245 @@ describe("DELETE /api/auth/account (issue #63)", () => {
         .where(eq(generations.id, queuedId));
       expect(queuedRow?.state).toBe("cancelled");
       expect(queuedRow?.deletedAt).not.toBeNull();
+
+      backendsService.stop();
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("flags a `running` Generation for deletion, and the runner's own terminal write Tombstones it once it ends (round 4)", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const { app, backendsService } = await build();
+      const { db } = await testDb;
+      const storage = createLocalStorage(testEnv().DATA_DIR);
+      const generationsRepository = new GenerationsRepository(db);
+      const admin = await insertUser({ role: "admin", status: "active" });
+      const adminHeaders = await headersFor(admin.id);
+      const model = await buildEnabledModel(app, adminHeaders, fake.url);
+
+      const user = await insertUser({});
+      const userHeaders = await headersFor(user.id);
+
+      const runningId = await submit(
+        app,
+        userHeaders,
+        model.slug,
+        model.modeId,
+      );
+      await db
+        .update(generations)
+        .set({ state: "running" })
+        .where(eq(generations.id, runningId));
+
+      const res = await app.request("/api/auth/account", {
+        method: "DELETE",
+        headers: userHeaders,
+        body: JSON.stringify({ email: user.email }),
+      });
+      expect(res.status).toBe(200);
+
+      // Cancelling a `running` Generation (issue #54) only moves it to
+      // `cancelling`, for the runner's own poll loop to confirm later —
+      // not ended yet, just flagged for deletion in the meantime.
+      const [flagged] = await db
+        .select()
+        .from(generations)
+        .where(eq(generations.id, runningId));
+      expect(flagged?.state).toBe("cancelling");
+      expect(flagged?.deletedAt).not.toBeNull();
+
+      // The runner's own terminal write lands later, independent of this
+      // request: simulate it reaching `succeeded` with a saved Asset.
+      await db
+        .update(generations)
+        .set({ state: "succeeded", endedAt: clock.now() })
+        .where(eq(generations.id, runningId));
+      await storage.write(
+        "generations/round4/out.png",
+        new Uint8Array([1, 2, 3]),
+      );
+      await db.insert(assets).values({
+        generationId: runningId,
+        nodeId: "3",
+        sortOrder: 0,
+        kind: "image",
+        comfyuiFilename: "out.png",
+        contentType: "image/png",
+        size: 3,
+        storageKey: "generations/round4/out.png",
+      });
+
+      const keys = await generationsRepository.finalizeIfPendingDeletion(
+        runningId,
+        clock.now(),
+      );
+      expect(keys).not.toBeNull();
+      if (keys) await deleteStorageFor(storage, keys);
+
+      const [tombstoned] = await db
+        .select()
+        .from(generations)
+        .where(eq(generations.id, runningId));
+      expect(tombstoned?.builtPrompt).toEqual({});
+      const remainingAssets = await db
+        .select()
+        .from(assets)
+        .where(eq(assets.generationId, runningId));
+      expect(remainingAssets).toEqual([]);
+      expect(await storage.stat("generations/round4/out.png")).toBeNull();
+
+      backendsService.stop();
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("a `saving` Generation (uncancellable) ends with no Assets left in storage once it's flagged (round 4)", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const { app, backendsService } = await build();
+      const { db } = await testDb;
+      const storage = createLocalStorage(testEnv().DATA_DIR);
+      const generationsRepository = new GenerationsRepository(db);
+      const admin = await insertUser({ role: "admin", status: "active" });
+      const adminHeaders = await headersFor(admin.id);
+      const model = await buildEnabledModel(app, adminHeaders, fake.url);
+
+      const user = await insertUser({});
+      const userHeaders = await headersFor(user.id);
+
+      const savingId = await submit(app, userHeaders, model.slug, model.modeId);
+      await db
+        .update(generations)
+        .set({ state: "saving" })
+        .where(eq(generations.id, savingId));
+
+      const res = await app.request("/api/auth/account", {
+        method: "DELETE",
+        headers: userHeaders,
+        body: JSON.stringify({ email: user.email }),
+      });
+      expect(res.status).toBe(200);
+
+      // Cancelling can't reach a `saving` Generation at all (issue #54):
+      // left exactly as it was, just flagged for deletion.
+      const [flagged] = await db
+        .select()
+        .from(generations)
+        .where(eq(generations.id, savingId));
+      expect(flagged?.state).toBe("saving");
+      expect(flagged?.deletedAt).not.toBeNull();
+
+      await db
+        .update(generations)
+        .set({ state: "succeeded", endedAt: clock.now() })
+        .where(eq(generations.id, savingId));
+      await storage.write(
+        "generations/round4-saving/out.png",
+        new Uint8Array([1, 2, 3]),
+      );
+      await db.insert(assets).values({
+        generationId: savingId,
+        nodeId: "3",
+        sortOrder: 0,
+        kind: "image",
+        comfyuiFilename: "out.png",
+        contentType: "image/png",
+        size: 3,
+        storageKey: "generations/round4-saving/out.png",
+      });
+
+      const keys = await generationsRepository.finalizeIfPendingDeletion(
+        savingId,
+        clock.now(),
+      );
+      expect(keys).not.toBeNull();
+      if (keys) await deleteStorageFor(storage, keys);
+
+      const remainingAssets = await db
+        .select()
+        .from(assets)
+        .where(eq(assets.generationId, savingId));
+      expect(remainingAssets).toEqual([]);
+      expect(
+        await storage.stat("generations/round4-saving/out.png"),
+      ).toBeNull();
+
+      backendsService.stop();
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("deletes every unused Upload outright, but keeps one still feeding a run that hasn't ended (round 4)", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const { app, backendsService } = await build();
+      const { db } = await testDb;
+      const storage = createLocalStorage(testEnv().DATA_DIR);
+      const admin = await insertUser({ role: "admin", status: "active" });
+      const adminHeaders = await headersFor(admin.id);
+      const model = await buildEnabledModel(app, adminHeaders, fake.url);
+
+      const user = await insertUser({});
+      const userHeaders = await headersFor(user.id);
+
+      const unusedUploadId = crypto.randomUUID();
+      const inUseUploadId = crypto.randomUUID();
+      await storage.write("uploads/unused.bin", new Uint8Array([1]));
+      await storage.write("uploads/in-use.bin", new Uint8Array([2]));
+      await db.insert(uploads).values([
+        {
+          id: unusedUploadId,
+          userId: user.id,
+          status: "complete",
+          originalName: "unused.png",
+          declaredType: "image/png",
+          size: 1,
+          storageKey: "uploads/unused.bin",
+          createdAt: clock.now(),
+          completedAt: clock.now(),
+        },
+        {
+          id: inUseUploadId,
+          userId: user.id,
+          status: "complete",
+          originalName: "in-use.png",
+          declaredType: "image/png",
+          size: 1,
+          storageKey: "uploads/in-use.bin",
+          createdAt: clock.now(),
+          completedAt: clock.now(),
+        },
+      ]);
+
+      const runningId = await submit(
+        app,
+        userHeaders,
+        model.slug,
+        model.modeId,
+      );
+      await db
+        .update(generations)
+        .set({ state: "running", uploadIds: [inUseUploadId] })
+        .where(eq(generations.id, runningId));
+
+      const res = await app.request("/api/auth/account", {
+        method: "DELETE",
+        headers: userHeaders,
+        body: JSON.stringify({ email: user.email }),
+      });
+      expect(res.status).toBe(200);
+
+      const remainingUploads = await db
+        .select()
+        .from(uploads)
+        .where(eq(uploads.userId, user.id));
+      expect(remainingUploads.map((row) => row.id)).toEqual([inUseUploadId]);
+      expect(await storage.stat("uploads/unused.bin")).toBeNull();
+      expect(await storage.stat("uploads/in-use.bin")).not.toBeNull();
 
       backendsService.stop();
     } finally {

@@ -1,7 +1,7 @@
 // Upload persistence (issue #50): one row per file a user sends in
 // chunks, from create through complete (or a refusal at complete).
 
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, notInArray } from "drizzle-orm";
 import type { Database } from "../db/client.js";
 import { uploads } from "../db/schema.js";
 import type {
@@ -173,6 +173,34 @@ export class UploadsRepository {
       .update(uploads)
       .set({ status: "failed", error })
       .where(eq(uploads.id, id));
+  }
+
+  /**
+   * Deletes every Upload this user has left, but not one in `inUseIds`
+   * (issue #63's account delete, round 4 fix): unused, failed and still-
+   * uploading ones go straight away — `finishDelete`'s own sweep only
+   * catches an Upload a Tombstoned Generation referenced, so this is the
+   * rest. Returns each deleted row's storage/thumbnail keys for the
+   * caller to remove from `Storage`.
+   */
+  async deleteAllForUserExcept(
+    userId: string,
+    inUseIds: readonly string[],
+  ): Promise<{ storageKey: string; thumbnailKey: string | null }[]> {
+    return this.db
+      .delete(uploads)
+      .where(
+        inUseIds.length === 0
+          ? eq(uploads.userId, userId)
+          : and(
+              eq(uploads.userId, userId),
+              notInArray(uploads.id, [...inUseIds]),
+            ),
+      )
+      .returning({
+        storageKey: uploads.storageKey,
+        thumbnailKey: uploads.thumbnailKey,
+      });
   }
 
   /** Inserts a trimmed Upload (issue #51), already `complete`. */

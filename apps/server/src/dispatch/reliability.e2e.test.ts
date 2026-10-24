@@ -111,6 +111,7 @@ describe("Reliable dispatch (issue #55)", () => {
       modelBackendsRepository,
       queue,
       assetsRepository,
+      generationsRepository,
       storage,
       generationEvents,
       pollIntervalMs: 15,
@@ -805,6 +806,7 @@ describe("Reliable dispatch (issue #55)", () => {
       await recoverInFlightGenerations({
         queue,
         assetsRepository,
+        generationsRepository,
         storage,
         backendRepository,
         backendsService,
@@ -897,6 +899,7 @@ describe("Reliable dispatch (issue #55)", () => {
       await recoverInFlightGenerations({
         queue,
         assetsRepository,
+        generationsRepository,
         storage,
         backendRepository,
         backendsService,

@@ -10,6 +10,16 @@
 // raw value, and unique even if the same Google account deletes and
 // re-registers more than once), freeing the real `sub` so signing in
 // again makes a fresh user.
+//
+// Round 4: cancelling only gets a `queued`/`starting`/`running`
+// Generation to `cancelling`, and a `saving` one can't be cancelled at
+// all — both still end later through the runner's own terminal write,
+// not through this request. Those are flagged with `deletedAt` here
+// (`markUnfinishedForPendingDeletion`) so `finalizeIfPendingDeletion`
+// Tombstones each one for good the moment it actually ends. Every other
+// Upload this user has — unused, failed or still uploading, not just
+// the ones a Tombstoned Generation referenced — is deleted outright,
+// except one still feeding a run that hasn't ended yet.
 
 import type { Clock } from "@ai-content-studio/shared";
 import { eq } from "drizzle-orm";
@@ -23,6 +33,7 @@ import {
 import { deleteStorageFor } from "../generations/deletion.js";
 import type { GenerationsRepository } from "../generations/repository.js";
 import type { Storage } from "../storage/storage.js";
+import type { UploadsRepository } from "../uploads/repository.js";
 
 export type AccountDeletionResult =
   | { ok: true }
@@ -32,6 +43,7 @@ export interface AccountDeletionDeps {
   db: Database;
   clock: Clock;
   generationsRepository: GenerationsRepository;
+  uploadsRepository: UploadsRepository;
   cancellationDeps: CancellationDeps;
   storage: Storage;
 }
@@ -73,11 +85,28 @@ export async function deleteOwnAccount(
     }
   }
 
+  // Flags what cancelling couldn't finish for good right away — `saving`
+  // (uncancellable) and `starting`/`running` only just moved to
+  // `cancelling` above — so the runner's own terminal write Tombstones
+  // each one the moment it actually ends.
+  await deps.generationsRepository.markUnfinishedForPendingDeletion(
+    userId,
+    now,
+  );
+
   const keys = await deps.generationsRepository.deleteAllEndedForUser(
     userId,
     now,
   );
   await deleteStorageFor(deps.storage, keys);
+
+  const inUseUploadIds =
+    await deps.generationsRepository.listUploadIdsInUseForUser(userId);
+  const uploadKeys = await deps.uploadsRepository.deleteAllForUserExcept(
+    userId,
+    inUseUploadIds,
+  );
+  await deleteStorageFor(deps.storage, { assets: [], uploads: uploadKeys });
 
   await deps.db.delete(sessions).where(eq(sessions.userId, userId));
 

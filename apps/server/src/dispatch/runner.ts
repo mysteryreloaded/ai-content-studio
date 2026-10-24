@@ -43,12 +43,20 @@ import {
 } from "../comfyui/client.js";
 import type { AssetsRepository } from "../generations/assets-repository.js";
 import type { GenerationEvents } from "../generations/events.js";
-import type { GenerationSummary } from "../generations/repository.js";
+import type {
+  GenerationSummary,
+  GenerationsRepository,
+} from "../generations/repository.js";
 import type { C2paSignerConfig } from "../media/c2pa.js";
 import { finishAsset } from "../media/finish.js";
 import type { MediaRunner } from "../media/media.js";
 import type { Storage } from "../storage/storage.js";
-import { publishChange, reportFailure, reportLostTry } from "./outcomes.js";
+import {
+  finalizePendingDeletion,
+  publishChange,
+  reportFailure,
+  reportLostTry,
+} from "./outcomes.js";
 import { ProgressTracker } from "./progress.js";
 import type { DispatchQueue, RunDetail } from "./queue.js";
 
@@ -66,6 +74,11 @@ const SAVING_BACKOFF_MAX_MS = 30_000;
 export interface RunnerDeps {
   queue: DispatchQueue;
   assetsRepository: AssetsRepository;
+  /** Issue #63 round 4: finalizes a Tombstone for a Generation whose owner self-deleted while it was still under way, the moment it reaches a terminal state here. */
+  generationsRepository: Pick<
+    GenerationsRepository,
+    "finalizeIfPendingDeletion"
+  >;
   storage: Storage;
   backendRepository: Pick<BackendRepository, "decryptedCredentials">;
   backendsService: Pick<
@@ -295,6 +308,38 @@ export async function finalizeCancelled(
     });
   }
   await publishChange(deps, detail, "cancelled", tries, null);
+  await finalizePendingDeletion(deps, detail.id);
+  return true;
+}
+
+/**
+ * Finalizes a successful run (issue #55): the same terminal write
+ * whether the run itself just finished here or boot recovery resumed
+ * one already at `saving`. Shared the same way `finalizeCancelled` is.
+ */
+export async function finalizeSucceeded(
+  deps: RunnerDeps,
+  detail: RunDetail,
+  tries: number,
+): Promise<boolean> {
+  if (!(await deps.queue.markSucceeded(detail.id, tries, deps.clock.now())))
+    return false;
+  const assets = await deps.assetsRepository.listForGeneration(detail.id);
+  await publishChange(
+    deps,
+    detail,
+    "succeeded",
+    tries,
+    null,
+    assets.map((asset): GenerationSummary["assets"][number] => ({
+      id: asset.id,
+      nodeId: asset.nodeId,
+      sortOrder: asset.sortOrder,
+      kind: asset.kind,
+      contentType: asset.contentType,
+    })),
+  );
+  await finalizePendingDeletion(deps, detail.id);
   return true;
 }
 
@@ -706,21 +751,5 @@ export async function pollUntilDone(
     return;
   }
 
-  if (!(await deps.queue.markSucceeded(generationId, tries, deps.clock.now())))
-    return;
-  const assets = await deps.assetsRepository.listForGeneration(generationId);
-  await publishChange(
-    deps,
-    detail,
-    "succeeded",
-    tries,
-    null,
-    assets.map((asset): GenerationSummary["assets"][number] => ({
-      id: asset.id,
-      nodeId: asset.nodeId,
-      sortOrder: asset.sortOrder,
-      kind: asset.kind,
-      contentType: asset.contentType,
-    })),
-  );
+  await finalizeSucceeded(deps, detail, tries);
 }

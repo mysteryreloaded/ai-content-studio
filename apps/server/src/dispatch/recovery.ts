@@ -22,6 +22,7 @@ import {
   allOutputFiles,
   describeError,
   finalizeCancelled,
+  finalizeSucceeded,
   pollUntilDone,
   readJobWithGrace,
   saveWithBackoff,
@@ -227,21 +228,5 @@ async function recoverOne(
     return;
   }
 
-  if (!(await deps.queue.markSucceeded(item.id, item.tries, deps.clock.now())))
-    return;
-  const assets = await deps.assetsRepository.listForGeneration(item.id);
-  await publishChange(
-    deps,
-    detail,
-    "succeeded",
-    item.tries,
-    null,
-    assets.map((asset) => ({
-      id: asset.id,
-      nodeId: asset.nodeId,
-      sortOrder: asset.sortOrder,
-      kind: asset.kind,
-      contentType: asset.contentType,
-    })),
-  );
+  await finalizeSucceeded(deps, detail, item.tries);
 }

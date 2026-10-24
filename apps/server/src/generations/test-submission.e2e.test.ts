@@ -124,6 +124,7 @@ describe("submitTestGeneration end-to-end (issue #74)", () => {
       modelBackendsRepository,
       queue,
       assetsRepository: new AssetsRepository(db),
+      generationsRepository,
       storage,
       generationEvents,
       media: new MediaRunner(2),

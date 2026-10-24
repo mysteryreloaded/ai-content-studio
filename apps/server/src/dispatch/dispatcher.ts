@@ -24,6 +24,7 @@ import type { BackendsService } from "../backends/service.js";
 import { cancelJob } from "../comfyui/client.js";
 import type { AssetsRepository } from "../generations/assets-repository.js";
 import type { GenerationEvents } from "../generations/events.js";
+import type { GenerationsRepository } from "../generations/repository.js";
 import type { Logger } from "../logger.js";
 import type { C2paSignerConfig } from "../media/c2pa.js";
 import type { MediaRunner } from "../media/media.js";
@@ -57,6 +58,11 @@ export interface DispatcherDeps {
   modelBackendsRepository: ModelBackendsRepository;
   queue: DispatchQueue;
   assetsRepository: AssetsRepository;
+  /** Issue #63 round 4: finalizes a Tombstone for a Generation whose owner self-deleted while it was still under way, the moment it reaches a terminal state. */
+  generationsRepository: Pick<
+    GenerationsRepository,
+    "finalizeIfPendingDeletion"
+  >;
   storage: Storage;
   generationEvents: GenerationEvents;
   /** Issue #45: runs ffmpeg/ffprobe for Asset finishing. */
@@ -216,6 +222,7 @@ export class Dispatcher {
     return {
       queue: this.deps.queue,
       assetsRepository: this.deps.assetsRepository,
+      generationsRepository: this.deps.generationsRepository,
       storage: this.deps.storage,
       backendRepository: this.deps.backendRepository,
       backendsService: this.deps.backendsService,

@@ -420,6 +420,9 @@ describe("Dispatcher Pause gating (issue #59)", () => {
           return true;
         },
       } as unknown as DispatcherDeps["queue"],
+      generationsRepository: {
+        finalizeIfPendingDeletion: async () => null,
+      },
       modelBackendsRepository: {
         // No Backend attached at all: never usable, so only the Paused
         // clock matters for whether the 15-minute wait advances.

@@ -181,6 +181,7 @@ describe("Dispatcher end-to-end against a fake ComfyUI", () => {
       modelBackendsRepository,
       queue,
       assetsRepository,
+      generationsRepository,
       storage,
       generationEvents,
       media: new MediaRunner(2),

@@ -12,6 +12,7 @@ function record(overrides: Partial<BackendRecord> = {}): BackendRecord {
     auth: "none",
     headerName: null,
     enabled: true,
+    draining: false,
     version: 1,
     deletedAt: null,
     createdAt: new Date(),

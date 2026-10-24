@@ -81,6 +81,11 @@ export class BackendsService {
     return this.monitor.unreachableSince(backendId);
   }
 
+  /** Forces the next `nodeTypesFor` call to refetch (issue #55: a missing-node rejection means this Backend's cached node list is stale). */
+  invalidateNodeKnowledge(backendId: string): void {
+    this.nodeKnowledge.invalidate(backendId);
+  }
+
   stop(): void {
     this.monitor.stopAll();
   }

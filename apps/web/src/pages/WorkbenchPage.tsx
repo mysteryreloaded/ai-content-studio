@@ -201,6 +201,8 @@ interface GenerationSummary {
   modeName: string;
   submissionId: string;
   state: GenerationState;
+  /** Issue #55: tries made so far. A queued Generation with `tries > 0` is retrying, not waiting for its first try. */
+  tries: number;
   error: string | null;
   submittedAt: string;
   assets: AssetSummary[];
@@ -260,10 +262,11 @@ type SubmitState =
   | { status: "submitting" }
   | { status: "error"; message: string };
 
-function stateLabel(state: GenerationState): string {
+/** Issue #55's AC: a queued card says it's waiting for a GPU or retrying, never a queue position. */
+function stateLabel(state: GenerationState, tries: number): string {
   switch (state) {
     case "queued":
-      return "Queued";
+      return tries > 0 ? "Retrying…" : "Waiting for a GPU…";
     case "starting":
       return "Starting…";
     case "running":
@@ -353,12 +356,16 @@ function GenerationCard({
   const mainAsset = generation.assets?.[0];
   return (
     <li>
-      <span>{stateLabel(generation.state)}</span>{" "}
+      <span>{stateLabel(generation.state, generation.tries)}</span>{" "}
       {(generation.state === "starting" || generation.state === "running") && (
         <ProgressLabel progress={progress} />
       )}
-      {generation.state === "failed" && generation.error && (
-        <span role="alert">{generation.error}</span>
+      {generation.state === "failed" && (
+        <>
+          {generation.error && <span role="alert">{generation.error}</span>}
+          {/* Issue #55's AC: the full Generation id, so it can be matched to a Log entry. */}
+          <span className="workbench-generation-id">{generation.id}</span>
+        </>
       )}
       {generation.state === "succeeded" && mainAsset && (
         <>

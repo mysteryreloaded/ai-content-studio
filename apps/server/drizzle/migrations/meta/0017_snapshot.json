@@ -1,5 +1,5 @@
 {
-  "id": "c945f243-5f58-4c40-a1b7-e4261127196f",
+  "id": "41653902-b6a1-4f59-a07e-c1144fd7d422",
   "prevId": "6108b265-5ea4-49e3-8a85-1d934bfa4d14",
   "version": "7",
   "dialect": "postgresql",
@@ -302,6 +302,13 @@
           "notNull": true,
           "default": true
         },
+        "draining": {
+          "name": "draining",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
         "version": {
           "name": "version",
           "type": "integer",
@@ -421,6 +428,13 @@
           "primaryKey": false,
           "notNull": true
         },
+        "tries": {
+          "name": "tries",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
         "error": {
           "name": "error",
           "type": "text",
@@ -432,6 +446,12 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
+        },
+        "queued_at": {
+          "name": "queued_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
         },
         "submitted_at": {
           "name": "submitted_at",
@@ -1371,27 +1391,6 @@
           "notNull": true,
           "default": 1
         },
-        "daily_cap": {
-          "name": "daily_cap",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 20
-        },
-        "concurrent_cap": {
-          "name": "concurrent_cap",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 4
-        },
-        "caps_revision": {
-          "name": "caps_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 1
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -1482,18 +1481,6 @@
         "terms_accepted_at": {
           "name": "terms_accepted_at",
           "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "daily_cap_override": {
-          "name": "daily_cap_override",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "concurrent_cap_override": {
-          "name": "concurrent_cap_override",
-          "type": "integer",
           "primaryKey": false,
           "notNull": false
         },

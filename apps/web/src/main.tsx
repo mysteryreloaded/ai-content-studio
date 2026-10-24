@@ -5,6 +5,7 @@ import { LandingPage } from "./LandingPage.js";
 import { NoticeBanner } from "./NoticeBanner.js";
 import { RequireActive } from "./RequireActive.js";
 import { RequireTermsAccepted } from "./RequireTermsAccepted.js";
+import { useTabNotifier } from "./notifications/useTabNotifier.js";
 import { AccountPage } from "./pages/AccountPage.js";
 import { AdminShell } from "./pages/AdminShell.js";
 import { GalleryPage } from "./pages/GalleryPage.js";
@@ -17,8 +18,13 @@ import { WorkbenchPage } from "./pages/WorkbenchPage.js";
 const root = document.getElementById("root");
 if (!root) throw new Error("missing #root element");
 
-/** The Notice/Pause banner (issue #59) on every page, signed in or out. */
+/**
+ * The Notice/Pause banner (issue #59) on every page, signed in or out,
+ * plus the tab title/favicon cue and Notification pipeline (issue #58),
+ * mounted once here so it runs regardless of which page is open.
+ */
 function RootLayout() {
+  useTabNotifier();
   return (
     <>
       <NoticeBanner />

@@ -697,6 +697,14 @@ export const uploads = pgTable(
     error: text("error"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
     completedAt: timestamp("completed_at", { withTimezone: true }),
+    /**
+     * Issue #69: written from the clock at create, every chunk and
+     * complete — the retention sweep's "24 h after last use or upload"
+     * (and "24 h after last chunk" for one still `uploading`) compares
+     * this, falling back to `createdAt` for a row from before this
+     * column existed.
+     */
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
   },
   (table) => [index("uploads_user_id_idx").on(table.userId)],
 );

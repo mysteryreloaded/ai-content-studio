@@ -24,7 +24,7 @@ import {
   or,
   sql,
 } from "drizzle-orm";
-import type { Database } from "../db/client.js";
+import type { Database, Transaction } from "../db/client.js";
 import {
   assets,
   generations,
@@ -59,6 +59,9 @@ const ENDED_STATES: readonly GenerationState[] = [
   "failed",
   "cancelled",
 ];
+
+/** Issue #69: how many Generations {@link GenerationsRepository.pruneOldAssets} tombstones per `inArray`, well under Postgres' bound-parameter limit. */
+const PRUNE_BATCH_SIZE = 500;
 
 export interface AssetSummary {
   id: string;
@@ -299,6 +302,25 @@ async function assetsByGenerationId(
   return byId;
 }
 
+/**
+ * Marks every named Upload used right now (issue #69): a Generation (a
+ * real Submission, a Test, or "Reuse these settings" resubmitting one
+ * already used) counts as a use the same way a chunk or complete does,
+ * so retention's 24 h clock resets instead of running from the
+ * Upload's own `createdAt`.
+ */
+async function touchUploads(
+  db: Database | Transaction,
+  uploadIds: readonly string[] | undefined,
+  now: Date,
+): Promise<void> {
+  if (!uploadIds || uploadIds.length === 0) return;
+  await db
+    .update(uploads)
+    .set({ lastUsedAt: now })
+    .where(inArray(uploads.id, [...uploadIds]));
+}
+
 export class GenerationsRepository {
   constructor(private readonly db: Database) {}
 
@@ -322,6 +344,7 @@ export class GenerationsRepository {
       })
       .returning();
     if (!row) throw new Error("insert returned no row");
+    await touchUploads(this.db, input.uploadIds, input.submittedAt);
     return toRecord(row, input.modeName);
   }
 
@@ -392,6 +415,11 @@ export class GenerationsRepository {
           })),
         )
         .returning();
+
+      const uploadIds = [
+        ...new Set(inputs.flatMap((input) => input.uploadIds ?? [])),
+      ];
+      await touchUploads(tx, uploadIds, now);
 
       const modeNameById = new Map(
         inputs.map((input) => [input.id, input.modeName]),
@@ -944,6 +972,44 @@ export class GenerationsRepository {
       rows.map((row) => row.id),
       now,
     );
+  }
+
+  /**
+   * The retention sweep's AC (issue #69): turns every non-deleted
+   * Generation with an Asset older than `cutoff` into a Tombstone, the
+   * same mechanism (and the same storage keys handed back to the
+   * caller) as a user's own delete.
+   *
+   * Runs in batches, oldest Asset first, rather than one `finishDelete`
+   * across every matching id: a large backlog (e.g. retention turned on
+   * long after launch) can exceed Postgres' bound-parameter limit in a
+   * single `inArray`, which would otherwise fail this sweep every hour
+   * forever.
+   */
+  async pruneOldAssets(cutoff: Date, now: Date): Promise<DeletedStorageKeys> {
+    const result: DeletedStorageKeys = { assets: [], uploads: [] };
+    while (true) {
+      const rows = await this.db
+        .select({
+          id: generations.id,
+          oldestAssetAt: sql<Date>`min(${assets.createdAt})`,
+        })
+        .from(assets)
+        .innerJoin(generations, eq(generations.id, assets.generationId))
+        .where(and(isNull(generations.deletedAt), lt(assets.createdAt, cutoff)))
+        .groupBy(generations.id)
+        .orderBy(sql`min(${assets.createdAt})`)
+        .limit(PRUNE_BATCH_SIZE);
+      if (rows.length === 0) break;
+      const batch = await this.finishDelete(
+        rows.map((row) => row.id),
+        now,
+      );
+      result.assets.push(...batch.assets);
+      result.uploads.push(...batch.uploads);
+      if (rows.length < PRUNE_BATCH_SIZE) break;
+    }
+    return result;
   }
 
   /**

@@ -21,6 +21,7 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@ai-content-studio/fake-comfyui": "workspace:*",
     "drizzle-kit": "^0.31.11"
   }
 }

@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   boolean,
   integer,
@@ -6,6 +7,7 @@ import {
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 
@@ -88,6 +90,61 @@ export const users = pgTable("users", {
   updatedAt: timestamp("updated_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
+});
+
+/** ADR 0004: ComfyUI is the only Backend kind, so there's no `kind` column. */
+export const backendAuthKind = pgEnum("backend_auth_kind", [
+  "none",
+  "basic",
+  "header",
+]);
+
+/**
+ * A ComfyUI server (issue #39). Credentials are encrypted at rest
+ * (AES-256-GCM, see backends/credentials.ts) and write-only: a save with
+ * blank credential fields keeps the stored ones. `version` guards a save
+ * against a concurrent one (409 when stale). Soft-deleted rows are kept
+ * (`deletedAt` set) so Log/Audit entries about them still resolve.
+ */
+export const backends = pgTable(
+  "backends",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    name: text("name").notNull(),
+    baseUrl: text("base_url").notNull(),
+    authKind: backendAuthKind("auth_kind").notNull().default("none"),
+    /** Base64 of nonce + ciphertext + auth tag; null when authKind = "none". */
+    encryptedCredentials: text("encrypted_credentials"),
+    headerName: text("header_name"),
+    version: integer("version").notNull().default(1),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("backends_name_unique")
+      .on(table.name)
+      .where(sql`${table.deletedAt} is null`),
+  ],
+);
+
+/** An operational record about the app or a Backend (issue #39), distinct from Audit entries. */
+export const logLevel = pgEnum("log_level", ["error", "warning", "info"]);
+
+export const logEntries = pgTable("log_entries", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  level: logLevel("level").notNull(),
+  message: text("message").notNull(),
+  /** Truncated by the writer before insert; see backends/log-entries.ts. */
+  details: text("details"),
+  backendId: uuid("backend_id").references(() => backends.id, {
+    onDelete: "set null",
+  }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
 });
 
 /**

@@ -31,6 +31,8 @@ async function startTestServer() {
     ADMIN_EMAILS: ["admin@example.com"],
     OIDC_ISSUER: ISSUER,
     DATA_DIR: "/tmp/ai-content-studio-test-data",
+    SECRET_KEY: "4FRG13w9RuN5CeV10Lzfxl78MY+AJRJtGuKrBdYzgCY=",
+    BACKENDS_ENABLED: false,
   };
 
   const { app } = await createApp({

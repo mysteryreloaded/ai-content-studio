@@ -7,6 +7,7 @@ const BASE_ENV = {
   GOOGLE_CLIENT_ID: "client-id",
   GOOGLE_CLIENT_SECRET: "client-secret",
   ADMIN_EMAILS: "admin@example.com",
+  SECRET_KEY: "4FRG13w9RuN5CeV10Lzfxl78MY+AJRJtGuKrBdYzgCY=",
 };
 
 describe("loadEnv", () => {

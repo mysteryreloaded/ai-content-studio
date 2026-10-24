@@ -45,6 +45,7 @@ function testEnv(): Env {
     STATUS_TOKEN: undefined,
     MIN_FREE_DISK_GB: 10,
     FFMPEG_CONCURRENCY: 2,
+    MAX_UPLOAD_MB: 500,
   };
 }
 

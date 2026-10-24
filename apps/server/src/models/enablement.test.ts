@@ -82,6 +82,7 @@ function serviceWithNodeTypes(
 ): BackendsService {
   return {
     nodeTypesFor: async (b: BackendRecord) => byBackend[b.id] ?? null,
+    fieldSpecsFor: async () => null,
   } as unknown as BackendsService;
 }
 
@@ -148,6 +149,124 @@ describe("checkEnableReadiness", () => {
       serviceWithNodeTypes({ b1: null }),
     );
     expect(result.ok).toBe(false);
+  });
+
+  describe("Upload loaders (issue #50)", () => {
+    const loaderWorkflow: Workflow = {
+      "1": { class_type: "LoadImage", inputs: { image: "example.png" } },
+      "2": { class_type: "SaveImage", inputs: { images: ["1", 0] } },
+    };
+    const allTypes = new Set(["LoadImage", "SaveImage"]);
+
+    function loaderDetail(
+      workflow: Workflow,
+      inputs: ModelDetail["inputs"] = [],
+    ): ModelDetail {
+      const base = detail([mode(["2"])]);
+      return {
+        ...base,
+        workflow,
+        inputs,
+        modes: [
+          {
+            ...mode([]),
+            outputNodes: [
+              { nodeId: "2", classType: "SaveImage", title: null, kind: null },
+            ],
+          },
+        ],
+      };
+    }
+
+    function serviceWithFiles(
+      byBackend: Record<string, string[]>,
+    ): BackendsService {
+      return {
+        nodeTypesFor: async () => allTypes,
+        fieldSpecsFor: async (b: BackendRecord) =>
+          new Map([
+            [
+              "LoadImage",
+              {
+                image: {
+                  type: "COMBO",
+                  options: byBackend[b.id] ?? [],
+                  imageUpload: true,
+                },
+              },
+            ],
+          ]),
+      } as unknown as BackendsService;
+    }
+
+    test("passes a loader whose fixed file is on every enabled Backend", async () => {
+      const result = await checkEnableReadiness(
+        loaderDetail(loaderWorkflow),
+        [backend("b1")],
+        serviceWithFiles({ b1: ["example.png"] }),
+      );
+      expect(result).toEqual({ ok: true, reasons: [] });
+    });
+
+    test("refuses a loader with neither a shown Input nor a fixed value", async () => {
+      const result = await checkEnableReadiness(
+        loaderDetail({
+          ...loaderWorkflow,
+          "1": { class_type: "LoadImage", inputs: { image: "" } },
+        }),
+        [backend("b1")],
+        serviceWithFiles({ b1: ["example.png"] }),
+      );
+      expect(result.ok).toBe(false);
+      expect(result.reasons).toEqual([
+        'Mode "Default": Upload loader "1" (LoadImage) has neither a shown Input nor a fixed value for "image"',
+      ]);
+    });
+
+    test("refuses a fixed file missing on an enabled attached Backend, ignoring a disabled one", async () => {
+      const disabled = { ...backend("b3"), enabled: false };
+      const result = await checkEnableReadiness(
+        loaderDetail(loaderWorkflow),
+        [backend("b1"), backend("b2"), disabled],
+        serviceWithFiles({ b1: ["example.png"], b2: ["other.png"] }),
+      );
+      expect(result.reasons).toEqual([
+        'Mode "Default": fixed file "example.png" for Upload loader "1" isn\'t on Backend "b2"',
+      ]);
+    });
+
+    test("a shown Image Upload Input bound to the loader satisfies both checks", async () => {
+      const result = await checkEnableReadiness(
+        loaderDetail(
+          {
+            ...loaderWorkflow,
+            "1": { class_type: "LoadImage", inputs: { image: "" } },
+          },
+          [
+            {
+              id: "8a3c1c5e-2d4b-4d55-9d0e-3f1f0f6b7a01",
+              kind: "image_upload",
+              group: "describe",
+              label: "Photo",
+              help: "",
+              maxSizeMb: 10,
+              maxLongSide: null,
+              bindings: [
+                {
+                  nodeId: "1",
+                  field: "image",
+                  classType: "LoadImage",
+                  title: null,
+                },
+              ],
+            },
+          ],
+        ),
+        [backend("b1")],
+        serviceWithFiles({ b1: [] }),
+      );
+      expect(result).toEqual({ ok: true, reasons: [] });
+    });
   });
 
   test("refuses a Seed Input with no max (issue #47, ADR 0007)", async () => {

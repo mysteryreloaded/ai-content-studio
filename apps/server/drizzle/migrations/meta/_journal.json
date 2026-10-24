@@ -131,8 +131,15 @@
     {
       "idx": 18,
       "version": "7",
-      "when": 1792828583580,
-      "tag": "0018_careless_korath",
+      "when": 1792827940966,
+      "tag": "0018_stale_the_hunter",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1792829120831,
+      "tag": "0019_blue_apocalypse",
       "breakpoints": true
     }
   ]

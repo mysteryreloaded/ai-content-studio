@@ -14,7 +14,7 @@ import type { ResolvedOutputNode, Workflow } from "@ai-content-studio/shared";
 import { and, eq, inArray, isNotNull, lt } from "drizzle-orm";
 import { sql } from "drizzle-orm";
 import type { Database } from "../db/client.js";
-import { generations, models, modes } from "../db/schema.js";
+import { generations, models, modes, uploads } from "../db/schema.js";
 
 /** At most this many tries before a lost try gives up for good (issue #55's AC). */
 export const MAX_TRIES = 2;
@@ -44,6 +44,15 @@ export interface RunDetail {
   builtPrompt: Workflow;
   outputNodes: ResolvedOutputNode[];
   maxRunTimeMinutes: number;
+  /** Issue #50: each Upload the prompt names, sent to the Backend before the prompt. */
+  uploads: RunUpload[];
+}
+
+export interface RunUpload {
+  id: string;
+  extension: string;
+  size: number;
+  storageKey: string;
 }
 
 /** A Generation stuck in `starting`/`running` (or `saving`) across a restart, found by boot recovery (issue #55's AC). */
@@ -302,6 +311,14 @@ export class DispatchQueue {
       .innerJoin(models, eq(models.id, generations.modelId))
       .where(eq(generations.id, generationId));
     if (!row) return null;
+
+    const uploadRows =
+      row.generation.uploadIds.length === 0
+        ? []
+        : await this.db
+            .select()
+            .from(uploads)
+            .where(inArray(uploads.id, row.generation.uploadIds));
     return {
       id: row.generation.id,
       revisionId: row.generation.revisionId,
@@ -316,6 +333,12 @@ export class DispatchQueue {
       builtPrompt: row.generation.builtPrompt as Workflow,
       outputNodes: row.mode.outputNodes as ResolvedOutputNode[],
       maxRunTimeMinutes: row.model.maxRunTimeMinutes,
+      uploads: uploadRows.map((upload) => ({
+        id: upload.id,
+        extension: upload.extension ?? "",
+        size: upload.size,
+        storageKey: upload.storageKey,
+      })),
     };
   }
 

@@ -693,4 +693,65 @@ describe("ModelEditorPage", () => {
       .map((el) => (el as HTMLInputElement).value);
     expect(names).toEqual(["Mode 1", "Mode 1 copy"]);
   });
+
+  test("adds an Image upload Input bound to a loader's file field and saves it (issue #50)", async () => {
+    const detail = {
+      ...DETAIL,
+      workflow: {
+        "1": { class_type: "LoadImage", inputs: { image: "example.png" } },
+      },
+      inputs: [],
+    };
+    const calls = mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1")) {
+        return Response.json(detail);
+      }
+      if (call.method === "GET") return respondGet(call.url);
+      if (call.method === "PUT" && call.url.endsWith("/inputs")) {
+        return Response.json({
+          record: { ...DETAIL.model, currentRevision: 2, version: 2 },
+          inputs: [],
+        });
+      }
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+
+    await view.findByText("LTX 2.5");
+    await userEvent.selectOptions(
+      view.getByLabelText("New Input kind"),
+      "image_upload",
+    );
+    await userEvent.click(view.getByText("Add Input"));
+    await userEvent.type(view.getByLabelText("Label"), "Photo");
+    const maxSize = view.getByLabelText("Max size (MB)");
+    await userEvent.clear(maxSize);
+    await userEvent.type(maxSize, "10");
+    await userEvent.type(
+      view.getByLabelText("Max long side (px, optional)"),
+      "2048",
+    );
+    await userEvent.click(view.getByRole("button", { name: "Add" }));
+    await userEvent.click(view.getByText("Save Inputs"));
+
+    const saved = calls.find(
+      (c) => c.method === "PUT" && c.url.endsWith("/inputs"),
+    );
+    expect(saved?.body?.inputs).toEqual([
+      {
+        id: expect.any(String),
+        kind: "image_upload",
+        group: "describe",
+        label: "Photo",
+        help: "",
+        maxSizeMb: 10,
+        maxLongSide: 2048,
+        bindings: [
+          { nodeId: "1", field: "image", classType: "LoadImage", title: null },
+        ],
+      },
+    ]);
+  });
 });

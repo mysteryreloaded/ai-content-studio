@@ -138,8 +138,15 @@
     {
       "idx": 19,
       "version": "7",
+      "when": 1792828100000,
+      "tag": "0019_nice_reaper",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
       "when": 1792829120831,
-      "tag": "0019_blue_apocalypse",
+      "tag": "0020_blue_apocalypse",
       "breakpoints": true
     }
   ]

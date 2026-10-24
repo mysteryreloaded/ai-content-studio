@@ -8,6 +8,8 @@ import type { Clock, Timer } from "@ai-content-studio/shared";
 import { Hono } from "hono";
 import { type RouteEntry, guardedRoute } from "../auth/access.js";
 import type { AppEnv } from "../auth/app-env.js";
+import type { Database } from "../db/client.js";
+import { getCapsStatus } from "../generations/caps.js";
 import type { GenerationEvent } from "../generations/events.js";
 import type { GenerationEvents } from "../generations/events.js";
 import type { GenerationsRepository } from "../generations/repository.js";
@@ -26,12 +28,30 @@ function sseEvent(event: string, data: unknown): string {
 
 /** `/api/generations`: the signed-in user's own Generation stream (issue #43). */
 export function generationsRoute(
+  db: Database,
   generationsRepository: GenerationsRepository,
   generationEvents: GenerationEvents,
   clock: Clock,
   routes: RouteEntry[],
 ): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
+
+  // `/api/generations/caps`: this user's Caps and current usage (issue
+  // #53), for the Workbench foot.
+  guardedRoute(
+    app,
+    routes,
+    "/api/generations",
+    "get",
+    "/caps",
+    "active",
+    async (c) => {
+      const session = c.get("session");
+      if (!session) return c.json({ error: "unauthorized" }, 401);
+      const status = await getCapsStatus(db, clock, session.user.id);
+      return c.json(status);
+    },
+  );
 
   guardedRoute(
     app,

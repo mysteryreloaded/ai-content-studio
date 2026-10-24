@@ -7,6 +7,7 @@ import {
   isAllowedImageContentType,
 } from "@ai-content-studio/shared";
 import { type FormEvent, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 
 interface AdminSiteSettings {
   version: number;
@@ -115,6 +116,9 @@ export function SiteSettingsForm() {
   return (
     <form onSubmit={(event) => void handleSubmit(event)}>
       <h2>Site settings</h2>
+      <Link to="/admin/audit?targetType=site_settings&targetId=singleton">
+        History
+      </Link>
 
       <label htmlFor="site-title">Title</label>
       <input

@@ -28,6 +28,7 @@ import {
 import { AssetsRepository } from "../generations/assets-repository.js";
 import { GenerationEvents } from "../generations/events.js";
 import { GenerationsRepository } from "../generations/repository.js";
+import { MediaRunner } from "../media/media.js";
 import { ModelBackendsRepository } from "../models/model-backends.js";
 import { ModelRepository } from "../models/repository.js";
 import { assetsRoute } from "../routes/assets.js";
@@ -112,7 +113,12 @@ describe("Dispatcher end-to-end against a fake ComfyUI", () => {
     await db.delete(users);
   });
 
-  async function setup(tmpDir: string) {
+  async function setup(
+    tmpDir: string,
+    logWriterOverride?: (real: ReturnType<typeof createLogEntryWriter>) => {
+      log: ReturnType<typeof createLogEntryWriter>["log"];
+    },
+  ) {
     const { db, sql } = await testDb;
     const modelRepository = new ModelRepository(db, systemClock);
     const modelBackendsRepository = new ModelBackendsRepository(
@@ -124,7 +130,10 @@ describe("Dispatcher end-to-end against a fake ComfyUI", () => {
       systemClock,
       SECRET_KEY,
     );
-    const logWriter = createLogEntryWriter(db, systemClock, silentLogger());
+    const realLogWriter = createLogEntryWriter(db, systemClock, silentLogger());
+    const logWriter = logWriterOverride
+      ? logWriterOverride(realLogWriter)
+      : realLogWriter;
     const backendsService = new BackendsService(
       backendRepository,
       systemClock,
@@ -149,6 +158,8 @@ describe("Dispatcher end-to-end against a fake ComfyUI", () => {
       assetsRepository,
       storage,
       generationEvents,
+      media: new MediaRunner(2),
+      siteName: "localhost",
       pollIntervalMs: 15,
     });
 
@@ -451,6 +462,199 @@ describe("Dispatcher end-to-end against a fake ComfyUI", () => {
       const forbiddenRes = await strangerApp.request(`/api/assets/${asset.id}`);
       expect(forbiddenRes.status).toBe(404);
     } finally {
+      await Bun.$`rm -rf ${tmpDir}`.quiet();
+    }
+  });
+
+  test("serves a video Asset's poster/thumb, 404s when there's none, and names its download (issue #45)", async () => {
+    const tmpDir = `/tmp/dispatcher-e2e-${randomUUID()}`;
+    const { db, modelRepository, assetsRepository, storage } =
+      await setup(tmpDir);
+    try {
+      const owner = await insertUser(db, "owner2@example.com");
+      const { model, mode, revisionId } = await createModelWithMode(
+        modelRepository,
+        "M4",
+      );
+
+      const generationId = randomUUID();
+      const { prompt, nodeTypes } = buildFrozenPrompt(
+        WORKFLOW,
+        ["2"],
+        generationId,
+      );
+      const generationsRepository = new GenerationsRepository(db);
+      await generationsRepository.create({
+        id: generationId,
+        modelId: model.id,
+        revisionId,
+        modeId: mode.id,
+        modeName: mode.name,
+        userId: owner.id,
+        submissionId: randomUUID(),
+        builtPrompt: prompt,
+        nodeTypes,
+        submittedAt: systemClock.now(),
+      });
+
+      const videoKey = `assets/${generationId}/2/studio_00001_.mp4`;
+      const posterKey = `${videoKey}.poster.jpg`;
+      await storage.write(
+        videoKey,
+        new TextEncoder().encode("fake video bytes"),
+      );
+      await storage.write(
+        posterKey,
+        new TextEncoder().encode("fake poster bytes"),
+      );
+      const video = await assetsRepository.createIfAbsent({
+        generationId,
+        nodeId: "2",
+        sortOrder: 0,
+        kind: "video",
+        comfyuiFilename: "studio_00001_.mp4",
+        contentType: "video/mp4",
+        size: 17,
+        storageKey: videoKey,
+        posterKey,
+        width: 64,
+        height: 48,
+        durationMs: 1400,
+        fps: 5,
+      });
+      if (!video) throw new Error("video asset not created");
+
+      const imageKey = `assets/${generationId}/3/studio_00001_.png`;
+      await storage.write(
+        imageKey,
+        new TextEncoder().encode("fake image bytes"),
+      );
+      const image = await assetsRepository.createIfAbsent({
+        generationId,
+        nodeId: "3",
+        sortOrder: 1,
+        kind: "image",
+        comfyuiFilename: "studio_00001_.png",
+        contentType: "image/png",
+        size: 17,
+        storageKey: imageKey,
+      });
+      if (!image) throw new Error("image asset not created");
+
+      const ownerApp = appAs(assetsRepository, storage, fakeSession(owner.id));
+
+      const posterRes = await ownerApp.request(
+        `/api/assets/${video.id}/poster`,
+      );
+      expect(posterRes.status).toBe(200);
+      expect(await posterRes.text()).toBe("fake poster bytes");
+      expect(posterRes.headers.get("content-type")).toBe("image/jpeg");
+
+      // The image Asset has no poster (only video gets one).
+      const noPosterRes = await ownerApp.request(
+        `/api/assets/${image.id}/poster`,
+      );
+      expect(noPosterRes.status).toBe(404);
+
+      const downloadRes = await ownerApp.request(
+        `/api/assets/${video.id}?download=1`,
+      );
+      expect(downloadRes.status).toBe(200);
+      expect(downloadRes.headers.get("content-disposition")).toBe(
+        `attachment; filename="m4-mode-1-${generationId.slice(-8)}.mp4"`,
+      );
+
+      const imageDownloadRes = await ownerApp.request(
+        `/api/assets/${image.id}?download=1`,
+      );
+      expect(imageDownloadRes.headers.get("content-disposition")).toBe(
+        `attachment; filename="m4-mode-1-${generationId.slice(-8)}.png"`,
+      );
+    } finally {
+      await Bun.$`rm -rf ${tmpDir}`.quiet();
+    }
+  });
+
+  test("a rejecting warning Log write doesn't crash the run (Dule's fix #1)", async () => {
+    const tmpDir = `/tmp/dispatcher-e2e-${randomUUID()}`;
+    const {
+      db,
+      modelRepository,
+      modelBackendsRepository,
+      backendRepository,
+      backendsService,
+      generationsRepository,
+      assetsRepository,
+      dispatcher,
+    } = await setup(tmpDir, (real) => ({
+      // Asset finishing warns because the fake Backend's output isn't
+      // real, decodable media; simulate that warning's own Log insert
+      // failing (DB down) and confirm it's swallowed, not an unhandled
+      // rejection that would kill the process.
+      log: (entry) =>
+        entry.level === "warning"
+          ? Promise.reject(new Error("db down"))
+          : real.log(entry),
+    }));
+
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const user = await insertUser(db, "user5@example.com");
+      const { model, mode, revisionId } = await createModelWithMode(
+        modelRepository,
+        "M5",
+      );
+
+      const backend = await backendRepository.create(
+        { name: "Fake5", baseUrl: fake.url, auth: "none" },
+        SYSTEM,
+      );
+      await modelBackendsRepository.attach(model.id, backend.id, SYSTEM);
+      backendsService.watch(backend);
+      forceReachable(backendsService, backend.id);
+
+      const generationId = randomUUID();
+      const { prompt, nodeTypes } = buildFrozenPrompt(
+        WORKFLOW,
+        ["2"],
+        generationId,
+      );
+      fake.script(generationId, {
+        steps: 2,
+        stepIntervalMs: 5,
+        outputs: {
+          "2": {
+            images: [
+              {
+                filename: "studio_00001_.png",
+                subfolder: "studio",
+                type: "output",
+              },
+            ],
+          },
+        },
+      });
+
+      await generationsRepository.create({
+        id: generationId,
+        modelId: model.id,
+        revisionId,
+        modeId: mode.id,
+        modeName: mode.name,
+        userId: user.id,
+        submissionId: randomUUID(),
+        builtPrompt: prompt,
+        nodeTypes,
+        submittedAt: systemClock.now(),
+      });
+
+      await dispatcher.runUntilIdle();
+
+      const savedAssets =
+        await assetsRepository.listForGeneration(generationId);
+      expect(savedAssets).toHaveLength(1);
+    } finally {
+      fake.stop();
       await Bun.$`rm -rf ${tmpDir}`.quiet();
     }
   });

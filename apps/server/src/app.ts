@@ -23,6 +23,7 @@ import { AssetsRepository } from "./generations/assets-repository.js";
 import { GenerationEvents } from "./generations/events.js";
 import { GenerationsRepository } from "./generations/repository.js";
 import type { Logger } from "./logger.js";
+import { MediaRunner } from "./media/media.js";
 import { ModelBackendsRepository } from "./models/model-backends.js";
 import { ModelRepository } from "./models/repository.js";
 import { ProblemsMonitor } from "./problems/monitor.js";
@@ -159,6 +160,7 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
   const generationEvents = new GenerationEvents();
   const assetsRepository = new AssetsRepository(deps.db);
   const dispatchQueue = new DispatchQueue(deps.db);
+  const media = new MediaRunner(deps.env.FFMPEG_CONCURRENCY);
   const dispatcher = new Dispatcher({
     sql: deps.sql,
     clock: deps.clock,
@@ -171,6 +173,8 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
     assetsRepository,
     storage,
     generationEvents,
+    media,
+    siteName: new URL(deps.env.PUBLIC_URL).hostname,
   });
   wakeDispatcher = dispatcher.wake;
 

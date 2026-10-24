@@ -29,6 +29,7 @@ import {
 import { AssetsRepository } from "../generations/assets-repository.js";
 import { GenerationEvents } from "../generations/events.js";
 import { GenerationsRepository } from "../generations/repository.js";
+import { MediaRunner } from "../media/media.js";
 import { ModelBackendsRepository } from "../models/model-backends.js";
 import { ModelRepository } from "../models/repository.js";
 import { createLocalStorage } from "../storage/storage.js";
@@ -112,6 +113,8 @@ describe("Reliable dispatch (issue #55)", () => {
       pollIntervalMs: 15,
       savingBackoffBudgetMs: 200,
       savingBackoffBaseMs: 20,
+      media: new MediaRunner(2),
+      siteName: "localhost",
     });
 
     return {
@@ -805,6 +808,8 @@ describe("Reliable dispatch (issue #55)", () => {
         // biome-ignore lint/suspicious/noExplicitAny: test-only access to the Dispatcher's private ProgressTracker
         progress: (dispatcher as any).progress,
         onFreed: () => {},
+        media: new MediaRunner(2),
+        siteName: "localhost",
       });
 
       const savedAssets =
@@ -893,6 +898,8 @@ describe("Reliable dispatch (issue #55)", () => {
         // biome-ignore lint/suspicious/noExplicitAny: test-only access to the Dispatcher's private ProgressTracker
         progress: (dispatcher as any).progress,
         onFreed: () => {},
+        media: new MediaRunner(2),
+        siteName: "localhost",
       });
 
       const summaries =

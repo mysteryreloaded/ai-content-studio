@@ -108,3 +108,11 @@ The floor, in GB, the retention jobs (issue #69) try to keep free on
 `DATA_DIR`'s disk. The Overview's `disk_low` Problem fires once free
 space drops below twice this value, so an Admin has warning before
 retention's own floor is hit. Defaults to `10`.
+
+## `ffmpeg_concurrency`
+
+### `FFMPEG_CONCURRENCY`
+
+The most ffmpeg/ffprobe processes Asset finishing (issue #45) runs at
+once; each also gets a share of the box's CPU threads, so a burst of
+saves can't starve it. Defaults to `2`.

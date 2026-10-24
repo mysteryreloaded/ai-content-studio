@@ -70,3 +70,20 @@ sign in against Google.
 
 The directory the local-disk `storage` module writes to (Site settings'
 logo and background images today). Defaults to `/data`.
+
+## `secret_key`
+
+### `SECRET_KEY`
+
+Base64 for exactly 32 bytes, used as the AES-256-GCM key that encrypts
+Backend credentials at rest (issue #39). Generate one with
+`openssl rand -base64 32`. Required. Changing it makes every stored
+Backend credential undecryptable — re-enter them after a rotation.
+
+## `backends_enabled`
+
+### `BACKENDS_ENABLED`
+
+`true` or `false`. When `false`, the studio never contacts any Backend
+(no health polling) and Admins see a banner saying so. Defaults to
+`true`.

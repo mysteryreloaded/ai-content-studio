@@ -24,6 +24,8 @@ const TEST_ENV: Env = {
   ADMIN_EMAILS: ["admin@example.com"],
   OIDC_ISSUER: undefined,
   DATA_DIR: "/tmp/ai-content-studio-test-data",
+  SECRET_KEY: "4FRG13w9RuN5CeV10Lzfxl78MY+AJRJtGuKrBdYzgCY=",
+  BACKENDS_ENABLED: false,
 };
 
 describe("every route's access level is declared and enforced", () => {
@@ -111,6 +113,10 @@ describe("every route's access level is declared and enforced", () => {
     // different test's job, so only its status code is overridden here.
     const ADMIN_STATUS_OVERRIDES: Record<string, number> = {
       "PUT /api/admin/site-settings": 400,
+      "POST /api/admin/backends": 400,
+      "GET /api/admin/backends/:id": 404,
+      "PUT /api/admin/backends/:id": 404,
+      "DELETE /api/admin/backends/:id": 404,
     };
 
     for (const route of routes) {

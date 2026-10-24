@@ -1,5 +1,6 @@
 import { Navigate } from "react-router-dom";
 import { useSession } from "../useSession.js";
+import { BackendsPage } from "./BackendsPage.js";
 import { SiteSettingsForm } from "./SiteSettingsForm.js";
 
 export function AdminShell() {
@@ -13,6 +14,7 @@ export function AdminShell() {
     <main>
       <h1>Admin</h1>
       <SiteSettingsForm />
+      <BackendsPage />
     </main>
   );
 }

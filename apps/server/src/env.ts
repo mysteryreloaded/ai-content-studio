@@ -11,6 +11,8 @@ const DOCS_BY_KEY: Record<string, string> = {
   ADMIN_EMAILS: "docs/server-env.md#admin_emails",
   OIDC_ISSUER: "docs/server-env.md#oidc_issuer",
   DATA_DIR: "docs/server-env.md#data_dir",
+  SECRET_KEY: "docs/server-env.md#secret_key",
+  BACKENDS_ENABLED: "docs/server-env.md#backends_enabled",
 };
 
 function isLocalhost(url: string): boolean {
@@ -44,6 +46,16 @@ const envSchema = z
       }),
     OIDC_ISSUER: z.string().min(1).url().optional(),
     DATA_DIR: z.string().min(1).default("/data"),
+    SECRET_KEY: z
+      .string()
+      .min(1)
+      .refine((value) => Buffer.from(value, "base64").length === 32, {
+        message: "must be base64 for 32 bytes (AES-256-GCM key)",
+      }),
+    BACKENDS_ENABLED: z
+      .enum(["true", "false"])
+      .default("true")
+      .transform((value) => value === "true"),
   })
   .superRefine((value, ctx) => {
     if (value.OIDC_ISSUER && !isLocalhost(value.PUBLIC_URL)) {
@@ -66,6 +78,8 @@ export const ENV_KEYS: readonly string[] = [
   "ADMIN_EMAILS",
   "OIDC_ISSUER",
   "DATA_DIR",
+  "SECRET_KEY",
+  "BACKENDS_ENABLED",
 ];
 
 export type Env = z.infer<typeof envSchema>;

@@ -8,11 +8,15 @@ import type { AppEnv } from "./auth/app-env.js";
 import { createMockOidcIssuer } from "./auth/mock-issuer.js";
 import { sameOriginGuard } from "./auth/same-origin-guard.js";
 import { sessionMiddleware } from "./auth/session-middleware.js";
+import { createLogEntryWriter } from "./backends/log-entries.js";
+import { BackendRepository } from "./backends/repository.js";
+import { BackendsService } from "./backends/service.js";
 import { injectBrandingIntoHtml } from "./branding/accent-html.js";
 import { getSiteSettings } from "./branding/site-settings-store.js";
 import type { Database } from "./db/client.js";
 import type { Env } from "./env.js";
 import type { Logger } from "./logger.js";
+import { adminBackendsRoute } from "./routes/admin-backends.js";
 import { adminSiteSettingsRoute } from "./routes/admin-site-settings.js";
 import { adminRoute } from "./routes/admin.js";
 import { authRoute } from "./routes/auth.js";
@@ -35,6 +39,8 @@ export interface CreatedApp {
   app: Hono<AppEnv>;
   /** Every route registered, with its access level (ADR 0003)'s guard test. */
   routes: RouteEntry[];
+  /** Backend health monitoring (issue #39): call `start()` after boot, `stop()` on shutdown. */
+  backendsService: BackendsService;
 }
 
 /** One Hono app answering the API and serving the built SPA from one origin. */
@@ -63,6 +69,23 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
 
   const storage = createLocalStorage(deps.env.DATA_DIR);
 
+  const backendRepository = new BackendRepository(
+    deps.db,
+    deps.clock,
+    deps.env.SECRET_KEY,
+  );
+  const backendLogWriter = createLogEntryWriter(
+    deps.db,
+    deps.clock,
+    deps.logger,
+  );
+  const backendsService = new BackendsService(
+    backendRepository,
+    deps.clock,
+    backendLogWriter,
+    deps.env.BACKENDS_ENABLED,
+  );
+
   app.route("/healthz", healthRoute(deps.sql, deps.clock, routes));
   app.route("/api/site-settings", siteSettingsRoute(deps.db, storage, routes));
   app.route(
@@ -74,6 +97,16 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
   app.route(
     "/api/admin/site-settings",
     adminSiteSettingsRoute(deps.db, deps.clock, storage, routes),
+  );
+  app.route(
+    "/api/admin/backends",
+    adminBackendsRoute(
+      deps.db,
+      deps.clock,
+      backendRepository,
+      backendsService,
+      routes,
+    ),
   );
 
   if (deps.env.OIDC_ISSUER) {
@@ -110,5 +143,5 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
   app.use("*", serveStatic({ root: deps.webDistDir }));
   app.use("*", serveBrandedIndex);
 
-  return { app, routes };
+  return { app, routes, backendsService };
 }

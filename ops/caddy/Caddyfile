@@ -1,0 +1,37 @@
+{
+	# Caddy's own access log is off; the studio already logs each
+	# request (apps/server/src/app.ts), so a second copy would just
+	# duplicate request_id-less lines with no way to correlate them.
+	admin off
+}
+
+{$DOMAIN} {
+	reverse_proxy studio:3000 {
+		# SSE (issue #43's Generation stream) must reach the browser as
+		# it's written, not once a buffer fills or the response ends.
+		flush_interval -1
+		fail_duration 5s
+	}
+
+	# While `studio` is unreachable (still booting, mid-upgrade, or
+	# restarting), Caddy serves this instead of a bare connection error
+	# and refreshes itself until the real app answers again.
+	handle_errors {
+		@unavailable expression {http.error.status_code} in [502, 503]
+		respond @unavailable <<HTML
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="refresh" content="3">
+<title>Restarting</title>
+<style>
+body { font: 16px system-ui, sans-serif; display: flex; align-items: center;
+       justify-content: center; height: 100vh; margin: 0; color: #333; }
+</style>
+</head>
+<body>Restarting, back in a moment&hellip;</body>
+</html>
+HTML 503
+	}
+}

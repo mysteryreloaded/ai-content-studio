@@ -1,19 +1,93 @@
+# The Operator's stack: `studio` (the app), `postgres` and `caddy` (HTTPS
+# termination). Copy `.env.example` to `.env`, fill it in, then
+# `docker compose up -d`. See docs/ops/deploy.md, including alternatives
+# to Caddy and how to upgrade.
+#
+# Developers only running the test suite locally can start just Postgres
+# with `docker compose up -d postgres`; `studio` and `caddy` are never
+# needed for that.
+
 services:
+  studio:
+    image: ghcr.io/mysteryreloaded/ai-content-studio:${STUDIO_VERSION}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-ai_content_studio}
+    volumes:
+      - studio-data:/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "bun",
+          "-e",
+          "fetch('http://localhost:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
   postgres:
     image: postgres:17
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: ai_content_studio
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-ai_content_studio}
     ports:
-      - "5432:5432"
+      # Bound to localhost only: `bun run dev` and the test suite reach
+      # it this way; the public internet never does.
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
       interval: 2s
       timeout: 2s
       retries: 15
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # No `profiles:` key, so this is part of Compose's implicit "default"
+  # profile and comes up with everything else. An Operator using the
+  # nginx or Cloudflare Tunnel alternative (docs/ops/deploy.md) runs
+  # `docker compose up -d studio postgres` instead and leaves this
+  # service stopped.
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    depends_on:
+      - studio
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./ops/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
 volumes:
   postgres-data:
+  studio-data:
+  caddy-data:
+  caddy-config:

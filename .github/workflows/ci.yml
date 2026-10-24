@@ -55,3 +55,28 @@ jobs:
 
       - name: Build web
         run: bun run build
+
+  docker:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: ShellCheck
+        run: shellcheck ops/studio/upgrade.sh
+
+      - name: Compose config is valid
+        run: |
+          sed -e 's/^STUDIO_VERSION=$/STUDIO_VERSION=test/' \
+              -e 's/^DOMAIN=$/DOMAIN=example.com/' \
+              .env.example > .env
+          docker compose config --quiet
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          platforms: linux/amd64

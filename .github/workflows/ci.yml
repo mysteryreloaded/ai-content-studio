@@ -6,6 +6,22 @@ on:
     branches: [main]
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      comfyui: ${{ steps.filter.outputs.comfyui }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            comfyui:
+              - 'apps/server/src/comfyui/**'
+              - 'apps/server/src/backends/client.ts'
+              - 'apps/fake-comfyui/**'
+              - 'docs/ops/backend-kit.md'
+
   ci:
     runs-on: ubuntu-latest
 
@@ -72,6 +88,66 @@ jobs:
 
       - name: Build web
         run: bun run build
+
+  # Path-triggered (issue #79's AC): the contract suite already ran against
+  # the fake as part of "ci"'s own `bun test --isolate`; this job re-runs
+  # just that suite against a real, pinned, CPU-only ComfyUI, to prove the
+  # fake tells the truth. See docs/ops/backend-kit.md's "ComfyUI version"
+  # for the pin.
+  comfyui-contract:
+    needs: changes
+    if: needs.changes.outputs.comfyui == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies (frozen)
+        run: bun install --frozen-lockfile
+
+      - name: Install a pinned, CPU-only ComfyUI
+        run: |
+          git clone --depth 1 --branch v0.26.2 \
+            https://github.com/comfyanonymous/ComfyUI.git /tmp/comfyui
+          python3 -m venv /tmp/comfyui/venv
+          /tmp/comfyui/venv/bin/pip install --upgrade pip
+          /tmp/comfyui/venv/bin/pip install torch torchvision torchaudio \
+            --index-url https://download.pytorch.org/whl/cpu
+          /tmp/comfyui/venv/bin/pip install -r /tmp/comfyui/requirements.txt
+          # TestSleep and ComfySwitchNode (this suite's own weightless
+          # Workflows, issue #79's AC) are ComfyUI's own test-only nodes,
+          # not shipped by default — install them as a custom node pack
+          # the same way any other one is installed.
+          cp -r /tmp/comfyui/tests/execution/testing_nodes/testing-pack \
+            /tmp/comfyui/custom_nodes/testing-pack
+
+      - name: Start ComfyUI (CPU-only)
+        run: |
+          nohup /tmp/comfyui/venv/bin/python /tmp/comfyui/main.py \
+            --cpu --listen 127.0.0.1 --port 8189 \
+            > /tmp/comfyui.log 2>&1 &
+          for _ in $(seq 1 60); do
+            curl -sf http://127.0.0.1:8189/system_stats > /dev/null && exit 0
+            sleep 2
+          done
+          echo "ComfyUI never came up:"; cat /tmp/comfyui.log; exit 1
+
+      - name: Run the comfyui contract suite against it
+        env:
+          COMFYUI_CONTRACT_URL: "http://127.0.0.1:8189"
+        run: bun test apps/server/src/comfyui/contract.e2e.test.ts
+
+      - name: ComfyUI's own log (only on failure, for debugging)
+        if: failure()
+        run: cat /tmp/comfyui.log
 
   docker:
     runs-on: ubuntu-latest

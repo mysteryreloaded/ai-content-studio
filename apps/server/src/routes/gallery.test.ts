@@ -356,6 +356,7 @@ describe("/api/gallery", () => {
         userId: first.userId,
         submissionId: first.submissionId,
         state: "succeeded",
+        queuedAt: first.submittedAt,
         builtPrompt: first.builtPrompt,
         nodeTypes: first.nodeTypes,
         submittedAt: first.submittedAt,

@@ -252,7 +252,7 @@ describe("Dispatcher end-to-end against a fake ComfyUI", () => {
         stepIntervalMs: 5,
         outputs: {
           "2": {
-            files: [
+            images: [
               {
                 filename: "studio_00001_.png",
                 subfolder: "studio",

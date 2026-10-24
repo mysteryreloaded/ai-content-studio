@@ -56,13 +56,20 @@ export interface JobFile {
   type: string;
 }
 
+/** ComfyUI's own output shape, keyed by media kind, not a made-up `files` list. */
+export interface JobOutput {
+  images?: JobFile[];
+  gifs?: JobFile[];
+  audio?: JobFile[];
+}
+
 export interface ScriptedJob {
   /** How many progress steps before the job finishes (default 1). */
   steps?: number;
   /** Delay between steps, in ms (default 5 — fast, but still observable as several states). */
   stepIntervalMs?: number;
   /** Output files per output node id, kept only when `type` is `"output"`. */
-  outputs?: Record<string, { files: JobFile[] }>;
+  outputs?: Record<string, JobOutput>;
   /** Scripts the job to fail once its steps run out, instead of completing. */
   fail?: string;
 }
@@ -71,7 +78,7 @@ interface JobState {
   status: "running" | "completed" | "failed";
   step: number;
   totalSteps: number;
-  outputs: Record<string, { files: JobFile[] }> | null;
+  outputs: Record<string, JobOutput> | null;
   error: string | null;
   clientId: string;
   script: ScriptedJob;
@@ -99,9 +106,7 @@ export function startFakeComfyUi(opts: FakeComfyUiOptions) {
     job.step += 1;
     sendTo(job.clientId, {
       type: "progress",
-      promptId,
-      step: job.step,
-      totalSteps: job.totalSteps,
+      data: { prompt_id: promptId, value: job.step, max: job.totalSteps },
     });
     if (job.step < job.totalSteps) return;
 
@@ -112,15 +117,16 @@ export function startFakeComfyUi(opts: FakeComfyUiOptions) {
       job.error = job.script.fail;
       sendTo(job.clientId, {
         type: "status",
-        promptId,
-        status: "failed",
-        error: job.error,
+        data: { prompt_id: promptId, status: "failed", error: job.error },
       });
       return;
     }
     job.status = "completed";
     job.outputs = job.script.outputs ?? {};
-    sendTo(job.clientId, { type: "status", promptId, status: "completed" });
+    sendTo(job.clientId, {
+      type: "status",
+      data: { prompt_id: promptId, status: "completed" },
+    });
   }
 
   /** Every node type the submitted prompt uses must be known, like ComfyUI's own `/prompt` validation. */
@@ -249,8 +255,6 @@ export function startFakeComfyUi(opts: FakeComfyUiOptions) {
         return Response.json({
           id: promptId,
           status: job.status,
-          step: job.step,
-          totalSteps: job.totalSteps,
           outputs: job.outputs,
           error: job.error,
         });

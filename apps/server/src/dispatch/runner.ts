@@ -14,6 +14,7 @@ import type {
 import {
   ComfyUiSocket,
   type Job,
+  type JobFile,
   PromptRejected,
   fetchView,
   readJob,
@@ -128,9 +129,15 @@ async function fail(
   deps.onFreed();
 }
 
-/** Only an output node's files whose ComfyUI `type` is `"output"` are kept (issue #44's AC). */
-function outputFilesFor(job: Job, nodeId: string) {
-  const files = job.outputs?.[nodeId]?.files ?? [];
+/** Only an output node's files whose ComfyUI `type` is `"output"` are kept (issue #44's AC). ComfyUI splits them across `images`/`gifs`/`audio`, not one `files` list. */
+function outputFilesFor(job: Job, nodeId: string): JobFile[] {
+  const output = job.outputs?.[nodeId];
+  if (!output) return [];
+  const files = [
+    ...(output.images ?? []),
+    ...(output.gifs ?? []),
+    ...(output.audio ?? []),
+  ];
   return files.filter((file) => file.type === "output");
 }
 
@@ -203,9 +210,6 @@ export async function runClaimedGeneration(
   try {
     while (true) {
       job = await readJob(target, generationId);
-      if (job && job.step !== null && job.totalSteps !== null) {
-        deps.progress.updateStep(generationId, job.step, job.totalSteps);
-      }
       publishProgress(deps, detail.userId, generationId);
       if (job?.status === "completed" || job?.status === "failed") break;
       if (deps.clock.now().getTime() > deadlineMs) {

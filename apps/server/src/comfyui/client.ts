@@ -52,15 +52,17 @@ export interface JobFile {
   type: string;
 }
 
+/** ComfyUI's own output shape, keyed by media kind, not a made-up `files` list. */
 export interface JobOutput {
-  files: JobFile[];
+  images?: JobFile[];
+  gifs?: JobFile[];
+  audio?: JobFile[];
 }
 
+/** No `step`/`totalSteps` here: that only ever comes from `/ws`'s `progress` message. */
 export interface Job {
   id: string;
   status: JobStatus;
-  step: number | null;
-  totalSteps: number | null;
   outputs: Record<string, JobOutput> | null;
   error: string | null;
 }
@@ -163,12 +165,49 @@ export class ComfyUiSocket {
   }
 }
 
+/**
+ * Real ComfyUI wraps every `/ws` message as `{type, data}` (e.g. a
+ * `progress` message's `data` is `{prompt_id, value, max}`); this unwraps
+ * that envelope into the flat `JobEvent` the rest of the module uses.
+ */
 function parseJobEvent(data: unknown): JobEvent | null {
   if (typeof data !== "string") return null;
   try {
     const parsed = JSON.parse(data);
-    if (parsed && typeof parsed === "object" && "type" in parsed) {
-      return parsed as JobEvent;
+    if (!parsed || typeof parsed !== "object" || !("type" in parsed)) {
+      return null;
+    }
+    const { type } = parsed as { type: unknown };
+    const envelope = (parsed as { data?: unknown }).data;
+    if (!envelope || typeof envelope !== "object") return null;
+
+    if (type === "progress") {
+      const { prompt_id, value, max } = envelope as Record<string, unknown>;
+      if (
+        typeof prompt_id !== "string" ||
+        typeof value !== "number" ||
+        typeof max !== "number"
+      ) {
+        return null;
+      }
+      return {
+        type: "progress",
+        promptId: prompt_id,
+        step: value,
+        totalSteps: max,
+      };
+    }
+    if (type === "status") {
+      const { prompt_id, status, error } = envelope as Record<string, unknown>;
+      if (typeof prompt_id !== "string" || typeof status !== "string") {
+        return null;
+      }
+      return {
+        type: "status",
+        promptId: prompt_id,
+        status: status as JobStatus,
+        error: typeof error === "string" ? error : undefined,
+      };
     }
     return null;
   } catch {

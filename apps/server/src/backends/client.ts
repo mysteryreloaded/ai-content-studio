@@ -13,6 +13,11 @@ export function systemStatsUrl(baseUrl: string): string {
   return `${baseUrl.replace(/\/+$/, "")}/system_stats`;
 }
 
+/** Joins `baseUrl`'s own path (if any) with `/object_info`, instead of `new URL` discarding it. */
+export function objectInfoUrl(baseUrl: string): string {
+  return `${baseUrl.replace(/\/+$/, "")}/object_info`;
+}
+
 function authHeaders(
   auth: BackendRecord["auth"],
   headerName: string | null,
@@ -63,6 +68,37 @@ export function backendTarget(
         vramTotal: device?.vram_total ?? 0,
         vramFree: device?.vram_free ?? 0,
       };
+    },
+  };
+}
+
+export interface ObjectInfoTarget {
+  fetchObjectInfo(): Promise<Record<string, unknown>>;
+}
+
+/** Like {@link backendTarget}, but for `/object_info` (issue #41): the node knowledge cache never keeps a {@link BackendRecord}, just this. */
+export function objectInfoTarget(
+  backend: BackendRecord,
+  repository: Pick<BackendRepository, "decryptedCredentials">,
+  timeoutMs: number = FETCH_TIMEOUT_MS,
+): ObjectInfoTarget {
+  return {
+    async fetchObjectInfo(): Promise<Record<string, unknown>> {
+      let creds: { user?: string; pass?: string; value?: string } | null = null;
+      try {
+        creds = await repository.decryptedCredentials(backend.id);
+      } catch (err) {
+        if (err instanceof DecryptionFailed) throw new CredentialsNeedReentry();
+        throw err;
+      }
+
+      const res = await fetch(objectInfoUrl(backend.baseUrl), {
+        headers: authHeaders(backend.auth, backend.headerName, creds),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!res.ok) throw new Error(`/object_info returned ${res.status}`);
+
+      return (await res.json()) as Record<string, unknown>;
     },
   };
 }

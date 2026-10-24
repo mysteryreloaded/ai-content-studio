@@ -105,7 +105,7 @@ export type UserActionResult =
 
 /**
  * Whether `email` is pinned: read live against `adminEmails` on every
- * check (ADR 0007), never from a stored flag, so removing an email from
+ * check (ADR 0008), never from a stored flag, so removing an email from
  * `ADMIN_EMAILS` unpins that Admin immediately, with no write and no
  * Audit entry of its own — only the Operator's configuration changed,
  * not anything about the user.
@@ -118,7 +118,7 @@ export function isPinned(
 }
 
 /**
- * ADR 0007: a target that's pinned, or is the acting Admin themselves,
+ * ADR 0008: a target that's pinned, or is the acting Admin themselves,
  * is refused 404 like a missing row, not 403 — so the row's existence
  * isn't leaked past what the Users page already shows, and the admin
  * panel can hide the same actions it would otherwise be refused.
@@ -198,7 +198,7 @@ export function approveUser(
 /**
  * Promotes a user to Admin (issue #62). Refused for a pinned Admin, the
  * acting Admin's own row, a user already an Admin, or a user still
- * pending (ADR 0007: approve before promote — two clicks, two Audit
+ * pending (ADR 0008: approve before promote — two clicks, two Audit
  * entries, never one).
  */
 export function promoteUser(

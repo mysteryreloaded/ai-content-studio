@@ -8,8 +8,11 @@ import { z } from "zod";
 import { adminActorFrom } from "../audit/actor.js";
 import { type RouteEntry, guardedRoute } from "../auth/access.js";
 import type { AppEnv } from "../auth/app-env.js";
+import type { BackendsService } from "../backends/service.js";
 import type { Database } from "../db/client.js";
 import { auditEntries } from "../db/schema.js";
+import { NotFound as BackendNotFound } from "../models/model-backends.js";
+import type { ModelBackendsRepository } from "../models/model-backends.js";
 import {
   NameTaken,
   NotFound,
@@ -22,6 +25,10 @@ import { ValidationFailed } from "../models/validation.js";
 const createSchema = z.object({
   name: z.string(),
   workflow: z.unknown(),
+});
+
+const attachBackendSchema = z.object({
+  backendId: z.string(),
 });
 
 const detailsSchema = z.object({
@@ -55,6 +62,8 @@ async function readJsonBody(
 export function adminModelsRoute(
   db: Database,
   repository: ModelRepository,
+  modelBackends: ModelBackendsRepository,
+  backendsService: BackendsService,
   routes: RouteEntry[],
 ): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
@@ -172,6 +181,104 @@ export function adminModelsRoute(
     routes,
     basePath,
     "get",
+    "/:id/backends",
+    "admin",
+    async (c) => {
+      const id = idParam(c);
+      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+
+      const detail = await repository.get(id);
+      if (!detail) return c.json({ error: "not found" }, 404);
+
+      const classTypes = [
+        ...new Set(detail.nodes.map((node) => node.classType)),
+      ];
+      const attached = await modelBackends.listForModel(id);
+
+      const backends = await Promise.all(
+        attached.map(async (backend) => {
+          const nodeTypes = await backendsService.nodeTypesFor(backend);
+          if (nodeTypes === null) {
+            return {
+              backend,
+              reachable: false,
+              missingNodeTypes: null,
+              note: "unreachable; can't check for missing node types",
+            };
+          }
+          return {
+            backend,
+            reachable: true,
+            missingNodeTypes: classTypes.filter((ct) => !nodeTypes.has(ct)),
+            note: null,
+          };
+        }),
+      );
+
+      return c.json({ backends });
+    },
+  );
+
+  guardedRoute(
+    app,
+    routes,
+    basePath,
+    "post",
+    "/:id/backends",
+    "admin",
+    async (c) => {
+      const id = idParam(c);
+      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+
+      const body = await readJsonBody(c);
+      if (body === null) return c.json({ error: "invalid JSON body" }, 400);
+
+      const parsed = attachBackendSchema.safeParse(body);
+      if (!parsed.success) return c.json({ error: "invalid input" }, 400);
+      if (!UUID_RE.test(parsed.data.backendId))
+        return c.json({ error: "not found" }, 404);
+
+      try {
+        await modelBackends.attach(
+          id,
+          parsed.data.backendId,
+          adminActorFrom(c),
+        );
+      } catch (err) {
+        return handleError(c, err);
+      }
+      return c.body(null, 204);
+    },
+  );
+
+  guardedRoute(
+    app,
+    routes,
+    basePath,
+    "delete",
+    "/:id/backends/:backendId",
+    "admin",
+    async (c) => {
+      const id = idParam(c);
+      const backendId = c.req.param("backendId");
+      if (!backendId) throw new Error("backendId param missing");
+      if (!UUID_RE.test(id) || !UUID_RE.test(backendId))
+        return c.json({ error: "not found" }, 404);
+
+      try {
+        await modelBackends.detach(id, backendId, adminActorFrom(c));
+      } catch (err) {
+        return handleError(c, err);
+      }
+      return c.body(null, 204);
+    },
+  );
+
+  guardedRoute(
+    app,
+    routes,
+    basePath,
+    "get",
     "/:id/history",
     "admin",
     async (c) => {
@@ -202,5 +309,7 @@ function handleError(c: Context<AppEnv>, err: unknown) {
   if (err instanceof SlugTaken) return c.json({ error: err.message }, 409);
   if (err instanceof StaleVersion) return c.json({ error: err.message }, 409);
   if (err instanceof NotFound) return c.json({ error: err.message }, 404);
+  if (err instanceof BackendNotFound)
+    return c.json({ error: err.message }, 404);
   throw err;
 }

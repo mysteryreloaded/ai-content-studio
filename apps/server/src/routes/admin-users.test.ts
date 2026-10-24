@@ -1,5 +1,5 @@
 // `/api/admin/users`: list/search/filter, pending-count, and
-// approve/promote/demote (issue #62, ADR 0007).
+// approve/promote/demote (issue #62, ADR 0008).
 
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { FakeClock } from "@ai-content-studio/shared";
@@ -244,7 +244,7 @@ describe("/api/admin/users", () => {
     expect(entries.map((e) => e.action).sort()).toEqual(["demote", "promote"]);
   });
 
-  test("promote refuses a user who's still pending (ADR 0007: approve before promote)", async () => {
+  test("promote refuses a user who's still pending (ADR 0008: approve before promote)", async () => {
     const { app } = await build();
     const admin = await makeUser({ email: "admin@example.com", role: "admin" });
     const pending = await makeUser({
@@ -263,7 +263,7 @@ describe("/api/admin/users", () => {
     const { app } = await build();
     const admin = await makeUser({ email: "admin@example.com", role: "admin" });
     // Pinned because this email is listed in TEST_ENV's ADMIN_EMAILS, not
-    // because of anything stored on the row (ADR 0007: read live).
+    // because of anything stored on the row (ADR 0008: read live).
     const pinned = await makeUser({
       email: "pinned-admin@example.com",
       role: "admin",

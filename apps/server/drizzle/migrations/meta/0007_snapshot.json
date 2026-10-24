@@ -1,5 +1,5 @@
 {
-  "id": "f93023bc-f1b4-4a5c-b9a5-c832ea3339d7",
+  "id": "c3beebb1-1008-4f85-8b27-b14f6becb0e7",
   "prevId": "ad3af365-a5ef-4de4-b52a-21db4914ac29",
   "version": "7",
   "dialect": "postgresql",
@@ -290,6 +290,62 @@
         }
       },
       "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.model_backends": {
+      "name": "model_backends",
+      "schema": "",
+      "columns": {
+        "model_id": {
+          "name": "model_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "backend_id": {
+          "name": "backend_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "model_backends_model_id_models_id_fk": {
+          "name": "model_backends_model_id_models_id_fk",
+          "tableFrom": "model_backends",
+          "tableTo": "models",
+          "columnsFrom": ["model_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "model_backends_backend_id_backends_id_fk": {
+          "name": "model_backends_backend_id_backends_id_fk",
+          "tableFrom": "model_backends",
+          "tableTo": "backends",
+          "columnsFrom": ["backend_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "model_backends_model_id_backend_id_pk": {
+          "name": "model_backends_model_id_backend_id_pk",
+          "columns": ["model_id", "backend_id"]
+        }
+      },
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
@@ -608,21 +664,6 @@
           "notNull": true,
           "default": "'teal'"
         },
-        "sign_up_mode": {
-          "name": "sign_up_mode",
-          "type": "sign_up_mode",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'approval'"
-        },
-        "contact": {
-          "name": "contact",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "''"
-        },
         "logo_key": {
           "name": "logo_key",
           "type": "text",
@@ -884,11 +925,6 @@
       "name": "model_state",
       "schema": "public",
       "values": ["enabled", "disabled"]
-    },
-    "public.sign_up_mode": {
-      "name": "sign_up_mode",
-      "schema": "public",
-      "values": ["open", "approval"]
     },
     "public.user_role": {
       "name": "user_role",

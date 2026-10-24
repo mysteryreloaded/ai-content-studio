@@ -146,6 +146,9 @@ describe("every route's access level is declared and enforced", () => {
       "POST /api/admin/users/:id/approve": 404,
       "POST /api/admin/users/:id/promote": 404,
       "POST /api/admin/users/:id/demote": 404,
+      "GET /api/admin/models/:id/backends": 404,
+      "POST /api/admin/models/:id/backends": 404,
+      "DELETE /api/admin/models/:id/backends/:backendId": 404,
     };
 
     // No Site terms are set in this test's database, so accepting them
@@ -310,7 +313,7 @@ describe("every route's access level is declared and enforced", () => {
     }
   });
 
-  test("ADR 0007: the terms gate comes before the pending check, for a pending user too", async () => {
+  test("ADR 0008: the terms gate comes before the pending check, for a pending user too", async () => {
     const { app, routes, db } = await build();
 
     await db

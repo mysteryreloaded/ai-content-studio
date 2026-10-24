@@ -17,6 +17,7 @@ import type { Database } from "./db/client.js";
 import type { Env } from "./env.js";
 import { logUnhandledError } from "./error-logging.js";
 import type { Logger } from "./logger.js";
+import { ModelBackendsRepository } from "./models/model-backends.js";
 import { ModelRepository } from "./models/repository.js";
 import { ProblemsMonitor } from "./problems/monitor.js";
 import { ProblemsRegistry } from "./problems/problems.js";
@@ -146,9 +147,19 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
   app.route("/api/admin/logs", adminLogsRoute(deps.db, deps.clock, routes));
   app.route("/api/terms", termsRoute(deps.db, deps.clock, routes));
   const modelRepository = new ModelRepository(deps.db, deps.clock);
+  const modelBackendsRepository = new ModelBackendsRepository(
+    deps.db,
+    deps.clock,
+  );
   app.route(
     "/api/admin/models",
-    adminModelsRoute(deps.db, modelRepository, routes),
+    adminModelsRoute(
+      deps.db,
+      modelRepository,
+      modelBackendsRepository,
+      backendsService,
+      routes,
+    ),
   );
   app.route("/api/admin/audit", adminAuditRoute(deps.db, routes));
   app.route(

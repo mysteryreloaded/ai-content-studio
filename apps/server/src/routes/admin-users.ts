@@ -1,5 +1,5 @@
 // `/api/admin/users`: the Users page's list, search and filters, a
-// user's own page, and approve/promote/demote (issue #62, ADR 0007).
+// user's own page, and approve/promote/demote (issue #62, ADR 0008).
 
 import type { Clock } from "@ai-content-studio/shared";
 import { and, desc, eq, ilike, lt, or, sql } from "drizzle-orm";
@@ -30,7 +30,7 @@ function isUuid(value: string | undefined): value is string {
 const ROLES = ["user", "admin"] as const;
 const STATUSES = ["pending", "active", "disabled"] as const;
 
-/** `pinned` is read live against `adminEmails`, never stored (ADR 0007). */
+/** `pinned` is read live against `adminEmails`, never stored (ADR 0008). */
 function userJson(
   user: typeof users.$inferSelect,
   adminEmails: readonly string[],

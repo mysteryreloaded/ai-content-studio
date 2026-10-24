@@ -14,8 +14,11 @@ import { BackendsService } from "./backends/service.js";
 import { injectBrandingIntoHtml } from "./branding/accent-html.js";
 import { getSiteSettings } from "./branding/site-settings-store.js";
 import type { Database } from "./db/client.js";
+import { Dispatcher } from "./dispatch/dispatcher.js";
+import { DispatchQueue } from "./dispatch/queue.js";
 import type { Env } from "./env.js";
 import { logUnhandledError } from "./error-logging.js";
+import { AssetsRepository } from "./generations/assets-repository.js";
 import { GenerationEvents } from "./generations/events.js";
 import { GenerationsRepository } from "./generations/repository.js";
 import type { Logger } from "./logger.js";
@@ -31,6 +34,7 @@ import { adminOverviewRoute } from "./routes/admin-overview.js";
 import { adminSiteSettingsRoute } from "./routes/admin-site-settings.js";
 import { adminUsersRoute } from "./routes/admin-users.js";
 import { adminRoute } from "./routes/admin.js";
+import { assetsRoute } from "./routes/assets.js";
 import { authRoute } from "./routes/auth.js";
 import { generationsRoute } from "./routes/generations.js";
 import { healthRoute } from "./routes/health.js";
@@ -61,6 +65,8 @@ export interface CreatedApp {
   backendsService: BackendsService;
   /** Problems detection (issue #70): call `start()` after boot, `stop()` on shutdown. */
   problemsMonitor: ProblemsMonitor;
+  /** Dispatches queued Generations to free Backends (issue #44): call `start()` after boot, `stop()` on shutdown. */
+  dispatcher: Dispatcher;
 }
 
 /** One Hono app answering the API and serving the built SPA from one origin. */
@@ -90,6 +96,11 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
 
   const storage = createLocalStorage(deps.env.DATA_DIR);
 
+  // The dispatcher is created after BackendsService (which needs a wake
+  // callback as soon as a Backend becomes reachable), so this ref is set
+  // once the dispatcher itself exists, just below.
+  let wakeDispatcher = () => {};
+
   const backendRepository = new BackendRepository(
     deps.db,
     deps.clock,
@@ -101,6 +112,7 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
     deps.clock,
     logWriter,
     deps.env.BACKENDS_ENABLED,
+    () => wakeDispatcher(),
   );
 
   const problemsRegistry = new ProblemsRegistry(() => deps.clock.now());
@@ -138,6 +150,22 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
   );
   const generationsRepository = new GenerationsRepository(deps.db);
   const generationEvents = new GenerationEvents();
+  const assetsRepository = new AssetsRepository(deps.db);
+  const dispatchQueue = new DispatchQueue(deps.db);
+  const dispatcher = new Dispatcher({
+    sql: deps.sql,
+    clock: deps.clock,
+    logWriter,
+    backendRepository,
+    backendsService,
+    modelBackendsRepository,
+    queue: dispatchQueue,
+    assetsRepository,
+    storage,
+    generationEvents,
+  });
+  wakeDispatcher = dispatcher.wake;
+
   app.route(
     "/api/models",
     modelsRoute(
@@ -150,6 +178,7 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
         generationsRepository,
         generationEvents,
         clock: deps.clock,
+        onGenerationQueued: dispatcher.wake,
       },
       routes,
     ),
@@ -163,6 +192,7 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
       routes,
     ),
   );
+  app.route("/api/assets", assetsRoute(assetsRepository, storage, routes));
   app.route("/api/admin", adminRoute(routes));
   app.route(
     "/api/admin/site-settings",
@@ -177,6 +207,7 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
       backendsService,
       generationsRepository,
       routes,
+      dispatcher.wake,
     ),
   );
   app.route("/api/admin/logs", adminLogsRoute(deps.db, deps.clock, routes));
@@ -248,5 +279,5 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
   app.use("*", serveStatic({ root: deps.webDistDir }));
   app.use("*", serveBrandedIndex);
 
-  return { app, routes, backendsService, problemsMonitor };
+  return { app, routes, backendsService, problemsMonitor, dispatcher };
 }

@@ -17,6 +17,24 @@ interface WorkbenchModel {
   modes: WorkbenchMode[];
 }
 
+type GenerationState =
+  | "queued"
+  | "starting"
+  | "running"
+  | "saving"
+  | "succeeded"
+  | "failed";
+
+const DONE_STATES = new Set<GenerationState>(["succeeded", "failed"]);
+
+interface AssetSummary {
+  id: string;
+  nodeId: string;
+  sortOrder: number;
+  kind: string;
+  contentType: string;
+}
+
 interface GenerationSummary {
   id: string;
   modelId: string;
@@ -25,8 +43,18 @@ interface GenerationSummary {
   modeId: string;
   modeName: string;
   submissionId: string;
-  state: "queued";
+  state: GenerationState;
+  error: string | null;
   submittedAt: string;
+  assets: AssetSummary[];
+}
+
+interface GenerationProgress {
+  generationId: string;
+  elapsedMs: number;
+  estimateMs: number | null;
+  step: number | null;
+  totalSteps: number | null;
 }
 
 interface SubmissionSummary {
@@ -37,25 +65,124 @@ interface SubmissionSummary {
   generations: GenerationSummary[];
 }
 
+/** Replaces or adds `generation` within its own Submission, creating that Submission if this is its first known Generation. */
+function upsertGeneration(
+  current: SubmissionSummary[],
+  generation: GenerationSummary,
+): SubmissionSummary[] {
+  const index = current.findIndex(
+    (s) => s.submissionId === generation.submissionId,
+  );
+  if (index === -1) {
+    const submission: SubmissionSummary = {
+      submissionId: generation.submissionId,
+      modeId: generation.modeId,
+      modeName: generation.modeName,
+      submittedAt: generation.submittedAt,
+      generations: [generation],
+    };
+    return [submission, ...current].slice(0, 8);
+  }
+
+  const submission = current[index] as SubmissionSummary;
+  const genIndex = submission.generations.findIndex(
+    (g) => g.id === generation.id,
+  );
+  const generations =
+    genIndex === -1
+      ? [...submission.generations, generation]
+      : submission.generations.map((g, i) => (i === genIndex ? generation : g));
+  const updated = [...current];
+  updated[index] = { ...submission, generations };
+  return updated;
+}
+
 type SubmitState =
   | { status: "idle" }
   | { status: "submitting" }
   | { status: "error"; message: string };
 
-function dedupeBySubmission(
-  submissions: SubmissionSummary[],
-): SubmissionSummary[] {
-  const seen = new Set<string>();
-  const result: SubmissionSummary[] = [];
-  for (const submission of submissions) {
-    if (seen.has(submission.submissionId)) continue;
-    seen.add(submission.submissionId);
-    result.push(submission);
+function stateLabel(state: GenerationState): string {
+  switch (state) {
+    case "queued":
+      return "Queued";
+    case "starting":
+      return "Starting…";
+    case "running":
+      return "Running…";
+    case "saving":
+      return "Saving…";
+    case "succeeded":
+      return "Done";
+    case "failed":
+      return "Failed";
+    default:
+      return state;
   }
-  return result.slice(0, 8);
 }
 
-/** A Model's Workbench at its slug (issue #43): pick the Mode, press Generate, watch it queue live. */
+/** Elapsed time against the median of its last 10 successes, capped at 99%, or indeterminate without history. */
+function ProgressLabel({
+  progress,
+}: { progress: GenerationProgress | undefined }) {
+  if (!progress) return null;
+  const parts: string[] = [];
+  if (progress.estimateMs !== null && progress.estimateMs > 0) {
+    const percent = Math.min(
+      99,
+      Math.round((progress.elapsedMs / progress.estimateMs) * 100),
+    );
+    parts.push(`${percent}%`);
+  }
+  if (progress.step !== null && progress.totalSteps !== null) {
+    parts.push(`step ${progress.step} / ${progress.totalSteps}`);
+  }
+  if (parts.length === 0) return null;
+  return <span className="workbench-progress">{parts.join(" · ")}</span>;
+}
+
+function assetSrc(asset: AssetSummary): string {
+  return `/api/assets/${asset.id}`;
+}
+
+/** Plays the main (first) Asset in place once the Generation has succeeded. */
+function AssetPlayer({ asset }: { asset: AssetSummary }) {
+  if (asset.kind === "video") {
+    // biome-ignore lint/a11y/useMediaCaption: a generated Asset has no captions to offer.
+    return <video controls src={assetSrc(asset)} className="workbench-asset" />;
+  }
+  if (asset.kind === "audio") {
+    // biome-ignore lint/a11y/useMediaCaption: a generated Asset has no captions to offer.
+    return <audio controls src={assetSrc(asset)} className="workbench-asset" />;
+  }
+  return <img src={assetSrc(asset)} alt="" className="workbench-asset" />;
+}
+
+function GenerationCard({
+  generation,
+  progress,
+}: {
+  generation: GenerationSummary;
+  progress: GenerationProgress | undefined;
+}) {
+  const mainAsset = generation.assets?.[0];
+  return (
+    <li>
+      <span>{stateLabel(generation.state)}</span>{" "}
+      {(generation.state === "starting" || generation.state === "running") && (
+        <ProgressLabel progress={progress} />
+      )}
+      {generation.state === "failed" && generation.error && (
+        <span role="alert">{generation.error}</span>
+      )}
+      {generation.state === "succeeded" && mainAsset && (
+        <AssetPlayer asset={mainAsset} />
+      )}
+    </li>
+  );
+}
+
+/** A Model's Workbench at its slug (issue #43, #44): pick the Mode, press Generate, watch it dispatch, run and play its Asset live. */
 export function WorkbenchPage() {
   const { slug = "" } = useParams();
   const { session } = useSession();
@@ -67,7 +194,15 @@ export function WorkbenchPage() {
   const [submitState, setSubmitState] = useState<SubmitState>({
     status: "idle",
   });
-  const [activeCount, setActiveCount] = useState(0);
+  const [activeStates, setActiveStates] = useState<
+    Map<string, GenerationState>
+  >(new Map());
+  const [progressById, setProgressById] = useState<
+    Map<string, GenerationProgress>
+  >(new Map());
+  const activeCount = [...activeStates.values()].filter(
+    (state) => !DONE_STATES.has(state),
+  ).length;
 
   const modelRef = useRef(model);
   modelRef.current = model;
@@ -127,35 +262,39 @@ export function WorkbenchPage() {
       const body = JSON.parse((event as MessageEvent).data) as {
         generations: GenerationSummary[];
       };
-      setActiveCount(body.generations.length);
+      setActiveStates(new Map(body.generations.map((g) => [g.id, g.state])));
       const forThisModel = body.generations.filter((g) => g.modelSlug === slug);
-      if (forThisModel.length > 0) {
-        setSubmissions((current) =>
-          dedupeBySubmission([...groupBySubmission(forThisModel), ...current]),
-        );
-      }
+      setSubmissions((current) => {
+        let next = current;
+        for (const generation of forThisModel) {
+          next = upsertGeneration(next, generation);
+        }
+        return next;
+      });
     });
 
     source.addEventListener("change", (event) => {
       const generation = JSON.parse(
         (event as MessageEvent).data,
       ) as GenerationSummary;
-      // Every "change" is a newly queued Generation for now (issue #43:
-      // nothing moves it on yet), so the active count only ever grows.
-      setActiveCount((count) => count + 1);
+      setActiveStates((current) => {
+        const next = new Map(current);
+        next.set(generation.id, generation.state);
+        return next;
+      });
       if (generation.modelSlug !== slug) return;
-      setSubmissions((current) =>
-        dedupeBySubmission([
-          {
-            submissionId: generation.submissionId,
-            modeId: generation.modeId,
-            modeName: generation.modeName,
-            submittedAt: generation.submittedAt,
-            generations: [generation],
-          },
-          ...current,
-        ]),
-      );
+      setSubmissions((current) => upsertGeneration(current, generation));
+    });
+
+    source.addEventListener("progress", (event) => {
+      const progress = JSON.parse(
+        (event as MessageEvent).data,
+      ) as GenerationProgress;
+      setProgressById((current) => {
+        const next = new Map(current);
+        next.set(progress.generationId, progress);
+        return next;
+      });
     });
 
     return () => source.close();
@@ -277,8 +416,16 @@ export function WorkbenchPage() {
                 <strong>{submission.modeName}</strong>{" "}
                 <time dateTime={submission.submittedAt}>
                   {new Date(submission.submittedAt).toLocaleString()}
-                </time>{" "}
-                <span>Queued</span>
+                </time>
+                <ul>
+                  {submission.generations.map((generation) => (
+                    <GenerationCard
+                      key={generation.id}
+                      generation={generation}
+                      progress={progressById.get(generation.id)}
+                    />
+                  ))}
+                </ul>
               </li>
             ))}
           </ul>
@@ -301,25 +448,15 @@ export function WorkbenchPage() {
   );
 }
 
-function groupBySubmission(
-  generations: GenerationSummary[],
-): SubmissionSummary[] {
-  const bySubmission = new Map<string, GenerationSummary[]>();
-  for (const generation of generations) {
-    const list = bySubmission.get(generation.submissionId) ?? [];
-    list.push(generation);
-    bySubmission.set(generation.submissionId, list);
-  }
-  return [...bySubmission.entries()].map(([submissionId, gens]) => ({
-    submissionId,
-    modeId: gens[0]?.modeId ?? "",
-    modeName: gens[0]?.modeName ?? "",
-    submittedAt: gens[0]?.submittedAt ?? "",
-    generations: gens,
-  }));
-}
-
 const WORKBENCH_STYLE = `
+.workbench-asset {
+  display: block;
+  max-width: 100%;
+  margin-top: 0.25rem;
+}
+.workbench-progress {
+  opacity: 0.8;
+}
 .workbench-layout {
   display: flex;
   gap: 2rem;

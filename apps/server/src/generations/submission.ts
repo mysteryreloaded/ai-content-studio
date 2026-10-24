@@ -56,6 +56,8 @@ export interface SubmissionDeps {
   generationsRepository: GenerationsRepository;
   generationEvents: GenerationEvents;
   clock: Clock;
+  /** Wakes the dispatcher (issue #44): a fresh queued Generation may be dispatchable right away. */
+  onGenerationQueued?: () => void;
 }
 
 /** Whether at least one attached, reachable Backend has every node type a Mode's Path needs. */
@@ -129,6 +131,7 @@ export async function submitGeneration(
       modelName: detail.model.name,
     },
   });
+  deps.onGenerationQueued?.();
 
   return record;
 }

@@ -1,0 +1,177 @@
+// Talks to a Backend's ComfyUI-compatible HTTP API (issue #44): submits
+// with a studio-chosen prompt id, reads a job's status from `/api/jobs/
+// :id`, and streams a saved file from `/view`. The fake ComfyUI
+// (apps/fake-comfyui) implements the same three endpoints, scripted.
+
+import type { Workflow } from "@ai-content-studio/shared";
+import type { ComfyUiTarget } from "../backends/client.js";
+
+const FETCH_TIMEOUT_MS = 15_000;
+
+function join(baseUrl: string, pathAndQuery: string): string {
+  return `${baseUrl.replace(/\/+$/, "")}${pathAndQuery}`;
+}
+
+export class PromptRejected extends Error {
+  constructor(
+    message: string,
+    public readonly nodeErrors: Record<string, unknown> | null,
+  ) {
+    super(message);
+  }
+}
+
+/** Submits `prompt` under `promptId`, the studio's own id (not ComfyUI-generated), so the run can be tracked without a round trip. */
+export async function submitPrompt(
+  target: ComfyUiTarget,
+  promptId: string,
+  prompt: Workflow,
+): Promise<void> {
+  const res = await fetch(join(target.baseUrl, "/prompt"), {
+    method: "POST",
+    headers: { "content-type": "application/json", ...target.headers },
+    body: JSON.stringify({ prompt, prompt_id: promptId, client_id: promptId }),
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new PromptRejected(
+      `/prompt returned ${res.status}`,
+      (body as { node_errors?: Record<string, unknown> } | null)?.node_errors ??
+        null,
+    );
+  }
+}
+
+export type JobStatus = "running" | "completed" | "failed";
+
+export interface JobFile {
+  filename: string;
+  subfolder: string;
+  /** ComfyUI's own folder kind for this file: only `"output"` files are kept (issue #44's AC). */
+  type: string;
+}
+
+export interface JobOutput {
+  files: JobFile[];
+}
+
+export interface Job {
+  id: string;
+  status: JobStatus;
+  step: number | null;
+  totalSteps: number | null;
+  outputs: Record<string, JobOutput> | null;
+  error: string | null;
+}
+
+/** Reads a job's current status. `null` when the Backend doesn't know this id (e.g. it restarted). */
+export async function readJob(
+  target: ComfyUiTarget,
+  promptId: string,
+): Promise<Job | null> {
+  const res = await fetch(join(target.baseUrl, `/api/jobs/${promptId}`), {
+    headers: target.headers,
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`/api/jobs/${promptId} returned ${res.status}`);
+  return (await res.json()) as Job;
+}
+
+/** Fetches one output file's bytes from `/view`, as a streamable `Response` (issue #44: saved straight to a temp file). */
+export async function fetchView(
+  target: ComfyUiTarget,
+  file: JobFile,
+): Promise<Response> {
+  const query = new URLSearchParams({
+    filename: file.filename,
+    subfolder: file.subfolder,
+    type: file.type,
+  });
+  const res = await fetch(join(target.baseUrl, `/view?${query}`), {
+    headers: target.headers,
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
+  if (!res.ok) throw new Error(`/view returned ${res.status}`);
+  return res;
+}
+
+function wsUrlFor(baseUrl: string, clientId: string): string {
+  const url = new URL(join(baseUrl, "/ws"));
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.searchParams.set("clientId", clientId);
+  return url.toString();
+}
+
+export type JobEvent =
+  | { type: "progress"; promptId: string; step: number; totalSteps: number }
+  | { type: "status"; promptId: string; status: JobStatus; error?: string };
+
+/**
+ * One WebSocket connection per Backend, reconnecting on close. Used only
+ * to wake a poll early (issue #44's AC: "follows `/ws`"); `/api/jobs/:id`
+ * stays the source of truth, so a dropped/never-connected socket never
+ * stalls a run, just makes it feel a little less live.
+ */
+export class ComfyUiSocket {
+  private ws: WebSocket | null = null;
+  private closed = false;
+  private readonly listeners = new Set<(event: JobEvent) => void>();
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+  constructor(
+    private readonly target: ComfyUiTarget,
+    private readonly clientId: string,
+  ) {
+    this.connect();
+  }
+
+  onMessage(listener: (event: JobEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  private connect(): void {
+    if (this.closed) return;
+    try {
+      const ws = new WebSocket(wsUrlFor(this.target.baseUrl, this.clientId));
+      this.ws = ws;
+      ws.addEventListener("message", (event) => {
+        const parsed = parseJobEvent(event.data);
+        if (parsed) for (const listener of this.listeners) listener(parsed);
+      });
+      ws.addEventListener("close", () => this.scheduleReconnect());
+      ws.addEventListener("error", () => this.scheduleReconnect());
+    } catch {
+      this.scheduleReconnect();
+    }
+  }
+
+  private scheduleReconnect(): void {
+    if (this.closed || this.reconnectTimer) return;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect();
+    }, 2_000);
+  }
+
+  close(): void {
+    this.closed = true;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.ws?.close();
+  }
+}
+
+function parseJobEvent(data: unknown): JobEvent | null {
+  if (typeof data !== "string") return null;
+  try {
+    const parsed = JSON.parse(data);
+    if (parsed && typeof parsed === "object" && "type" in parsed) {
+      return parsed as JobEvent;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}

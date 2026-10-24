@@ -16,7 +16,7 @@ createRoot(root).render(
         <Route path="/" element={<LandingPage />} />
         <Route path="/models" element={<ModelsHome />} />
         <Route path="/account" element={<AccountPage />} />
-        <Route path="/admin" element={<AdminShell />} />
+        <Route path="/admin/*" element={<AdminShell />} />
       </Routes>
     </BrowserRouter>
   </StrictMode>,

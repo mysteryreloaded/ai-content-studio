@@ -163,6 +163,7 @@ export class BackendMonitor {
       this.unreachableSince.delete(target.id);
       await this.logger.log({
         level: "info",
+        source: "backend",
         message: `Backend "${target.name}" is reachable again`,
         details: downtimeMs !== null ? `downtime_ms=${downtimeMs}` : undefined,
         backendId: target.id,
@@ -195,6 +196,7 @@ export class BackendMonitor {
     if (credentialsError && !current.credentialsError) {
       await this.logger.log({
         level: "error",
+        source: "backend",
         message: `Backend "${target.name}": re-enter credentials`,
         details: err instanceof Error ? err.message : String(err),
         backendId: target.id,
@@ -205,6 +207,7 @@ export class BackendMonitor {
       this.unreachableSince.set(target.id, this.clock.now());
       await this.logger.log({
         level: "warning",
+        source: "backend",
         message: `Backend "${target.name}" became unreachable`,
         details: err instanceof Error ? err.message : String(err),
         backendId: target.id,

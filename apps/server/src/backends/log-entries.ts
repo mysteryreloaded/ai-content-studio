@@ -7,12 +7,17 @@ import { logEntries } from "../db/schema.js";
 import type { Logger } from "../logger.js";
 
 export type LogEntryLevel = "error" | "warning" | "info";
+export type LogEntrySource = "backend" | "app";
 
 export interface LogEntryInput {
   level: LogEntryLevel;
+  source: LogEntrySource;
   message: string;
   details?: string;
   backendId?: string;
+  userId?: string;
+  modelId?: string;
+  generationId?: string;
 }
 
 const MAX_DETAILS_LENGTH = 4000;
@@ -44,9 +49,13 @@ export function createLogEntryWriter(
 
       await db.insert(logEntries).values({
         level: entry.level,
+        source: entry.source,
         message: entry.message,
         details: details ?? null,
         backendId: entry.backendId ?? null,
+        userId: entry.userId ?? null,
+        modelId: entry.modelId ?? null,
+        generationId: entry.generationId ?? null,
         createdAt,
       });
     },

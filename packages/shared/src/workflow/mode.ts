@@ -2,7 +2,7 @@
 // per-Input settings (issue #48): hidden, optional, required or fixed,
 // with an optional Mode-specific label.
 
-import { fieldKey } from "./input.js";
+import { applyInputValues, fieldKey } from "./input.js";
 import type { ComfyFieldSpec, InputDefinition } from "./input.js";
 import { computePath } from "./path.js";
 import type { NodeFieldValue, Workflow } from "./types.js";
@@ -110,10 +110,35 @@ export function resolveModeOutputNodes(
 }
 
 /**
+ * Writes a Mode's fixed Input values into its Workflow (issue #48 CEO
+ * review round): ADR 0001 follows a `ComfySwitchNode` branch whose value
+ * is "known before sending", and a fixed value is known exactly that way
+ * — the same as a value `buildPrompt` later writes for a real Generation.
+ * Callers computing a Mode's Path or relevant Inputs (`computeModePath`,
+ * `relevantInputs`) must run this first, or a switch fixed to the side
+ * opposite the Workflow's own literal computes the wrong Path: showing
+ * the other side's Inputs, never writing its own, and checking the wrong
+ * side's node types for Backend enablement.
+ */
+export function applyModeFixedValues(
+  workflow: Workflow,
+  inputs: readonly InputDefinition[],
+  settings: readonly ModeInputSetting[],
+): Workflow {
+  const { fixedValues } = resolveModeInputs(inputs, settings);
+  return applyInputValues(
+    workflow,
+    inputs,
+    fixedValues as Record<string, string | number | undefined>,
+  );
+}
+
+/**
  * A Mode's Path (ADR 0001): its output nodes plus everything upstream.
  * `unresolvableFields` (issue #48) keeps both sides of a switch steered
  * by a field in that set, rather than pruning one on a value a visible
- * Input could still change.
+ * Input could still change. Pass a Workflow already run through
+ * {@link applyModeFixedValues} so a fixed value picks its switch's side.
  */
 export function computeModePath(
   workflow: Workflow,

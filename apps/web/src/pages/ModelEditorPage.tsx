@@ -1,6 +1,7 @@
 import {
   MODEL_ATTRIBUTION_MAX_LENGTH,
   MODEL_TERMS_MAX_LENGTH,
+  applyModeFixedValues,
   computeModePath,
   fieldKey,
   isValidModelLicenseUrl,
@@ -118,6 +119,20 @@ function visibleBoundFieldsFor(
   inputs: InputDefinition[],
 ): Set<string> {
   return visibleModeBoundFields(mode.inputSettings, inputs);
+}
+
+/**
+ * This Mode's Workflow, with its fixed Input values written in (issue
+ * #48 CEO review): a fixed value is known before sending (ADR 0001), so
+ * every Path computed for display must pick its switch's side the same
+ * way the real prompt would.
+ */
+function workflowForMode(
+  mode: DraftMode,
+  inputs: InputDefinition[],
+  workflow: Workflow,
+): Workflow {
+  return applyModeFixedValues(workflow, inputs, mode.inputSettings);
 }
 
 /** Node ids this Input's bindings touch, to decide which Modes its Path makes "eligible" (issue #48). */
@@ -622,7 +637,7 @@ export function ModelEditorPage() {
         if (i === sourceIndex) return mode;
         if (mode.outputNodeIds.length === 0) return mode;
         const path = computeModePath(
-          detail.workflow,
+          workflowForMode(mode, detail.inputs ?? [], detail.workflow),
           mode.outputNodeIds,
           visibleBoundFieldsFor(mode, detail.inputs ?? []),
         );
@@ -869,7 +884,7 @@ export function ModelEditorPage() {
   const editingPath =
     detail && editingMode && editingMode.outputNodeIds.length > 0
       ? computeModePath(
-          detail.workflow,
+          workflowForMode(editingMode, detail.inputs ?? [], detail.workflow),
           editingMode.outputNodeIds,
           visibleBoundFieldsFor(editingMode, detail.inputs ?? []),
         )
@@ -1966,14 +1981,11 @@ function ModeSheetFacts({
 
   const inputs = detail.inputs ?? [];
   const unresolvable = visibleModeBoundFields(mode.inputSettings ?? [], inputs);
-  const path = computeModePath(
-    detail.workflow,
-    mode.outputNodeIds,
-    unresolvable,
-  );
+  const workflow = workflowForMode(mode, inputs, detail.workflow);
+  const path = computeModePath(workflow, mode.outputNodeIds, unresolvable);
   const relevant = relevantInputs(
     inputs,
-    detail.workflow,
+    workflow,
     mode.outputNodeIds,
     unresolvable,
   );
@@ -2059,7 +2071,7 @@ function ModeInputGrid({
                   mode.outputNodeIds.length > 0 &&
                   [...boundNodeIds(input)].some((id) =>
                     computeModePath(
-                      workflow,
+                      workflowForMode(mode, inputs, workflow),
                       mode.outputNodeIds,
                       visibleBoundFieldsFor(mode, inputs),
                     ).nodeIds.has(id),

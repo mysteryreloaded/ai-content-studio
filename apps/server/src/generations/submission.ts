@@ -6,6 +6,7 @@ import {
   type ImageUploadInputDefinition,
   type InputDefinition,
   type InputIssue,
+  applyModeFixedValues,
   buildPrompt,
   computeModePath,
   findBlockedWord,
@@ -21,7 +22,7 @@ import {
   validateSeedRange,
   visibleModeBoundFields,
 } from "@ai-content-studio/shared";
-import type { Clock } from "@ai-content-studio/shared";
+import type { Clock, Workflow } from "@ai-content-studio/shared";
 import type { z } from "zod";
 import type { LogEntryWriter } from "../backends/log-entries.js";
 import type { BackendsService } from "../backends/service.js";
@@ -199,17 +200,18 @@ async function resolveUploadValues(
 /** Whether at least one attached, reachable Backend has every node type a Mode's Path needs. */
 async function hasUsableBackend(
   detail: ModelDetail,
+  workflowForMode: Workflow,
   modeOutputNodeIds: readonly string[],
   unresolvableFields: ReadonlySet<string>,
   deps: SubmissionDeps,
 ): Promise<boolean> {
   const path = computeModePath(
-    detail.workflow,
+    workflowForMode,
     modeOutputNodeIds,
     unresolvableFields,
   );
   const pathClassTypes = [...path.nodeIds]
-    .map((nodeId) => detail.workflow[nodeId]?.class_type)
+    .map((nodeId) => workflowForMode[nodeId]?.class_type)
     .filter((classType): classType is string => Boolean(classType));
 
   const attached = await deps.modelBackendsRepository.listForModel(
@@ -266,8 +268,17 @@ export async function submitGeneration(
     mode.inputSettings,
     detail.inputs,
   );
+  // issue #48 CEO review: a fixed Input's value is known before sending
+  // (ADR 0001), so it must pick its switch's side here too, the same
+  // way buildPrompt's own applyInputValues does for the real prompt.
+  const workflowForMode = applyModeFixedValues(
+    detail.workflow,
+    detail.inputs,
+    mode.inputSettings,
+  );
   const usable = await hasUsableBackend(
     detail,
+    workflowForMode,
     outputNodeIds,
     unresolvable,
     deps,
@@ -276,7 +287,7 @@ export async function submitGeneration(
 
   const relevant = relevantInputs(
     detail.inputs,
-    detail.workflow,
+    workflowForMode,
     outputNodeIds,
     unresolvable,
   );

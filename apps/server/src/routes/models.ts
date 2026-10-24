@@ -1,5 +1,6 @@
 import type { InputDefinition, Workflow } from "@ai-content-studio/shared";
 import {
+  applyModeFixedValues,
   isNodeLink,
   modeMenuGroup,
   relevantInputs,
@@ -141,9 +142,16 @@ function toWorkbenchDetail(
         mode.inputSettings,
         detail.inputs,
       );
+      // issue #48 CEO review: a fixed Input's value is known before
+      // sending (ADR 0001), so it must pick its switch's side here too.
+      const workflowForMode = applyModeFixedValues(
+        detail.workflow,
+        detail.inputs,
+        mode.inputSettings,
+      );
       const relevant = relevantInputs(
         detail.inputs,
-        detail.workflow,
+        workflowForMode,
         mode.outputNodes.map((node) => node.nodeId),
         unresolvable,
       );

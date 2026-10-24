@@ -369,6 +369,113 @@ describe("checkEnableReadiness", () => {
     expect(result.reasons.some((r) => r.includes('Mode "Default"'))).toBe(true);
   });
 
+  test("a fixed value opposite the Workflow's own literal picks its own switch branch (issue #48 CEO review)", async () => {
+    const switchWorkflow: Workflow = {
+      prim: { class_type: "PrimitiveBoolean", inputs: { value: false } },
+      switch: {
+        class_type: "ComfySwitchNode",
+        inputs: { switch: ["prim", 0], on_true: ["a", 0], on_false: ["b", 0] },
+      },
+      a: { class_type: "LoadImage", inputs: {} },
+      b: { class_type: "LoadVideo", inputs: {} },
+      out: { class_type: "SaveImage", inputs: { image: ["switch", 0] } },
+    };
+    const flagInput: InputDefinition = {
+      id: "flag-1",
+      kind: "select",
+      group: "settings",
+      label: "Flag",
+      help: "",
+      default: null,
+      options: [
+        { id: "off", label: "Off", values: [false] },
+        { id: "on", label: "On", values: [true] },
+      ],
+      bindings: [
+        {
+          nodeId: "prim",
+          field: "value",
+          classType: "PrimitiveBoolean",
+          title: null,
+        },
+      ],
+    };
+    // The Workflow's own literal picks "off" (LoadVideo), but this Mode
+    // fixes the Input to the opposite side, "on" (LoadImage).
+    function switchDetail(): ModelDetail {
+      return {
+        model: detail([], []).model,
+        revisionId: "revision-1",
+        workflowHash: "hash",
+        workflow: switchWorkflow,
+        nodes: [],
+        outsideServiceNotes: [],
+        modes: [
+          {
+            id: "mode-1",
+            sortOrder: 0,
+            name: "Default",
+            description: "",
+            inputSettings: [
+              {
+                inputId: "flag-1",
+                state: "fixed",
+                fixedValue: "on",
+                label: "",
+              },
+            ],
+            outputNodes: [
+              {
+                nodeId: "out",
+                classType: "SaveImage",
+                title: null,
+                kind: "image",
+              },
+            ],
+          },
+        ],
+        inputs: [flagInput],
+      };
+    }
+
+    // A Backend covering only the Workflow's own literal side (LoadVideo)
+    // fails: the fixed value picked the other side (LoadImage), which
+    // this Backend can't run.
+    const onlyLiteralSide = await checkEnableReadiness(
+      switchDetail(),
+      [backend("b1")],
+      serviceWithNodeTypes({
+        b1: new Set([
+          "PrimitiveBoolean",
+          "ComfySwitchNode",
+          "LoadVideo",
+          "SaveImage",
+        ]),
+      }),
+    );
+    expect(onlyLiteralSide.ok).toBe(false);
+    expect(
+      onlyLiteralSide.reasons.some((r) => r.includes('Mode "Default"')),
+    ).toBe(true);
+
+    // A Backend covering the fixed side (LoadImage) passes, even though
+    // it's missing the Workflow's own literal side (LoadVideo): the
+    // fixed value is known before sending, so only its side is on the Path.
+    const onlyFixedSide = await checkEnableReadiness(
+      switchDetail(),
+      [backend("b1")],
+      serviceWithNodeTypes({
+        b1: new Set([
+          "PrimitiveBoolean",
+          "ComfySwitchNode",
+          "LoadImage",
+          "SaveImage",
+        ]),
+      }),
+    );
+    expect(onlyFixedSide).toEqual({ ok: true, reasons: [] });
+  });
+
   test("passes with a Seed Input that has a max set", async () => {
     const seedInput: InputDefinition = {
       id: "seed-1",

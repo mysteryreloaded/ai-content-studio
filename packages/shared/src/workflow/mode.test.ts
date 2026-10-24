@@ -4,7 +4,9 @@ import type {
   SelectInputDefinition,
   TextInputDefinition,
 } from "./input.js";
+import { relevantInputs } from "./input.js";
 import {
+  applyModeFixedValues,
   computeModePath,
   inferOutputNodeKind,
   isPreviewNodeClass,
@@ -368,6 +370,89 @@ describe("Mode × Input settings (issue #48)", () => {
       const path = computeModePath(workflow, ["out"], new Set(["prim::value"]));
       expect(path.nodeIds.has("a")).toBe(true);
       expect(path.nodeIds.has("b")).toBe(true);
+    });
+  });
+
+  describe("applyModeFixedValues (issue #48 CEO review)", () => {
+    const switchWorkflow: Workflow = {
+      prim: { class_type: "PrimitiveBoolean", inputs: { value: false } },
+      switch: {
+        class_type: "ComfySwitchNode",
+        inputs: {
+          switch: ["prim", 0],
+          on_true: ["ltx", 0],
+          on_false: ["custom", 0],
+        },
+      },
+      ltx: { class_type: "LTXNode", inputs: { text: "" } },
+      custom: { class_type: "CustomNode", inputs: { text: "" } },
+      out: { class_type: "SaveImage", inputs: { image: ["switch", 0] } },
+    };
+    const engineInput: SelectInputDefinition = {
+      id: "engine",
+      kind: "select",
+      group: "settings",
+      label: "Engine",
+      help: "",
+      default: null,
+      options: [
+        { id: "custom", label: "Custom", values: [false] },
+        { id: "ltx", label: "LTX", values: [true] },
+      ],
+      bindings: [
+        { nodeId: "prim", field: "value", classType: "X", title: null },
+      ],
+    };
+    const ltxOnlyInput: TextInputDefinition = {
+      ...textInput,
+      id: "ltx-prompt",
+      label: "LTX prompt",
+      bindings: [{ nodeId: "ltx", field: "text", classType: "X", title: null }],
+    };
+    const customOnlyInput: TextInputDefinition = {
+      ...textInput,
+      id: "custom-prompt",
+      label: "Custom prompt",
+      bindings: [
+        { nodeId: "custom", field: "text", classType: "X", title: null },
+      ],
+    };
+    const allInputs = [engineInput, ltxOnlyInput, customOnlyInput];
+    const fixedToLtx: ModeInputSetting[] = [
+      { inputId: "engine", state: "fixed", fixedValue: "ltx", label: "" },
+    ];
+
+    test("writes a fixed select's value into the switch's steering field", () => {
+      const applied = applyModeFixedValues(
+        switchWorkflow,
+        allInputs,
+        fixedToLtx,
+      );
+      expect(applied.prim?.inputs.value).toBe(true);
+    });
+
+    test("computeModePath follows the fixed side, not the Workflow's own literal", () => {
+      const applied = applyModeFixedValues(
+        switchWorkflow,
+        allInputs,
+        fixedToLtx,
+      );
+      const path = computeModePath(applied, ["out"]);
+      expect(path.nodeIds.has("ltx")).toBe(true);
+      expect(path.nodeIds.has("custom")).toBe(false);
+    });
+
+    test("relevantInputs shows only the fixed side's Input", () => {
+      const applied = applyModeFixedValues(
+        switchWorkflow,
+        allInputs,
+        fixedToLtx,
+      );
+      const relevant = relevantInputs(allInputs, applied, ["out"]).map(
+        (input) => input.id,
+      );
+      expect(relevant).toContain("ltx-prompt");
+      expect(relevant).not.toContain("custom-prompt");
     });
   });
 

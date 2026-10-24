@@ -5,6 +5,7 @@ import {
   jsonb,
   pgEnum,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -270,6 +271,27 @@ export const modelRevisions = pgTable(
       table.revisionNumber,
     ),
   ],
+);
+
+/**
+ * Which Backends are attached to a Model (issue #41), many-to-many. No
+ * node knowledge lives here: `/object_info` is fetched live and cached
+ * only in memory (backends/node-knowledge.ts), never stored.
+ */
+export const modelBackends = pgTable(
+  "model_backends",
+  {
+    modelId: uuid("model_id")
+      .notNull()
+      .references(() => models.id, { onDelete: "cascade" }),
+    backendId: uuid("backend_id")
+      .notNull()
+      .references(() => backends.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.modelId, table.backendId] })],
 );
 
 /**

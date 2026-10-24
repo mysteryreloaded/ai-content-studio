@@ -251,6 +251,7 @@ describe("resolveGenerationSettings", () => {
             height: 1080,
             thumbnailKey: "thumb/upload-1.jpg",
             trimmedFromName: "original.mp4",
+            removed: false,
           },
         },
       ],

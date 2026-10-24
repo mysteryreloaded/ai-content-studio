@@ -1,7 +1,17 @@
 // Upload persistence (issue #50): one row per file a user sends in
 // chunks, from create through complete (or a refusal at complete).
 
-import { and, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import type { Clock } from "@ai-content-studio/shared";
+import {
+  and,
+  desc,
+  eq,
+  inArray,
+  isNull,
+  notInArray,
+  sql,
+} from "drizzle-orm";
+import { type AuditActor, recordAuditEntry } from "../audit/audit.js";
 import type { Database } from "../db/client.js";
 import { generations, uploads } from "../db/schema.js";
 import type {
@@ -41,6 +51,9 @@ export interface UploadRecord {
   trimStartMs: number | null;
   trimEndMs: number | null;
   error: string | null;
+  /** Issue #68: set once an Admin removed this Upload for breaking the rules — its file is gone. */
+  removedAt: Date | null;
+  removedReason: string | null;
   createdAt: Date;
   completedAt: Date | null;
   lastUsedAt: Date | null;
@@ -214,6 +227,46 @@ export class UploadsRepository {
         storageKey: uploads.storageKey,
         thumbnailKey: uploads.thumbnailKey,
       });
+  }
+
+  /** This user's own Uploads (issue #68's AC: a user's page links to their Uploads, read-only), newest first. */
+  async listForUser(userId: string): Promise<UploadRecord[]> {
+    const rows = await this.db
+      .select()
+      .from(uploads)
+      .where(eq(uploads.userId, userId))
+      .orderBy(desc(uploads.createdAt));
+    return rows.map(toRecord);
+  }
+
+  /**
+   * Marks this Upload removed (issue #68's AC): the caller
+   * (uploads/removal.ts) deletes its file first, this just records the
+   * Removal and its Audit entry (ADR 0005), which holds only the Upload
+   * id, owner and reason.
+   */
+  async markRemoved(
+    id: string,
+    userId: string,
+    reason: string,
+    actor: AuditActor,
+    clock: Clock,
+    now: Date,
+  ): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      await tx
+        .update(uploads)
+        .set({ removedAt: now, removedReason: reason })
+        .where(eq(uploads.id, id));
+      await recordAuditEntry(tx, clock, {
+        actor,
+        targetType: "upload",
+        targetId: id,
+        action: "remove",
+        before: null,
+        after: { ownerId: userId, reason },
+      });
+    });
   }
 
   /** Inserts a trimmed Upload (issue #51), already `complete`. */

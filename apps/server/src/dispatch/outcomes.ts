@@ -74,6 +74,7 @@ function toSummary(
     startedAt: null,
     endedAt: null,
     deletedAt: null,
+    removedAt: null,
     modelSlug: detail.modelSlug,
     modelName: detail.modelName,
     isTest: detail.isTest,

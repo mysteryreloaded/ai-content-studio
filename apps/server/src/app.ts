@@ -40,10 +40,12 @@ import { RetentionScheduler } from "./retention/scheduler.js";
 import { accountRoute } from "./routes/account.js";
 import { adminAuditRoute } from "./routes/admin-audit.js";
 import { adminBackendsRoute } from "./routes/admin-backends.js";
+import { adminGenerationsRoute } from "./routes/admin-generations.js";
 import { adminLogsRoute } from "./routes/admin-logs.js";
 import { adminModelsRoute } from "./routes/admin-models.js";
 import { adminOverviewRoute } from "./routes/admin-overview.js";
 import { adminSiteSettingsRoute } from "./routes/admin-site-settings.js";
+import { adminUploadsRoute } from "./routes/admin-uploads.js";
 import { adminUsersRoute } from "./routes/admin-users.js";
 import { adminRoute } from "./routes/admin.js";
 import { assetsRoute } from "./routes/assets.js";
@@ -370,6 +372,37 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
     ),
   );
   app.route("/api/admin/audit", adminAuditRoute(deps.db, routes));
+  app.route(
+    "/api/admin/generations",
+    adminGenerationsRoute(
+      deps.db,
+      generationsRepository,
+      {
+        queue: dispatchQueue,
+        generationsRepository,
+        generationEvents,
+        storage,
+        wakeDispatcher: dispatcher.wake,
+        clock: deps.clock,
+      },
+      routes,
+    ),
+  );
+  app.route(
+    "/api/admin/uploads",
+    adminUploadsRoute(
+      uploadsRepository,
+      {
+        uploadsRepository,
+        generationsRepository,
+        queue: dispatchQueue,
+        generationEvents,
+        storage,
+        clock: deps.clock,
+      },
+      routes,
+    ),
+  );
   app.route(
     "/api/admin/users",
     adminUsersRoute(deps.db, deps.clock, deps.env.ADMIN_EMAILS, routes),

@@ -233,7 +233,7 @@ export function uploadsRoute(
     },
   );
 
-  /** A complete Upload the caller owns, or any one for an Admin; null (404) otherwise. */
+  /** A complete Upload the caller owns, or any one for an Admin; null (404) otherwise. A removed Upload 404s for anyone but an Admin (issue #68's AC). */
   async function viewable(c: Context<AppEnv>) {
     const session = c.get("session");
     const id = idParam(c);
@@ -242,7 +242,8 @@ export function uploadsRoute(
     if (
       !upload ||
       upload.status !== "complete" ||
-      (upload.userId !== session.user.id && session.user.role !== "admin")
+      (upload.userId !== session.user.id && session.user.role !== "admin") ||
+      (upload.removedAt !== null && session.user.role !== "admin")
     ) {
       return null;
     }

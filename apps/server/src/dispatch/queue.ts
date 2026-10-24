@@ -521,6 +521,21 @@ export class DispatchQueue {
     return row?.state ?? null;
   }
 
+  /**
+   * Whether an Admin removed this Generation (issue #68's AC): checked
+   * after a save lands, since `markCancelling` only matches
+   * `starting`/`running` and so never stops a `saving` run that an
+   * Admin removed mid-save — the runner deletes what it just saved
+   * instead of leaving it live for the owner to download.
+   */
+  async isRemoved(generationId: string): Promise<boolean> {
+    const [row] = await this.db
+      .select({ removedAt: generations.removedAt })
+      .from(generations)
+      .where(eq(generations.id, generationId));
+    return row?.removedAt != null;
+  }
+
   /** Every Generation still waiting for its Backend to be re-told about a cancel it missed (issue #54), grouped with the Backend it needs resending to. */
   async pendingBackendCancels(): Promise<
     { generationId: string; backendId: string }[]

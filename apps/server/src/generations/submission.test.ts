@@ -7,12 +7,13 @@
 
 import { afterAll, describe, expect, test } from "bun:test";
 import type {
+  ImageUploadInputDefinition,
   InputDefinition,
   NumberInputDefinition,
   PointsInputDefinition,
   VideoUploadInputDefinition,
 } from "@ai-content-studio/shared";
-import { uploadFileName } from "@ai-content-studio/shared";
+import { systemClock, uploadFileName } from "@ai-content-studio/shared";
 import { users } from "../db/schema.js";
 import { createTestDatabase } from "../test/database.js";
 import { UploadsRepository } from "../uploads/repository.js";
@@ -154,6 +155,66 @@ describe("resolveUploadValues: trimmed video/audio Uploads (issue #51)", () => {
 
     await expect(
       resolveUploadValues([input], { [input.id]: original.id }, userId, deps),
+    ).rejects.toBeInstanceOf(InvalidUploads);
+  });
+
+  // CEO review round 1, point 4: `submission.ts` used to accept a
+  // removed Upload (its file deleted, `status` left "complete") and
+  // resubmit it, instead of refusing it the same way a missing Upload
+  // is refused.
+  test("a removed Upload is refused, not resubmitted (issue #68's AC)", async () => {
+    const { repository, userId, deps } = await setup();
+    const input: ImageUploadInputDefinition = {
+      id: crypto.randomUUID(),
+      kind: "image_upload",
+      group: "describe",
+      label: "Image",
+      help: "",
+      maxSizeMb: 50,
+      maxLongSide: null,
+      bindings: [],
+    };
+
+    const upload = await repository.create({
+      id: crypto.randomUUID(),
+      userId,
+      originalName: "photo.png",
+      declaredType: "image/png",
+      size: 1000,
+      modelId: null,
+      inputId: input.id,
+      storageKey: `uploads/${crypto.randomUUID()}/original`,
+      createdAt: new Date(),
+    });
+    await repository.markComplete(upload.id, {
+      kind: "image",
+      extension: "png",
+      contentType: "image/png",
+      width: 64,
+      height: 48,
+      durationMs: null,
+      fps: null,
+      probe: {
+        formatName: "png",
+        codecName: "png",
+        width: 64,
+        height: 48,
+        pixFmt: "rgba",
+      },
+      thumbnailKey: null,
+      completedAt: new Date(),
+    });
+    await repository.markRemoved(
+      upload.id,
+      userId,
+      "Reported content",
+      { type: "system" },
+      systemClock,
+      new Date(),
+    );
+
+    await expect(
+      resolveUploadValues([input], { [input.id]: upload.id }, userId, deps),
     ).rejects.toBeInstanceOf(InvalidUploads);
   });
 });

@@ -17,13 +17,17 @@ import {
   and,
   desc,
   eq,
+  gte,
   inArray,
+  isNotNull,
   isNull,
   lt,
+  lte,
   notInArray,
   or,
   sql,
 } from "drizzle-orm";
+import { type AuditActor, recordAuditEntry } from "../audit/audit.js";
 import type { Database, Transaction } from "../db/client.js";
 import {
   assets,
@@ -54,7 +58,7 @@ export type GenerationState =
   | "cancelled";
 
 /** Issue #57: a Generation past any of these states can be deleted (into a Tombstone) or have its detail's "run time" shown. */
-const ENDED_STATES: readonly GenerationState[] = [
+export const ENDED_STATES: readonly GenerationState[] = [
   "succeeded",
   "failed",
   "cancelled",
@@ -89,6 +93,8 @@ export interface GenerationRecord {
   endedAt: Date | null;
   /** Issue #57: set once this Generation (or its Submission) was deleted — a Tombstone. */
   deletedAt: Date | null;
+  /** Issue #68: set once an Admin removed this Generation — the owner sees a dismissable card, no reason. */
+  removedAt: Date | null;
   assets: AssetSummary[];
   /** Issue #74: a test run of the Model editor's own unsaved state, never counted toward Caps and never current. */
   isTest: boolean;
@@ -167,6 +173,8 @@ export interface GenerationDetail {
   startedAt: Date | null;
   endedAt: Date | null;
   deletedAt: Date | null;
+  /** Issue #68: set once an Admin removed this Generation — the owner sees a dismissable card, no reason, no Reuse. */
+  removedAt: Date | null;
   modelId: string;
   modelSlug: string;
   modelName: string;
@@ -177,6 +185,69 @@ export interface GenerationDetail {
   assets: GenerationAssetDetail[];
   /** Empty for a Tombstone, which has nothing left to resolve. */
   settings: GenerationInputSetting[];
+}
+
+/** An Admin's own read-only view of a Generation (issue #68): everything `GenerationDetail` has, plus the owner, tries/error and (when removed) the reason. */
+export interface AdminGenerationDetail extends GenerationDetail {
+  ownerId: string;
+  ownerEmail: string;
+  ownerName: string;
+  /** Shown to Admins only; the owner's own view never includes this. */
+  removedReason: string | null;
+  tries: number;
+  error: string | null;
+}
+
+/** The Admin Generations page's state filter (issue #68): every real `GenerationState`, plus "deleted" and "removed" (mutually exclusive with a real state and with each other — a deleted row never also matches "removed"). */
+export type AdminGenerationStatusFilter =
+  | GenerationState
+  | "deleted"
+  | "removed";
+
+export interface AdminGenerationRow {
+  id: string;
+  modelId: string;
+  modelName: string;
+  modelSlug: string;
+  modeId: string;
+  modeName: string;
+  userId: string;
+  userEmail: string;
+  userName: string;
+  state: GenerationState;
+  isTest: boolean;
+  deletedAt: Date | null;
+  removedAt: Date | null;
+  submittedAt: Date;
+  endedAt: Date | null;
+}
+
+export interface AdminGenerationListParams {
+  modelId?: string;
+  modeId?: string;
+  userId?: string;
+  status?: AdminGenerationStatusFilter;
+  isTest?: boolean;
+  from?: Date;
+  to?: Date;
+  cursor?: { submittedAt: Date; id: string };
+  limit: number;
+}
+
+export interface AdminGenerationListPage {
+  generations: AdminGenerationRow[];
+  hasMore: boolean;
+}
+
+/** Just enough to decide how to remove a Generation (issue #68): who owns it, its Model/Mode, and whether it's already gone. */
+export interface GenerationForRemoval {
+  userId: string;
+  modelId: string;
+  modeId: string;
+  state: GenerationState;
+  tries: number;
+  deletedAt: Date | null;
+  removedAt: Date | null;
 }
 
 /** Storage keys {@link GenerationsRepository.finishDelete} collected, for the route to delete from `Storage` once the Tombstone is committed. */
@@ -277,6 +348,7 @@ function toRecord(
     startedAt: row.startedAt,
     endedAt: row.endedAt,
     deletedAt: row.deletedAt,
+    removedAt: row.removedAt,
     isTest: row.isTest,
     assets: [...assetRows]
       .sort((a, b) => a.sortOrder - b.sortOrder)
@@ -779,6 +851,11 @@ export class GenerationsRepository {
     const clauses = [
       eq(generations.userId, params.userId),
       isNull(generations.deletedAt),
+      // Issue #68's AC: a removed Generation keeps showing under All
+      // until the owner dismisses its card, then it drops out of the
+      // Gallery for good (though the row itself, and the Audit entry,
+      // stay for Admins).
+      or(isNull(generations.removedAt), isNull(generations.removedDismissedAt)),
     ];
     if (params.modelId) clauses.push(eq(generations.modelId, params.modelId));
     if (params.stateFilter) {
@@ -928,6 +1005,7 @@ export class GenerationsRepository {
       startedAt: row.generation.startedAt,
       endedAt: row.generation.endedAt,
       deletedAt: row.generation.deletedAt,
+      removedAt: row.generation.removedAt,
       modelId: row.generation.modelId,
       modelSlug: row.model.slug,
       modelName: row.model.name,
@@ -940,6 +1018,283 @@ export class GenerationsRepository {
         .map(toAssetDetail),
       settings,
     };
+  }
+
+  /**
+   * One Generation's own detail, for an Admin (issue #68): unlike
+   * {@link getDetailForUser}, there's no owner check (any Generation
+   * resolves) and settings are resolved even once it's been removed
+   * (only a Tombstone's `deletedAt` empties them) — a Removal
+   * deliberately keeps `builtPrompt`/`uploadIds` so an Admin can still
+   * see the values, prompt and Upload links it ran with.
+   */
+  async getAdminDetail(
+    generationId: string,
+  ): Promise<AdminGenerationDetail | null> {
+    const [row] = await this.db
+      .select({
+        generation: generations,
+        mode: modes,
+        model: models,
+        user: users,
+      })
+      .from(generations)
+      .innerJoin(modes, eq(modes.id, generations.modeId))
+      .innerJoin(models, eq(models.id, generations.modelId))
+      .innerJoin(users, eq(users.id, generations.userId))
+      .where(eq(generations.id, generationId));
+    if (!row) return null;
+
+    const assetRows = await this.db
+      .select()
+      .from(assets)
+      .where(eq(assets.generationId, generationId));
+
+    const settings = row.generation.deletedAt
+      ? []
+      : await this.resolveSettings(row.generation, row.mode.inputSettings);
+
+    return {
+      id: row.generation.id,
+      state: row.generation.state,
+      error: row.generation.error,
+      tries: row.generation.tries,
+      submittedAt: row.generation.submittedAt,
+      startedAt: row.generation.startedAt,
+      endedAt: row.generation.endedAt,
+      deletedAt: row.generation.deletedAt,
+      removedAt: row.generation.removedAt,
+      removedReason: row.generation.removedReason,
+      ownerId: row.user.id,
+      ownerEmail: row.user.email,
+      ownerName: row.user.name,
+      modelId: row.generation.modelId,
+      modelSlug: row.model.slug,
+      modelName: row.model.name,
+      modelAttribution: row.model.attribution,
+      modelDeleted: row.model.deletedAt !== null,
+      modeId: row.generation.modeId,
+      modeName: row.mode.name,
+      assets: [...assetRows]
+        .sort((a, b) => a.sortOrder - b.sortOrder)
+        .map(toAssetDetail),
+      settings,
+    };
+  }
+
+  /**
+   * The Admin Generations page's list (issue #68): across every user,
+   * newest first, filterable by Model, Mode, user, status (a real state,
+   * or "deleted"/"removed") and date, paged by a (submitted-at, id)
+   * keyset cursor.
+   */
+  async listForAdmin(
+    params: AdminGenerationListParams,
+  ): Promise<AdminGenerationListPage> {
+    const clauses = [];
+    if (params.modelId) clauses.push(eq(generations.modelId, params.modelId));
+    if (params.modeId) clauses.push(eq(generations.modeId, params.modeId));
+    if (params.userId) clauses.push(eq(generations.userId, params.userId));
+    if (params.isTest !== undefined) {
+      clauses.push(eq(generations.isTest, params.isTest));
+    }
+    if (params.from) clauses.push(gte(generations.submittedAt, params.from));
+    if (params.to) clauses.push(lte(generations.submittedAt, params.to));
+
+    if (params.status === "deleted") {
+      clauses.push(isNotNull(generations.deletedAt));
+    } else if (params.status === "removed") {
+      clauses.push(
+        and(isNotNull(generations.removedAt), isNull(generations.deletedAt)),
+      );
+    } else if (params.status) {
+      clauses.push(
+        and(
+          eq(generations.state, params.status),
+          isNull(generations.deletedAt),
+          isNull(generations.removedAt),
+        ),
+      );
+    }
+
+    if (params.cursor) {
+      const cursorClause = or(
+        lt(generations.submittedAt, params.cursor.submittedAt),
+        and(
+          eq(generations.submittedAt, params.cursor.submittedAt),
+          lt(generations.id, params.cursor.id),
+        ),
+      );
+      if (cursorClause) clauses.push(cursorClause);
+    }
+
+    const rows = await this.db
+      .select({
+        generation: generations,
+        mode: modes,
+        model: models,
+        user: users,
+      })
+      .from(generations)
+      .innerJoin(modes, eq(modes.id, generations.modeId))
+      .innerJoin(models, eq(models.id, generations.modelId))
+      .innerJoin(users, eq(users.id, generations.userId))
+      .where(clauses.length > 0 ? and(...clauses) : undefined)
+      .orderBy(desc(generations.submittedAt), desc(generations.id))
+      .limit(params.limit + 1);
+
+    const hasMore = rows.length > params.limit;
+    const page = hasMore ? rows.slice(0, params.limit) : rows;
+
+    return {
+      generations: page.map((row) => ({
+        id: row.generation.id,
+        modelId: row.generation.modelId,
+        modelName: row.model.name,
+        modelSlug: row.model.slug,
+        modeId: row.generation.modeId,
+        modeName: row.mode.name,
+        userId: row.generation.userId,
+        userEmail: row.user.email,
+        userName: row.user.name,
+        state: row.generation.state,
+        isTest: row.generation.isTest,
+        deletedAt: row.generation.deletedAt,
+        removedAt: row.generation.removedAt,
+        submittedAt: row.generation.submittedAt,
+        endedAt: row.generation.endedAt,
+      })),
+      hasMore,
+    };
+  }
+
+  /** Resolves the Admin Generations page's jump-to box (issue #68's AC): a Generation id matches directly, else an Asset id resolves to its own Generation. */
+  async resolveJumpTarget(id: string): Promise<string | null> {
+    const [generation] = await this.db
+      .select({ id: generations.id })
+      .from(generations)
+      .where(eq(generations.id, id));
+    if (generation) return generation.id;
+
+    const [asset] = await this.db
+      .select({ generationId: assets.generationId })
+      .from(assets)
+      .where(eq(assets.id, id));
+    return asset?.generationId ?? null;
+  }
+
+  /** Just enough to decide how to remove a Generation (issue #68). */
+  async getForRemoval(
+    generationId: string,
+  ): Promise<GenerationForRemoval | null> {
+    const [row] = await this.db
+      .select({
+        userId: generations.userId,
+        modelId: generations.modelId,
+        modeId: generations.modeId,
+        state: generations.state,
+        tries: generations.tries,
+        deletedAt: generations.deletedAt,
+        removedAt: generations.removedAt,
+      })
+      .from(generations)
+      .where(eq(generations.id, generationId));
+    return row ?? null;
+  }
+
+  /**
+   * Removes one Generation (issue #68's AC): deletes its Assets (rows and
+   * files, like a user delete) but, unlike a Tombstone, keeps
+   * `builtPrompt`/`uploadIds` so an Admin can still see the values,
+   * prompt and Upload links it ran with. Call only once the Generation
+   * is no longer active (the caller, generations/removal.ts, cancels it
+   * first); this just records the Removal and cleans up its Assets. The
+   * Audit entry (ADR 0005) holds only the Generation id, owner, Model,
+   * Mode and reason (the AC) — nothing else about the Generation.
+   */
+  async markRemoved(
+    generationId: string,
+    owner: { id: string; modelId: string; modeId: string },
+    reason: string,
+    actor: AuditActor,
+    clock: Clock,
+    now: Date,
+  ): Promise<DeletedStorageKeys> {
+    const assetRows = await this.db
+      .select()
+      .from(assets)
+      .where(eq(assets.generationId, generationId));
+
+    await this.db.transaction(async (tx) => {
+      await tx.delete(assets).where(eq(assets.generationId, generationId));
+      await tx
+        .update(generations)
+        .set({ removedAt: now, removedReason: reason })
+        .where(eq(generations.id, generationId));
+      await recordAuditEntry(tx, clock, {
+        actor,
+        targetType: "generation",
+        targetId: generationId,
+        action: "remove",
+        before: null,
+        after: {
+          ownerId: owner.id,
+          modelId: owner.modelId,
+          modeId: owner.modeId,
+          reason,
+        },
+      });
+    });
+
+    return {
+      assets: assetRows.map((row) => ({
+        storageKey: row.storageKey,
+        posterKey: row.posterKey,
+        thumbnailKey: row.thumbnailKey,
+      })),
+      uploads: [],
+    };
+  }
+
+  /** The owner dismissing their "Removed by an administrator" card (issue #68's AC): false when it's not this user's own, or isn't removed. */
+  async dismissRemoved(
+    generationId: string,
+    userId: string,
+    now: Date,
+  ): Promise<boolean> {
+    const rows = await this.db
+      .update(generations)
+      .set({ removedDismissedAt: now })
+      .where(
+        and(
+          eq(generations.id, generationId),
+          eq(generations.userId, userId),
+          isNotNull(generations.removedAt),
+        ),
+      )
+      .returning({ id: generations.id });
+    return rows.length > 0;
+  }
+
+  /** Every still-active Generation using this Upload (issue #68's AC: it fails them when the Upload is removed). */
+  async listActiveUsingUpload(
+    uploadId: string,
+  ): Promise<{ id: string; userId: string; tries: number }[]> {
+    const rows = await this.db
+      .select({
+        id: generations.id,
+        userId: generations.userId,
+        tries: generations.tries,
+      })
+      .from(generations)
+      .where(
+        and(
+          notInArray(generations.state, ["succeeded", "failed", "cancelled"]),
+          isNull(generations.deletedAt),
+          sql`${generations.uploadIds} @> ARRAY[${uploadId}]::uuid[]`,
+        ),
+      );
+    return rows;
   }
 
   private async resolveSettings(
@@ -995,6 +1350,7 @@ export class GenerationsRepository {
         trimmedFromName: upload.trimmedFromId
           ? (trimmedFromNameById.get(upload.trimmedFromId) ?? null)
           : null,
+        removed: upload.removedAt !== null,
       },
     }));
 

@@ -42,6 +42,7 @@ import {
   uploadInputImage,
 } from "../comfyui/client.js";
 import type { AssetsRepository } from "../generations/assets-repository.js";
+import { deleteStorageFor } from "../generations/deletion.js";
 import type { GenerationEvents } from "../generations/events.js";
 import type {
   GenerationSummary,
@@ -316,6 +317,15 @@ export async function finalizeCancelled(
  * Finalizes a successful run (issue #55): the same terminal write
  * whether the run itself just finished here or boot recovery resumed
  * one already at `saving`. Shared the same way `finalizeCancelled` is.
+ *
+ * Issue #68's AC: an Admin removing a `saving` Generation can't stop it
+ * via `markCancelling` (it only matches `starting`/`running`), so the
+ * save lands anyway — caught here instead, deleting what was just saved
+ * rather than leaving it live for the owner to download. Issue #63
+ * round 4's own pending-deletion check still runs afterward either way,
+ * so a self-deleted owner's row still gets its full Tombstone cleanup
+ * (clearing `builtPrompt`/`uploadIds`, sweeping Uploads) even when an
+ * Admin also happened to remove it.
  */
 export async function finalizeSucceeded(
   deps: RunnerDeps,
@@ -324,6 +334,24 @@ export async function finalizeSucceeded(
 ): Promise<boolean> {
   if (!(await deps.queue.markSucceeded(detail.id, tries, deps.clock.now())))
     return false;
+
+  if (await deps.queue.isRemoved(detail.id)) {
+    const removedAssets = await deps.assetsRepository.deleteForGeneration(
+      detail.id,
+    );
+    await deleteStorageFor(deps.storage, {
+      assets: removedAssets.map((asset) => ({
+        storageKey: asset.storageKey,
+        posterKey: asset.posterKey,
+        thumbnailKey: asset.thumbnailKey,
+      })),
+      uploads: [],
+    });
+    await publishChange(deps, detail, "succeeded", tries, null, []);
+    await finalizePendingDeletion(deps, detail.id);
+    return true;
+  }
+
   const assets = await deps.assetsRepository.listForGeneration(detail.id);
   await publishChange(
     deps,

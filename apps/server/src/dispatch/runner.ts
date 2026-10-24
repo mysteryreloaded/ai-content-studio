@@ -294,6 +294,31 @@ export async function runClaimedGeneration(
 }
 
 /**
+ * Reads a job's status, tolerating a poll blip (a timeout, a 5xx) the
+ * same way `pollUntilDone`'s own loop does: retries instead of losing
+ * the try at once, giving up only after `RUNNING_UNREACHABLE_LOST_MS`
+ * of continuous failure. Boot recovery's AC (issue #55): reattaching
+ * to a Backend that's briefly unreachable at startup resumes polling
+ * the same way, instead of marking the try lost on the first attempt.
+ */
+export async function readJobWithGrace(
+  target: Awaited<ReturnType<typeof comfyUiTarget>>,
+  generationId: string,
+  deps: Pick<RunnerDeps, "clock" | "pollIntervalMs">,
+): ReturnType<typeof readJob> {
+  const pollIntervalMs = deps.pollIntervalMs ?? POLL_INTERVAL_MS;
+  const deadlineMs = deps.clock.now().getTime() + RUNNING_UNREACHABLE_LOST_MS;
+  while (true) {
+    try {
+      return await readJob(target, generationId);
+    } catch (err) {
+      if (deps.clock.now().getTime() > deadlineMs) throw err;
+      await delay(deps.clock, pollIntervalMs);
+    }
+  }
+}
+
+/**
  * Follows `/ws` and polls `/api/jobs/:id` for a Generation already
  * `running` on `backend`, through to saving and succeeded/failed.
  * Shared by the normal dispatch path (right after `markRunning`) and
@@ -327,6 +352,11 @@ export async function pollUntilDone(
 
   const deadlineMs =
     deps.clock.now().getTime() + detail.maxRunTimeMinutes * 60_000;
+  // A poll blip (a timeout, a 5xx) shouldn't lose the try at once: the
+  // GPU keeps running it regardless. Only continuous failure for as
+  // long as the health monitor's own "unreachable" grace gives up
+  // (issue #55's AC).
+  let pollFailureSinceMs: number | null = null;
   let outcome: Outcome;
   try {
     while (true) {
@@ -342,7 +372,21 @@ export async function pollUntilDone(
         break;
       }
 
-      const job = await readJob(target, generationId);
+      let job: Job | null;
+      try {
+        job = await readJob(target, generationId);
+      } catch (err) {
+        const nowMs = deps.clock.now().getTime();
+        if (pollFailureSinceMs === null) pollFailureSinceMs = nowMs;
+        if (nowMs - pollFailureSinceMs > RUNNING_UNREACHABLE_LOST_MS) {
+          outcome = { kind: "lost", reason: describeError(err) };
+          break;
+        }
+        await delay(deps.clock, pollIntervalMs);
+        continue;
+      }
+      pollFailureSinceMs = null;
+
       if (job === null) {
         outcome = {
           kind: "lost",

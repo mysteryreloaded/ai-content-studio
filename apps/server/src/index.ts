@@ -38,12 +38,13 @@ async function main() {
 
   await backendsService.start();
   problemsMonitor.start();
-  logger.info("recovering in-flight Generations");
-  await recover();
-  dispatcher.start();
 
   logger.info("server listening", { port: env.PORT });
   Bun.serve({ port: env.PORT, fetch: app.fetch });
+
+  logger.info("recovering in-flight Generations");
+  await recover();
+  dispatcher.start();
 }
 
 main();

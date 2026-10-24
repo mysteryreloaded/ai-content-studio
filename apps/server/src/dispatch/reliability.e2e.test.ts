@@ -73,7 +73,10 @@ describe("Reliable dispatch (issue #55)", () => {
     await db.delete(users);
   });
 
-  async function setup(tmpDir: string) {
+  async function setup(
+    tmpDir: string,
+    overrides: { waitingForBackendTimeoutMs?: number } = {},
+  ) {
     const { db, sql } = await testDb;
     const modelRepository = new ModelRepository(db, systemClock);
     const modelBackendsRepository = new ModelBackendsRepository(
@@ -115,6 +118,7 @@ describe("Reliable dispatch (issue #55)", () => {
       savingBackoffBaseMs: 20,
       media: new MediaRunner(2),
       siteName: "localhost",
+      ...overrides,
     });
 
     return {
@@ -596,8 +600,11 @@ describe("Reliable dispatch (issue #55)", () => {
 
   test("the watchdog fails a long-queued Generation with no usable Backend", async () => {
     const tmpDir = `/tmp/reliability-e2e-${randomUUID()}`;
+    // Tracked continuously from the first watchdog tick that finds no
+    // usable Backend at all (issue #55's AC), not from `queuedAt`: a
+    // zero threshold still needs a second tick to actually fail it.
     const { db, modelRepository, generationsRepository, dispatcher } =
-      await setup(tmpDir);
+      await setup(tmpDir, { waitingForBackendTimeoutMs: 0 });
 
     try {
       const user = await insertUser(db, "nobackend@example.com");
@@ -624,12 +631,9 @@ describe("Reliable dispatch (issue #55)", () => {
         nodeTypes,
         submittedAt: systemClock.now(),
       });
-      // Back-date `queuedAt` past the 15-minute threshold instead of waiting.
-      await db
-        .update(generations)
-        .set({ queuedAt: new Date(Date.now() - 16 * 60_000) })
-        .where(eq(generations.id, generationId));
-
+      // First tick only records "no usable Backend since now"; the
+      // second one finds the (zero) threshold already passed.
+      await dispatcher.runWatchdogOnce();
       await dispatcher.runWatchdogOnce();
 
       const summaries =

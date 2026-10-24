@@ -96,6 +96,8 @@ export class Dispatcher {
   private stopped = false;
   /** Test-only: while `runUntilIdle`'s own loop is driving, `wake()` just flags it instead of also racing a real background tick against it. */
   private manualDriveActive = false;
+  /** Generation id -> when `failLongQueuedWithoutBackend` first found it with no usable Backend at all, continuously (issue #55's AC). */
+  private readonly noUsableBackendSince = new Map<string, number>();
 
   constructor(private readonly deps: DispatcherDeps) {
     this.progress = new ProgressTracker(deps.clock);
@@ -368,7 +370,16 @@ export class Dispatcher {
     return plan;
   }
 
-  /** Whether any Backend attached to `modelId` could, right now, take a Generation needing `nodeTypes` — enabled, not draining, reachable, and known to support them. */
+  /**
+   * Whether any Backend attached to `modelId` could soon take a
+   * Generation needing `nodeTypes` — enabled, not draining, and not
+   * confirmed unreachable. "Unknown" reachability (not yet health-
+   * checked, e.g. right after boot) isn't proof a Backend can't run
+   * this, so it counts as usable here (issue #55's AC) the same as a
+   * reachable-but-busy one does; only a Backend the health monitor has
+   * actually confirmed unreachable, or whose known node types actually
+   * don't match, counts against it.
+   */
   private async hasUsableBackend(
     modelId: string,
     nodeTypes: readonly string[],
@@ -378,14 +389,16 @@ export class Dispatcher {
     for (const backend of attached) {
       if (!backend.enabled || backend.draining) continue;
       if (
-        this.deps.backendsService.healthFor(backend.id).reachability !==
-        "reachable"
+        this.deps.backendsService.healthFor(backend.id).reachability ===
+        "unreachable"
       ) {
         continue;
       }
       const knownTypes = await this.deps.backendsService.nodeTypesFor(backend);
-      if (!knownTypes) continue;
-      if (nodeTypes.every((type) => knownTypes.has(type))) return true;
+      if (knownTypes && !nodeTypes.every((type) => knownTypes.has(type))) {
+        continue;
+      }
+      return true;
     }
     return false;
   }
@@ -420,15 +433,37 @@ export class Dispatcher {
     if (stuck.length > 0) this.wake();
   }
 
+  /**
+   * Fails a `queued` Generation once it's gone 15 minutes with no
+   * usable Backend at all for its Model — tracked per Generation in
+   * `noUsableBackendSince`, from when that became true, not from
+   * `queuedAt` (issue #55's AC): a Generation queued a while behind a
+   * busy-but-usable Backend doesn't fail the instant that Backend is
+   * drained, rebooted, or still "unknown" right after boot.
+   */
   private async failLongQueuedWithoutBackend(): Promise<void> {
-    const longQueued = await this.deps.queue.listQueuedOlderThan(
-      this.deps.waitingForBackendTimeoutMs ?? WAITING_FOR_BACKEND_TIMEOUT_MS,
-      this.deps.clock.now(),
-    );
-    for (const candidate of longQueued) {
+    const queued = await this.deps.queue.listQueued();
+    const queuedIds = new Set(queued.map((candidate) => candidate.id));
+    for (const id of this.noUsableBackendSince.keys()) {
+      if (!queuedIds.has(id)) this.noUsableBackendSince.delete(id);
+    }
+
+    const thresholdMs =
+      this.deps.waitingForBackendTimeoutMs ?? WAITING_FOR_BACKEND_TIMEOUT_MS;
+    const nowMs = this.deps.clock.now().getTime();
+
+    for (const candidate of queued) {
       if (await this.hasUsableBackend(candidate.modelId, candidate.nodeTypes)) {
+        this.noUsableBackendSince.delete(candidate.id);
         continue;
       }
+      const since = this.noUsableBackendSince.get(candidate.id);
+      if (since === undefined) {
+        this.noUsableBackendSince.set(candidate.id, nowMs);
+        continue;
+      }
+      if (nowMs - since < thresholdMs) continue;
+
       const detail = await this.deps.queue.detailForRun(candidate.id);
       if (!detail) continue;
       await reportFailure(
@@ -438,6 +473,7 @@ export class Dispatcher {
         candidate.tries,
         "no server available for this Model",
       );
+      this.noUsableBackendSince.delete(candidate.id);
     }
   }
 }

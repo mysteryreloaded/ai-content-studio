@@ -448,8 +448,11 @@ export const generationState = pgEnum("generation_state", [
  * once a watchdog or a later try has already moved the row on.
  * `queuedAt` is when this row most recently became `queued` (first
  * submitted, or requeued after a lost try); it resets on each requeue,
- * unlike `submittedAt`, so the "no usable Backend for 15 minutes"
- * timeout measures from the most recent wait, not the whole lifetime.
+ * unlike `submittedAt`. The "no usable Backend for 15 minutes" timeout
+ * is tracked separately, in the Dispatcher's own memory, from when a
+ * Model last had no usable Backend at all — not from `queuedAt` — so a
+ * Generation queued a while behind a busy (but usable) Backend doesn't
+ * fail the instant that Backend is drained or briefly unreachable.
  */
 export const generations = pgTable(
   "generations",

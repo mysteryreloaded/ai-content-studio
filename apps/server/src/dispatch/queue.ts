@@ -70,14 +70,6 @@ export interface RunningGeneration {
   maxRunTimeMinutes: number;
 }
 
-/** A Generation that's been `queued` without a usable Backend for a while, for the watchdog's 15-minute check (issue #55's AC). */
-export interface LongQueuedGeneration {
-  id: string;
-  modelId: string;
-  nodeTypes: string[];
-  tries: number;
-}
-
 export type LoseTryOutcome = "retried" | "exhausted" | "stale";
 
 function isUniqueViolation(err: unknown): boolean {
@@ -260,10 +252,10 @@ export class DispatchQueue {
   /**
    * Records a lost try (issue #55's AC: unreachable while starting,
    * unreachable > 2 min while running, a 404'd job, or a missing-node
-   * rejection). Below `MAX_TRIES`, requeues it (resetting `queuedAt` so
-   * the 15-minute "no usable Backend" wait starts over) for a try on any
-   * Backend; at `MAX_TRIES`, fails it with `exhaustedMessage` instead.
-   * `"stale"` means another write already moved this try on first.
+   * rejection). Below `MAX_TRIES`, requeues it (resetting `queuedAt`) for
+   * a try on any Backend; at `MAX_TRIES`, fails it with
+   * `exhaustedMessage` instead. `"stale"` means another write already
+   * moved this try on first.
    */
   async loseTry(
     generationId: string,
@@ -378,26 +370,6 @@ export class DispatchQueue {
       startedAt: row.startedAt as Date,
       maxRunTimeMinutes: row.maxRunTimeMinutes,
     }));
-  }
-
-  /** `queued` Generations whose most recent wait started more than `thresholdMs` ago (issue #55's AC: 15 minutes), for the caller to check against usable Backends. */
-  async listQueuedOlderThan(
-    thresholdMs: number,
-    now: Date,
-  ): Promise<LongQueuedGeneration[]> {
-    const cutoff = new Date(now.getTime() - thresholdMs);
-    const rows = await this.db
-      .select({
-        id: generations.id,
-        modelId: generations.modelId,
-        nodeTypes: generations.nodeTypes,
-        tries: generations.tries,
-      })
-      .from(generations)
-      .where(
-        and(eq(generations.state, "queued"), lt(generations.queuedAt, cutoff)),
-      );
-    return rows;
   }
 
   /** Every Generation left `starting`, `running` or `saving` with a Backend assigned — boot recovery's starting point (issue #55's AC). */

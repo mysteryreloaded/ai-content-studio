@@ -8,7 +8,7 @@
 
 import { comfyUiTarget } from "../backends/client.js";
 import type { BackendRepository } from "../backends/repository.js";
-import { readJob } from "../comfyui/client.js";
+import type { readJob } from "../comfyui/client.js";
 import { publishChange, reportFailure, reportLostTry } from "./outcomes.js";
 import { ProgressTracker } from "./progress.js";
 import type { UnfinishedGeneration } from "./queue.js";
@@ -17,6 +17,7 @@ import {
   allOutputFiles,
   describeError,
   pollUntilDone,
+  readJobWithGrace,
   saveWithBackoff,
 } from "./runner.js";
 
@@ -68,9 +69,10 @@ async function recoverOne(
   const target = await comfyUiTarget(backend, deps.backendRepository);
   let job: Awaited<ReturnType<typeof readJob>>;
   try {
-    job = await readJob(target, item.id);
+    job = await readJobWithGrace(target, item.id, deps);
   } catch (err) {
-    // Can't reach the Backend to ask: treated the same as a 404, a lost try.
+    // Still can't reach the Backend after resuming polling for a while
+    // (issue #55's AC): a lost try, same as a 404.
     await reportLostTry(
       deps,
       detail,

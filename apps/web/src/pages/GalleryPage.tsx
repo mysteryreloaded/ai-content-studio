@@ -52,6 +52,23 @@ function matchesStateFilter(
   return filter === "all" || STATE_BUCKETS[filter].includes(state);
 }
 
+/**
+ * Applies an SSE "change" event onto a Generation already in state
+ * (issue #68's AC): `generations/dispatch/outcomes.ts`'s own events
+ * always carry `removedAt: null` (the runner has no reason to know
+ * about a Removal), so a run's own cancel confirmation landing after an
+ * Admin's Removal would otherwise wipe the card back to plain
+ * "Cancelled" — kept once it was set instead.
+ */
+function mergeGeneration(
+  previous: GenerationSummary,
+  incoming: GenerationSummary,
+): GenerationSummary {
+  return previous.removedAt
+    ? { ...incoming, removedAt: previous.removedAt }
+    : incoming;
+}
+
 interface AssetSummary {
   id: string;
   nodeId: string;
@@ -72,6 +89,8 @@ interface GenerationSummary {
   assets: AssetSummary[];
   /** Issue #74: a test run from the Model editor, marked in the Gallery. */
   isTest: boolean;
+  /** Issue #68: an Admin removed this Generation — shown as a dismissable card, until the owner dismisses it. */
+  removedAt: string | null;
 }
 
 interface GallerySubmission {
@@ -147,7 +166,11 @@ function GenerationCard({
         aria-label={`Open Generation ${generation.id}`}
       />
       {generation.isTest && <span className="gallery-card-test">Test</span>}
-      {generation.state === "succeeded" && mainAsset ? (
+      {generation.removedAt ? (
+        <div className="gallery-card-state">
+          <span role="alert">Removed by an administrator</span>
+        </div>
+      ) : generation.state === "succeeded" && mainAsset ? (
         <>
           {thumb ? (
             <img src={thumb} alt="" className="gallery-card-thumb" />
@@ -448,7 +471,7 @@ export function GalleryPage() {
             genIndex === -1
               ? [...submission.generations, generation]
               : submission.generations.map((g, i) =>
-                  i === genIndex ? generation : g,
+                  i === genIndex ? mergeGeneration(g, generation) : g,
                 );
           const next = [...current];
           next[index] = { ...submission, generations };
@@ -513,6 +536,11 @@ export function GalleryPage() {
     );
   }
 
+  /** Issue #68's AC: once the owner dismisses the "Removed by an administrator" card, it drops out of the Gallery for good. */
+  function handleDismissed(dismissedId: string) {
+    handleDeleted(dismissedId);
+  }
+
   if (session.status === "loading") return null;
   if (session.status === "signed-out") return <Navigate to="/" replace />;
 
@@ -532,6 +560,7 @@ export function GalleryPage() {
           onClose={closeOverlay}
           onNavigate={openGeneration}
           onDeleted={handleDeleted}
+          onDismissed={handleDismissed}
         />
       )}
       <main className="gallery">

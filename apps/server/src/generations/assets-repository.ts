@@ -84,6 +84,8 @@ export interface AssetWithOwner extends AssetRecord {
   ownerId: string;
   modelSlug: string;
   modeName: string;
+  /** Issue #68: set once an Admin removed the Asset's own Generation — `/api/assets/:id` 404s it for anyone but an Admin. */
+  generationRemovedAt: Date | null;
 }
 
 export class AssetsRepository {
@@ -108,6 +110,7 @@ export class AssetsRepository {
         ownerId: generations.userId,
         modelSlug: models.slug,
         modeName: modes.name,
+        generationRemovedAt: generations.removedAt,
       })
       .from(assets)
       .innerJoin(generations, eq(generations.id, assets.generationId))
@@ -120,6 +123,7 @@ export class AssetsRepository {
       ownerId: row.ownerId,
       modelSlug: row.modelSlug,
       modeName: row.modeName,
+      generationRemovedAt: row.generationRemovedAt,
     };
   }
 
@@ -135,5 +139,19 @@ export class AssetsRepository {
           a.sortOrder - b.sortOrder ||
           a.comfyuiFilename.localeCompare(b.comfyuiFilename),
       );
+  }
+
+  /**
+   * Deletes every Asset of a Generation and returns the rows (issue
+   * #68's AC): used when a save lands after an Admin already removed
+   * the Generation mid-save, so the runner can delete the files it
+   * just wrote instead of leaving them live.
+   */
+  async deleteForGeneration(generationId: string): Promise<AssetRecord[]> {
+    const rows = await this.db
+      .delete(assets)
+      .where(eq(assets.generationId, generationId))
+      .returning();
+    return rows.map(toRecord);
   }
 }

@@ -5,7 +5,7 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { FakeClock } from "@ai-content-studio/shared";
+import { FakeClock, systemClock } from "@ai-content-studio/shared";
 import { Hono } from "hono";
 import { users } from "../db/schema.js";
 import {
@@ -294,6 +294,42 @@ describe("/api/uploads", () => {
       (await stranger.request(`/api/uploads/${upload.id}/thumb`)).status,
     ).toBe(404);
     expect((await putChunk(stranger, upload.id, 0, jpeg)).status).toBe(404);
+    expect(
+      (await as(adminId, "admin").request(`/api/uploads/${upload.id}`)).status,
+    ).toBe(200);
+  });
+
+  test("a removed Upload 404s for its owner and 200s for an Admin (issue #68's AC)", async () => {
+    const { insertUser, as, repository, dir } = await setup();
+    const ownerId = await insertUser("owner3@example.com");
+    const adminId = await insertUser("admin2@example.com");
+    const owner = as(ownerId);
+    const jpeg = await makeImage(dir, "c.jpg", "64x64");
+
+    const created = await createUpload(owner, {
+      name: "c.jpg",
+      size: jpeg.length,
+      type: "image/jpeg",
+    });
+    const { upload } = (await created.json()) as { upload: { id: string } };
+    await putChunk(owner, upload.id, 0, jpeg);
+    await owner.request(`/api/uploads/${upload.id}/complete`, {
+      method: "POST",
+    });
+
+    await repository.markRemoved(
+      upload.id,
+      ownerId,
+      "Reported content",
+      { type: "system" },
+      systemClock,
+      new Date(),
+    );
+
+    expect((await owner.request(`/api/uploads/${upload.id}`)).status).toBe(404);
+    expect(
+      (await owner.request(`/api/uploads/${upload.id}/thumb`)).status,
+    ).toBe(404);
     expect(
       (await as(adminId, "admin").request(`/api/uploads/${upload.id}`)).status,
     ).toBe(200);

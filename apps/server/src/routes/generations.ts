@@ -223,5 +223,32 @@ export function generationsRoute(
     },
   );
 
+  // `/api/generations/:id/dismiss-removed` (issue #68's AC): the owner
+  // dismissing their "Removed by an administrator" card. 404 for
+  // anything not this user's own, or that isn't removed.
+  guardedRoute(
+    app,
+    routes,
+    "/api/generations",
+    "post",
+    "/:id/dismiss-removed",
+    "active",
+    async (c) => {
+      const session = c.get("session");
+      if (!session) return c.json({ error: "unauthorized" }, 401);
+
+      const id = c.req.param("id");
+      if (!id || !UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+
+      const ok = await generationsRepository.dismissRemoved(
+        id,
+        session.user.id,
+        clock.now(),
+      );
+      if (!ok) return c.json({ error: "not found" }, 404);
+      return c.json({ ok: true });
+    },
+  );
+
   return app;
 }

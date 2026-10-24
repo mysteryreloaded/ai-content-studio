@@ -31,6 +31,8 @@ interface GenerationDetail {
   startedAt: string | null;
   endedAt: string | null;
   deletedAt: string | null;
+  /** Issue #68: an Admin removed this Generation — a dismissable card, no reason, no Reuse. */
+  removedAt: string | null;
   modelId: string;
   modelSlug: string;
   modelName: string;
@@ -188,6 +190,7 @@ export function GenerationDetailOverlay({
   onClose,
   onNavigate,
   onDeleted,
+  onDismissed,
 }: {
   id: string;
   prevId: string | null;
@@ -195,6 +198,7 @@ export function GenerationDetailOverlay({
   onClose: () => void;
   onNavigate: (id: string) => void;
   onDeleted: (id: string) => void;
+  onDismissed?: (id: string) => void;
 }) {
   const navigate = useNavigate();
   const [detail, setDetail] = useState<GenerationDetail | null>(null);
@@ -202,6 +206,8 @@ export function GenerationDetailOverlay({
   const [copied, setCopied] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [dismissing, setDismissing] = useState(false);
+  const [dismissError, setDismissError] = useState<string | null>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
 
   useEffect(() => {
@@ -260,6 +266,23 @@ export function GenerationDetailOverlay({
       setDeleteError("Could not delete this Generation.");
     } finally {
       setDeleting(false);
+    }
+  }
+
+  async function handleDismiss() {
+    setDismissing(true);
+    setDismissError(null);
+    try {
+      const res = await fetch(`/api/generations/${id}/dismiss-removed`, {
+        method: "POST",
+      });
+      if (!res.ok) throw new Error(`unexpected status ${res.status}`);
+      onDismissed?.(id);
+      onClose();
+    } catch {
+      setDismissError("Could not dismiss this card.");
+    } finally {
+      setDismissing(false);
     }
   }
 
@@ -327,6 +350,18 @@ export function GenerationDetailOverlay({
 
           {detail.deletedAt ? (
             <p>Deleted.</p>
+          ) : detail.removedAt ? (
+            <div className="generation-detail-removed">
+              <p role="alert">Removed by an administrator.</p>
+              <button
+                type="button"
+                onClick={() => void handleDismiss()}
+                disabled={dismissing}
+              >
+                Dismiss
+              </button>
+              {dismissError && <p role="alert">{dismissError}</p>}
+            </div>
           ) : (
             <>
               {detail.state === "succeeded" && mainAsset ? (
@@ -474,6 +509,12 @@ const GENERATION_DETAIL_STYLE = `
 }
 .generation-detail-points circle {
   fill: red;
+}
+.generation-detail-removed {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  align-items: flex-start;
 }
 .generation-detail-actions {
   display: flex;

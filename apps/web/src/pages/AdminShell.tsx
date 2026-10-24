@@ -2,6 +2,9 @@ import { useEffect, useState } from "react";
 import { Link, Navigate, Route, Routes } from "react-router-dom";
 import { Footer } from "../Footer.js";
 import { useSession } from "../useSession.js";
+import { AdminGenerationDetailPage } from "./AdminGenerationDetailPage.js";
+import { AdminGenerationsPage } from "./AdminGenerationsPage.js";
+import { AdminUploadsPage } from "./AdminUploadsPage.js";
 import { AuditPage } from "./AuditPage.js";
 import { BackendsPage } from "./BackendsPage.js";
 import { BlockedWordsForm } from "./BlockedWordsForm.js";
@@ -103,6 +106,7 @@ export function AdminShell() {
           <Link to="/admin">Overview</Link>
           <Link to="/admin/settings">Settings</Link>
           <Link to="/admin/models">Models</Link>
+          <Link to="/admin/generations">Generations</Link>
           <Link to="/admin/users">
             Users{pendingCount ? ` (${pendingCount})` : ""}
           </Link>
@@ -130,8 +134,14 @@ export function AdminShell() {
           />
           <Route path="models" element={<ModelsPage />} />
           <Route path="models/:id" element={<ModelEditorPage />} />
+          <Route path="generations" element={<AdminGenerationsPage />} />
+          <Route
+            path="generations/:id"
+            element={<AdminGenerationDetailPage />}
+          />
           <Route path="users" element={<UsersPage />} />
           <Route path="users/:id" element={<UserPage />} />
+          <Route path="users/:id/uploads" element={<AdminUploadsPage />} />
           <Route path="logs" element={<LogsPage />} />
           <Route path="audit" element={<AuditPage />} />
         </Routes>

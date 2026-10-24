@@ -258,6 +258,8 @@ export async function resolveUploadValues(
     const [expectedKind, limitIssue] = expectedKindAndIssue(input);
     if (!upload || upload.userId !== userId) {
       refuse("that Upload wasn't found");
+    } else if (upload.removedAt) {
+      refuse("that Upload was removed by an administrator");
     } else if (upload.status !== "complete" || !upload.extension) {
       refuse("that Upload hasn't finished");
     } else if (upload.kind !== expectedKind) {

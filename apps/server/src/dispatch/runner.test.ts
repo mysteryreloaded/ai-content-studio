@@ -113,6 +113,8 @@ function fakeQueue(loseTryOutcome: "retried" | "exhausted" = "retried") {
     detailForRun: async () => null,
     // issue #54: never cancelling in this suite's own scenarios.
     currentState: async () => "running" as const,
+    // issue #68: never removed, unless a test overrides it.
+    isRemoved: async () => false,
   };
   return { queue, calls };
 }
@@ -515,6 +517,107 @@ describe("saveWithBackoff (issue #55)", () => {
 
     expect(attempts).toBe(3);
     expect(result.ok).toBe(true);
+  });
+});
+
+describe("removing a Generation while it's saving (issue #68)", () => {
+  let fake: ReturnType<typeof startFakeComfyUi> | null = null;
+
+  afterEach(() => {
+    fake?.stop();
+    fake = null;
+  });
+
+  test("a save that lands after an Admin removed it deletes what it just saved, instead of leaving it live for the owner", async () => {
+    fake = startFakeComfyUi({ port: 0 });
+    const backend = fakeBackend({ baseUrl: fake.url });
+    const generationId = randomUUID();
+    const { prompt } = buildFrozenPrompt(WORKFLOW, ["2"], generationId);
+    const detail = fakeDetail(generationId, prompt);
+    fake.script(generationId, {
+      steps: 1,
+      stepIntervalMs: 10,
+      outputs: {
+        "2": { images: [{ filename: "a.png", subfolder: "", type: "output" }] },
+      },
+    });
+    await fetch(`${fake.url}/prompt`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        prompt,
+        prompt_id: generationId,
+        client_id: generationId,
+      }),
+    });
+
+    const clock = new FakeClock();
+    const { queue, calls } = fakeQueue();
+    // The Admin's own removal already set `removed_at`; `markCancelling`
+    // never matched `saving`, so the run kept going to completion.
+    queue.isRemoved = async () => true;
+
+    const created: {
+      storageKey: string;
+      posterKey: string | null;
+      thumbnailKey: string | null;
+    }[] = [];
+    const deleteForGenerationCalls: string[] = [];
+    const deps = baseDeps(clock, queue, {
+      assetsRepository: {
+        createIfAbsent: async (input: {
+          storageKey: string;
+          posterKey?: string | null;
+          thumbnailKey?: string | null;
+        }) => {
+          const record = {
+            id: randomUUID(),
+            posterKey: input.posterKey ?? null,
+            thumbnailKey: input.thumbnailKey ?? null,
+            ...input,
+          };
+          created.push(record);
+          return record;
+        },
+        deleteForGeneration: async (id: string) => {
+          deleteForGenerationCalls.push(id);
+          return created;
+        },
+        listForGeneration: async () => created,
+        // biome-ignore lint/suspicious/noExplicitAny: a hand-rolled fake standing in for AssetsRepository
+      } as any,
+    });
+    const deletedStorageKeys: string[] = [];
+    const storage = deps.storage;
+    deps.storage = {
+      ...storage,
+      delete: async (key: string) => {
+        deletedStorageKeys.push(key);
+        await storage.delete(key);
+      },
+    };
+    const events: GenerationEvent[] = [];
+    deps.generationEvents.subscribe(detail.userId, (event) =>
+      events.push(event),
+    );
+    const target = { baseUrl: fake.url, headers: {} };
+
+    const run = pollUntilDone(backend, detail, 1, target, deps);
+    await driveUntilSettled(clock, run, 1_000);
+
+    expect(calls.markSaving).toHaveLength(1);
+    expect(calls.markSucceeded).toHaveLength(1);
+    expect(created.length).toBeGreaterThan(0);
+    expect(deleteForGenerationCalls).toEqual([generationId]);
+    const firstStorageKey = created[0]?.storageKey;
+    if (!firstStorageKey) throw new Error("no Asset was saved");
+    expect(deletedStorageKeys).toContain(firstStorageKey);
+
+    const change = events.find(
+      (event) =>
+        event.type === "change" && event.generation.state === "succeeded",
+    );
+    expect(change?.type === "change" && change.generation.assets).toEqual([]);
   });
 });
 

@@ -231,4 +231,49 @@ describe("GenerationDetailOverlay (issue #57)", () => {
       window.confirm = originalConfirm;
     }
   });
+
+  test("a removed Generation shows Dismiss, no Reuse or Delete (issue #68's AC)", async () => {
+    let dismissed = false;
+    const REMOVED_GENERATION = {
+      ...GENERATION_1,
+      removedAt: new Date().toISOString(),
+    };
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/gallery/models")) {
+        return Response.json({ models: [] });
+      }
+      if (call.url.includes("/api/gallery?")) {
+        return Response.json({
+          submissions: dismissed ? [] : [SUBMISSION_1],
+          hasMore: false,
+        });
+      }
+      if (
+        call.url === "/api/generations/g1/dismiss-removed" &&
+        call.method === "POST"
+      ) {
+        dismissed = true;
+        return Response.json({ ok: true });
+      }
+      if (call.url === "/api/generations/g1") {
+        return Response.json(REMOVED_GENERATION);
+      }
+      throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+    });
+
+    const view = renderAt("/generations/g1");
+    expect(await view.findByText("Removed by an administrator.")).toBeTruthy();
+    expect(
+      view.queryByRole("button", { name: "Reuse these settings" }),
+    ).toBeNull();
+    expect(view.queryByRole("button", { name: "Delete" })).toBeNull();
+
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await userEvent.click(view.getByRole("button", { name: "Dismiss" }));
+
+    await waitFor(() => expect(dismissed).toBe(true));
+    await waitFor(() =>
+      expect(view.queryByText("Removed by an administrator.")).toBeNull(),
+    );
+  });
 });

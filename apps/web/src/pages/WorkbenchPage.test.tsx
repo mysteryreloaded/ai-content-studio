@@ -465,6 +465,48 @@ describe("WorkbenchPage", () => {
     expect(view.queryByText("No Submissions yet.")).toBeNull();
   });
 
+  test("shows a removed Generation as a dismissable-looking card, not its own state (issue #68's AC)", async () => {
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/models/ltx")) {
+        return Response.json({ model: MODEL });
+      }
+      if (call.url.endsWith("/api/models/ltx/generations")) {
+        return Response.json({
+          submissions: [
+            {
+              submissionId: "s1",
+              modeId: "mode1",
+              modeName: "Default",
+              submittedAt: "2026-01-01T00:00:00.000Z",
+              generations: [
+                {
+                  id: "g1",
+                  modelId: "m1",
+                  modelSlug: "ltx",
+                  modelName: "LTX 2.5",
+                  modeId: "mode1",
+                  modeName: "Default",
+                  submissionId: "s1",
+                  state: "cancelled",
+                  tries: 0,
+                  error: null,
+                  submittedAt: "2026-01-01T00:00:00.000Z",
+                  assets: [],
+                  removedAt: "2026-01-02T00:00:00.000Z",
+                },
+              ],
+            },
+          ],
+        });
+      }
+      throw new Error(`unexpected fetch ${call.url}`);
+    });
+
+    const view = renderWorkbench();
+    expect(await view.findByText("Removed by an administrator")).toBeTruthy();
+    expect(view.queryByText("Cancelled")).toBeNull();
+  });
+
   describe("Cancel a Submission (issue #54)", () => {
     const QUEUED_SUBMISSION = {
       submissionId: "s1",
@@ -1630,6 +1672,34 @@ describe("WorkbenchPage", () => {
         "Who to replace (redraw the points)",
       );
       // See the previous test's comment: let the effect's own `.finally()` settle first.
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+
+    test("refuses a removed Generation instead of reusing its settings (issue #68's AC)", async () => {
+      reuseServer({
+        modelId: "m1",
+        modelDeleted: false,
+        modeId: "mode-points",
+        removedAt: new Date().toISOString(),
+        settings: [
+          {
+            inputId: POINTS_INPUT_ID,
+            label: "Who to replace",
+            kind: "points",
+            display: "1 point",
+            points: [{ x: 300, y: 200 }],
+            frameWidth: 512,
+            frameHeight: 512,
+          },
+        ],
+      });
+
+      const view = renderWorkbench("/models/ltx?reuse=g0");
+      expect(
+        await view.findByText(
+          "That Generation was removed by an administrator; its settings can't be reused.",
+        ),
+      ).toBeTruthy();
       await new Promise((resolve) => setTimeout(resolve, 10));
     });
   });

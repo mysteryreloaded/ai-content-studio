@@ -27,6 +27,8 @@ export interface GenerationUploadFacts {
   thumbnailKey: string | null;
   /** The Upload it was trimmed from, by original name, or null when it wasn't (issue #51). */
   trimmedFromName: string | null;
+  /** Issue #68: an Admin removed this Upload for breaking the rules — its file is gone, so only this flag (not the facts above) should be shown. */
+  removed: boolean;
 }
 
 /** One Upload the server looks up by the file name `buildPrompt` wrote (issue #50's naming, `uploadFileName`). */
@@ -220,7 +222,11 @@ export function resolveGenerationSettings(params: {
         inputId: input.id,
         label: input.label,
         kind: "upload",
-        display: match ? match.facts.name : "None",
+        display: match
+          ? match.facts.removed
+            ? "Removed by an administrator"
+            : match.facts.name
+          : "None",
         upload: match?.facts ?? null,
       };
     }

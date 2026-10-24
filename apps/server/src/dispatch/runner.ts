@@ -42,6 +42,7 @@ import {
   uploadInputImage,
 } from "../comfyui/client.js";
 import type { AssetsRepository } from "../generations/assets-repository.js";
+import { deleteStorageFor } from "../generations/deletion.js";
 import type { GenerationEvents } from "../generations/events.js";
 import type { GenerationSummary } from "../generations/repository.js";
 import type { C2paSignerConfig } from "../media/c2pa.js";
@@ -708,6 +709,26 @@ export async function pollUntilDone(
 
   if (!(await deps.queue.markSucceeded(generationId, tries, deps.clock.now())))
     return;
+
+  // Issue #68's AC: an Admin removing a `saving` Generation can't stop
+  // via `markCancelling` (it only matches `starting`/`running`), so the
+  // save lands anyway — caught here instead, deleting what was just
+  // saved rather than leaving it live for the owner to download.
+  if (await deps.queue.isRemoved(generationId)) {
+    const removedAssets =
+      await deps.assetsRepository.deleteForGeneration(generationId);
+    await deleteStorageFor(deps.storage, {
+      assets: removedAssets.map((asset) => ({
+        storageKey: asset.storageKey,
+        posterKey: asset.posterKey,
+        thumbnailKey: asset.thumbnailKey,
+      })),
+      uploads: [],
+    });
+    await publishChange(deps, detail, "succeeded", tries, null, []);
+    return;
+  }
+
   const assets = await deps.assetsRepository.listForGeneration(generationId);
   await publishChange(
     deps,

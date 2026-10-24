@@ -319,6 +319,49 @@ describe("GalleryPage", () => {
     expect(view.queryByRole("link", { name: "Wan" })).toBeNull();
   });
 
+  test("a cancel's own SSE event doesn't wipe a Removed card back to plain Cancelled (CEO review round 1, point 2)", async () => {
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/gallery/models")) {
+        return Response.json({
+          models: [{ id: "m1", slug: "ltx", name: "LTX 2.5", deleted: false }],
+        });
+      }
+      if (call.url.includes("/api/gallery?")) {
+        return Response.json({
+          submissions: [
+            {
+              ...SUBMISSION_1,
+              generations: [
+                {
+                  ...SUBMISSION_1.generations[0],
+                  state: "saving",
+                  assets: [],
+                  removedAt: new Date().toISOString(),
+                },
+              ],
+            },
+          ],
+          hasMore: false,
+        });
+      }
+      throw new Error(`unexpected fetch ${call.url}`);
+    });
+
+    const view = renderGallery();
+    expect(await view.findByText("Removed by an administrator")).toBeTruthy();
+
+    await waitFor(() => FakeEventSource.generationsStream());
+    FakeEventSource.generationsStream().emit("change", {
+      ...SUBMISSION_1.generations[0],
+      state: "cancelled",
+      removedAt: null,
+      assets: [],
+    });
+
+    expect(await view.findByText("Removed by an administrator")).toBeTruthy();
+    expect(view.queryByText("Cancelled")).toBeNull();
+  });
+
   test("an unrecognised ?state= reads as All instead of crashing on the next SSE event", async () => {
     mockFetch((call) => {
       if (call.url.endsWith("/api/gallery/models")) {

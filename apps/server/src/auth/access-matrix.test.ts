@@ -108,6 +108,7 @@ describe("every route's access level is declared and enforced", () => {
       "signed-in": { active: 200, admin: 200 },
       active: { active: 200, admin: 200 },
       admin: { active: 403, admin: 200 },
+      "admin-or-status-token": { active: 403, admin: 200 },
     };
 
     // A route that needs a request body to do anything (e.g. a save)

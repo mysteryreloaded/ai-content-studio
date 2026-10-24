@@ -20,6 +20,14 @@ function fakeBackendRepository(
   return { list: async () => backends } as unknown as BackendRepository;
 }
 
+function fakeBackendRepositoryThatRejects(): BackendRepository {
+  return {
+    list: async () => {
+      throw new Error("down");
+    },
+  } as unknown as BackendRepository;
+}
+
 function fakeBackendsService(since: Map<string, Date>): BackendsService {
   return {
     unreachableSince: (id: string) => since.get(id) ?? null,
@@ -101,6 +109,23 @@ describe("ProblemsMonitor", () => {
     expect(registry.list().map((p) => p.code)).not.toContain(
       "backend_unreachable",
     );
+  });
+
+  test("runChecks resolves (never crashes the server) when the database is down, and still sets db_unreachable", async () => {
+    const clock = new FakeClock();
+    const registry = new ProblemsRegistry(() => clock.now());
+    const monitor = new ProblemsMonitor(
+      registry,
+      clock,
+      fakeSql(false),
+      fakeBackendRepositoryThatRejects(),
+      fakeBackendsService(new Map()),
+      "/nonexistent",
+      10,
+    );
+
+    await expect(monitor.runChecks()).resolves.toBeUndefined();
+    expect(registry.list().map((p) => p.code)).toContain("db_unreachable");
   });
 
   test("raises disk_low under twice MIN_FREE_DISK_GB, using the real disk", async () => {

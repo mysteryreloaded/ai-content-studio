@@ -41,10 +41,17 @@ export class ProblemsMonitor {
 
   private scheduleNext(): void {
     this.timer = this.clock.setTimeout(() => {
-      void this.runChecks().finally(() => this.scheduleNext());
+      void this.runChecks()
+        .catch(() => {
+          // Each check already swallows its own errors; this is only a
+          // last-resort net so one unexpected throw can never leave an
+          // unhandled rejection that crashes the process.
+        })
+        .finally(() => this.scheduleNext());
     }, CHECK_INTERVAL_MS);
   }
 
+  /** Never throws: each check swallows its own errors so one failing check (e.g. the DB being down) can't skip the others or crash the process. */
   async runChecks(): Promise<void> {
     await Promise.all([
       this.checkDatabase(),
@@ -67,7 +74,15 @@ export class ProblemsMonitor {
   }
 
   private async checkBackends(): Promise<void> {
-    const backends = await this.backendRepository.list();
+    let backends: Awaited<ReturnType<BackendRepository["list"]>>;
+    try {
+      backends = await this.backendRepository.list();
+    } catch {
+      // Can't reach the database (e.g. it's down, see db_unreachable):
+      // leave backend_unreachable as it is rather than throwing.
+      return;
+    }
+
     const keep = new Set<string>();
     const now = this.clock.now().getTime();
 

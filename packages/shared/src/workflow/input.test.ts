@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   applyInputValues,
+  audioUploadLimitIssue,
   buildInputValuesSchema,
   buildPrompt,
   imageUploadLimitIssue,
@@ -10,13 +11,16 @@ import {
   uploadFileName,
   validateBinding,
   validateInputDefinition,
+  videoUploadLimitIssue,
 } from "./input.js";
 import type {
+  AudioUploadInputDefinition,
   ImageUploadInputDefinition,
   NumberInputDefinition,
   SeedInputDefinition,
   SelectInputDefinition,
   TextInputDefinition,
+  VideoUploadInputDefinition,
 } from "./input.js";
 import type { Workflow } from "./types.js";
 
@@ -868,6 +872,199 @@ describe("Image Upload Inputs (issue #50)", () => {
         { ...uploadInput, maxLongSide: null },
       ),
     ).toBeNull();
+  });
+});
+
+describe("Video/Audio Upload Inputs (issue #51)", () => {
+  const videoWorkflow: Workflow = {
+    "20": {
+      class_type: "VHS_LoadVideo",
+      inputs: { video: "example.mp4" },
+    },
+    "21": {
+      class_type: "LoadAudio",
+      inputs: { audio: "example.wav" },
+    },
+    "22": {
+      class_type: "SaveVideo",
+      inputs: { images: ["20", 0], filename_prefix: "ComfyUI" },
+    },
+  };
+  const videoCtx = {
+    workflow: videoWorkflow,
+    outputNodeIds: new Set(["22"]),
+    usedFields: new Set<string>(),
+  };
+  const videoInput: VideoUploadInputDefinition = {
+    id: "8a3c1c5e-2d4b-4d55-9d0e-3f1f0f6b7a02",
+    kind: "video_upload",
+    group: "describe",
+    label: "Reference clip",
+    help: "",
+    maxSizeMb: 50,
+    maxLongSide: 1920,
+    minDurationMs: 500,
+    maxDurationMs: 10_000,
+    trimmable: true,
+    bindings: [
+      { nodeId: "20", field: "video", classType: "VHS_LoadVideo", title: null },
+    ],
+  };
+  const audioInput: AudioUploadInputDefinition = {
+    id: "8a3c1c5e-2d4b-4d55-9d0e-3f1f0f6b7a03",
+    kind: "audio_upload",
+    group: "describe",
+    label: "Reference audio",
+    help: "",
+    maxSizeMb: 20,
+    minDurationMs: 500,
+    maxDurationMs: 10_000,
+    trimmable: false,
+    bindings: [
+      { nodeId: "21", field: "audio", classType: "LoadAudio", title: null },
+    ],
+  };
+  const uploadId = "0c6b3d2a-6f6a-4b8e-9f8e-1a2b3c4d5e70";
+
+  test("a Video Upload Input binds VHS_LoadVideo/VHS_LoadVideoFFmpeg without a flag", () => {
+    expect(validateBinding("video_upload", "20", "video", videoCtx)).toBeNull();
+  });
+
+  test("a Video Upload Input also binds a loader field the Backend flags video_upload", () => {
+    const withSpecs = {
+      ...videoCtx,
+      fieldSpecs: new Map([
+        ["LoadVideoCustom", { video: { type: "COMBO", videoUpload: true } }],
+      ]),
+      workflow: {
+        ...videoWorkflow,
+        "23": { class_type: "LoadVideoCustom", inputs: { video: "x.mp4" } },
+      },
+    };
+    expect(
+      validateBinding("video_upload", "23", "video", withSpecs),
+    ).toBeNull();
+  });
+
+  test("refuses a Video Upload Input bound to a field the Backend reports without the flag, on a non-VHS loader", () => {
+    const withSpecs = {
+      ...videoCtx,
+      fieldSpecs: new Map([["LoadAudio", { audio: { type: "COMBO" } }]]),
+    };
+    expect(validateBinding("video_upload", "21", "audio", withSpecs)).toContain(
+      "video upload loader",
+    );
+  });
+
+  test("an Audio Upload Input binds a loader field the Backend flags audio_upload", () => {
+    const withSpecs = {
+      ...videoCtx,
+      fieldSpecs: new Map([
+        ["LoadAudio", { audio: { type: "COMBO", audioUpload: true } }],
+      ]),
+    };
+    expect(
+      validateBinding("audio_upload", "21", "audio", withSpecs),
+    ).toBeNull();
+  });
+
+  test("refuses an Audio Upload Input bound to a field the Backend reports without the flag", () => {
+    const withSpecs = {
+      ...videoCtx,
+      fieldSpecs: new Map([["LoadAudio", { audio: { type: "COMBO" } }]]),
+    };
+    expect(validateBinding("audio_upload", "21", "audio", withSpecs)).toContain(
+      "audio upload loader",
+    );
+  });
+
+  test("max size, max long side and min/max duration are validated", () => {
+    const withCeiling = { ...videoCtx, maxUploadMb: 500 };
+    expect(validateInputDefinition(videoInput, [], withCeiling)).toEqual([]);
+    expect(
+      validateInputDefinition({ ...videoInput, maxSizeMb: 0 }, [], withCeiling),
+    ).toContain("max size must be 1-500 MB");
+    expect(
+      validateInputDefinition(
+        { ...videoInput, maxDurationMs: 100 },
+        [],
+        withCeiling,
+      ),
+    ).toContain("max duration must be greater than min duration");
+    expect(
+      validateInputDefinition(
+        { ...videoInput, minDurationMs: -1 },
+        [],
+        withCeiling,
+      ),
+    ).toContain(
+      "min duration must be a whole number of milliseconds, at least 0",
+    );
+    expect(validateInputDefinition(audioInput, [], withCeiling)).toEqual([]);
+  });
+
+  test("a shown Video/Audio Upload is always required and takes an Upload id", () => {
+    const schema = buildInputValuesSchema([videoInput, audioInput]);
+    expect(schema.safeParse({}).success).toBe(false);
+    expect(
+      schema.safeParse({
+        [videoInput.id]: uploadId,
+        [audioInput.id]: "not-an-id",
+      }).success,
+    ).toBe(false);
+    expect(
+      schema.safeParse({ [videoInput.id]: uploadId, [audioInput.id]: uploadId })
+        .success,
+    ).toBe(true);
+  });
+
+  test("buildPrompt writes the Upload's Backend file name into the loader field", () => {
+    const { prompt } = buildPrompt(
+      videoWorkflow,
+      [videoInput],
+      { [videoInput.id]: uploadFileName(uploadId, "mp4") },
+      ["22"],
+      "gen-1",
+    );
+    expect(prompt["20"]?.inputs.video).toBe(`studio/${uploadId}.mp4`);
+  });
+
+  test("videoUploadLimitIssue checks size, long side and duration", () => {
+    const mb = 1024 * 1024;
+    expect(
+      videoUploadLimitIssue({ size: 20 * mb, durationMs: 1000 }, videoInput),
+    ).toBeNull();
+    expect(
+      videoUploadLimitIssue({ size: 51 * mb, durationMs: 1000 }, videoInput),
+    ).toBe("is larger than 50 MB");
+    expect(
+      videoUploadLimitIssue(
+        { size: mb, width: 1921, height: 100, durationMs: 1000 },
+        videoInput,
+      ),
+    ).toBe("is larger than 1920 px on its long side");
+    expect(
+      videoUploadLimitIssue({ size: mb, durationMs: 100 }, videoInput),
+    ).toBe("is shorter than 0.5s");
+    expect(
+      videoUploadLimitIssue({ size: mb, durationMs: 20_000 }, videoInput),
+    ).toBe("is longer than 10.0s");
+  });
+
+  test("audioUploadLimitIssue checks size and duration, with no long side", () => {
+    const mb = 1024 * 1024;
+    expect(
+      audioUploadLimitIssue({ size: 20 * mb, durationMs: 1000 }, audioInput),
+    ).toBeNull();
+    expect(
+      audioUploadLimitIssue({ size: 21 * mb, durationMs: 1000 }, audioInput),
+    ).toBe("is larger than 20 MB");
+    expect(
+      audioUploadLimitIssue({ size: mb, durationMs: 100 }, audioInput),
+    ).toBe("is shorter than 0.5s");
+    expect(
+      audioUploadLimitIssue({ size: mb, durationMs: 20_000 }, audioInput),
+    ).toBe("is longer than 10.0s");
   });
 });
 

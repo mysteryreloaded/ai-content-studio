@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 import {
   type UploadApi,
   UploadError,
+  pickAudioIssue,
   pickIssue,
+  pickVideoIssue,
   uploadResumable,
 } from "./chunkedUpload.js";
 
@@ -45,7 +47,13 @@ function fakeServer(chunkSize: number) {
     },
     async complete(id) {
       calls.push("complete");
-      return { id, width: 10, height: 10 };
+      return {
+        id,
+        width: 10,
+        height: 10,
+        durationMs: null,
+        browserPlayable: null,
+      };
     },
   };
   return { api, calls, script, received: () => received };
@@ -275,5 +283,96 @@ describe("pickIssue", () => {
     expect(
       pickIssue({ ...png, size: MB }, limits, 500, { width: 2048, height: 10 }),
     ).toBeNull();
+  });
+});
+
+describe("pickVideoIssue", () => {
+  const mp4 = { name: "clip.mp4", type: "video/mp4" };
+
+  test("a too-long clip is refused against a non-trimmable Input", () => {
+    const limits = {
+      maxSizeMb: 50,
+      maxLongSide: null,
+      minDurationMs: 0,
+      maxDurationMs: 10_000,
+      trimmable: false,
+    };
+    expect(
+      pickVideoIssue({ ...mp4, size: MB }, limits, 500, { durationMs: 30_000 }),
+    ).toBe("is longer than 10.0s");
+  });
+
+  test("a too-long clip for a trimmable Input isn't refused client-side (it's trimmed before Generate)", () => {
+    const limits = {
+      maxSizeMb: 50,
+      maxLongSide: null,
+      minDurationMs: 0,
+      maxDurationMs: 10_000,
+      trimmable: true,
+    };
+    expect(
+      pickVideoIssue({ ...mp4, size: MB }, limits, 500, { durationMs: 30_000 }),
+    ).toBeNull();
+  });
+
+  test("a trimmable Input still refuses a too-short clip, and still refuses size/dimension issues", () => {
+    const limits = {
+      maxSizeMb: 50,
+      maxLongSide: 1920,
+      minDurationMs: 2_000,
+      maxDurationMs: 10_000,
+      trimmable: true,
+    };
+    expect(
+      pickVideoIssue({ ...mp4, size: MB }, limits, 500, { durationMs: 500 }),
+    ).toBe("is shorter than 2.0s");
+    expect(
+      pickVideoIssue({ ...mp4, size: 51 * MB }, limits, 500, {
+        durationMs: 5000,
+      }),
+    ).toBe("is larger than 50 MB");
+  });
+});
+
+describe("pickAudioIssue", () => {
+  const mp3 = { name: "clip.mp3", type: "audio/mpeg" };
+
+  test("a too-long clip is refused against a non-trimmable Input", () => {
+    const limits = {
+      maxSizeMb: 20,
+      minDurationMs: 0,
+      maxDurationMs: 10_000,
+      trimmable: false,
+    };
+    expect(pickAudioIssue({ ...mp3, size: MB }, limits, 500, 30_000)).toBe(
+      "is longer than 10.0s",
+    );
+  });
+
+  test("a too-long clip for a trimmable Input isn't refused client-side", () => {
+    const limits = {
+      maxSizeMb: 20,
+      minDurationMs: 0,
+      maxDurationMs: 10_000,
+      trimmable: true,
+    };
+    expect(
+      pickAudioIssue({ ...mp3, size: MB }, limits, 500, 30_000),
+    ).toBeNull();
+  });
+
+  test("a trimmable Input still refuses a too-short clip or one over its own size limit", () => {
+    const limits = {
+      maxSizeMb: 20,
+      minDurationMs: 2_000,
+      maxDurationMs: 10_000,
+      trimmable: true,
+    };
+    expect(pickAudioIssue({ ...mp3, size: MB }, limits, 500, 500)).toBe(
+      "is shorter than 2.0s",
+    );
+    expect(pickAudioIssue({ ...mp3, size: 21 * MB }, limits, 500, 5000)).toBe(
+      "is larger than 20 MB",
+    );
   });
 });

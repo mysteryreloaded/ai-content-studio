@@ -76,6 +76,38 @@ export interface ImageUploadInputDefinition extends InputBase {
 }
 
 /**
+ * A Video Upload Input (issue #51): takes one video Upload (MP4, MOV,
+ * WebM or MKV; H.264, HEVC, VP8, VP9 or AV1). Binds to a loader flagged
+ * `video_upload` or to `VHS_LoadVideo`/`VHS_LoadVideoFFmpeg`. Optionally
+ * trimmable on a local player; an Upload the browser can't play passes
+ * through untrimmed only when it already fits (ADR 0007).
+ */
+export interface VideoUploadInputDefinition extends InputBase {
+  kind: "video_upload";
+  /** Whole MB, 1 to the Operator's MAX_UPLOAD_MB. */
+  maxSizeMb: number;
+  /** The largest allowed width or height in pixels; null for no limit. */
+  maxLongSide: number | null;
+  minDurationMs: number;
+  maxDurationMs: number;
+  trimmable: boolean;
+}
+
+/**
+ * An Audio Upload Input (issue #51): takes one audio Upload (WAV, MP3,
+ * FLAC, OGG/Opus or M4A/AAC). Binds to a loader flagged `audio_upload`.
+ * Optionally trimmable on a local player.
+ */
+export interface AudioUploadInputDefinition extends InputBase {
+  kind: "audio_upload";
+  /** Whole MB, 1 to the Operator's MAX_UPLOAD_MB. */
+  maxSizeMb: number;
+  minDurationMs: number;
+  maxDurationMs: number;
+  trimmable: boolean;
+}
+
+/**
  * A Model's own Input type (issue #47, ADR 0007): bound to exactly one
  * INT Node field, with no default, at most one per Model. Blank, the
  * studio draws a random seed; set, the user's own. `max` bounds the
@@ -92,6 +124,8 @@ export type InputDefinition =
   | NumberInputDefinition
   | SelectInputDefinition
   | ImageUploadInputDefinition
+  | VideoUploadInputDefinition
+  | AudioUploadInputDefinition
   | SeedInputDefinition;
 
 export const BYTES_PER_MB = 1024 * 1024;
@@ -125,6 +159,84 @@ export function imageUploadLimitIssue(
   }
   return null;
 }
+
+/**
+ * Why a video file breaks a Video Upload Input's limits, or null (issue
+ * #51). Size and long side are checked the same way an Image Upload's
+ * are; duration is checked against min/max. Dimensions/duration are
+ * skipped while still unknown (not yet probed by the server).
+ */
+export function videoUploadLimitIssue(
+  file: {
+    size: number;
+    width?: number | null;
+    height?: number | null;
+    durationMs?: number | null;
+  },
+  limits: Pick<
+    VideoUploadInputDefinition,
+    "maxSizeMb" | "maxLongSide" | "minDurationMs" | "maxDurationMs"
+  >,
+): string | null {
+  const sizeOrDimensionIssue = imageUploadLimitIssue(file, limits);
+  if (sizeOrDimensionIssue) return sizeOrDimensionIssue;
+  if (typeof file.durationMs === "number") {
+    if (file.durationMs < limits.minDurationMs) {
+      return `is shorter than ${(limits.minDurationMs / 1000).toFixed(1)}s`;
+    }
+    if (file.durationMs > limits.maxDurationMs) {
+      return `is longer than ${(limits.maxDurationMs / 1000).toFixed(1)}s`;
+    }
+  }
+  return null;
+}
+
+/** Why an audio file breaks an Audio Upload Input's limits, or null (issue #51): size and duration only, audio has no dimensions. */
+export function audioUploadLimitIssue(
+  file: { size: number; durationMs?: number | null },
+  limits: Pick<
+    AudioUploadInputDefinition,
+    "maxSizeMb" | "minDurationMs" | "maxDurationMs"
+  >,
+): string | null {
+  if (file.size > limits.maxSizeMb * BYTES_PER_MB) {
+    return `is larger than ${limits.maxSizeMb} MB`;
+  }
+  if (typeof file.durationMs === "number") {
+    if (file.durationMs < limits.minDurationMs) {
+      return `is shorter than ${(limits.minDurationMs / 1000).toFixed(1)}s`;
+    }
+    if (file.durationMs > limits.maxDurationMs) {
+      return `is longer than ${(limits.maxDurationMs / 1000).toFixed(1)}s`;
+    }
+  }
+  return null;
+}
+
+/** Loaders a Video Upload Input may bind to besides a flagged `video_upload` field (issue #51). */
+export const VIDEO_LOADER_CLASS_TYPES: ReadonlySet<string> = new Set([
+  "VHS_LoadVideo",
+  "VHS_LoadVideoFFmpeg",
+]);
+
+/** A video Upload's accepted containers, by file extension (issue #51); the real check is ffprobe's at complete. */
+export const VIDEO_UPLOAD_EXTENSIONS: readonly string[] = [
+  "mp4",
+  "mov",
+  "webm",
+  "mkv",
+];
+
+/** An audio Upload's accepted containers, by file extension (issue #51); the real check is ffprobe's at complete. */
+export const AUDIO_UPLOAD_EXTENSIONS: readonly string[] = [
+  "wav",
+  "mp3",
+  "flac",
+  "ogg",
+  "opus",
+  "m4a",
+  "aac",
+];
 
 /** An Upload's file name on a Backend, under its `input/studio` folder (issue #50). */
 export function uploadFileName(uploadId: string, extension: string): string {
@@ -179,6 +291,10 @@ export interface ComfyFieldSpec {
   options?: readonly string[];
   /** Issue #50: the Backend flags this loader field `image_upload` (ComfyUI's `LoadImage.image`). */
   imageUpload?: boolean;
+  /** Issue #51: the Backend flags this loader field `video_upload`. */
+  videoUpload?: boolean;
+  /** Issue #51: the Backend flags this loader field `audio_upload`. */
+  audioUpload?: boolean;
   /** An INT/FLOAT field's own range and step, when the Backend reports them (issue #49). */
   min?: number;
   max?: number;
@@ -259,6 +375,22 @@ export function validateBinding(
     const spec = ctx.fieldSpecs?.get(node.class_type)?.[field];
     if (spec ? !spec.imageUpload : typeof value !== "string") {
       return `field "${field}" on node "${nodeId}" isn't an image upload loader field`;
+    }
+  }
+  if (kind === "video_upload") {
+    const spec = ctx.fieldSpecs?.get(node.class_type)?.[field];
+    const isVideoLoader = VIDEO_LOADER_CLASS_TYPES.has(node.class_type);
+    if (
+      !isVideoLoader &&
+      (spec ? !spec.videoUpload : typeof value !== "string")
+    ) {
+      return `field "${field}" on node "${nodeId}" isn't a video upload loader field`;
+    }
+  }
+  if (kind === "audio_upload") {
+    const spec = ctx.fieldSpecs?.get(node.class_type)?.[field];
+    if (spec ? !spec.audioUpload : typeof value !== "string") {
+      return `field "${field}" on node "${nodeId}" isn't an audio upload loader field`;
     }
   }
   return null;
@@ -347,6 +479,37 @@ export function validateInputDefinition(
       (!Number.isInteger(input.maxLongSide) || input.maxLongSide < 1)
     ) {
       errors.push("max long side must be a whole number of pixels, at least 1");
+    }
+  } else if (input.kind === "video_upload" || input.kind === "audio_upload") {
+    const ceiling = ctx.maxUploadMb ?? Number.POSITIVE_INFINITY;
+    if (
+      !Number.isInteger(input.maxSizeMb) ||
+      input.maxSizeMb < 1 ||
+      input.maxSizeMb > ceiling
+    ) {
+      errors.push(
+        Number.isFinite(ceiling)
+          ? `max size must be 1-${ceiling} MB`
+          : "max size must be a whole number of MB, at least 1",
+      );
+    }
+    if (
+      input.kind === "video_upload" &&
+      input.maxLongSide !== null &&
+      (!Number.isInteger(input.maxLongSide) || input.maxLongSide < 1)
+    ) {
+      errors.push("max long side must be a whole number of pixels, at least 1");
+    }
+    if (!Number.isInteger(input.minDurationMs) || input.minDurationMs < 0) {
+      errors.push(
+        "min duration must be a whole number of milliseconds, at least 0",
+      );
+    }
+    if (
+      !Number.isInteger(input.maxDurationMs) ||
+      input.maxDurationMs <= input.minDurationMs
+    ) {
+      errors.push("max duration must be greater than min duration");
     }
   } else if (input.kind === "seed") {
     if (input.bindings.length > 1) {
@@ -491,7 +654,11 @@ export function buildInputValuesSchema(
           { message: "must be a whole number" },
         );
       shape[input.id] = required ? schema : schema.optional();
-    } else if (input.kind === "image_upload") {
+    } else if (
+      input.kind === "image_upload" ||
+      input.kind === "video_upload" ||
+      input.kind === "audio_upload"
+    ) {
       shape[input.id] = z
         .string({ error: "pick a file" })
         .regex(UUID_RE, { message: "must be an Upload id" });

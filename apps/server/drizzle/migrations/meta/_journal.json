@@ -162,6 +162,13 @@
       "when": 1792832400000,
       "tag": "0022_blue_apocalypse",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1792832400001,
+      "tag": "0023_rich_skreet",
+      "breakpoints": true
     }
   ]
 }

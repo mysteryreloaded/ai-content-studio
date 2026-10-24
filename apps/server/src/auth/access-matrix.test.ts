@@ -193,6 +193,7 @@ describe("every route's access level is declared and enforced", () => {
       "GET /api/uploads/:id/status": 404,
       "PUT /api/uploads/:id/chunk": 404,
       "POST /api/uploads/:id/complete": 404,
+      "POST /api/uploads/:id/trim": 404,
       "GET /api/uploads/:id": 404,
       "GET /api/uploads/:id/thumb": 404,
     };

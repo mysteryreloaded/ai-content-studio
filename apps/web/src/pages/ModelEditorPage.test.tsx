@@ -657,6 +657,85 @@ describe("ModelEditorPage", () => {
     expect(cell.style.opacity).toBe("");
   });
 
+  test("the Mode x Input grid's State select never offers 'fixed' for a Video or Audio Upload Input (issue #51: always a real Upload id)", async () => {
+    const DETAIL_UPLOADS = {
+      ...DETAIL,
+      modes: [
+        {
+          id: "mode-1",
+          sortOrder: 0,
+          name: "Mode 1",
+          description: "",
+          outputNodes: [
+            { nodeId: "1", classType: "LoadImage", title: null, kind: null },
+          ],
+          inputSettings: [],
+        },
+      ],
+      inputs: [
+        {
+          id: "video-input",
+          kind: "video_upload",
+          group: "describe",
+          label: "Clip",
+          help: "",
+          maxSizeMb: 50,
+          maxLongSide: null,
+          minDurationMs: 0,
+          maxDurationMs: 10_000,
+          trimmable: true,
+          bindings: [
+            {
+              nodeId: "1",
+              field: "image",
+              classType: "LoadImage",
+              title: null,
+            },
+          ],
+        },
+        {
+          id: "audio-input",
+          kind: "audio_upload",
+          group: "describe",
+          label: "Narration",
+          help: "",
+          maxSizeMb: 20,
+          minDurationMs: 0,
+          maxDurationMs: 10_000,
+          trimmable: true,
+          bindings: [
+            {
+              nodeId: "1",
+              field: "image",
+              classType: "LoadImage",
+              title: null,
+            },
+          ],
+        },
+      ],
+    };
+
+    mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1")) {
+        return Response.json(DETAIL_UPLOADS);
+      }
+      if (call.method === "GET") return Response.json(NO_BACKENDS);
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+
+    for (const label of ["Clip", "Narration"]) {
+      const row = (await view.findByText(label, { selector: "th" })).closest(
+        "tr",
+      ) as HTMLElement;
+      const select = row.querySelector("select") as HTMLSelectElement;
+      const options = [...select.options].map((o) => o.value);
+      expect(options).not.toContain("fixed");
+      expect(options).toContain("optional");
+    }
+  });
+
   test("Duplicate Mode adds a copy right after the original, named '… copy'", async () => {
     const DETAIL_ONE_MODE = {
       ...DETAIL,

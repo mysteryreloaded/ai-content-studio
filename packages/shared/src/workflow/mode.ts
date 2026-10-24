@@ -270,11 +270,22 @@ export function validateModeInputSettings(
       // ADR 0007: blank always means "draw one"; fixing a Seed would
       // make every Submission draw the same one, defeating the point.
       errors.push(`"${input.label}" is a Seed and can't be fixed`);
-    } else if (input.kind === "image_upload") {
-      // issue #50/#48 CEO review: an Upload always takes a real Upload
-      // id (there's no Workflow-default fallback for a missing file),
-      // so a fixed bare file name isn't this Input's concern.
-      errors.push(`"${input.label}" is an Image Upload and can't be fixed`);
+    } else if (
+      input.kind === "image_upload" ||
+      input.kind === "video_upload" ||
+      input.kind === "audio_upload"
+    ) {
+      // issue #50/#48 CEO review (issue #51: video/audio Uploads too):
+      // an Upload always takes a real Upload id (there's no
+      // Workflow-default fallback for a missing file), so a fixed bare
+      // file name isn't this Input's concern.
+      const kindLabel =
+        input.kind === "image_upload"
+          ? "an Image Upload"
+          : input.kind === "video_upload"
+            ? "a Video Upload"
+            : "an Audio Upload";
+      errors.push(`"${input.label}" is ${kindLabel} and can't be fixed`);
     }
   }
 

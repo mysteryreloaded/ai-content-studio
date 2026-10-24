@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import type {
+  AudioUploadInputDefinition,
   ImageUploadInputDefinition,
   NumberInputDefinition,
   SelectInputDefinition,
   TextInputDefinition,
+  VideoUploadInputDefinition,
 } from "./input.js";
 import { relevantInputs } from "./input.js";
 import {
@@ -189,6 +191,31 @@ describe("Mode × Input settings (issue #48)", () => {
     maxLongSide: null,
     bindings: [{ nodeId: "4", field: "image", classType: "X", title: null }],
   };
+  const videoUploadInput: VideoUploadInputDefinition = {
+    id: "video",
+    kind: "video_upload",
+    group: "describe",
+    label: "Video",
+    help: "",
+    maxSizeMb: 50,
+    maxLongSide: null,
+    minDurationMs: 0,
+    maxDurationMs: 10_000,
+    trimmable: true,
+    bindings: [{ nodeId: "4", field: "video", classType: "X", title: null }],
+  };
+  const audioUploadInput: AudioUploadInputDefinition = {
+    id: "audio",
+    kind: "audio_upload",
+    group: "describe",
+    label: "Audio",
+    help: "",
+    maxSizeMb: 20,
+    minDurationMs: 0,
+    maxDurationMs: 10_000,
+    trimmable: true,
+    bindings: [{ nodeId: "4", field: "audio", classType: "X", title: null }],
+  };
 
   describe("modeInputSetting", () => {
     test("defaults to optional with no label override", () => {
@@ -296,6 +323,25 @@ describe("Mode × Input settings (issue #48)", () => {
       expect(
         validateModeInputSettings(settings, [...inputs, imageUploadInput])[0],
       ).toContain("Image Upload");
+    });
+
+    test("refuses fixing a Video or Audio Upload too (issue #51: the same always-a-real-Upload-id rule)", () => {
+      const settings: ModeInputSetting[] = [
+        { inputId: "video", state: "fixed", fixedValue: "clip.mp4", label: "" },
+      ];
+      expect(
+        validateModeInputSettings(settings, [...inputs, videoUploadInput])[0],
+      ).toContain("Video Upload");
+
+      const audioSettings: ModeInputSetting[] = [
+        { inputId: "audio", state: "fixed", fixedValue: "clip.wav", label: "" },
+      ];
+      expect(
+        validateModeInputSettings(audioSettings, [
+          ...inputs,
+          audioUploadInput,
+        ])[0],
+      ).toContain("Audio Upload");
     });
 
     test("refuses a Mode label over 60 characters", () => {

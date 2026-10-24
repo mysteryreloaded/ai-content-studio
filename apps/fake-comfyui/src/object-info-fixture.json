@@ -471,5 +471,43 @@
     "description": "",
     "category": "utilities/logic",
     "output_node": false
+  },
+  "LoadVideoCustom": {
+    "input": {
+      "required": {
+        "video": [
+          ["example.mp4"],
+          {
+            "video_upload": true
+          }
+        ]
+      }
+    },
+    "output": ["IMAGE", "VHS_VIDEOINFO"],
+    "output_name": ["IMAGE", "video_info"],
+    "name": "LoadVideoCustom",
+    "display_name": "Load Video (Custom)",
+    "description": "",
+    "category": "image/video",
+    "output_node": false
+  },
+  "LoadAudioCustom": {
+    "input": {
+      "required": {
+        "audio": [
+          ["example.wav"],
+          {
+            "audio_upload": true
+          }
+        ]
+      }
+    },
+    "output": ["AUDIO"],
+    "output_name": ["AUDIO"],
+    "name": "LoadAudioCustom",
+    "display_name": "Load Audio (Custom)",
+    "description": "",
+    "category": "audio",
+    "output_node": false
   }
 }

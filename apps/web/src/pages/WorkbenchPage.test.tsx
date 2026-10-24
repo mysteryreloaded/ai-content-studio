@@ -5,6 +5,30 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
 await GlobalRegistrator.register();
 
+// happy-dom never fires a <video>/<audio> element's loadedmetadata or
+// error event for a blob: URL, so `readMediaDuration` (chunkedUpload.ts)
+// would hang forever reading a picked file's own duration. Firing
+// `error` (as a real browser would for a file it truly can't decode)
+// resolves it to `null`, which is exactly how the client already
+// handles "the browser couldn't tell": skip the client-side duration
+// check and let the server's own probe at complete decide.
+{
+  const descriptor = Object.getOwnPropertyDescriptor(
+    HTMLMediaElement.prototype,
+    "src",
+  );
+  Object.defineProperty(HTMLMediaElement.prototype, "src", {
+    configurable: true,
+    get() {
+      return descriptor?.get?.call(this) ?? "";
+    },
+    set(value: string) {
+      descriptor?.set?.call(this, value);
+      queueMicrotask(() => this.dispatchEvent(new Event("error")));
+    },
+  });
+}
+
 const { cleanup, render, waitFor } = await import("@testing-library/react");
 const { createMemoryRouter, RouterProvider } = await import("react-router-dom");
 const { WorkbenchPage } = await import("./WorkbenchPage.js");
@@ -1061,6 +1085,182 @@ describe("WorkbenchPage", () => {
         await view.findByText("anim.gif isn't a PNG, JPEG or WebP image."),
       ).toBeTruthy();
       expect(server.calls).toEqual([]);
+    });
+  });
+
+  describe("Video Upload Inputs: trimming before Generate (issue #51's AC)", () => {
+    const VIDEO_INPUT_ID = "88888888-8888-4888-8888-888888888888";
+    const UPLOAD_ID = "99999999-9999-4999-8999-999999999999";
+    const TRIMMED_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const VIDEO_MODEL = {
+      ...MODEL,
+      modes: [
+        {
+          id: "mode-video",
+          name: "Default",
+          description: "",
+          inputs: [
+            {
+              id: VIDEO_INPUT_ID,
+              kind: "video_upload",
+              group: "describe",
+              label: "Clip",
+              help: "",
+              placeholder: null,
+              maxSizeMb: 50,
+              maxLongSide: null,
+              minDurationMs: 0,
+              maxDurationMs: 10_000,
+              trimmable: true,
+            },
+          ],
+        },
+      ],
+    };
+
+    /** The uploaded file completes at a 2s duration; `trim` returns a distinct Upload id. */
+    function videoServer() {
+      const posts: FetchCall[] = [];
+      const trimCalls: FetchCall[] = [];
+      mockFetch(async (call) => {
+        if (call.url.endsWith("/api/models/ltx")) {
+          return Response.json({ model: VIDEO_MODEL });
+        }
+        if (
+          call.url.endsWith("/api/models/ltx/generations") &&
+          call.method === "GET"
+        ) {
+          return Response.json({ submissions: [] });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          posts.push(call);
+          return Response.json({ generation: { id: "g1" } }, { status: 201 });
+        }
+        if (call.url === "/api/uploads") {
+          return Response.json(
+            { upload: { id: UPLOAD_ID, chunkSize: 16 * 1024 * 1024 } },
+            { status: 201 },
+          );
+        }
+        if (call.url.startsWith(`/api/uploads/${UPLOAD_ID}/chunk`)) {
+          return Response.json({ offset: 4 });
+        }
+        if (call.url === `/api/uploads/${UPLOAD_ID}/complete`) {
+          return Response.json({
+            upload: {
+              id: UPLOAD_ID,
+              durationMs: 2000,
+              browserPlayable: true,
+            },
+          });
+        }
+        if (call.url === `/api/uploads/${UPLOAD_ID}/trim`) {
+          trimCalls.push(call);
+          return Response.json(
+            {
+              upload: {
+                id: TRIMMED_ID,
+                durationMs: 1500,
+                browserPlayable: true,
+              },
+            },
+            { status: 201 },
+          );
+        }
+        throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+      });
+      return { posts, trimCalls };
+    }
+
+    test("changing Start, then Generate: trims once and submits the trimmed Upload's id", async () => {
+      const server = videoServer();
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await view.findByText("Your media");
+      await userEvent.upload(
+        view.getByLabelText("Clip"),
+        new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
+      );
+
+      const startInput = await view.findByLabelText("Start (s)");
+      await userEvent.clear(startInput);
+      await userEvent.type(startInput, "0.5");
+
+      await userEvent.click(view.getByRole("button", { name: "Generate" }));
+
+      await waitFor(() => expect(server.trimCalls).toHaveLength(1));
+      expect(server.trimCalls[0]?.body).toEqual({
+        startMs: 500,
+        endMs: 2000,
+      });
+
+      await waitFor(() => expect(server.posts).toHaveLength(1));
+      expect(server.posts[0]?.body).toMatchObject({
+        modeId: "mode-video",
+        values: { [VIDEO_INPUT_ID]: TRIMMED_ID },
+      });
+    });
+
+    test("an untouched range isn't trimmed: Generate submits the uploaded Upload's own id", async () => {
+      const server = videoServer();
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await view.findByText("Your media");
+      await userEvent.upload(
+        view.getByLabelText("Clip"),
+        new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
+      );
+      await view.findByLabelText("Start (s)");
+
+      await userEvent.click(view.getByRole("button", { name: "Generate" }));
+
+      await waitFor(() => expect(server.posts).toHaveLength(1));
+      expect(server.trimCalls).toHaveLength(0);
+      expect(server.posts[0]?.body).toMatchObject({
+        modeId: "mode-video",
+        values: { [VIDEO_INPUT_ID]: UPLOAD_ID },
+      });
+    });
+
+    test("a trimmed Generate, then the range set back to the whole clip, submits the Upload's own id, not the stale trimmed one (Dule's round 6 review)", async () => {
+      const server = videoServer();
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await view.findByText("Your media");
+      await userEvent.upload(
+        view.getByLabelText("Clip"),
+        new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
+      );
+
+      const startInput = await view.findByLabelText("Start (s)");
+      await userEvent.clear(startInput);
+      await userEvent.type(startInput, "0.5");
+      await userEvent.click(view.getByRole("button", { name: "Generate" }));
+
+      await waitFor(() => expect(server.trimCalls).toHaveLength(1));
+      await waitFor(() => expect(server.posts).toHaveLength(1));
+      expect(server.posts[0]?.body).toMatchObject({
+        values: { [VIDEO_INPUT_ID]: TRIMMED_ID },
+      });
+
+      await userEvent.clear(startInput);
+      await userEvent.type(startInput, "0");
+      await userEvent.click(view.getByRole("button", { name: "Generate" }));
+
+      await waitFor(() => expect(server.posts).toHaveLength(2));
+      expect(server.trimCalls).toHaveLength(1);
+      expect(server.posts[1]?.body).toMatchObject({
+        values: { [VIDEO_INPUT_ID]: UPLOAD_ID },
+      });
     });
   });
 });

@@ -19,16 +19,18 @@ export interface CropRegion {
 
 /**
  * Python's `round()`: half rounds to the nearest even integer, not
- * always up. `common_upscale`'s own crop offsets use it, so matching it
- * here is what "reproduces ImageScale's centre crop" means for a frame
- * whose crop amount lands exactly on a half pixel.
+ * always up. `common_upscale`'s own crop offset uses it, so matching it
+ * exactly here is what "reproduces ImageScale's centre crop" means for
+ * an offset that lands exactly on a half pixel. No epsilon: a genuine
+ * floating-point `.5` (from dividing a difference by 2) is exact in
+ * binary, so fuzzing the comparison would only risk the wrong tie-break
+ * on an input that was never actually ambiguous.
  */
 export function roundHalfToEven(n: number): number {
   const floor = Math.floor(n);
   const diff = n - floor;
-  const EPSILON = 1e-9;
-  if (diff < 0.5 - EPSILON) return floor;
-  if (diff > 0.5 + EPSILON) return floor + 1;
+  if (diff < 0.5) return floor;
+  if (diff > 0.5) return floor + 1;
   return floor % 2 === 0 ? floor : floor + 1;
 }
 
@@ -36,9 +38,10 @@ export function roundHalfToEven(n: number): number {
  * The region of a `frameWidth` x `frameHeight` frame that `ImageScale`'s
  * `crop: "center"` keeps before scaling to `targetWidth` x `targetHeight`
  * (ComfyUI's `common_upscale`): whichever side is too wide for the
- * target aspect loses `round-half-to-even` pixels, split floor/ceil
- * between its two edges (an odd amount leaves the extra pixel on the
- * bottom/right, the same floor-division both offsets use).
+ * target aspect loses an offset off each edge, where
+ * `off = round((amount removed) / 2)` — the *halved* amount is rounded,
+ * not the full amount then halved, so the kept width/height is always
+ * exactly `original - 2*off`.
  */
 export function centerCropRegion(
   frameWidth: number,
@@ -49,24 +52,21 @@ export function centerCropRegion(
   const oldAspect = frameWidth / frameHeight;
   const newAspect = targetWidth / targetHeight;
 
-  let cropX = 0;
-  let cropY = 0;
+  let left = 0;
+  let top = 0;
+  let width = frameWidth;
+  let height = frameHeight;
   if (oldAspect > newAspect) {
-    cropX = roundHalfToEven(frameWidth - frameWidth * (newAspect / oldAspect));
+    const amount = frameWidth - frameWidth * (newAspect / oldAspect);
+    left = roundHalfToEven(amount / 2);
+    width = frameWidth - 2 * left;
   } else if (oldAspect < newAspect) {
-    cropY = roundHalfToEven(
-      frameHeight - frameHeight * (oldAspect / newAspect),
-    );
+    const amount = frameHeight - frameHeight * (oldAspect / newAspect);
+    top = roundHalfToEven(amount / 2);
+    height = frameHeight - 2 * top;
   }
 
-  const left = Math.floor(cropX / 2);
-  const top = Math.floor(cropY / 2);
-  return {
-    left,
-    top,
-    width: frameWidth - left - Math.floor(cropX / 2),
-    height: frameHeight - top - Math.floor(cropY / 2),
-  };
+  return { left, top, width, height };
 }
 
 /** Whether a fraction-of-frame `point` lands inside `crop` (inclusive of its edges). */

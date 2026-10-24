@@ -93,9 +93,12 @@ type WorkbenchInput = {
       kind: "points";
       /** The Video Upload Input (issue #52) whose first frame this picks on. */
       videoInputId: string;
-      /** A shown Number Input (if any) bound to the same field as the crop/scale target width, watched live instead of `defaultWidth`. */
+      /** A shown Number or Select Input (if any) bound to the same field as the crop/scale target width, watched live instead of `defaultWidth`. */
       widthInputId: string | null;
       heightInputId: string | null;
+      /** When `widthInputId` names a Select Input, that option id's own value for this field (issue #52 CEO review round 2: its own value isn't the field's number). */
+      widthOptionValues: Record<string, number> | null;
+      heightOptionValues: Record<string, number> | null;
       defaultWidth: number | null;
       defaultHeight: number | null;
     }
@@ -1922,6 +1925,30 @@ function YourMedia({
   );
 }
 
+/**
+ * A Points Input's crop/scale target Width or Height (issue #52 CEO
+ * review round 2 point 4): when `inputId` names a shown Select Input,
+ * its current (or default) value is an option id, resolved through
+ * `optionValues`, not a number `Number()` can parse; a Number Input's
+ * own value parses directly. Falls back to the literal `fallback` when
+ * nothing resolves (no bound Input, or its value is blank).
+ */
+function resolveTargetSize(
+  inputId: string | null,
+  optionValues: Record<string, number> | null,
+  fallback: number | null,
+  values: Record<string, string>,
+): number | null {
+  if (!inputId) return fallback;
+  const raw = values[inputId];
+  if (!raw) return fallback;
+  if (optionValues) {
+    return optionValues[raw] ?? fallback;
+  }
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 /** Closest distance (as a fraction of the frame) at which a click counts as "on an existing point", rather than a new one. */
 const POINT_HIT_RADIUS = 0.03;
 
@@ -1989,16 +2016,18 @@ function PointsField({
   const uploadId = upload?.status === "complete" ? upload.uploadId : null;
   const startMs = range?.startMs ?? null;
 
-  const widthRaw = input.widthInputId ? values[input.widthInputId] : "";
-  const heightRaw = input.heightInputId ? values[input.heightInputId] : "";
-  const widthFromInput = widthRaw ? Number(widthRaw) : Number.NaN;
-  const heightFromInput = heightRaw ? Number(heightRaw) : Number.NaN;
-  const targetWidth = Number.isFinite(widthFromInput)
-    ? widthFromInput
-    : input.defaultWidth;
-  const targetHeight = Number.isFinite(heightFromInput)
-    ? heightFromInput
-    : input.defaultHeight;
+  const targetWidth = resolveTargetSize(
+    input.widthInputId,
+    input.widthOptionValues,
+    input.defaultWidth,
+    values,
+  );
+  const targetHeight = resolveTargetSize(
+    input.heightInputId,
+    input.heightOptionValues,
+    input.defaultHeight,
+    values,
+  );
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const [frame, setFrame] = useState<{ width: number; height: number } | null>(

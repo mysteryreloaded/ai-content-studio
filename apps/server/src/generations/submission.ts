@@ -556,10 +556,18 @@ export async function submitGeneration(
   // issue #52: resolved from the still-raw submitted values (a video
   // Upload's bare id, needed to look up its probed frame size), before
   // `resolveUploadValues` below rewrites it to a Backend file name.
+  // `fixedValues` is merged in too: a fixed Width/Height Input isn't in
+  // `formInputs` (so never in `parsedValues.data`), and without its own
+  // fixed value here, `applyInputValues` would resolve that field from
+  // the bound Number Input's own default (or the Workflow's literal)
+  // instead of the value this Mode actually fixes it to.
   const frameSizes = await resolvePointsFrameSizes(
     nonHiddenRelevant,
     workflowForMode,
-    parsedValues.data as Record<string, string | number | undefined>,
+    {
+      ...(parsedValues.data as Record<string, string | number | undefined>),
+      ...(fixedValues as Record<string, string | number | undefined>),
+    },
     params.userId,
     deps,
   );

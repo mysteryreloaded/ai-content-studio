@@ -50,14 +50,26 @@ describe("centerCropRegion", () => {
     expect(crop.width).toBe(101);
   });
 
-  test("a half-pixel crop amount rounds to the nearest even pixel", () => {
-    // old aspect 3 (3x1), new aspect 0.5 (1x2):
-    // cropX = 3 - 3*(0.5/3) = 2.5 exactly -> rounds to 2 (even)
-    const crop = centerCropRegion(3, 1, 1, 2);
-    expect(crop.left).toBe(1);
-    expect(crop.width).toBe(1);
-    expect(crop.top).toBe(0);
-    expect(crop.height).toBe(1);
+  test("a half-pixel offset ties to the nearest even one", () => {
+    // old aspect 10 (10x1), new aspect 5 (5x1): amount = 10 - 10*(5/10) = 5,
+    // off = 5/2 = 2.5 exactly -> ties to 2 (even)
+    const tiesDown = centerCropRegion(10, 1, 5, 1);
+    expect(tiesDown.left).toBe(2);
+    expect(tiesDown.width).toBe(6);
+
+    // old aspect 10 (10x1), new aspect 3 (3x1): amount = 10 - 10*(3/10) = 7,
+    // off = 7/2 = 3.5 exactly -> ties to 4 (even), not 3
+    const tiesUp = centerCropRegion(10, 1, 3, 1);
+    expect(tiesUp.left).toBe(4);
+    expect(tiesUp.width).toBe(2);
+  });
+
+  test("1440x1080 cropped for 832x480 keeps width, offsets height by 125 (CEO review round 2)", () => {
+    // This is ComfyUI's own off = round((H - H*(old/new)) / 2), halving
+    // *before* rounding; rounding the full amount first (249.23 -> 249)
+    // then halving by floor division gives 124, one pixel short.
+    const crop = centerCropRegion(1440, 1080, 832, 480);
+    expect(crop).toEqual({ left: 0, top: 125, width: 1440, height: 830 });
   });
 
   test("crops height when the frame is taller than the target aspect", () => {

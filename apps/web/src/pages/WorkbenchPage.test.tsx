@@ -1347,6 +1347,50 @@ describe("WorkbenchPage", () => {
       };
     }
 
+    const SIZE_SELECT_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    const SMALL_OPTION_ID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+    const BIG_OPTION_ID = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+
+    /** Like {@link pointsModelWithDefaultSize}, but the crop/scale target width comes from a shown Select Input's chosen option, not a literal or a Number Input (issue #52 CEO review round 2 point 4). */
+    function pointsModelWithBoundSelectWidth() {
+      const model = pointsModelWithDefaultSize();
+      const pointsInput = model.modes[0]?.inputs[1];
+      if (!pointsInput || pointsInput.kind !== "points") throw new Error();
+      return {
+        ...model,
+        modes: [
+          {
+            ...model.modes[0],
+            inputs: [
+              model.modes[0]?.inputs[0],
+              {
+                id: SIZE_SELECT_ID,
+                kind: "select",
+                group: "settings",
+                label: "Size",
+                help: "",
+                placeholder: null,
+                options: [
+                  { id: SMALL_OPTION_ID, label: "Small" },
+                  { id: BIG_OPTION_ID, label: "Big" },
+                ],
+                default: BIG_OPTION_ID,
+              },
+              {
+                ...pointsInput,
+                widthInputId: SIZE_SELECT_ID,
+                widthOptionValues: {
+                  [SMALL_OPTION_ID]: 256,
+                  [BIG_OPTION_ID]: 1024,
+                },
+                defaultWidth: null,
+              },
+            ],
+          },
+        ],
+      };
+    }
+
     function pointsServer(model: unknown) {
       const posts: FetchCall[] = [];
       mockFetch(async (call) => {
@@ -1423,6 +1467,26 @@ describe("WorkbenchPage", () => {
 
       // No literal `defaultWidth` on this fixture: the picker only shows
       // once *some* target width is known, here from the Width Input.
+      expect(await view.findByText(/0\/10 points picked/)).toBeTruthy();
+    });
+
+    test("resolves the crop's target size from a bound Select Input's chosen option value, not Number() of its option id", async () => {
+      pointsServer(pointsModelWithBoundSelectWidth());
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await view.findByText("Your media");
+      await userEvent.upload(
+        view.getByLabelText("Clip"),
+        new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
+      );
+      await view.findByLabelText("Start (s)");
+
+      // `Size` defaults to the Big option: `Number(optionId)` is NaN,
+      // so before the fix this fell back to `defaultWidth` (null here),
+      // showing "Set a size first." instead of the picker.
       expect(await view.findByText(/0\/10 points picked/)).toBeTruthy();
     });
   });

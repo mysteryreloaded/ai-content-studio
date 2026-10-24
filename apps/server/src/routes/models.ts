@@ -63,17 +63,43 @@ function placeholderFor(
   return value === undefined || isNodeLink(value) ? null : value;
 }
 
-/** The shown Input, if any, bound to `ref`'s field (issue #52: a Points Input's Width/Height may itself be a live Number Input). */
-function boundInputIdFor(
+/** The shown Input, if any, bound to `ref`'s field (issue #52: a Points Input's Width/Height may itself be a live Number or Select Input). */
+function boundInputFor(
   ref: { nodeId: string; field: string },
   formInputs: readonly InputDefinition[],
-): string | null {
-  const match = formInputs.find((other) =>
-    other.bindings.some(
-      (binding) => binding.nodeId === ref.nodeId && binding.field === ref.field,
-    ),
+): InputDefinition | null {
+  return (
+    formInputs.find((other) =>
+      other.bindings.some(
+        (binding) =>
+          binding.nodeId === ref.nodeId && binding.field === ref.field,
+      ),
+    ) ?? null
   );
-  return match?.id ?? null;
+}
+
+/**
+ * A Select Input bound to `ref`'s field resolves to a different value
+ * per option, not a number the client can just parse (issue #52 CEO
+ * review round 2 point 4): this is that option id -> value map, so the
+ * Workbench can look up whichever option is currently chosen (or
+ * defaulted).
+ */
+function selectOptionValuesFor(
+  ref: { nodeId: string; field: string },
+  input: InputDefinition | null,
+): Record<string, number> | null {
+  if (!input || input.kind !== "select") return null;
+  const bindingIndex = input.bindings.findIndex(
+    (binding) => binding.nodeId === ref.nodeId && binding.field === ref.field,
+  );
+  if (bindingIndex === -1) return null;
+  const values: Record<string, number> = {};
+  for (const option of input.options) {
+    const value = option.values[bindingIndex];
+    if (typeof value === "number") values[option.id] = value;
+  }
+  return values;
 }
 
 /** Trims an Input down to what the Workbench needs to render and validate its field: never the bindings or an option's per-field values. */
@@ -155,16 +181,24 @@ function toWorkbenchInput(
       workflow[input.widthField.nodeId]?.inputs[input.widthField.field];
     const heightValue =
       workflow[input.heightField.nodeId]?.inputs[input.heightField.field];
+    const widthInput = boundInputFor(input.widthField, formInputs);
+    const heightInput = boundInputFor(input.heightField, formInputs);
     return {
       ...base,
       placeholder: null,
       kind: "points" as const,
       videoInputId: input.videoInputId,
-      // issue #52: when the Mode shows a Number Input bound to the same
-      // field, the Workbench watches its live value instead of this
-      // literal (an Admin's `widthField` is often one these Inputs own).
-      widthInputId: boundInputIdFor(input.widthField, formInputs),
-      heightInputId: boundInputIdFor(input.heightField, formInputs),
+      // issue #52: when the Mode shows a Number or Select Input bound
+      // to the same field, the Workbench watches its live value
+      // instead of this literal (an Admin's `widthField` is often one
+      // these Inputs own).
+      widthInputId: widthInput?.id ?? null,
+      heightInputId: heightInput?.id ?? null,
+      // issue #52 CEO review round 2: a Select Input's own value is an
+      // option id, not the field's number — this is that option id's
+      // -> value map, so the Workbench can resolve whichever's chosen.
+      widthOptionValues: selectOptionValuesFor(input.widthField, widthInput),
+      heightOptionValues: selectOptionValuesFor(input.heightField, heightInput),
       defaultWidth: typeof widthValue === "number" ? widthValue : null,
       defaultHeight: typeof heightValue === "number" ? heightValue : null,
     };

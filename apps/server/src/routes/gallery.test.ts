@@ -44,13 +44,14 @@ function testEnv(): Env {
     STATUS_TOKEN: undefined,
     MIN_FREE_DISK_GB: 10,
     FFMPEG_CONCURRENCY: 2,
+    MAX_UPLOAD_MB: 500,
   };
 }
 
 const SAME_ORIGIN_HEADERS = { "Sec-Fetch-Site": "same-origin" };
 
 const WORKFLOW = {
-  "1": { class_type: "LoadImage", inputs: { image: "a.png" } },
+  "1": { class_type: "LoadImage", inputs: { image: "example.png" } },
   "2": { class_type: "KSampler", inputs: { seed: 0, model: ["1", 0] } },
   "3": { class_type: "SaveImage", inputs: { images: ["2", 0] } },
 };

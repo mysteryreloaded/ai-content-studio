@@ -17,8 +17,10 @@ import type { Database } from "./db/client.js";
 import type { Env } from "./env.js";
 import { logUnhandledError } from "./error-logging.js";
 import type { Logger } from "./logger.js";
+import { ModelRepository } from "./models/repository.js";
 import { adminBackendsRoute } from "./routes/admin-backends.js";
 import { adminLogsRoute } from "./routes/admin-logs.js";
+import { adminModelsRoute } from "./routes/admin-models.js";
 import { adminSiteSettingsRoute } from "./routes/admin-site-settings.js";
 import { adminRoute } from "./routes/admin.js";
 import { authRoute } from "./routes/auth.js";
@@ -118,6 +120,11 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
     ),
   );
   app.route("/api/admin/logs", adminLogsRoute(deps.db, deps.clock, routes));
+  const modelRepository = new ModelRepository(deps.db, deps.clock);
+  app.route(
+    "/api/admin/models",
+    adminModelsRoute(deps.db, modelRepository, routes),
+  );
 
   if (deps.env.OIDC_ISSUER) {
     const issuerUrl = new URL(deps.env.OIDC_ISSUER);

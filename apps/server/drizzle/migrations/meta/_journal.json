@@ -36,6 +36,13 @@
       "when": 1792803329282,
       "tag": "0004_salty_silver_surfer",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1792806084580,
+      "tag": "0005_safe_blue_blade",
+      "breakpoints": true
     }
   ]
 }

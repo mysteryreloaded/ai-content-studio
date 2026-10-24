@@ -3,6 +3,8 @@ import { Link, Navigate, Route, Routes } from "react-router-dom";
 import { useSession } from "../useSession.js";
 import { BackendsPage } from "./BackendsPage.js";
 import { LogsPage } from "./LogsPage.js";
+import { ModelEditorPage } from "./ModelEditorPage.js";
+import { ModelsPage } from "./ModelsPage.js";
 import { SiteSettingsForm } from "./SiteSettingsForm.js";
 
 const ERROR_BADGE_POLL_MS = 30_000;
@@ -57,6 +59,7 @@ export function AdminShell() {
       <h1>Admin</h1>
       <nav>
         <Link to="/admin">Dashboard</Link>
+        <Link to="/admin/models">Models</Link>
         <Link to="/admin/logs">Logs{errorCount ? ` (${errorCount})` : ""}</Link>
       </nav>
 
@@ -70,6 +73,8 @@ export function AdminShell() {
             </>
           }
         />
+        <Route path="models" element={<ModelsPage />} />
+        <Route path="models/:id" element={<ModelEditorPage />} />
         <Route path="logs" element={<LogsPage />} />
       </Routes>
     </main>

@@ -34,6 +34,7 @@ import {
 } from "../models/repository.js";
 import type { UploadsRepository } from "../uploads/repository.js";
 import { STORAGE_FULL_MESSAGE } from "../uploads/service.js";
+import { ConcurrentCapExceeded, DailyCapExceeded } from "./caps.js";
 import type { GenerationEvents } from "./events.js";
 import {
   type CreateGenerationInput,
@@ -112,6 +113,9 @@ export class BlockedWordSubmitted extends Error {
   }
 }
 
+/** This Submission would put the user over their daily or concurrent Cap (409, issue #53): refused whole. */
+export { ConcurrentCapExceeded, DailyCapExceeded };
+
 /** `DATA_DIR`'s disk is under MIN_FREE_DISK_GB (507 `storage_full`, issue #50). */
 export class SubmissionStorageFull extends Error {
   constructor() {
@@ -141,6 +145,8 @@ export interface SubmissionDeps {
   logWriter: LogEntryWriter;
   /** The Admin's blocked words list, current as of this call (issue #66). */
   getBlockedWords: () => Promise<string[]>;
+  /** The Site's default Caps, current as of this call (issue #53); a user's own override, read inside the locked transaction, may still win. */
+  getSiteCaps: () => Promise<{ dailyCap: number; concurrentCap: number }>;
   /** Wakes the dispatcher (issue #44): a fresh queued Generation may be dispatchable right away. */
   onGenerationQueued?: () => void;
   uploadsRepository: UploadsRepository;
@@ -396,9 +402,12 @@ export async function submitGeneration(
     });
   }
 
+  const siteCaps = await deps.getSiteCaps();
   const records = await deps.generationsRepository.createSubmission(
     params.userId,
     creations,
+    siteCaps,
+    deps.clock,
   );
 
   const generations: GenerationSummary[] = records.map((record) => ({

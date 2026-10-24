@@ -2,10 +2,22 @@
 // This ticket only ever inserts `queued` rows; a later issue's
 // dispatcher moves them on.
 
-import type { InputDefinition, Workflow } from "@ai-content-studio/shared";
-import { and, desc, eq, inArray, notInArray } from "drizzle-orm";
+import { DAY_MS } from "@ai-content-studio/shared";
+import type {
+  Clock,
+  InputDefinition,
+  Workflow,
+} from "@ai-content-studio/shared";
+import { and, desc, eq, inArray, lt, notInArray, or } from "drizzle-orm";
 import type { Database } from "../db/client.js";
 import { assets, generations, models, modes, users } from "../db/schema.js";
+import {
+  ConcurrentCapExceeded,
+  DailyCapExceeded,
+  countConcurrentForUser,
+  countDailyForUser,
+  effectiveCapsFor,
+} from "./caps.js";
 
 export type GenerationState =
   | "queued"
@@ -52,6 +64,43 @@ export interface SubmissionSummary {
   /** The Submission's prompt text, or null when the Model has no text Input to show (issue #47). */
   prompt: string | null;
   generations: GenerationRecord[];
+}
+
+/** The Gallery's state filter (issue #56): buckets of `GenerationState`. */
+export type GalleryStateFilter = "underway" | "finished" | "failed";
+
+const GALLERY_STATE_BUCKETS: Record<
+  GalleryStateFilter,
+  readonly GenerationState[]
+> = {
+  underway: ["queued", "starting", "running", "saving"],
+  finished: ["succeeded"],
+  failed: ["failed"],
+};
+
+/** A Submission in the Gallery (issue #56): across every Model, with the whole of its Generations. */
+export interface GallerySubmission {
+  submissionId: string;
+  modelId: string;
+  modelSlug: string;
+  modelName: string;
+  modeId: string;
+  modeName: string;
+  submittedAt: Date;
+  generations: GenerationRecord[];
+}
+
+export interface GalleryPage {
+  submissions: GallerySubmission[];
+  hasMore: boolean;
+}
+
+export interface GalleryModelOption {
+  id: string;
+  slug: string;
+  name: string;
+  /** Sorts last in the filter (issue #56's AC), even though it's still shown for a user's past Submissions. */
+  deleted: boolean;
 }
 
 /** Where a Model's "prompt" field lives, and the value it has when a user leaves it blank (issue #47). */
@@ -184,20 +233,53 @@ export class GenerationsRepository {
   }
 
   /**
-   * One Submission's 1-4 Generations (issue #47, ADR 0007): locks the
-   * submitting user's row before inserting every Generation, so two
-   * presses of Generate from the same user never interleave their draws.
+   * One Submission's 1-4 Generations (issue #47, ADR "Submission
+   * creation is one locked transaction"; issue #53, ADR "Caps are
+   * checked in the locking transaction"): locks the submitting user's
+   * row before inserting every Generation, so two presses of Generate
+   * from the same user never interleave their draws or their Cap
+   * checks. Caps are checked all-or-nothing against this one
+   * Submission's own count: a Submission that would exceed either Cap
+   * is refused whole, inserting nothing.
    */
   async createSubmission(
     userId: string,
     inputs: readonly CreateGenerationInput[],
+    siteCaps: { dailyCap: number; concurrentCap: number },
+    clock: Clock,
   ): Promise<GenerationRecord[]> {
     return await this.db.transaction(async (tx) => {
-      await tx
-        .select({ id: users.id })
+      const [userRow] = await tx
+        .select({
+          id: users.id,
+          dailyCapOverride: users.dailyCapOverride,
+          concurrentCapOverride: users.concurrentCapOverride,
+        })
         .from(users)
         .where(eq(users.id, userId))
         .for("update");
+      if (!userRow) throw new Error("user not found");
+
+      const caps = effectiveCapsFor(siteCaps, userRow);
+      const now = clock.now();
+      const since = new Date(now.getTime() - DAY_MS);
+      const [dailyUsed, concurrentUsed] = await Promise.all([
+        countDailyForUser(tx, userId, since),
+        countConcurrentForUser(tx, userId),
+      ]);
+
+      if (dailyUsed + inputs.length > caps.dailyCap) {
+        throw new DailyCapExceeded(
+          caps.dailyCap,
+          Math.max(0, caps.dailyCap - dailyUsed),
+        );
+      }
+      if (concurrentUsed + inputs.length > caps.concurrentCap) {
+        throw new ConcurrentCapExceeded(
+          caps.concurrentCap,
+          Math.max(0, caps.concurrentCap - concurrentUsed),
+        );
+      }
 
       const rows = await tx
         .insert(generations)
@@ -349,5 +431,126 @@ export class GenerationsRepository {
       )
       .limit(1);
     return !!row;
+  }
+
+  /**
+   * The Gallery's page of Submissions (issue #56): every Model, newest
+   * first, paged by a (submitted-at, submission id) keyset cursor. A
+   * Submission shows whole once any of its Generations matches `modelId`
+   * and `stateFilter` (the AC: it stays shown even if that Generation's
+   * state moves on from the match during this page's lifetime).
+   */
+  async listGallerySubmissions(params: {
+    userId: string;
+    modelId?: string;
+    stateFilter?: GalleryStateFilter;
+    cursor?: { submittedAt: Date; submissionId: string };
+    limit: number;
+  }): Promise<GalleryPage> {
+    const clauses = [eq(generations.userId, params.userId)];
+    if (params.modelId) clauses.push(eq(generations.modelId, params.modelId));
+    if (params.stateFilter) {
+      clauses.push(
+        inArray(generations.state, GALLERY_STATE_BUCKETS[params.stateFilter]),
+      );
+    }
+    if (params.cursor) {
+      const cursorClause = or(
+        lt(generations.submittedAt, params.cursor.submittedAt),
+        and(
+          eq(generations.submittedAt, params.cursor.submittedAt),
+          lt(generations.submissionId, params.cursor.submissionId),
+        ),
+      );
+      if (cursorClause) clauses.push(cursorClause);
+    }
+
+    const idRows = await this.db
+      .selectDistinct({
+        submissionId: generations.submissionId,
+        submittedAt: generations.submittedAt,
+      })
+      .from(generations)
+      .where(and(...clauses))
+      .orderBy(desc(generations.submittedAt), desc(generations.submissionId))
+      .limit(params.limit + 1);
+
+    const hasMore = idRows.length > params.limit;
+    const page = hasMore ? idRows.slice(0, params.limit) : idRows;
+    const orderedIds = page.map((row) => row.submissionId);
+    if (orderedIds.length === 0) return { submissions: [], hasMore: false };
+
+    const rows = await this.db
+      .select({ generation: generations, mode: modes, model: models })
+      .from(generations)
+      .innerJoin(modes, eq(modes.id, generations.modeId))
+      .innerJoin(models, eq(models.id, generations.modelId))
+      .where(inArray(generations.submissionId, orderedIds));
+
+    const assetsById = await assetsByGenerationId(
+      this.db,
+      rows.map((row) => row.generation.id),
+    );
+
+    const bySubmission = new Map<string, typeof rows>();
+    for (const row of rows) {
+      const list = bySubmission.get(row.generation.submissionId) ?? [];
+      list.push(row);
+      bySubmission.set(row.generation.submissionId, list);
+    }
+
+    const submissions: GallerySubmission[] = orderedIds.map((submissionId) => {
+      const submissionRows = (bySubmission.get(submissionId) ?? []).sort(
+        (a, b) => a.generation.id.localeCompare(b.generation.id),
+      );
+      const first = submissionRows[0] as (typeof rows)[number];
+      return {
+        submissionId,
+        modelId: first.generation.modelId,
+        modelSlug: first.model.slug,
+        modelName: first.model.name,
+        modeId: first.generation.modeId,
+        modeName: first.mode.name,
+        submittedAt: first.generation.submittedAt,
+        generations: submissionRows.map((row) =>
+          toRecord(
+            row.generation,
+            row.mode.name,
+            assetsById.get(row.generation.id) ?? [],
+          ),
+        ),
+      };
+    });
+
+    return { submissions, hasMore };
+  }
+
+  /** Models this user has ever submitted a Generation for, in Admin order, a deleted Model sorted last (issue #56). */
+  async listUsedModelsForUser(userId: string): Promise<GalleryModelOption[]> {
+    const rows = await this.db
+      .selectDistinct({
+        id: models.id,
+        slug: models.slug,
+        name: models.name,
+        sortOrder: models.sortOrder,
+        deletedAt: models.deletedAt,
+      })
+      .from(generations)
+      .innerJoin(models, eq(models.id, generations.modelId))
+      .where(eq(generations.userId, userId));
+
+    return rows
+      .sort((a, b) => {
+        const aDeleted = a.deletedAt !== null;
+        const bDeleted = b.deletedAt !== null;
+        if (aDeleted !== bDeleted) return aDeleted ? 1 : -1;
+        return a.sortOrder - b.sortOrder;
+      })
+      .map((row) => ({
+        id: row.id,
+        slug: row.slug,
+        name: row.name,
+        deleted: row.deletedAt !== null,
+      }));
   }
 }

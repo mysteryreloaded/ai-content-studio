@@ -11,5 +11,6 @@ export * from "./clock/fake-clock.js";
 export * from "./branding/accent.js";
 export * from "./branding/blocked-words.js";
 export * from "./branding/site-settings.js";
+export * from "./caps/caps.js";
 export * from "./markdown/markdown.js";
 export * from "./models/model-terms.js";

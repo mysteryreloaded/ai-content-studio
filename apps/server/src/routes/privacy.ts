@@ -9,6 +9,7 @@ import type { Database } from "../db/client.js";
 export function privacyRoute(
   db: Database,
   appVersion: string,
+  assetRetentionDays: number | null,
   routes: RouteEntry[],
 ): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
@@ -22,6 +23,7 @@ export function privacyRoute(
         signUpMode: settings.signUpMode,
         contact: settings.contact,
         appVersion,
+        assetRetentionDays,
       }),
     });
   });

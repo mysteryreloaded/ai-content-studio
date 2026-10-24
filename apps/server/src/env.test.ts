@@ -20,6 +20,31 @@ describe("loadEnv", () => {
     expect(env.MAX_UPLOAD_MB).toBe(500);
   });
 
+  test("ASSET_RETENTION_DAYS defaults to undefined (forever) and LOG_RETENTION_DAYS to 30", () => {
+    const env = loadEnv(BASE_ENV);
+    expect(env.ASSET_RETENTION_DAYS).toBeUndefined();
+    expect(env.LOG_RETENTION_DAYS).toBe(30);
+  });
+
+  test("treats a blank ASSET_RETENTION_DAYS the same as unset", () => {
+    const env = loadEnv({ ...BASE_ENV, ASSET_RETENTION_DAYS: "" });
+    expect(env.ASSET_RETENTION_DAYS).toBeUndefined();
+  });
+
+  test("parses a set ASSET_RETENTION_DAYS", () => {
+    const env = loadEnv({ ...BASE_ENV, ASSET_RETENTION_DAYS: "90" });
+    expect(env.ASSET_RETENTION_DAYS).toBe(90);
+  });
+
+  test("rejects a non-positive ASSET_RETENTION_DAYS", () => {
+    expect.assertions(1);
+    try {
+      loadEnv({ ...BASE_ENV, ASSET_RETENTION_DAYS: "0" });
+    } catch (error) {
+      expect(error).toBeInstanceOf(EnvValidationError);
+    }
+  });
+
   test("lowercases and splits ADMIN_EMAILS", () => {
     const env = loadEnv({
       ...BASE_ENV,

@@ -43,6 +43,8 @@ const TEST_ENV: Env = {
   MIN_FREE_DISK_GB: 10,
   MAX_UPLOAD_MB: 500,
   FFMPEG_CONCURRENCY: 2,
+  LOG_RETENTION_DAYS: 30,
+  ASSET_RETENTION_DAYS: undefined,
 };
 
 const SAME_ORIGIN_HEADERS = { "Sec-Fetch-Site": "same-origin" };
@@ -113,5 +115,44 @@ describe("/api/privacy", () => {
     const body = (await res.json()) as { generatedBody: string };
     // Default sign-up mode is "approval" (see site-settings.ts).
     expect(body.generatedBody).toContain("### Approval");
+  });
+
+  test("says Assets are kept until deleted when ASSET_RETENTION_DAYS is unset", async () => {
+    const { db, sql } = await testDb;
+    const { app } = await createApp({
+      db,
+      sql,
+      clock,
+      logger: silentLogger,
+      env: { ...TEST_ENV, ASSET_RETENTION_DAYS: undefined },
+      webDistDir: new URL("../../../web", import.meta.url).pathname,
+    });
+    const res = await app.request("/api/privacy", {
+      headers: SAME_ORIGIN_HEADERS,
+    });
+    const body = (await res.json()) as { generatedBody: string };
+    expect(body.generatedBody).toContain(
+      "Assets are kept until you delete them.",
+    );
+    expect(body.generatedBody).toContain(
+      "An Upload no Generation uses is removed 24 hours after it was last used.",
+    );
+  });
+
+  test("states the Asset retention period when ASSET_RETENTION_DAYS is set", async () => {
+    const { db, sql } = await testDb;
+    const { app } = await createApp({
+      db,
+      sql,
+      clock,
+      logger: silentLogger,
+      env: { ...TEST_ENV, ASSET_RETENTION_DAYS: 45 },
+      webDistDir: new URL("../../../web", import.meta.url).pathname,
+    });
+    const res = await app.request("/api/privacy", {
+      headers: SAME_ORIGIN_HEADERS,
+    });
+    const body = (await res.json()) as { generatedBody: string };
+    expect(body.generatedBody).toContain("Assets are removed after 45 days.");
   });
 });

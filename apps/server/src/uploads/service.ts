@@ -211,7 +211,12 @@ export class UploadsService {
     if (!(await this.deps.hasFreeDisk())) throw new StorageFull();
 
     await this.deps.storage.writeAt(upload.storageKey, offset, bytes);
-    const advanced = await this.deps.repository.advance(id, offset, end);
+    const advanced = await this.deps.repository.advance(
+      id,
+      offset,
+      end,
+      this.deps.clock.now(),
+    );
     if (!advanced) {
       const current = await this.ownUpload(userId, id);
       throw new OffsetMismatch(current.receivedBytes);

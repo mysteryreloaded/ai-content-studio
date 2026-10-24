@@ -1,5 +1,5 @@
 {
-  "id": "ef3e9060-54d5-4bea-8034-6f530d2169e0",
+  "id": "2acc0d46-aaf7-4518-abdd-1bb377bd0ab3",
   "prevId": "982bf8f4-eb86-4b02-8ca9-5e6ae90f8e5c",
   "version": "7",
   "dialect": "postgresql",
@@ -482,24 +482,6 @@
         },
         "deleted_at": {
           "name": "deleted_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "removed_at": {
-          "name": "removed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "removed_reason": {
-          "name": "removed_reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "removed_dismissed_at": {
-          "name": "removed_dismissed_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
@@ -1693,18 +1675,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "removed_at": {
-          "name": "removed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "removed_reason": {
-          "name": "removed_reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -1713,6 +1683,12 @@
         },
         "completed_at": {
           "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_used_at": {
+          "name": "last_used_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false

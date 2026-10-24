@@ -20,6 +20,8 @@ const DOCS_BY_KEY: Record<string, string> = {
   C2PA_CERT_PATH: "docs/server-env.md#c2pa_cert_path",
   C2PA_KEY_PATH: "docs/server-env.md#c2pa_key_path",
   C2PA_TIMESTAMP_URL: "docs/server-env.md#c2pa_timestamp_url",
+  ASSET_RETENTION_DAYS: "docs/server-env.md#asset_retention_days",
+  LOG_RETENTION_DAYS: "docs/server-env.md#log_retention_days",
 };
 
 function isLocalhost(url: string): boolean {
@@ -70,6 +72,12 @@ const envSchema = z
     C2PA_CERT_PATH: z.string().min(1).optional(),
     C2PA_KEY_PATH: z.string().min(1).optional(),
     C2PA_TIMESTAMP_URL: z.string().min(1).url().optional(),
+    /** Issue #69: blank (unset or empty) means "keep Assets forever", unlike every other numeric var here. */
+    ASSET_RETENTION_DAYS: z.preprocess(
+      (value) => (value === "" ? undefined : value),
+      z.coerce.number().int().positive().optional(),
+    ),
+    LOG_RETENTION_DAYS: z.coerce.number().int().positive().default(30),
   })
   .superRefine((value, ctx) => {
     if (value.OIDC_ISSUER && !isLocalhost(value.PUBLIC_URL)) {
@@ -115,6 +123,8 @@ export const ENV_KEYS: readonly string[] = [
   "C2PA_CERT_PATH",
   "C2PA_KEY_PATH",
   "C2PA_TIMESTAMP_URL",
+  "ASSET_RETENTION_DAYS",
+  "LOG_RETENTION_DAYS",
 ];
 
 export type Env = z.infer<typeof envSchema>;

@@ -2,10 +2,10 @@
 // chunks, from create through complete (or a refusal at complete).
 
 import type { Clock } from "@ai-content-studio/shared";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { type AuditActor, recordAuditEntry } from "../audit/audit.js";
 import type { Database } from "../db/client.js";
-import { uploads } from "../db/schema.js";
+import { generations, uploads } from "../db/schema.js";
 import type {
   AudioProbeFacts,
   ImageProbeFacts,
@@ -48,6 +48,7 @@ export interface UploadRecord {
   removedReason: string | null;
   createdAt: Date;
   completedAt: Date | null;
+  lastUsedAt: Date | null;
 }
 
 type UploadRow = typeof uploads.$inferSelect;
@@ -114,7 +115,10 @@ export class UploadsRepository {
   constructor(private readonly db: Database) {}
 
   async create(input: CreateUploadInput): Promise<UploadRecord> {
-    const [row] = await this.db.insert(uploads).values(input).returning();
+    const [row] = await this.db
+      .insert(uploads)
+      .values({ ...input, lastUsedAt: input.createdAt })
+      .returning();
     if (!row) throw new Error("insert returned no row");
     return toRecord(row);
   }
@@ -139,16 +143,20 @@ export class UploadsRepository {
   /**
    * Moves the offset from `expectedOffset` to `newOffset`, only while the
    * Upload is still `uploading` at that offset: a concurrent or replayed
-   * chunk for the same range loses instead of double-counting.
+   * chunk for the same range loses instead of double-counting. `now`
+   * (issue #69) is also written as `lastUsedAt`, so retention's "24 h
+   * after the last chunk" compares an incomplete Upload's own activity,
+   * not its original `createdAt`.
    */
   async advance(
     id: string,
     expectedOffset: number,
     newOffset: number,
+    now: Date,
   ): Promise<boolean> {
     const rows = await this.db
       .update(uploads)
-      .set({ receivedBytes: newOffset })
+      .set({ receivedBytes: newOffset, lastUsedAt: now })
       .where(
         and(
           eq(uploads.id, id),
@@ -166,7 +174,12 @@ export class UploadsRepository {
   ): Promise<UploadRecord> {
     const [row] = await this.db
       .update(uploads)
-      .set({ status: "complete", error: null, ...input })
+      .set({
+        status: "complete",
+        error: null,
+        ...input,
+        lastUsedAt: input.completedAt,
+      })
       .where(eq(uploads.id, id))
       .returning();
     if (!row) throw new Error("upload vanished");
@@ -229,9 +242,49 @@ export class UploadsRepository {
         status: "complete",
         receivedBytes: input.size,
         completedAt: input.createdAt,
+        lastUsedAt: input.createdAt,
       })
       .returning();
     if (!row) throw new Error("insert returned no row");
     return toRecord(row);
+  }
+
+  /**
+   * Deletes every Upload gone stale (issue #69's AC): `complete` and
+   * unreferenced by any non-deleted Generation's own `uploadIds`, or
+   * `uploading`/`failed` and simply old — those can never be referenced,
+   * so there's nothing to check. "Stale" compares `lastUsedAt`, falling
+   * back to `createdAt` for a row from before that column existed.
+   * Returns the deleted rows so the caller can remove their files from
+   * `Storage`, the same hand-off `GenerationsRepository.finishDelete`
+   * makes.
+   */
+  async deleteUnused(cutoff: Date): Promise<UploadRecord[]> {
+    const stale = await this.db
+      .select()
+      .from(uploads)
+      .where(
+        sql`coalesce(${uploads.lastUsedAt}, ${uploads.createdAt}) < ${cutoff.toISOString()}`,
+      );
+
+    const deleted: UploadRecord[] = [];
+    for (const row of stale) {
+      if (row.status === "complete") {
+        const [stillUsed] = await this.db
+          .select({ id: generations.id })
+          .from(generations)
+          .where(
+            and(
+              isNull(generations.deletedAt),
+              sql`${generations.uploadIds} @> ARRAY[${row.id}]::uuid[]`,
+            ),
+          )
+          .limit(1);
+        if (stillUsed) continue;
+      }
+      await this.db.delete(uploads).where(eq(uploads.id, row.id));
+      deleted.push(toRecord(row));
+    }
+    return deleted;
   }
 }

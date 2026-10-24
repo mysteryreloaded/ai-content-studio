@@ -50,7 +50,7 @@ export interface CheckModelBackend {
 }
 
 /**
- * classType -> the node pack it ships in (ADR-0049: "static data shipped
+ * classType -> the node pack it ships in (ADR-0010: "static data shipped
  * with the studio, not inferred from `object_info`" — a Backend missing
  * a node class can't report that node's own pack). Grows as more node
  * classes are identified, same spirit as `mode.ts`'s `SAVE_NODE_KINDS`.
@@ -144,7 +144,7 @@ export interface ModeBackendGap {
 /**
  * Per attached Backend, why it can't run `mode` (issue #49's Backends
  * section: "Can't run Outpaint: missing X (pack Y)"). Omits a Backend
- * that can run it. The pack name comes from `NODE_PACKS` (ADR-0049), not
+ * that can run it. The pack name comes from `NODE_PACKS` (ADR-0010), not
  * from any Backend's own `/object_info` — the Backend missing the node
  * is, definitionally, not the one that could report its pack.
  */
@@ -300,7 +300,7 @@ export function checkModel(
     });
   }
 
-  // Duplicate Modes (ADR-0049): two Modes with the same Path and the same
+  // Duplicate Modes (ADR-0010): two Modes with the same Path and the same
   // fixed values are indistinguishable to a user, making one of them
   // dead weight on the Workbench's menu.
   const seenPaths = new Set<string>();

@@ -115,7 +115,7 @@ A condition the studio reports to Admins and to the Operator's outside monitor f
 _Avoid_: alert (what the Operator's monitor sends), incident, issue (a validation error)
 
 **Issue**:
-One entry in the Model editor's rail, naming something wrong with the Model as currently edited: an error or a warning, found live as the Admin edits (ADR-0049). Errors block enabling the Model, and block saving it while it is enabled; the editor offers "Save and disable" instead. A disabled Model can always be saved, errors and all. Warnings never block saving or enabling.
+One entry in the Model editor's rail, naming something wrong with the Model as currently edited: an error or a warning, found live as the Admin edits (ADR-0010). Errors block enabling the Model, and block saving it while it is enabled; the editor offers "Save and disable" instead. A disabled Model can always be saved, errors and all. Warnings never block saving or enabling.
 _Avoid_: error (one severity of Issue; "warning" the other), Problem (a Problem is a run-time condition the studio reports on its own; an Issue is found by checking a Model's definition), validation error (names the mechanism, not the rail entry)
 
 **Site settings**:

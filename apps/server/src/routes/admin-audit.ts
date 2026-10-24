@@ -1,7 +1,7 @@
 // `/api/admin/audit`: the Audit page's filters and live actor/target
 // name lookups (issue #38).
 
-import { and, desc, eq, gte, ilike, inArray, lte } from "drizzle-orm";
+import { and, desc, eq, gte, ilike, inArray, lt, lte, or } from "drizzle-orm";
 import { Hono } from "hono";
 import { type RouteEntry, guardedRoute } from "../auth/access.js";
 import type { AppEnv } from "../auth/app-env.js";
@@ -49,6 +49,23 @@ function filtersFrom(query: Record<string, string | undefined>) {
       clauses.push(lte(auditEntries.createdAt, to));
   }
 
+  // Keyset cursor for "Load older": entries strictly after
+  // (createdAt, id) in the desc(createdAt), desc(id) ordering below.
+  if (query.beforeCreatedAt && isUuid(query.beforeId)) {
+    const beforeCreatedAt = new Date(query.beforeCreatedAt);
+    if (!Number.isNaN(beforeCreatedAt.getTime())) {
+      clauses.push(
+        or(
+          lt(auditEntries.createdAt, beforeCreatedAt),
+          and(
+            eq(auditEntries.createdAt, beforeCreatedAt),
+            lt(auditEntries.id, query.beforeId),
+          ),
+        ),
+      );
+    }
+  }
+
   return clauses;
 }
 
@@ -75,7 +92,9 @@ export function adminAuditRoute(
         ? Math.min(limitParam, MAX_LIMIT)
         : DEFAULT_LIMIT;
 
-    const rows = await db
+    // Fetch one extra row to tell whether there's an older page, without
+    // a separate count query; the extra row is trimmed off below.
+    const fetched = await db
       .select({
         id: auditEntries.id,
         createdAt: auditEntries.createdAt,
@@ -91,8 +110,11 @@ export function adminAuditRoute(
       })
       .from(auditEntries)
       .where(clauses.length > 0 ? and(...clauses) : undefined)
-      .orderBy(desc(auditEntries.createdAt))
-      .limit(limit);
+      .orderBy(desc(auditEntries.createdAt), desc(auditEntries.id))
+      .limit(limit + 1);
+
+    const hasMore = fetched.length > limit;
+    const rows = hasMore ? fetched.slice(0, limit) : fetched;
 
     // Admin actors keep their email denormalized (ADR 0005), so only a
     // non-Admin actor (none exist yet) and a "user" target need a live
@@ -136,7 +158,7 @@ export function adminAuditRoute(
       images: row.images,
     }));
 
-    return c.json({ entries });
+    return c.json({ entries, hasMore });
   });
 
   return app;

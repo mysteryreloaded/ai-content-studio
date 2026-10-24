@@ -231,6 +231,54 @@ describe("GET /api/admin/audit", () => {
     ).toHaveLength(0);
   });
 
+  test("paginates with a keyset cursor and reports hasMore", async () => {
+    const { app, db } = await build();
+    const admin = await makeUser("admin", "admin@example.com");
+    const cookie = await cookieFor(admin.id);
+
+    // Three entries for one target, oldest to newest, each a tick apart
+    // so createdAt alone orders them (desc(createdAt), desc(id) ties
+    // only matter within the same millisecond).
+    for (const n of [1, 2, 3]) {
+      await recordAuditEntry(db, clock, {
+        actor: { type: "system" },
+        targetType: "backend",
+        targetId: "page-test-b",
+        action: `step-${n}`,
+        before: null,
+        after: { n },
+      });
+      clock.advance(1000);
+    }
+
+    const firstPage = await app.request(
+      "/api/admin/audit?targetType=backend&targetId=page-test-b&limit=2",
+      { headers: { ...SAME_ORIGIN_HEADERS, Cookie: cookie } },
+    );
+    const firstBody = (await firstPage.json()) as {
+      entries: { id: string; action: string; createdAt: string }[];
+      hasMore: boolean;
+    };
+    expect(firstBody.entries.map((e) => e.action)).toEqual([
+      "step-3",
+      "step-2",
+    ]);
+    expect(firstBody.hasMore).toBe(true);
+
+    const last = firstBody.entries[1];
+    if (!last) throw new Error("expected a second entry");
+    const secondPage = await app.request(
+      `/api/admin/audit?targetType=backend&targetId=page-test-b&limit=2&beforeCreatedAt=${encodeURIComponent(last.createdAt)}&beforeId=${last.id}`,
+      { headers: { ...SAME_ORIGIN_HEADERS, Cookie: cookie } },
+    );
+    const secondBody = (await secondPage.json()) as {
+      entries: { action: string }[];
+      hasMore: boolean;
+    };
+    expect(secondBody.entries.map((e) => e.action)).toEqual(["step-1"]);
+    expect(secondBody.hasMore).toBe(false);
+  });
+
   test("a non-Admin cannot read the Audit trail", async () => {
     const { app } = await build();
     await makeUser("admin", "admin@example.com");

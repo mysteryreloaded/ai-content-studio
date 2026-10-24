@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
 interface AuditImage {
@@ -23,6 +23,7 @@ interface AuditEntry {
 
 interface AuditResponse {
   entries: AuditEntry[];
+  hasMore: boolean;
 }
 
 interface FilterState {
@@ -43,14 +44,22 @@ const BLANK_FILTERS: FilterState = {
   to: "",
 };
 
+/** `datetime-local` wants "YYYY-MM-DDTHH:mm" in local time; the server's filter is an ISO string. */
+function isoToLocalInputValue(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
 function filtersFromParams(params: URLSearchParams): FilterState {
   return {
     actor: params.get("actor") ?? "",
     targetType: params.get("targetType") ?? "",
     targetId: params.get("targetId") ?? "",
     action: params.get("action") ?? "",
-    from: params.get("from") ?? "",
-    to: params.get("to") ?? "",
+    from: isoToLocalInputValue(params.get("from") ?? ""),
+    to: isoToLocalInputValue(params.get("to") ?? ""),
   };
 }
 
@@ -59,7 +68,11 @@ function queryStringFrom(filters: FilterState): string {
   for (const [key, value] of Object.entries(filters)) {
     if (!value) continue;
     if (key === "from" || key === "to") {
-      params.set(key, new Date(value).toISOString());
+      // A bad or partial datetime-local value must never break the page:
+      // skip it rather than let toISOString() throw.
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) continue;
+      params.set(key, date.toISOString());
     } else {
       params.set(key, value);
     }
@@ -72,8 +85,11 @@ function actorLabel(entry: AuditEntry): string {
   return entry.actorName ?? "Deleted user";
 }
 
+/** AC: a user target shows by id plus the live-looked-up name. */
 function targetLabel(entry: AuditEntry): string {
-  if (entry.targetType === "user") return entry.targetName ?? "Deleted user";
+  if (entry.targetType === "user") {
+    return `${entry.targetId} (${entry.targetName ?? "Deleted user"})`;
+  }
   return entry.targetId;
 }
 
@@ -160,38 +176,71 @@ function EntryDiff({ entry }: { entry: AuditEntry }) {
 /** The Admin Audit page: every recorded change, newest first, with filters and a diff (issue #38). */
 export function AuditPage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const initialFilters = filtersFromParams(searchParams);
-  const [draft, setDraft] = useState<FilterState>(initialFilters);
-  const [applied, setApplied] = useState<FilterState>(initialFilters);
-  const [data, setData] = useState<AuditResponse | null>(null);
+  // The URL is the source of truth for the applied filters, so Back/
+  // Forward and the nav "Audit" link (which clears the query string)
+  // re-fetch instead of leaving the page showing a stale, filtered list.
+  const applied = useMemo(
+    () => filtersFromParams(searchParams),
+    [searchParams],
+  );
+  const [draft, setDraft] = useState<FilterState>(applied);
+  const [entries, setEntries] = useState<AuditEntry[]>([]);
+  const [hasMore, setHasMore] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
 
-  function load() {
-    const qs = queryStringFrom(applied);
-    fetch(`/api/admin/audit${qs ? `?${qs}` : ""}`)
-      .then((res) => {
-        if (!res.ok) throw new Error(`unexpected status ${res.status}`);
-        return res.json() as Promise<AuditResponse>;
-      })
-      .then((body) => {
-        setData(body);
-        setLoadError(null);
-      })
-      .catch(() => setLoadError("could not load the Audit trail"));
+  useEffect(() => {
+    setDraft(applied);
+  }, [applied]);
+
+  function fetchPage(cursor?: { createdAt: string; id: string }) {
+    const params = new URLSearchParams(queryStringFrom(applied));
+    if (cursor) {
+      params.set("beforeCreatedAt", cursor.createdAt);
+      params.set("beforeId", cursor.id);
+    }
+    const qs = params.toString();
+    return fetch(`/api/admin/audit${qs ? `?${qs}` : ""}`).then((res) => {
+      if (!res.ok) throw new Error(`unexpected status ${res.status}`);
+      return res.json() as Promise<AuditResponse>;
+    });
   }
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: load is re-created each render, applied is the actual dependency
-  useEffect(load, [applied]);
+  function loadFirstPage() {
+    fetchPage()
+      .then((body) => {
+        setEntries(body.entries);
+        setHasMore(body.hasMore);
+        setLoadError(null);
+      })
+      .catch(() => setLoadError("could not load the Audit trail"))
+      .finally(() => setLoaded(true));
+  }
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: loadFirstPage is re-created each render, applied is the actual dependency
+  useEffect(loadFirstPage, [applied]);
+
+  function loadMore() {
+    const last = entries[entries.length - 1];
+    if (!last) return;
+    setLoadingMore(true);
+    fetchPage({ createdAt: last.createdAt, id: last.id })
+      .then((body) => {
+        setEntries((current) => [...current, ...body.entries]);
+        setHasMore(body.hasMore);
+      })
+      .catch(() => setLoadError("could not load older Audit entries"))
+      .finally(() => setLoadingMore(false));
+  }
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
-    setApplied(draft);
     setSearchParams(queryStringFrom(draft));
   }
 
   function handleClear() {
     setDraft(BLANK_FILTERS);
-    setApplied(BLANK_FILTERS);
     setSearchParams({});
   }
 
@@ -259,21 +308,21 @@ export function AuditPage() {
         <button type="button" onClick={handleClear}>
           Clear
         </button>
-        <button type="button" onClick={load}>
+        <button type="button" onClick={loadFirstPage}>
           Refresh
         </button>
       </form>
 
       {loadError && <p role="alert">{loadError}</p>}
-      {!data && !loadError && <p>Loading…</p>}
+      {!loaded && !loadError && <p>Loading…</p>}
 
-      {data && data.entries.length === 0 && (
+      {loaded && entries.length === 0 && (
         <p>No Audit entries match these filters.</p>
       )}
 
-      {data && data.entries.length > 0 && (
+      {entries.length > 0 && (
         <ul>
-          {data.entries.map((entry) => (
+          {entries.map((entry) => (
             <li key={entry.id}>
               <details>
                 <summary>
@@ -286,6 +335,12 @@ export function AuditPage() {
             </li>
           ))}
         </ul>
+      )}
+
+      {hasMore && (
+        <button type="button" onClick={loadMore} disabled={loadingMore}>
+          Load older
+        </button>
       )}
     </section>
   );

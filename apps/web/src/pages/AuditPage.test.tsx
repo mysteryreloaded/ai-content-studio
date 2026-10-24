@@ -6,7 +6,7 @@ import { BUN_FETCH } from "../test/happy-dom-setup.js";
 const { cleanup, render, screen, waitFor } = await import(
   "@testing-library/react"
 );
-const { MemoryRouter } = await import("react-router-dom");
+const { Link, MemoryRouter, Route, Routes } = await import("react-router-dom");
 const { AuditPage } = await import("./AuditPage.js");
 
 afterEach(() => {
@@ -129,5 +129,103 @@ describe("AuditPage", () => {
     expect(
       await screen.findByText("No Audit entries match these filters."),
     ).toBeTruthy();
+  });
+
+  test("a user target shows by id plus the live-looked-up name", async () => {
+    mockFetch(() =>
+      Response.json({
+        entries: [{ ...USER_ENTRY, targetName: "Target Name" }],
+      }),
+    );
+
+    renderAt("/admin/audit");
+
+    expect(await screen.findByText(/user u1 \(Target Name\)/)).toBeTruthy();
+  });
+
+  test("a reload with from= set still filters, and the field shows it", async () => {
+    const iso = "2026-01-01T10:00:00.000Z";
+    const calls = mockFetch(() => Response.json({ entries: [] }));
+
+    renderAt(`/admin/audit?from=${encodeURIComponent(iso)}`);
+
+    await waitFor(() => {
+      expect(calls[0]?.url).toContain(`from=${encodeURIComponent(iso)}`);
+    });
+
+    const date = new Date(iso);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const expectedLocalValue = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    expect((screen.getByLabelText("From") as HTMLInputElement).value).toBe(
+      expectedLocalValue,
+    );
+  });
+
+  test("a bad from= in the URL is skipped instead of crashing the page", async () => {
+    const calls = mockFetch(() => Response.json({ entries: [] }));
+
+    renderAt("/admin/audit?from=not-a-date");
+
+    await screen.findByText("No Audit entries match these filters.");
+    expect(calls[0]?.url).not.toContain("from=");
+  });
+
+  test("Load older fetches the next page with a keyset cursor and appends", async () => {
+    const calls = mockFetch((call) => {
+      if (!call.url.includes("beforeCreatedAt")) {
+        return Response.json({ entries: [USER_ENTRY], hasMore: true });
+      }
+      return Response.json({
+        entries: [SITE_SETTINGS_ENTRY],
+        hasMore: false,
+      });
+    });
+
+    renderAt("/admin/audit");
+
+    await screen.findByText(/System disable user/);
+    const loadOlder = screen.getByText("Load older");
+
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await userEvent.click(loadOlder);
+
+    expect(
+      await screen.findByText(/admin@example\.com update site_settings/),
+    ).toBeTruthy();
+    expect(screen.queryByText("Load older")).toBeNull();
+    const secondCall = calls[1];
+    expect(secondCall?.url).toContain(
+      `beforeCreatedAt=${encodeURIComponent(USER_ENTRY.createdAt)}`,
+    );
+    expect(secondCall?.url).toContain(`beforeId=${USER_ENTRY.id}`);
+  });
+
+  test("navigating to the unfiltered Audit link refetches without the old filter", async () => {
+    const calls = mockFetch(() => Response.json({ entries: [] }));
+
+    render(
+      <MemoryRouter
+        initialEntries={["/admin/audit?targetType=backend&targetId=b1"]}
+      >
+        <Link to="/admin/audit">Audit</Link>
+        <Routes>
+          <Route path="/admin/audit" element={<AuditPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(calls[0]?.url).toContain("targetType=backend");
+    });
+
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await userEvent.click(screen.getByRole("link", { name: "Audit" }));
+
+    await waitFor(() => {
+      expect(calls[1]?.url).not.toContain("targetType");
+    });
+    expect(
+      (screen.getByLabelText("Target type") as HTMLInputElement).value,
+    ).toBe("");
   });
 });

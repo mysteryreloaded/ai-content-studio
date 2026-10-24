@@ -6,8 +6,9 @@
 // idempotent and never undone.
 //
 // The server's test files (run in this same process) need Bun's own
-// fetch/Request/Response/Headers untouched — a mock OIDC issuer, Backend
-// health checks and Hono's own `app.request()` all depend on them — so
+// fetch/Request/Response/Headers/Blob/File untouched — a mock OIDC
+// issuer, Backend health checks, Hono's own `app.request()`, and
+// admin-site-settings's `instanceof File` check all depend on them — so
 // those specific globals are restored right after registering happy-dom.
 // No component test needs happy-dom's fetch: each one replaces
 // `globalThis.fetch` itself with its own mock.
@@ -21,6 +22,8 @@ const NETWORK_GLOBALS = [
   "FormData",
   "AbortController",
   "AbortSignal",
+  "Blob",
+  "File",
 ] as const;
 
 /** Bun's own `fetch`, captured before happy-dom registers (see below). */

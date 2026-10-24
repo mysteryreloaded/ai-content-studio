@@ -17,11 +17,14 @@ export class BackendsService {
     clock: Clock,
     logger: LogEntryWriter,
     private readonly backendsEnabled: boolean,
+    /** Issue #44: wakes the dispatcher — a Backend becoming reachable may free it up to take a Generation. */
+    private readonly onBackendReachable?: () => void,
   ) {
     this.nodeKnowledge = new NodeKnowledge(repository, clock);
-    this.monitor = new BackendMonitor(clock, logger, (backendId) =>
-      this.nodeKnowledge.invalidate(backendId),
-    );
+    this.monitor = new BackendMonitor(clock, logger, (backendId) => {
+      this.nodeKnowledge.invalidate(backendId);
+      this.onBackendReachable?.();
+    });
   }
 
   /** Admins see this banner whenever BACKENDS_ENABLED=false. */

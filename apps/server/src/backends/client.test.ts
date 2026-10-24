@@ -11,6 +11,7 @@ function record(overrides: Partial<BackendRecord> = {}): BackendRecord {
     baseUrl: "http://localhost:8188",
     auth: "none",
     headerName: null,
+    enabled: true,
     version: 1,
     deletedAt: null,
     createdAt: new Date(),

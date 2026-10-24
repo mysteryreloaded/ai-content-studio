@@ -79,8 +79,16 @@ export function generationsRoute(
               buffered.push(event);
               return;
             }
-            send(event.type, event.generation);
+            sendGenerationEvent(event);
           });
+
+          function sendGenerationEvent(event: GenerationEvent) {
+            if (event.type === "progress") {
+              send("progress", event.progress);
+            } else {
+              send("change", event.generation);
+            }
+          }
 
           const snapshot =
             await generationsRepository.listActiveForUser(userId);
@@ -89,8 +97,13 @@ export function generationsRoute(
 
           const snapshotIds = new Set(snapshot.map((g) => g.id));
           for (const event of buffered) {
-            if (snapshotIds.has(event.generation.id)) continue;
-            send(event.type, event.generation);
+            if (
+              event.type === "change" &&
+              snapshotIds.has(event.generation.id)
+            ) {
+              continue;
+            }
+            sendGenerationEvent(event);
           }
 
           const scheduleHeartbeat = () => {

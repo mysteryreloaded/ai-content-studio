@@ -1,7 +1,9 @@
 import type { InputDefinition, Workflow } from "@ai-content-studio/shared";
 import {
   isNodeLink,
+  modeMenuGroup,
   relevantInputs,
+  resolveModeInputs,
   toInputIssues,
 } from "@ai-content-studio/shared";
 import { Hono } from "hono";
@@ -45,12 +47,17 @@ function placeholderFor(
 }
 
 /** Trims an Input down to what the Workbench needs to render and validate its field: never the bindings or an option's per-field values. */
-function toWorkbenchInput(input: InputDefinition, workflow: Workflow) {
+function toWorkbenchInput(
+  input: InputDefinition,
+  workflow: Workflow,
+  required: boolean,
+) {
   const base = {
     id: input.id,
     group: input.group,
     label: input.label,
     help: input.help,
+    required,
     placeholder: placeholderFor(input, workflow),
   };
   if (input.kind === "text") {
@@ -98,16 +105,27 @@ function toWorkbenchDetail(
     description: detail.model.description,
     revision: detail.model.currentRevision,
     attribution: detail.model.attribution,
-    modes: detail.modes.map((mode) => ({
-      id: mode.id,
-      name: mode.name,
-      inputs: relevantInputs(
+    modes: detail.modes.map((mode) => {
+      const relevant = relevantInputs(
         detail.inputs,
         detail.workflow,
         mode.outputNodes.map((node) => node.nodeId),
-      ).map((input) => toWorkbenchInput(input, detail.workflow)),
-      description: mode.description,
-    })),
+      );
+      const { formInputs, requiredIds } = resolveModeInputs(
+        relevant,
+        mode.inputSettings,
+      );
+      return {
+        id: mode.id,
+        name: mode.name,
+        inputs: formInputs.map((input) =>
+          toWorkbenchInput(input, detail.workflow, requiredIds.has(input.id)),
+        ),
+        description: mode.description,
+        // issue #48: the Mode menu's "From a prompt / images / audio / video" group.
+        menuGroup: modeMenuGroup(relevant, mode.inputSettings),
+      };
+    }),
     terms:
       termsVersion === null
         ? null

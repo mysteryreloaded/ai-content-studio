@@ -47,6 +47,17 @@ const detailsSchema = z.object({
 
 const versionSchema = z.coerce.number().int().min(1);
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** One Mode's setting for one Input (issue #48): hidden, optional, required, or fixed to a value. */
+const modeInputSettingSchema = z.object({
+  inputId: z.string().regex(UUID_RE, "inputId must be a UUID"),
+  state: z.enum(["hidden", "optional", "required", "fixed"]),
+  fixedValue: z.union([z.string(), z.number(), z.boolean(), z.null()]),
+  label: z.string(),
+});
+
 const modesSchema = z.object({
   version: z.number().int().min(1),
   modes: z.array(
@@ -54,6 +65,7 @@ const modesSchema = z.object({
       name: z.string(),
       description: z.string(),
       outputNodeIds: z.array(z.string()),
+      inputSettings: z.array(modeInputSettingSchema).default([]),
     }),
   ),
 });
@@ -64,9 +76,6 @@ const bindingSchema = z.object({
   classType: z.string(),
   title: z.string().nullable(),
 });
-
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const inputBaseSchema = {
   id: z.string().regex(UUID_RE, "id must be a UUID"),

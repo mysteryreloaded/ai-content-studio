@@ -19,12 +19,28 @@ const PRIMITIVE_CLASSES = new Set([
   "PrimitiveStringMultiline",
 ]);
 
-/** Resolves a switch's boolean field to a known value, or undefined if it's missing or depends on an unresolved Input. */
+/** `nodeId::field`, matching `fieldKey` in input.ts (kept local to avoid a cross-module import cycle). */
+function pathFieldKey(nodeId: string, field: string): string {
+  return `${nodeId}::${field}`;
+}
+
+/**
+ * Resolves a switch's boolean field to a known value, or undefined if
+ * it's missing, depends on an unresolved Input, or is read from a field
+ * in `unresolvableFields` (issue #48: a field bound by an Input that's
+ * visible for this Mode, whose value the Admin can't know ahead of a
+ * user's own choice).
+ */
 function resolveKnownBoolean(
   workflow: Workflow,
-  value: NodeLink | boolean | number | string | null | undefined,
+  nodeId: string,
+  field: string,
+  unresolvableFields?: ReadonlySet<string>,
   seen: Set<string> = new Set(),
 ): boolean | undefined {
+  if (unresolvableFields?.has(pathFieldKey(nodeId, field))) return undefined;
+
+  const value = workflow[nodeId]?.inputs[field];
   if (!isNodeLink(value)) {
     if (typeof value === "boolean") return value;
     if (typeof value === "number") return value !== 0;
@@ -37,13 +53,9 @@ function resolveKnownBoolean(
   if (!source || !PRIMITIVE_CLASSES.has(source.class_type)) return undefined;
   return resolveKnownBoolean(
     workflow,
-    source.inputs.value as
-      | NodeLink
-      | boolean
-      | number
-      | string
-      | null
-      | undefined,
+    sourceId,
+    "value",
+    unresolvableFields,
     seen,
   );
 }
@@ -55,10 +67,17 @@ export interface PathResult {
   missingOutputNodeIds: string[];
 }
 
-/** Computes the Path for a Mode: its output nodes plus every node they depend on. */
+/**
+ * Computes the Path for a Mode: its output nodes plus every node they
+ * depend on. `unresolvableFields` (issue #48, `nodeId::field` keys) are
+ * switch-steering fields to treat as unknown even when they hold a
+ * literal: both branches stay on the Path rather than pruning one on a
+ * value a user could still change.
+ */
 export function computePath(
   workflow: Workflow,
   outputNodeIds: readonly string[],
+  unresolvableFields?: ReadonlySet<string>,
 ): PathResult {
   const nodeIds = new Set<string>();
   const missingOutputNodeIds: string[] = [];
@@ -84,9 +103,9 @@ export function computePath(
     const known = isSwitch
       ? resolveKnownBoolean(
           workflow,
-          node.inputs[SWITCH_BOOLEAN_FIELD] as Parameters<
-            typeof resolveKnownBoolean
-          >[1],
+          id,
+          SWITCH_BOOLEAN_FIELD,
+          unresolvableFields,
         )
       : undefined;
     const prunedBranchField =

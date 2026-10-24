@@ -230,12 +230,19 @@ describe("/api/models/:slug and :slug/generations", () => {
             name: string;
             description: string;
             inputs: unknown[];
+            menuGroup: string;
           }>;
         };
       };
       expect(body.model.name).toBe("LTX");
       expect(body.model.modes).toEqual([
-        { id: modeId, name: "Default", description: "", inputs: [] },
+        {
+          id: modeId,
+          name: "Default",
+          description: "",
+          inputs: [],
+          menuGroup: "prompt",
+        },
       ]);
 
       backendsService.stop();

@@ -32,6 +32,7 @@ function mode(outputNodeIds: string[]): ModeRecord {
     sortOrder: 0,
     name: "Default",
     description: "",
+    inputSettings: [],
     outputNodes: outputNodeIds.map((nodeId) => ({
       nodeId,
       classType: WORKFLOW[nodeId]?.class_type ?? "Unknown",

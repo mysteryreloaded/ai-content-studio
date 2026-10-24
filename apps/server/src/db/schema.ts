@@ -350,7 +350,11 @@ export const modelBackends = pgTable(
  * later renames or removes those nodes in a newer Workflow. `sortOrder`
  * is the Admin's own ordering within the revision. `outputNodes` is an
  * ordered JSON array of `{ nodeId, classType, title, kind }`; the first
- * entry is the main Asset.
+ * entry is the main Asset. `inputSettings` (issue #48) is an unordered
+ * JSON array of `ModeInputSetting` (packages/shared): per Input, whether
+ * this Mode hides it, shows it optional/required, or fixes its value,
+ * plus an optional Mode-specific label; an Input absent from the array
+ * defaults to optional with no label override.
  */
 export const modes = pgTable(
   "modes",
@@ -363,6 +367,7 @@ export const modes = pgTable(
     name: text("name").notNull(),
     description: text("description").notNull().default(""),
     outputNodes: jsonb("output_nodes").notNull(),
+    inputSettings: jsonb("input_settings").notNull().default([]),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

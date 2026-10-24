@@ -7,6 +7,7 @@ import {
   computeModePath,
   parseInputValues,
   relevantInputs,
+  resolveModeInputs,
 } from "@ai-content-studio/shared";
 import type { Clock } from "@ai-content-studio/shared";
 import type { z } from "zod";
@@ -143,15 +144,28 @@ export async function submitGeneration(
     detail.workflow,
     outputNodeIds,
   );
-  const schema = parseInputValues(detail.revisionId, mode.id, relevant);
+  const { formInputs, requiredIds, fixedValues } = resolveModeInputs(
+    relevant,
+    mode.inputSettings,
+  );
+  const schema = parseInputValues(
+    detail.revisionId,
+    mode.id,
+    formInputs,
+    requiredIds,
+  );
   const parsedValues = schema.safeParse(params.values);
   if (!parsedValues.success) throw new InvalidInputValues(parsedValues.error);
 
   const generationId = crypto.randomUUID();
+  const values = {
+    ...(parsedValues.data as Record<string, string | number | undefined>),
+    ...(fixedValues as Record<string, string | number | undefined>),
+  };
   const { prompt, nodeTypes } = buildPrompt(
     detail.workflow,
     relevant,
-    parsedValues.data as Record<string, string | number | undefined>,
+    values,
     outputNodeIds,
     generationId,
   );

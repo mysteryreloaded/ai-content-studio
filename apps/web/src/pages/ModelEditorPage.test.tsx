@@ -397,7 +397,14 @@ describe("ModelEditorPage", () => {
     );
     expect(saved?.body).toEqual({
       version: 1,
-      modes: [{ name: "Default", description: "", outputNodeIds: ["1"] }],
+      modes: [
+        {
+          name: "Default",
+          description: "",
+          outputNodeIds: ["1"],
+          inputSettings: [],
+        },
+      ],
     });
   });
 

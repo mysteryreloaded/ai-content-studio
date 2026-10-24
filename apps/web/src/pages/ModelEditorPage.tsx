@@ -5,11 +5,15 @@ import {
   fieldKey,
   isValidModelLicenseUrl,
   listBindableFields,
+  modeInputSetting,
   renderMarkdown,
+  visibleModeBoundFields,
 } from "@ai-content-studio/shared";
 import type {
   BindableField,
   InputDefinition,
+  ModeInputSetting,
+  ModeInputState,
   NumberInputDefinition,
   SelectInputDefinition,
   SelectOption,
@@ -56,6 +60,7 @@ interface ModeRecord {
   name: string;
   description: string;
   outputNodes: ResolvedOutputNode[];
+  inputSettings: ModeInputSetting[];
 }
 
 interface DraftMode {
@@ -64,6 +69,7 @@ interface DraftMode {
   name: string;
   description: string;
   outputNodeIds: string[];
+  inputSettings: ModeInputSetting[];
 }
 
 interface ModelDetail {
@@ -97,7 +103,21 @@ function draftsFrom(detail: ModelDetail): DraftMode[] {
     name: mode.name,
     description: mode.description,
     outputNodeIds: mode.outputNodes.map((node) => node.nodeId),
+    inputSettings: mode.inputSettings,
   }));
+}
+
+/** This Mode's visible (optional/required) bound fields, for `computeModePath`'s unresolvableFields (issue #48). */
+function visibleBoundFieldsFor(
+  mode: DraftMode,
+  inputs: InputDefinition[],
+): Set<string> {
+  return visibleModeBoundFields(mode.inputSettings, inputs);
+}
+
+/** Node ids this Input's bindings touch, to decide which Modes its Path makes "eligible" (issue #48). */
+function boundNodeIds(input: InputDefinition): Set<string> {
+  return new Set(input.bindings.map((binding) => binding.nodeId));
 }
 
 function withoutKey(draft: DraftMode) {
@@ -468,6 +488,7 @@ export function ModelEditorPage() {
         name: "",
         description: "",
         outputNodeIds: [],
+        inputSettings: [],
       },
     ]);
     setEditingModeIndex(modesDraft.length);
@@ -483,6 +504,71 @@ export function ModelEditorPage() {
     if (!modesDraft) return;
     setModesDraft(
       modesDraft.map((mode, i) => (i === index ? { ...mode, ...patch } : mode)),
+    );
+  }
+
+  /** Duplicates Mode `index` right after it, as a fresh (unsaved) Mode (issue #48). */
+  function duplicateMode(index: number) {
+    if (!modesDraft) return;
+    const mode = modesDraft[index];
+    if (!mode) return;
+    const copy: DraftMode = {
+      ...mode,
+      key: crypto.randomUUID(),
+      name: `${mode.name} copy`.slice(0, 60),
+    };
+    setModesDraft([
+      ...modesDraft.slice(0, index + 1),
+      copy,
+      ...modesDraft.slice(index + 1),
+    ]);
+  }
+
+  /** Sets Mode `modeIndex`'s setting for `inputId` (issue #48's grid cell). */
+  function setModeInputSetting(
+    modeIndex: number,
+    inputId: string,
+    patch: Partial<ModeInputSetting>,
+  ) {
+    if (!modesDraft) return;
+    const mode = modesDraft[modeIndex];
+    if (!mode) return;
+    const current = modeInputSetting(mode.inputSettings, inputId);
+    const next: ModeInputSetting = { ...current, ...patch };
+    const withoutThisInput = mode.inputSettings.filter(
+      (s) => s.inputId !== inputId,
+    );
+    updateMode(modeIndex, {
+      inputSettings: [...withoutThisInput, next],
+    });
+  }
+
+  /** "Apply to every Mode whose Path holds this Input" (issue #48): copies `inputId`'s setting onto every other Mode whose output nodes depend on one of its bound fields. */
+  function applySettingToEveryEligibleMode(
+    sourceIndex: number,
+    input: InputDefinition,
+  ) {
+    if (!detail || !modesDraft) return;
+    const setting = modeInputSetting(
+      (modesDraft[sourceIndex] as DraftMode).inputSettings,
+      input.id,
+    );
+    const nodeIds = boundNodeIds(input);
+    setModesDraft(
+      modesDraft.map((mode, i) => {
+        if (i === sourceIndex) return mode;
+        if (mode.outputNodeIds.length === 0) return mode;
+        const path = computeModePath(detail.workflow, mode.outputNodeIds);
+        const onPath = [...nodeIds].some((id) => path.nodeIds.has(id));
+        if (!onPath) return mode;
+        return {
+          ...mode,
+          inputSettings: [
+            ...mode.inputSettings.filter((s) => s.inputId !== input.id),
+            { ...setting },
+          ],
+        };
+      }),
     );
   }
 
@@ -539,12 +625,20 @@ export function ModelEditorPage() {
     setModesSaveError(null);
 
     try {
+      const currentInputIds = new Set(
+        (detail.inputs ?? []).map((input) => input.id),
+      );
       const res = await fetch(`/api/admin/models/${detail.model.id}/modes`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           version: detail.model.version,
-          modes: modesDraft.map(withoutKey),
+          modes: modesDraft.map(withoutKey).map((mode) => ({
+            ...mode,
+            inputSettings: mode.inputSettings.filter((s) =>
+              currentInputIds.has(s.inputId),
+            ),
+          })),
         }),
       });
 
@@ -700,7 +794,11 @@ export function ModelEditorPage() {
     editingModeIndex !== null ? (modesDraft?.[editingModeIndex] ?? null) : null;
   const editingPath =
     detail && editingMode && editingMode.outputNodeIds.length > 0
-      ? computeModePath(detail.workflow, editingMode.outputNodeIds)
+      ? computeModePath(
+          detail.workflow,
+          editingMode.outputNodeIds,
+          visibleBoundFieldsFor(editingMode, detail.inputs ?? []),
+        )
       : null;
 
   const editingInput =
@@ -1023,6 +1121,9 @@ export function ModelEditorPage() {
                 ? "Done picking output nodes"
                 : "Pick output nodes in the Workflow below"}
             </button>
+            <button type="button" onClick={() => duplicateMode(index)}>
+              Duplicate Mode
+            </button>
             <button type="button" onClick={() => removeMode(index)}>
               Remove Mode
             </button>
@@ -1032,6 +1133,17 @@ export function ModelEditorPage() {
         <button type="button" onClick={addMode}>
           Add Mode
         </button>
+
+        {detail && modesDraft && modesDraft.length > 0 && (
+          <ModeInputGrid
+            modes={modesDraft}
+            inputs={detail.inputs}
+            workflow={detail.workflow}
+            onChange={setModeInputSetting}
+            onApplyToEveryEligibleMode={applySettingToEveryEligibleMode}
+          />
+        )}
+
         <button
           type="button"
           disabled={savingModes || !modesDirty}
@@ -1618,5 +1730,188 @@ export function ModelEditorPage() {
       </button>
       {deleteError && <p role="alert">{deleteError}</p>}
     </section>
+  );
+}
+
+const MODE_INPUT_STATES: ModeInputState[] = [
+  "hidden",
+  "optional",
+  "required",
+  "fixed",
+];
+
+/** One grid cell's fixed-value editor, matching the Input's own kind (issue #48: "fixed values respect options and ranges"). */
+function FixedValueEditor({
+  input,
+  value,
+  onChange,
+}: {
+  input: InputDefinition;
+  value: string | number | boolean | null;
+  onChange: (value: string | number | boolean | null) => void;
+}) {
+  if (input.kind === "text") {
+    return (
+      <input
+        aria-label={`${input.label} fixed value`}
+        value={typeof value === "string" ? value : ""}
+        maxLength={input.maxLength}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    );
+  }
+  if (input.kind === "number") {
+    return (
+      <input
+        aria-label={`${input.label} fixed value`}
+        type="number"
+        value={typeof value === "number" ? value : ""}
+        min={input.min}
+        max={input.max}
+        step={input.step}
+        onChange={(event) => {
+          const parsed = Number(event.target.value);
+          onChange(Number.isFinite(parsed) ? parsed : null);
+        }}
+      />
+    );
+  }
+  return (
+    <select
+      aria-label={`${input.label} fixed value`}
+      value={typeof value === "string" ? value : ""}
+      onChange={(event) => onChange(event.target.value)}
+    >
+      <option value="">Choose…</option>
+      {input.options.map((option) => (
+        <option key={option.id} value={option.id}>
+          {option.label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+/**
+ * The Mode × Input grid (issue #48): a row per Input, a column per Mode,
+ * each cell holding that Mode's state for that Input (hidden, optional,
+ * required, or fixed with a value) plus an optional Mode-specific label.
+ * "Apply to every Mode whose Path holds this Input" copies a cell onto
+ * every other Mode that could use it.
+ */
+function ModeInputGrid({
+  modes,
+  inputs,
+  workflow,
+  onChange,
+  onApplyToEveryEligibleMode,
+}: {
+  modes: DraftMode[];
+  inputs: InputDefinition[];
+  workflow: Workflow;
+  onChange: (
+    modeIndex: number,
+    inputId: string,
+    patch: Partial<ModeInputSetting>,
+  ) => void;
+  onApplyToEveryEligibleMode: (
+    modeIndex: number,
+    input: InputDefinition,
+  ) => void;
+}) {
+  if (!inputs || inputs.length === 0) return null;
+
+  return (
+    <>
+      <h4>Mode × Input grid</h4>
+      <table>
+        <thead>
+          <tr>
+            <th>Input</th>
+            {modes.map((mode, i) => (
+              <th key={mode.key}>{mode.name || `Mode ${i + 1}`}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {inputs.map((input) => (
+            <tr key={input.id}>
+              <th scope="row">{input.label}</th>
+              {modes.map((mode, modeIndex) => {
+                const onPath =
+                  mode.outputNodeIds.length > 0 &&
+                  [...boundNodeIds(input)].some((id) =>
+                    computeModePath(workflow, mode.outputNodeIds).nodeIds.has(
+                      id,
+                    ),
+                  );
+                const setting = modeInputSetting(mode.inputSettings, input.id);
+                return (
+                  <td
+                    key={mode.key}
+                    style={!onPath ? { opacity: 0.4 } : undefined}
+                  >
+                    <label>
+                      State
+                      <select
+                        value={setting.state}
+                        onChange={(event) =>
+                          onChange(modeIndex, input.id, {
+                            state: event.target.value as ModeInputState,
+                            fixedValue:
+                              event.target.value === "fixed"
+                                ? setting.fixedValue
+                                : null,
+                          })
+                        }
+                      >
+                        {MODE_INPUT_STATES.map((state) => (
+                          <option key={state} value={state}>
+                            {state}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    {setting.state === "fixed" && (
+                      <FixedValueEditor
+                        input={input}
+                        value={setting.fixedValue}
+                        onChange={(fixedValue) =>
+                          onChange(modeIndex, input.id, { fixedValue })
+                        }
+                      />
+                    )}
+
+                    <label>
+                      Mode label
+                      <input
+                        value={setting.label}
+                        placeholder={input.label}
+                        maxLength={60}
+                        onChange={(event) =>
+                          onChange(modeIndex, input.id, {
+                            label: event.target.value,
+                          })
+                        }
+                      />
+                    </label>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onApplyToEveryEligibleMode(modeIndex, input)
+                      }
+                    >
+                      Apply to every Mode whose Path holds this Input
+                    </button>
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </>
   );
 }

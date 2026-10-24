@@ -539,6 +539,16 @@ describe("buildInputValuesSchema / parseInputValues", () => {
     expect(schema.safeParse({}).success).toBe(true);
   });
 
+  test("requiredIds (issue #48) rejects a blank/missing required Input", () => {
+    const required = buildInputValuesSchema(
+      [textInput, numberInput, selectInput],
+      new Set(["prompt"]),
+    );
+    expect(required.safeParse({ prompt: "" }).success).toBe(false);
+    expect(required.safeParse({}).success).toBe(false);
+    expect(required.safeParse({ prompt: "hi" }).success).toBe(true);
+  });
+
   test("toInputIssues maps a failure onto path/code/message", () => {
     const result = schema.safeParse({ steps: 1000 });
     if (result.success) throw new Error("expected failure");

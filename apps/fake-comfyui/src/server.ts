@@ -6,6 +6,8 @@
 // of time to succeed after N steps with canned outputs, or to fail. Issue
 // #54 adds /api/jobs/:id/cancel (the user's own cancel) and a `hang`
 // script option, alongside issue #55's /interrupt (a timeout's own).
+// Issue #50 adds `POST /upload/image` and `/view?type=input` (with HEAD),
+// backed by an in-memory input folder a test can seed and inspect.
 
 import objectInfoFixture from "./object-info-fixture.json" with {
   type: "json",
@@ -103,6 +105,8 @@ export function startFakeComfyUi(opts: FakeComfyUiOptions) {
     string,
     Set<{ send(data: string): void; close(): void }>
   >();
+  const inputFiles = new Map<string, InputFile>();
+  let uploadCount = 0;
 
   function sendTo(clientId: string, payload: unknown) {
     for (const ws of sockets.get(clientId) ?? []) {
@@ -369,6 +373,50 @@ export function startFakeComfyUi(opts: FakeComfyUiOptions) {
         });
       }
 
+      if (url.pathname === "/upload/image" && req.method === "POST") {
+        if (unreachable)
+          return new Response("down for testing", { status: 503 });
+        if (!isAuthorized(req, opts))
+          return new Response("unauthorized", { status: 401 });
+        return req.formData().then(async (form) => {
+          const image = form.get("image");
+          if (!(image instanceof Blob)) {
+            return new Response("no image", { status: 400 });
+          }
+          const name = (image as File).name ?? "image.png";
+          const subfolder = String(form.get("subfolder") ?? "");
+          uploadCount += 1;
+          inputFiles.set(inputKey(subfolder, name), {
+            bytes: new Uint8Array(await image.arrayBuffer()),
+            lastModified: new Date(),
+          });
+          return Response.json({ name, subfolder, type: "input" });
+        });
+      }
+
+      if (
+        url.pathname === "/view" &&
+        url.searchParams.get("type") === "input"
+      ) {
+        if (unreachable)
+          return new Response("down for testing", { status: 503 });
+        if (!isAuthorized(req, opts))
+          return new Response("unauthorized", { status: 401 });
+        const file = inputFiles.get(
+          inputKey(
+            url.searchParams.get("subfolder") ?? "",
+            url.searchParams.get("filename") ?? "",
+          ),
+        );
+        if (!file) return new Response("not found", { status: 404 });
+        const headers = {
+          "content-length": String(file.bytes.length),
+          "last-modified": file.lastModified.toUTCString(),
+        };
+        if (req.method === "HEAD") return new Response(null, { headers });
+        return new Response(file.bytes, { headers });
+      }
+
       if (url.pathname === "/view") {
         if (unreachable)
           return new Response("down for testing", { status: 503 });
@@ -419,6 +467,23 @@ export function startFakeComfyUi(opts: FakeComfyUiOptions) {
     script(promptId: string, job: ScriptedJob) {
       scripts.set(promptId, job);
     },
+    /** The input folder's file at `subfolder/filename`, as `/upload/image` stored it. */
+    inputFile(subfolder: string, filename: string): InputFile | undefined {
+      return inputFiles.get(inputKey(subfolder, filename));
+    },
+    /** Seeds the input folder, as if an earlier `/upload/image` had sent it at `lastModified`. */
+    putInputFile(
+      subfolder: string,
+      filename: string,
+      bytes: Uint8Array,
+      lastModified: Date,
+    ) {
+      inputFiles.set(inputKey(subfolder, filename), { bytes, lastModified });
+    },
+    /** How many `/upload/image` requests arrived. */
+    get uploadCount() {
+      return uploadCount;
+    },
     /** Drops every open `/ws` connection without closing the server itself (issue #55's AC). */
     dropWs() {
       for (const set of sockets.values()) {
@@ -445,6 +510,15 @@ export function startFakeComfyUi(opts: FakeComfyUiOptions) {
       server.stop(true);
     },
   };
+}
+
+export interface InputFile {
+  bytes: Uint8Array;
+  lastModified: Date;
+}
+
+function inputKey(subfolder: string, filename: string): string {
+  return subfolder ? `${subfolder}/${filename}` : filename;
 }
 
 /** Deterministic bytes for a filename, so a test can assert on saved content without a real codec. */

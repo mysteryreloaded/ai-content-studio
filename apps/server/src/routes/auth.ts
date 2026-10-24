@@ -167,7 +167,8 @@ export function authRoute(
   guardedRoute(app, routes, basePath, "get", "/me", "signed-in", async (c) => {
     const session = c.get("session");
     if (!session) return c.json({ error: "unauthorized" }, 401);
-    return c.json(session.user);
+    // Issue #50: the browser refuses a too-large file on pick.
+    return c.json({ ...session.user, maxUploadMb: deps.env.MAX_UPLOAD_MB });
   });
 
   return app;

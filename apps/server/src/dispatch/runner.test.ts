@@ -70,6 +70,7 @@ function fakeDetail(
       { nodeId: "2", classType: "SaveImage", title: null, kind: null },
     ],
     maxRunTimeMinutes: 30,
+    uploads: [],
     ...overrides,
   };
 }

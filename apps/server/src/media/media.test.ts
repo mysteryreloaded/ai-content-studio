@@ -89,6 +89,44 @@ describe("MediaRunner", () => {
     ).rejects.toBeInstanceOf(MediaCommandError);
   });
 
+  test("probeImage accepts a still and makeThumbnail scales it down (issue #50)", async () => {
+    const media = new MediaRunner(2);
+    const probe = await media.probeImage(IMAGE);
+    expect(probe.ok).toBe(true);
+    if (!probe.ok) throw new Error("expected ok");
+    expect(probe.kind).toBe("image");
+    expect(probe.facts.width).toBe(32);
+    expect(probe.facts.height).toBe(32);
+
+    const dir = await mkdtemp(path.join(tmpdir(), "media-test-"));
+    try {
+      const output = path.join(dir, "thumb.webp");
+      await media.makeThumbnail(IMAGE, output);
+      const bytes = await readFile(output);
+      expect(bytes.length).toBeGreaterThan(0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("probeImage never throws on a non-image path: a missing file comes back ok: false", async () => {
+    const media = new MediaRunner(2);
+    const probe = await media.probeImage(path.join(FIXTURES, "missing.png"));
+    expect(probe).toEqual({
+      ok: false,
+      reason: "isn't a PNG, JPEG or WebP image",
+    });
+  });
+
+  test("a 1ms timeout kills probeImage's ffprobe and comes back ok: false, never hangs or throws", async () => {
+    // Real ffprobe can't finish in 1ms, so `MediaRunner` kills it; the
+    // same bound protects `makeThumbnail` against a hostile or huge
+    // file's decode (Dule's #140 review).
+    const media = new MediaRunner(2, 1);
+    const probe = await media.probeImage(IMAGE);
+    expect(probe.ok).toBe(false);
+  });
+
   test("signC2pa signs an image with the c2pa-rs test chain (issue #75's AC)", async () => {
     const media = new MediaRunner(2);
     const dir = await mkdtemp(path.join(tmpdir(), "media-test-"));

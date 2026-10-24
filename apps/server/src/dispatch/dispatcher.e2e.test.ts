@@ -38,6 +38,7 @@ import { ModelRepository } from "../models/repository.js";
 import { assetsRoute } from "../routes/assets.js";
 import { createLocalStorage } from "../storage/storage.js";
 import { createTestDatabase } from "../test/database.js";
+import { UploadsRepository } from "../uploads/repository.js";
 import { Dispatcher } from "./dispatcher.js";
 import { DispatchQueue } from "./queue.js";
 
@@ -1079,5 +1080,139 @@ describe("Dispatcher end-to-end against a fake ComfyUI", () => {
         await Bun.$`rm -rf ${tmpDir}`.quiet();
       }
     });
+  });
+
+  test("sends each Upload to /upload/image before the prompt, skipping a fresh same-size copy (issue #50)", async () => {
+    const tmpDir = `/tmp/dispatcher-e2e-${randomUUID()}`;
+    const {
+      db,
+      modelRepository,
+      modelBackendsRepository,
+      backendRepository,
+      backendsService,
+      generationsRepository,
+      storage,
+      dispatcher,
+    } = await setup(tmpDir);
+
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const user = await insertUser(db, "uploader@example.com");
+      const { model, mode, revisionId } = await createModelWithMode(
+        modelRepository,
+        "M4",
+      );
+      const backend = await backendRepository.create(
+        { name: "Fake4", baseUrl: fake.url, auth: "none" },
+        SYSTEM,
+      );
+      await modelBackendsRepository.attach(model.id, backend.id, SYSTEM);
+      backendsService.watch(backend);
+      forceReachable(backendsService, backend.id);
+
+      const uploadsRepository = new UploadsRepository(db);
+      const now = systemClock.now();
+      async function completeUpload(content: string) {
+        const id = randomUUID();
+        const bytes = new TextEncoder().encode(content);
+        const storageKey = `uploads/${id}/original`;
+        await storage.write(storageKey, bytes);
+        await uploadsRepository.create({
+          id,
+          userId: user.id,
+          originalName: "photo.png",
+          declaredType: "image/png",
+          size: bytes.length,
+          modelId: null,
+          inputId: null,
+          storageKey,
+          createdAt: now,
+        });
+        await uploadsRepository.markComplete(id, {
+          kind: "image",
+          extension: "png",
+          contentType: "image/png",
+          width: 1,
+          height: 1,
+          probe: {
+            formatName: "png_pipe",
+            codecName: "png",
+            width: 1,
+            height: 1,
+            pixFmt: null,
+          },
+          thumbnailKey: `uploads/${id}/thumb.webp`,
+          completedAt: now,
+        });
+        return { id, bytes };
+      }
+      const missing = await completeUpload("missing on the Backend");
+      const fresh = await completeUpload("already there");
+      const stale = await completeUpload("there, but old");
+      fake.putInputFile("studio", `${fresh.id}.png`, fresh.bytes, now);
+      fake.putInputFile(
+        "studio",
+        `${stale.id}.png`,
+        stale.bytes,
+        new Date(now.getTime() - 13 * 60 * 60 * 1000),
+      );
+
+      const generationId = randomUUID();
+      const { prompt, nodeTypes } = buildFrozenPrompt(
+        WORKFLOW,
+        ["2"],
+        generationId,
+      );
+      fake.script(generationId, {
+        steps: 1,
+        stepIntervalMs: 5,
+        outputs: {
+          "2": {
+            images: [
+              {
+                filename: "studio_00001_.png",
+                subfolder: "studio",
+                type: "output",
+              },
+            ],
+          },
+        },
+      });
+      await generationsRepository.create({
+        id: generationId,
+        modelId: model.id,
+        revisionId,
+        modeId: mode.id,
+        modeName: mode.name,
+        userId: user.id,
+        submissionId: randomUUID(),
+        builtPrompt: prompt,
+        nodeTypes,
+        uploadIds: [missing.id, fresh.id, stale.id],
+        submittedAt: now,
+      });
+
+      await dispatcher.runUntilIdle();
+
+      expect(fake.uploadCount).toBe(2);
+      const sent = fake.inputFile("studio", `${missing.id}.png`);
+      expect(new TextDecoder().decode(sent?.bytes)).toBe(
+        "missing on the Backend",
+      );
+      expect(
+        fake.inputFile("studio", `${stale.id}.png`)?.lastModified.getTime(),
+      ).toBeGreaterThan(now.getTime() - 60_000);
+
+      const summaries =
+        await generationsRepository.listRecentSubmissionsForModel(
+          model.id,
+          user.id,
+          8,
+        );
+      expect(summaries[0]?.generations[0]?.state).toBe("succeeded");
+    } finally {
+      fake.stop();
+      await Bun.$`rm -rf ${tmpDir}`.quiet();
+    }
   });
 });

@@ -131,8 +131,15 @@
     {
       "idx": 18,
       "version": "7",
-      "when": 1792828829709,
-      "tag": "0018_perpetual_prodigy",
+      "when": 1792827940966,
+      "tag": "0018_stale_the_hunter",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1792829801061,
+      "tag": "0019_low_firelord",
       "breakpoints": true
     }
   ]

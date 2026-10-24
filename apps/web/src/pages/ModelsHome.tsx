@@ -39,6 +39,10 @@ export function ModelsHome() {
       <main>
         <h1>Models</h1>
 
+        <nav aria-label="Primary">
+          <Link to="/gallery">Gallery</Link>
+        </nav>
+
         {models && models.length > 0 && (
           <nav aria-label="Models">
             {models.map((model) => (

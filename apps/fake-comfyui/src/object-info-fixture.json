@@ -118,7 +118,7 @@
   "LoadImage": {
     "input": {
       "required": {
-        "image": [[]]
+        "image": [["example.png"], { "image_upload": true }]
       }
     },
     "output": ["IMAGE", "MASK"],

@@ -66,6 +66,20 @@ const router = createBrowserRouter([
           </RequireTermsAccepted>
         ),
       },
+      {
+        // Issue #57: a Generation's own link opens its detail dialog
+        // over the Gallery — `GalleryPage` renders the same either way,
+        // reading an optional `:id` param to decide whether the dialog
+        // is open.
+        path: "/generations/:id",
+        element: (
+          <RequireTermsAccepted>
+            <RequireActive>
+              <GalleryPage />
+            </RequireActive>
+          </RequireTermsAccepted>
+        ),
+      },
       { path: "/account", element: <AccountPage /> },
       {
         path: "/admin/*",

@@ -220,10 +220,14 @@ export class DispatchQueue {
   }
 
   /** Only from `saving`. */
-  async markSucceeded(generationId: string, tries: number): Promise<boolean> {
+  async markSucceeded(
+    generationId: string,
+    tries: number,
+    endedAt: Date,
+  ): Promise<boolean> {
     const rows = await this.db
       .update(generations)
-      .set({ state: "succeeded" })
+      .set({ state: "succeeded", endedAt })
       .where(
         and(
           eq(generations.id, generationId),
@@ -246,10 +250,11 @@ export class DispatchQueue {
     generationId: string,
     tries: number,
     error: string,
+    endedAt: Date,
   ): Promise<boolean> {
     const rows = await this.db
       .update(generations)
-      .set({ state: "failed", error })
+      .set({ state: "failed", error, endedAt })
       .where(
         and(
           eq(generations.id, generationId),
@@ -291,7 +296,12 @@ export class DispatchQueue {
       .update(generations)
       .set(
         exhausted
-          ? { state: "failed", backendId: null, error: exhaustedMessage }
+          ? {
+              state: "failed",
+              backendId: null,
+              error: exhaustedMessage,
+              endedAt: now,
+            }
           : {
               state: "queued",
               backendId: null,
@@ -435,10 +445,10 @@ export class DispatchQueue {
   }
 
   /** Cancels a `queued` Generation at once (issue #54's AC): nothing was ever sent to a Backend. Returns whether it actually was still queued. */
-  async cancelQueued(generationId: string): Promise<boolean> {
+  async cancelQueued(generationId: string, endedAt: Date): Promise<boolean> {
     const rows = await this.db
       .update(generations)
-      .set({ state: "cancelled" })
+      .set({ state: "cancelled", endedAt })
       .where(
         and(eq(generations.id, generationId), eq(generations.state, "queued")),
       )
@@ -480,12 +490,14 @@ export class DispatchQueue {
     generationId: string,
     tries: number,
     opts: { pendingBackendCancel: boolean },
+    endedAt: Date,
   ): Promise<boolean> {
     const rows = await this.db
       .update(generations)
       .set({
         state: "cancelled",
         pendingBackendCancel: opts.pendingBackendCancel,
+        endedAt,
       })
       .where(
         and(

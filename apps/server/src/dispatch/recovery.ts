@@ -227,7 +227,8 @@ async function recoverOne(
     return;
   }
 
-  if (!(await deps.queue.markSucceeded(item.id, item.tries))) return;
+  if (!(await deps.queue.markSucceeded(item.id, item.tries, deps.clock.now())))
+    return;
   const assets = await deps.assetsRepository.listForGeneration(item.id);
   await publishChange(
     deps,

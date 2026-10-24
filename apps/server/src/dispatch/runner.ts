@@ -275,9 +275,12 @@ export async function finalizeCancelled(
   tries: number,
   pendingBackendCancel: boolean,
 ): Promise<boolean> {
-  const ok = await deps.queue.markCancelled(detail.id, tries, {
-    pendingBackendCancel,
-  });
+  const ok = await deps.queue.markCancelled(
+    detail.id,
+    tries,
+    { pendingBackendCancel },
+    deps.clock.now(),
+  );
   if (!ok) return false;
   if (pendingBackendCancel) {
     await deps.logWriter.log({
@@ -703,7 +706,8 @@ export async function pollUntilDone(
     return;
   }
 
-  if (!(await deps.queue.markSucceeded(generationId, tries))) return;
+  if (!(await deps.queue.markSucceeded(generationId, tries, deps.clock.now())))
+    return;
   const assets = await deps.assetsRepository.listForGeneration(generationId);
   await publishChange(
     deps,

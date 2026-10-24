@@ -40,6 +40,12 @@ function toSummary(
     tries,
     error,
     submittedAt: detail.submittedAt,
+    // RunDetail doesn't carry these (issue #57): a Gallery/Workbench
+    // client refetches the Generation's own detail for them; the SSE
+    // event only needs to say a change happened.
+    startedAt: null,
+    endedAt: null,
+    deletedAt: null,
     modelSlug: detail.modelSlug,
     modelName: detail.modelName,
     isTest: detail.isTest,
@@ -78,7 +84,12 @@ export async function reportFailure(
   message: string,
   rawDetail?: string,
 ): Promise<boolean> {
-  const ok = await deps.queue.markFailed(detail.id, tries, message);
+  const ok = await deps.queue.markFailed(
+    detail.id,
+    tries,
+    message,
+    deps.clock.now(),
+  );
   if (!ok) return false;
   await deps.logWriter.log({
     level: "error",

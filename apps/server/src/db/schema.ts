@@ -557,6 +557,17 @@ export const generations = pgTable(
       .notNull()
       .default(false),
     startedAt: timestamp("started_at", { withTimezone: true }),
+    /** Issue #57: when this Generation reached `succeeded`, `failed` or `cancelled` — the detail dialog's "run time" is `endedAt - startedAt`. */
+    endedAt: timestamp("ended_at", { withTimezone: true }),
+    /**
+     * Issue #57: set once a user deletes this Generation (or its whole
+     * Submission), turning the row into a Tombstone (CONTEXT.md, ADR
+     * 0011): `builtPrompt`/`nodeTypes`/`uploadIds` are cleared to empty
+     * in the same update rather than relaxed to nullable, and this row's
+     * Assets are deleted outright — only the owner, Model, Mode, state
+     * and times are left, and it still counts toward the daily Cap.
+     */
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
     queuedAt: timestamp("queued_at", { withTimezone: true }).notNull(),
     submittedAt: timestamp("submitted_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })

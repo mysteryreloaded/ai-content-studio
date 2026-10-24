@@ -726,6 +726,7 @@ describe("Dispatcher end-to-end against a fake ComfyUI", () => {
           generationsRepository,
           generationEvents,
           wakeDispatcher: () => {},
+          clock: systemClock,
         });
 
         const [row] = await db
@@ -782,6 +783,7 @@ describe("Dispatcher end-to-end against a fake ComfyUI", () => {
             generationsRepository,
             generationEvents,
             wakeDispatcher: () => {},
+            clock: systemClock,
           }),
         ).rejects.toThrow();
 
@@ -855,6 +857,7 @@ describe("Dispatcher end-to-end against a fake ComfyUI", () => {
           generationsRepository,
           generationEvents,
           wakeDispatcher: () => {},
+          clock: systemClock,
         });
 
         const [cancellingRow] = await db
@@ -951,6 +954,7 @@ describe("Dispatcher end-to-end against a fake ComfyUI", () => {
           generationsRepository,
           generationEvents,
           wakeDispatcher: () => {},
+          clock: systemClock,
         });
         fake.setUnreachable(true);
 
@@ -1067,6 +1071,7 @@ describe("Dispatcher end-to-end against a fake ComfyUI", () => {
           generationsRepository,
           generationEvents,
           wakeDispatcher: () => {},
+          clock: systemClock,
         });
 
         for (const generationId of generationIds) {

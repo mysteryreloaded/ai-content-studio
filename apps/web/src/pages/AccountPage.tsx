@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Navigate } from "react-router-dom";
 import { Footer } from "../Footer.js";
+import { NotificationsSwitch } from "../notifications/NotificationsSwitch.js";
 import { useSession } from "../useSession.js";
 
 function initials(name: string): string {
@@ -42,6 +43,7 @@ export function AccountPage() {
         <button type="button" onClick={() => void signOut()}>
           Sign out
         </button>
+        <NotificationsSwitch />
       </main>
       <Footer />
     </>

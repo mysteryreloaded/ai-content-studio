@@ -1592,6 +1592,10 @@ describe("WorkbenchPage", () => {
       expect(
         await view.findByText("Reused that Generation's settings."),
       ).toBeTruthy();
+      // The effect's own cleanup (dropping `?reuse=` from the URL) runs
+      // in a `.finally()` after the notice is set; let it settle before
+      // the test's own cleanup unmounts, so it doesn't fire afterwards.
+      await new Promise((resolve) => setTimeout(resolve, 10));
     });
 
     test("drops Points, noting it, when the video Upload it was drawn on is gone", async () => {
@@ -1625,6 +1629,8 @@ describe("WorkbenchPage", () => {
       expect(notice.textContent).toContain(
         "Who to replace (redraw the points)",
       );
+      // See the previous test's comment: let the effect's own `.finally()` settle first.
+      await new Promise((resolve) => setTimeout(resolve, 10));
     });
   });
 });

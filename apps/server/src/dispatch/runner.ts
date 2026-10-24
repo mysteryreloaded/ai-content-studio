@@ -26,6 +26,7 @@ import type {
   GenerationState,
   GenerationSummary,
 } from "../generations/repository.js";
+import type { C2paSignerConfig } from "../media/c2pa.js";
 import { finishAsset } from "../media/finish.js";
 import type { MediaRunner } from "../media/media.js";
 import type { Storage } from "../storage/storage.js";
@@ -50,6 +51,10 @@ export interface RunnerDeps {
   media: MediaRunner;
   /** Issue #45: named in a finished video's "AI-generated" comment tag, alongside the Model and Generation id. */
   siteName: string;
+  /** Issue #75: set only when the Operator configured a certificate and key. */
+  c2pa: C2paSignerConfig | null;
+  /** Issue #75: reads the Site title live, for the C2PA manifest's `title` and custom assertion. */
+  getSiteTitle: () => Promise<string>;
 }
 
 function describeError(err: unknown): string {
@@ -154,6 +159,16 @@ async function saveAssets(
   deps: RunnerDeps,
 ): Promise<void> {
   const comment = `AI-generated with ${detail.modelName} on ${deps.siteName}, Generation ${detail.id}`;
+  // Fetched once per Generation rather than per Asset: the Site title
+  // could change mid-run, but every Asset of one Generation should
+  // carry the same manifest.
+  const c2pa = deps.c2pa
+    ? {
+        modelName: detail.modelName,
+        siteTitle: await deps.getSiteTitle(),
+        generationId: detail.id,
+      }
+    : undefined;
 
   for (const [index, outputNode] of detail.outputNodes.entries()) {
     for (const file of outputFilesFor(job, outputNode.nodeId)) {
@@ -181,10 +196,12 @@ async function saveAssets(
               })
               .catch(() => {});
           },
+          c2pa: deps.c2pa,
         },
         kind,
         storageKey,
         comment,
+        c2pa,
       );
 
       await deps.assetsRepository.createIfAbsent({

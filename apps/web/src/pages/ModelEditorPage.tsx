@@ -9,6 +9,7 @@ import {
 } from "@ai-content-studio/shared";
 import type {
   BindableField,
+  ImageUploadInputDefinition,
   InputDefinition,
   NumberInputDefinition,
   SelectInputDefinition,
@@ -18,6 +19,7 @@ import type {
 } from "@ai-content-studio/shared";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { useBlocker, useNavigate, useParams } from "react-router-dom";
+import { useSession } from "../useSession.js";
 
 interface ModelNode {
   id: string;
@@ -162,6 +164,19 @@ function newSelectInput(): SelectInputDefinition {
   };
 }
 
+function newImageUploadInput(): ImageUploadInputDefinition {
+  return {
+    id: crypto.randomUUID(),
+    kind: "image_upload",
+    group: "describe",
+    label: "",
+    help: "",
+    maxSizeMb: 20,
+    maxLongSide: null,
+    bindings: [],
+  };
+}
+
 /** `fieldKey` of every field bound by an Input other than `excludingId`. */
 function usedFieldKeys(
   inputs: InputDefinition[],
@@ -193,6 +208,9 @@ function candidateFieldsFor(
     if (used.has(key) && !alreadyBound.has(key)) return false;
     if (input.kind === "text") return field.valueType === "string";
     if (input.kind === "number") return field.valueType === "number";
+    // Issue #50: a loader's file name field (e.g. LoadImage.image); the
+    // server checks the Backend flags it image_upload when it can.
+    if (input.kind === "image_upload") return field.valueType === "string";
     return true;
   });
 }
@@ -322,6 +340,9 @@ async function messageFrom(res: Response, fallback: string): Promise<string> {
 export function ModelEditorPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { session } = useSession();
+  const maxUploadMb =
+    session.status === "signed-in" ? session.user.maxUploadMb : undefined;
 
   const [detail, setDetail] = useState<ModelDetail | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -566,7 +587,9 @@ export function ModelEditorPage() {
         ? newTextInput()
         : newInputKind === "number"
           ? newNumberInput()
-          : newSelectInput();
+          : newInputKind === "image_upload"
+            ? newImageUploadInput()
+            : newSelectInput();
     setInputsDraft([...inputsDraft, created]);
     setEditingInputIndex(inputsDraft.length);
   }
@@ -1215,6 +1238,50 @@ export function ModelEditorPage() {
               </>
             )}
 
+            {input.kind === "image_upload" && (
+              <>
+                <p>
+                  Shown under "Your files" and always required. Bind it to a
+                  loader's file field, such as LoadImage's "image".
+                </p>
+                <label htmlFor={`input-max-size-${index}`}>Max size (MB)</label>
+                <input
+                  id={`input-max-size-${index}`}
+                  type="number"
+                  min={1}
+                  max={maxUploadMb}
+                  step={1}
+                  value={input.maxSizeMb}
+                  onChange={(event) =>
+                    updateInput(index, {
+                      ...input,
+                      maxSizeMb: Number(event.target.value),
+                    })
+                  }
+                />
+
+                <label htmlFor={`input-max-long-side-${index}`}>
+                  Max long side (px, optional)
+                </label>
+                <input
+                  id={`input-max-long-side-${index}`}
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={input.maxLongSide ?? ""}
+                  onChange={(event) =>
+                    updateInput(index, {
+                      ...input,
+                      maxLongSide:
+                        event.target.value === ""
+                          ? null
+                          : Number(event.target.value),
+                    })
+                  }
+                />
+              </>
+            )}
+
             {input.kind === "number" && (
               <>
                 <label htmlFor={`input-mode-${index}`}>Number</label>
@@ -1498,6 +1565,7 @@ export function ModelEditorPage() {
           <option value="text">Text</option>
           <option value="number">Number</option>
           <option value="select">Select</option>
+          <option value="image_upload">Image upload</option>
         </select>
         <button type="button" onClick={addInput}>
           Add Input

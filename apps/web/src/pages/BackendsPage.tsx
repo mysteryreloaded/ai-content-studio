@@ -18,6 +18,7 @@ interface AdminBackend {
   baseUrl: string;
   auth: AuthKind;
   headerName: string | null;
+  enabled: boolean;
   version: number;
   health: BackendHealth;
 }
@@ -221,6 +222,23 @@ export function BackendsPage() {
     load();
   }
 
+  /** Issue #44: an on/off switch separate from reachability — the dispatcher skips a disabled Backend even while it's reachable. */
+  async function handleToggleEnabled(backend: AdminBackend) {
+    const res = await fetch(`/api/admin/backends/${backend.id}/enabled`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        enabled: !backend.enabled,
+        version: backend.version,
+      }),
+    });
+    if (res.status === 409) {
+      setLoadError("changed by someone else, reload");
+      return;
+    }
+    load();
+  }
+
   return (
     <section>
       <h2>Backends</h2>
@@ -236,6 +254,7 @@ export function BackendsPage() {
             <tr>
               <th>Name</th>
               <th>Base URL</th>
+              <th>Enabled</th>
               <th>Health</th>
               <th>ComfyUI version</th>
               <th>VRAM</th>
@@ -248,6 +267,14 @@ export function BackendsPage() {
                 <tr>
                   <td>{backend.name}</td>
                   <td>{backend.baseUrl}</td>
+                  <td>
+                    <button
+                      type="button"
+                      onClick={() => void handleToggleEnabled(backend)}
+                    >
+                      {backend.enabled ? "Enabled" : "Disabled"}
+                    </button>
+                  </td>
                   <td>{healthLabel(backend)}</td>
                   <td>{backend.health.comfyuiVersion ?? "–"}</td>
                   <td>{formatVram(backend.health.vramFree)}</td>

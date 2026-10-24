@@ -18,7 +18,8 @@ export function objectInfoUrl(baseUrl: string): string {
   return `${baseUrl.replace(/\/+$/, "")}/object_info`;
 }
 
-function authHeaders(
+/** Shared with the comfyui module (issue #44), which authenticates `/prompt`, `/api/jobs` and `/view` the same way. */
+export function authHeaders(
   auth: BackendRecord["auth"],
   headerName: string | null,
   creds: { user?: string; pass?: string; value?: string } | null,
@@ -100,5 +101,29 @@ export function objectInfoTarget(
 
       return (await res.json()) as Record<string, unknown>;
     },
+  };
+}
+
+/** `baseUrl` and auth headers for a Backend, decrypted once (issue #44's comfyui module). */
+export interface ComfyUiTarget {
+  baseUrl: string;
+  headers: Record<string, string>;
+}
+
+/** Resolves a Backend's base URL and auth headers for the comfyui module. Throws {@link CredentialsNeedReentry} if its credentials can't be decrypted. */
+export async function comfyUiTarget(
+  backend: BackendRecord,
+  repository: Pick<BackendRepository, "decryptedCredentials">,
+): Promise<ComfyUiTarget> {
+  let creds: { user?: string; pass?: string; value?: string } | null = null;
+  try {
+    creds = await repository.decryptedCredentials(backend.id);
+  } catch (err) {
+    if (err instanceof DecryptionFailed) throw new CredentialsNeedReentry();
+    throw err;
+  }
+  return {
+    baseUrl: backend.baseUrl,
+    headers: authHeaders(backend.auth, backend.headerName, creds),
   };
 }

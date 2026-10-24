@@ -56,6 +56,7 @@ export function adminBackendsRoute(
   service: BackendsService,
   generationsRepository: GenerationsRepository,
   routes: RouteEntry[],
+  onBackendEnabled?: () => void,
 ): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   const basePath = "/api/admin/backends";
@@ -153,6 +154,40 @@ export function adminBackendsRoute(
       return handleError(c, err);
     }
   });
+
+  guardedRoute(
+    app,
+    routes,
+    basePath,
+    "patch",
+    "/:id/enabled",
+    "admin",
+    async (c) => {
+      const id = idParam(c);
+      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+
+      const body = await readJsonBody(c);
+      if (body === null) return c.json({ error: "invalid JSON body" }, 400);
+
+      const versionResult = versionSchema.safeParse(body.version);
+      if (!versionResult.success)
+        return c.json({ error: "version is required" }, 400);
+      const enabled = Boolean(body.enabled);
+
+      try {
+        const record = await repository.setEnabled(
+          id,
+          enabled,
+          versionResult.data,
+          adminActorFrom(c),
+        );
+        if (enabled) onBackendEnabled?.();
+        return c.json(record);
+      } catch (err) {
+        return handleError(c, err);
+      }
+    },
+  );
 
   guardedRoute(
     app,

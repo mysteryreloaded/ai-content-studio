@@ -75,21 +75,30 @@ export class RetentionScheduler {
    * releases it. A no-op (returns right away) when another instance
    * already holds it — that instance's own tick will get to the same
    * work.
+   *
+   * The whole body, including acquiring `reserved` itself, is wrapped
+   * here (mirroring Dispatcher.tick()'s own whole-body try/catch): a
+   * DB outage at tick time must not escape as an unhandled rejection,
+   * since start()'s `void this.runOnce().finally(...)` doesn't catch one.
    */
   async runOnce(): Promise<void> {
-    const reserved = await this.deps.sql.reserve();
     try {
-      const [row] = await reserved<{ locked: boolean }[]>`
-        select pg_try_advisory_lock(${RETENTION_LOCK_KEY}) as locked
-      `;
-      if (!row?.locked) return;
+      const reserved = await this.deps.sql.reserve();
       try {
-        await this.runJobs();
+        const [row] = await reserved<{ locked: boolean }[]>`
+          select pg_try_advisory_lock(${RETENTION_LOCK_KEY}) as locked
+        `;
+        if (!row?.locked) return;
+        try {
+          await this.runJobs();
+        } finally {
+          await reserved`select pg_advisory_unlock(${RETENTION_LOCK_KEY})`;
+        }
       } finally {
-        await reserved`select pg_advisory_unlock(${RETENTION_LOCK_KEY})`;
+        reserved.release();
       }
-    } finally {
-      reserved.release();
+    } catch (err) {
+      await this.logFailure("retention: sweep failed", err);
     }
   }
 

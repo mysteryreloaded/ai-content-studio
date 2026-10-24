@@ -6,6 +6,7 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { startFakeComfyUi } from "@ai-content-studio/fake-comfyui";
 import { FakeClock, type Workflow } from "@ai-content-studio/shared";
 import { eq } from "drizzle-orm";
+import type postgres from "postgres";
 import { createApp } from "../app.js";
 import { createLogEntryWriter } from "../backends/log-entries.js";
 import {
@@ -640,5 +641,68 @@ describe("retention sweep (issue #69)", () => {
     await scheduler.runOnce();
     const afterRelease = await db.select().from(logEntries);
     expect(afterRelease.length).toBe(0);
+  });
+
+  test("a DB outage while acquiring the advisory lock is logged, not thrown as an unhandled rejection, and the scheduler keeps rescheduling", async () => {
+    const { db } = await testDb;
+    const logWriter = createLogEntryWriter(db, clock, silentLogger);
+    const storage = createLocalStorage(
+      "/tmp/ai-content-studio-test-retention-storage-4",
+    );
+    const tickClock = new FakeClock();
+    // Simulates `sql.reserve()` itself rejecting, the same as a DB outage
+    // would at tick time — before any advisory-lock query even runs.
+    const unreachableSql = {
+      reserve: () => Promise.reject(new Error("DB unreachable")),
+    } as unknown as postgres.Sql;
+
+    const scheduler = new RetentionScheduler({
+      sql: unreachableSql,
+      db,
+      clock: tickClock,
+      storage,
+      logWriter,
+      logger: silentLogger,
+      generationsRepository: {
+        pruneOldAssets: async () => ({ assets: [], uploads: [] }),
+      },
+      uploadsRepository: new UploadsRepository(db),
+      assetRetentionDays: null,
+      logRetentionDays: 30,
+      intervalMs: 1000,
+    });
+
+    const unhandled: unknown[] = [];
+    const onUnhandledRejection = (err: unknown) => unhandled.push(err);
+    process.on("unhandledRejection", onUnhandledRejection);
+
+    try {
+      scheduler.start();
+
+      tickClock.advance(1000);
+      await flushMicrotasks();
+      expect(unhandled).toEqual([]);
+
+      const afterFirstTick = await db
+        .select()
+        .from(logEntries)
+        .where(eq(logEntries.level, "error"));
+      expect(afterFirstTick.length).toBe(1);
+      expect(afterFirstTick[0]?.message).toContain("retention: sweep failed");
+
+      // The scheduler rescheduled its next tick despite the failure.
+      tickClock.advance(1000);
+      await flushMicrotasks();
+      expect(unhandled).toEqual([]);
+
+      const afterSecondTick = await db
+        .select()
+        .from(logEntries)
+        .where(eq(logEntries.level, "error"));
+      expect(afterSecondTick.length).toBe(2);
+    } finally {
+      scheduler.stop();
+      process.off("unhandledRejection", onUnhandledRejection);
+    }
   });
 });

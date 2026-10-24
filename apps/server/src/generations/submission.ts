@@ -7,16 +7,20 @@ import {
   type ImageUploadInputDefinition,
   type InputDefinition,
   type InputIssue,
+  type PointsInputDefinition,
   type VideoUploadInputDefinition,
+  applyInputValues,
   applyModeFixedValues,
   audioUploadLimitIssue,
   buildPrompt,
   computeModePath,
+  decodePointsValue,
   findBlockedWord,
   imageUploadLimitIssue,
   isSeedInput,
   modeInputSetting,
   parseInputValues,
+  pointsValidationIssue,
   randomSeedBase,
   relevantInputs,
   resolveModeInputs,
@@ -271,6 +275,111 @@ export async function resolveUploadValues(
   return { values: resolved, uploadIds: [...new Set(ids)] };
 }
 
+/**
+ * A Points Input's referenced video's first-frame pixel size (its
+ * Upload's own probed width/height), with its submitted points checked
+ * against the crop `widthField`/`heightField` resolve to, right now,
+ * from `values` (issue #52). Throws `InvalidUploads` the same way
+ * `resolveUploadValues` does, reusing its `{ error: "invalid", issues }`
+ * shape, since both are "this submitted value can't be used" issues.
+ */
+export async function resolvePointsFrameSizes(
+  inputs: readonly InputDefinition[],
+  workflowForMode: Workflow,
+  values: Record<string, string | number | undefined>,
+  userId: string,
+  deps: SubmissionDeps,
+): Promise<Record<string, { width: number; height: number }>> {
+  const pointsInputs = inputs.filter(
+    (input): input is PointsInputDefinition => input.kind === "points",
+  );
+  if (pointsInputs.length === 0) return {};
+
+  const videoInputsById = new Map(
+    inputs
+      .filter(
+        (input): input is VideoUploadInputDefinition =>
+          input.kind === "video_upload",
+      )
+      .map((input) => [input.id, input] as const),
+  );
+
+  // The Width/Height fields read the Workflow's own literal, or
+  // whatever a bound Number Input just submitted; neither is a Points
+  // Input's own concern, so every other Input is applied first, the
+  // same way `applyInputValues` itself resolves them for the real
+  // prompt.
+  const dimsWorkflow = applyInputValues(
+    workflowForMode,
+    inputs.filter((input) => input.kind !== "points"),
+    values,
+  );
+
+  const videoUploadIds = pointsInputs
+    .map((input) => {
+      const videoInput = videoInputsById.get(input.videoInputId);
+      return videoInput ? values[videoInput.id] : undefined;
+    })
+    .filter((id): id is string => typeof id === "string");
+  const uploadsById = new Map(
+    (await deps.uploadsRepository.listByIds(videoUploadIds)).map((u) => [
+      u.id,
+      u,
+    ]),
+  );
+
+  const frameSizes: Record<string, { width: number; height: number }> = {};
+  const issues: InputIssue[] = [];
+  for (const input of pointsInputs) {
+    const refuse = (message: string) =>
+      issues.push({ path: input.id, code: "points", message });
+
+    const raw = values[input.id];
+    const points = typeof raw === "string" ? decodePointsValue(raw) : null;
+    const videoInput = videoInputsById.get(input.videoInputId);
+    const upload = videoInput
+      ? uploadsById.get(String(values[videoInput.id]))
+      : undefined;
+    const width =
+      dimsWorkflow[input.widthField.nodeId]?.inputs[input.widthField.field];
+    const height =
+      dimsWorkflow[input.heightField.nodeId]?.inputs[input.heightField.field];
+
+    if (!points) {
+      refuse("needs 1-10 points");
+      continue;
+    }
+    if (
+      !upload ||
+      upload.userId !== userId ||
+      !upload.width ||
+      !upload.height
+    ) {
+      refuse("that video's frame size couldn't be resolved");
+      continue;
+    }
+    if (typeof width !== "number" || typeof height !== "number") {
+      refuse("the crop size couldn't be resolved");
+      continue;
+    }
+    const issue = pointsValidationIssue(
+      points,
+      upload.width,
+      upload.height,
+      width,
+      height,
+    );
+    if (issue) {
+      refuse(issue);
+      continue;
+    }
+    frameSizes[input.id] = { width: upload.width, height: upload.height };
+  }
+
+  if (issues.length > 0) throw new InvalidUploads(issues);
+  return frameSizes;
+}
+
 /** Whether at least one attached, reachable Backend has every node type a Mode's Path needs. */
 async function hasUsableBackend(
   detail: ModelDetail,
@@ -444,6 +553,17 @@ export async function submitGeneration(
     }
   }
 
+  // issue #52: resolved from the still-raw submitted values (a video
+  // Upload's bare id, needed to look up its probed frame size), before
+  // `resolveUploadValues` below rewrites it to a Backend file name.
+  const frameSizes = await resolvePointsFrameSizes(
+    nonHiddenRelevant,
+    workflowForMode,
+    parsedValues.data as Record<string, string | number | undefined>,
+    params.userId,
+    deps,
+  );
+
   // A hidden Upload Input (fixed is refused for this kind) isn't
   // submitted, so it must stay out of resolution too, or it 400s every
   // Submit looking for an Upload id that was never asked for.
@@ -487,6 +607,7 @@ export async function submitGeneration(
       values,
       outputNodeIds,
       generationId,
+      frameSizes,
     );
     creations.push({
       id: generationId,

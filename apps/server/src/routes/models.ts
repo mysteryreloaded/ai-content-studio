@@ -63,11 +63,25 @@ function placeholderFor(
   return value === undefined || isNodeLink(value) ? null : value;
 }
 
+/** The shown Input, if any, bound to `ref`'s field (issue #52: a Points Input's Width/Height may itself be a live Number Input). */
+function boundInputIdFor(
+  ref: { nodeId: string; field: string },
+  formInputs: readonly InputDefinition[],
+): string | null {
+  const match = formInputs.find((other) =>
+    other.bindings.some(
+      (binding) => binding.nodeId === ref.nodeId && binding.field === ref.field,
+    ),
+  );
+  return match?.id ?? null;
+}
+
 /** Trims an Input down to what the Workbench needs to render and validate its field: never the bindings or an option's per-field values. */
 function toWorkbenchInput(
   input: InputDefinition,
   workflow: Workflow,
   required: boolean,
+  formInputs: readonly InputDefinition[] = [],
 ) {
   const base = {
     id: input.id,
@@ -136,6 +150,25 @@ function toWorkbenchInput(
       max: input.max,
     };
   }
+  if (input.kind === "points") {
+    const widthValue =
+      workflow[input.widthField.nodeId]?.inputs[input.widthField.field];
+    const heightValue =
+      workflow[input.heightField.nodeId]?.inputs[input.heightField.field];
+    return {
+      ...base,
+      placeholder: null,
+      kind: "points" as const,
+      videoInputId: input.videoInputId,
+      // issue #52: when the Mode shows a Number Input bound to the same
+      // field, the Workbench watches its live value instead of this
+      // literal (an Admin's `widthField` is often one these Inputs own).
+      widthInputId: boundInputIdFor(input.widthField, formInputs),
+      heightInputId: boundInputIdFor(input.heightField, formInputs),
+      defaultWidth: typeof widthValue === "number" ? widthValue : null,
+      defaultHeight: typeof heightValue === "number" ? heightValue : null,
+    };
+  }
   return {
     ...base,
     kind: "select" as const,
@@ -191,7 +224,12 @@ function toWorkbenchDetail(
         id: mode.id,
         name: mode.name,
         inputs: formInputs.map((input) =>
-          toWorkbenchInput(input, detail.workflow, requiredIds.has(input.id)),
+          toWorkbenchInput(
+            input,
+            workflowForMode,
+            requiredIds.has(input.id),
+            formInputs,
+          ),
         ),
         description: mode.description,
         // issue #48: the Mode menu's "From a prompt / images / audio / video" group.

@@ -5,6 +5,7 @@ export * from "./workflow/frozen-prompt.js";
 export * from "./workflow/validate.js";
 export * from "./workflow/outside-service.js";
 export * from "./workflow/input.js";
+export * from "./workflow/points.js";
 export * from "./workflow/seed.js";
 export * from "./clock/clock.js";
 export * from "./clock/fake-clock.js";

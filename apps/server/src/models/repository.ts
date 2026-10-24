@@ -829,6 +829,7 @@ export class ModelRepository {
           labelsSoFar,
           ctx,
           idsSoFar,
+          input,
         );
         for (const message of defErrors) {
           errors.push({ field: `inputs[${index}]`, message });

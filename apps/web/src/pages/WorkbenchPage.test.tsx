@@ -1263,4 +1263,167 @@ describe("WorkbenchPage", () => {
       });
     });
   });
+
+  describe("Points Inputs (issue #52)", () => {
+    const VIDEO_INPUT_ID = "88888888-8888-4888-8888-888888888888";
+    const POINTS_INPUT_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const UPLOAD_ID = "99999999-9999-4999-8999-999999999999";
+    const WIDTH_INPUT_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+
+    function pointsModelWithDefaultSize() {
+      return {
+        ...MODEL,
+        modes: [
+          {
+            id: "mode-points",
+            name: "Default",
+            description: "",
+            inputs: [
+              {
+                id: VIDEO_INPUT_ID,
+                kind: "video_upload",
+                group: "describe",
+                label: "Clip",
+                help: "",
+                placeholder: null,
+                maxSizeMb: 50,
+                maxLongSide: null,
+                minDurationMs: 0,
+                maxDurationMs: 10_000,
+                trimmable: true,
+              },
+              {
+                id: POINTS_INPUT_ID,
+                kind: "points",
+                group: "describe",
+                label: "Who to replace",
+                help: "",
+                placeholder: null,
+                videoInputId: VIDEO_INPUT_ID,
+                widthInputId: null,
+                heightInputId: null,
+                defaultWidth: 512,
+                defaultHeight: 512,
+              },
+            ],
+          },
+        ],
+      };
+    }
+
+    /** Like {@link pointsModelWithDefaultSize}, but the crop/scale target width comes from a shown Number Input instead of a literal. */
+    function pointsModelWithBoundWidth() {
+      const model = pointsModelWithDefaultSize();
+      const pointsInput = model.modes[0]?.inputs[1];
+      if (!pointsInput || pointsInput.kind !== "points") throw new Error();
+      return {
+        ...model,
+        modes: [
+          {
+            ...model.modes[0],
+            inputs: [
+              model.modes[0]?.inputs[0],
+              {
+                id: WIDTH_INPUT_ID,
+                kind: "number",
+                group: "settings",
+                label: "Width",
+                help: "",
+                placeholder: null,
+                numberMode: "integer",
+                min: 64,
+                max: 2048,
+                step: 8,
+                default: 256,
+              },
+              {
+                ...pointsInput,
+                widthInputId: WIDTH_INPUT_ID,
+                defaultWidth: null,
+              },
+            ],
+          },
+        ],
+      };
+    }
+
+    function pointsServer(model: unknown) {
+      const posts: FetchCall[] = [];
+      mockFetch(async (call) => {
+        if (call.url.endsWith("/api/models/ltx")) {
+          return Response.json({ model });
+        }
+        if (
+          call.url.endsWith("/api/models/ltx/generations") &&
+          call.method === "GET"
+        ) {
+          return Response.json({ submissions: [] });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          posts.push(call);
+          return Response.json({ generation: { id: "g1" } }, { status: 201 });
+        }
+        if (call.url === "/api/uploads") {
+          return Response.json(
+            { upload: { id: UPLOAD_ID, chunkSize: 16 * 1024 * 1024 } },
+            { status: 201 },
+          );
+        }
+        if (call.url.startsWith(`/api/uploads/${UPLOAD_ID}/chunk`)) {
+          return Response.json({ offset: 4 });
+        }
+        if (call.url === `/api/uploads/${UPLOAD_ID}/complete`) {
+          return Response.json({
+            upload: { id: UPLOAD_ID, durationMs: 2000, browserPlayable: true },
+          });
+        }
+        throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+      });
+      return { posts };
+    }
+
+    test("asks for a video before showing the picker", async () => {
+      pointsServer(pointsModelWithDefaultSize());
+      const view = renderWorkbench();
+
+      await view.findByText("Points");
+      expect(view.getByText("Pick a video above first.")).toBeTruthy();
+    });
+
+    test("shows the point counter once a video is uploaded and a target size is known", async () => {
+      pointsServer(pointsModelWithDefaultSize());
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await view.findByText("Your media");
+      await userEvent.upload(
+        view.getByLabelText("Clip"),
+        new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
+      );
+      await view.findByLabelText("Start (s)");
+
+      expect(await view.findByText(/0\/10 points picked/)).toBeTruthy();
+    });
+
+    test("resolves the crop's target size from a bound Number Input, not just the literal default", async () => {
+      pointsServer(pointsModelWithBoundWidth());
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await view.findByText("Your media");
+      await userEvent.upload(
+        view.getByLabelText("Clip"),
+        new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
+      );
+      await view.findByLabelText("Start (s)");
+
+      // No literal `defaultWidth` on this fixture: the picker only shows
+      // once *some* target width is known, here from the Width Input.
+      expect(await view.findByText(/0\/10 points picked/)).toBeTruthy();
+    });
+  });
 });

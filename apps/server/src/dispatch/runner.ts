@@ -17,8 +17,10 @@ import {
   type JobFile,
   PromptRejected,
   fetchView,
+  headInputFile,
   readJob,
   submitPrompt,
+  uploadInputImage,
 } from "../comfyui/client.js";
 import type { AssetsRepository } from "../generations/assets-repository.js";
 import type { GenerationEvents } from "../generations/events.js";
@@ -31,6 +33,9 @@ import { ProgressTracker } from "./progress.js";
 import type { DispatchQueue, RunDetail } from "./queue.js";
 
 const POLL_INTERVAL_MS = 1_000;
+/** A Backend's copy of an Upload this old is sent again (issue #50), in case the Backend's own cleanup is about to remove it. */
+const UPLOAD_FRESH_MS = 12 * 60 * 60 * 1000;
+const UPLOAD_SUBFOLDER = "studio";
 
 export interface RunnerDeps {
   queue: DispatchQueue;
@@ -169,6 +174,36 @@ async function saveAssets(
   }
 }
 
+/**
+ * Makes sure the Backend has every Upload the prompt names (issue #50):
+ * one it already holds with the same size and under 12 h old is skipped;
+ * any other is sent to `/upload/image`, overwriting.
+ */
+async function sendUploads(
+  target: Awaited<ReturnType<typeof comfyUiTarget>>,
+  detail: RunDetail,
+  deps: RunnerDeps,
+): Promise<void> {
+  for (const upload of detail.uploads) {
+    const filename = `${upload.id}.${upload.extension}`;
+    const existing = await headInputFile(target, UPLOAD_SUBFOLDER, filename);
+    if (
+      existing &&
+      existing.size === upload.size &&
+      existing.lastModified !== null &&
+      deps.clock.now().getTime() - existing.lastModified.getTime() <
+        UPLOAD_FRESH_MS
+    ) {
+      continue;
+    }
+    const file = Bun.file(deps.storage.absolutePath(upload.storageKey));
+    if (!(await file.exists())) {
+      throw new Error(`Upload ${upload.id} is no longer stored`);
+    }
+    await uploadInputImage(target, UPLOAD_SUBFOLDER, filename, file);
+  }
+}
+
 export async function runClaimedGeneration(
   backend: BackendRecord,
   detail: RunDetail,
@@ -185,6 +220,7 @@ export async function runClaimedGeneration(
   let target: Awaited<ReturnType<typeof comfyUiTarget>>;
   try {
     target = await comfyUiTarget(backend, deps.backendRepository);
+    await sendUploads(target, detail, deps);
     await submitPrompt(target, generationId, detail.builtPrompt);
   } catch (err) {
     await fail(deps, detail, backend.id, describeError(err));

@@ -60,6 +60,8 @@ export interface CreateGenerationInput {
   submissionId: string;
   builtPrompt: Workflow;
   nodeTypes: string[];
+  /** Issue #50: the Uploads `builtPrompt` names. */
+  uploadIds?: string[];
   submittedAt: Date;
 }
 
@@ -131,6 +133,7 @@ export class GenerationsRepository {
         submissionId: input.submissionId,
         builtPrompt: input.builtPrompt,
         nodeTypes: input.nodeTypes,
+        uploadIds: input.uploadIds ?? [],
         submittedAt: input.submittedAt,
       })
       .returning();

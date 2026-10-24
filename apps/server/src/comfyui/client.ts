@@ -99,6 +99,61 @@ export async function fetchView(
   return res;
 }
 
+/** What `HEAD /view` tells about a Backend's own input file (issue #50). */
+export interface InputFileInfo {
+  size: number;
+  lastModified: Date | null;
+}
+
+/** `HEAD /view` for `input/<subfolder>/<filename>`: null when the Backend doesn't have it. */
+export async function headInputFile(
+  target: ComfyUiTarget,
+  subfolder: string,
+  filename: string,
+): Promise<InputFileInfo | null> {
+  const query = new URLSearchParams({ filename, subfolder, type: "input" });
+  const res = await fetch(join(target.baseUrl, `/view?${query}`), {
+    method: "HEAD",
+    headers: target.headers,
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`HEAD /view returned ${res.status}`);
+  const size = Number(res.headers.get("content-length"));
+  const lastModifiedHeader = res.headers.get("last-modified");
+  const lastModified = lastModifiedHeader ? new Date(lastModifiedHeader) : null;
+  return {
+    size: Number.isFinite(size) ? size : -1,
+    lastModified:
+      lastModified && !Number.isNaN(lastModified.getTime())
+        ? lastModified
+        : null,
+  };
+}
+
+/** Sends a file to `POST /upload/image` (ComfyUI's own endpoint), overwriting `input/<subfolder>/<filename>`. */
+export async function uploadInputImage(
+  target: ComfyUiTarget,
+  subfolder: string,
+  filename: string,
+  file: Blob,
+): Promise<void> {
+  const form = new FormData();
+  form.append("image", file, filename);
+  form.append("type", "input");
+  form.append("subfolder", subfolder);
+  form.append("overwrite", "true");
+  const res = await fetch(join(target.baseUrl, "/upload/image"), {
+    method: "POST",
+    headers: target.headers,
+    body: form,
+    // A whole Upload (up to MAX_UPLOAD_MB) goes in one request, so this
+    // gets far longer than the API calls' timeout.
+    signal: AbortSignal.timeout(10 * 60_000),
+  });
+  if (!res.ok) throw new Error(`/upload/image returned ${res.status}`);
+}
+
 function wsUrlFor(baseUrl: string, clientId: string): string {
   const url = new URL(join(baseUrl, "/ws"));
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";

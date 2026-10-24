@@ -756,6 +756,7 @@ export class ModelRepository {
     expectedVersion: number,
     actor: AuditActor,
     fieldSpecs?: ReadonlyMap<string, Record<string, ComfyFieldSpec>>,
+    maxUploadMb?: number,
   ): Promise<{ record: ModelRecord; inputs: InputDefinition[] }> {
     return await this.db.transaction(async (tx) => {
       const [before] = await tx
@@ -800,6 +801,7 @@ export class ModelRepository {
           outputNodeIds,
           usedFields,
           fieldSpecs,
+          maxUploadMb,
         };
         const defErrors = validateInputDefinition(
           def,

@@ -102,6 +102,14 @@ export class Dispatcher {
       for (const { generation, backend } of claimed) {
         void this.run(generation, backend);
       }
+    } catch (err) {
+      await this.deps.logWriter.log({
+        level: "error",
+        source: "app",
+        message: "dispatcher tick failed",
+        details:
+          err instanceof Error ? (err.stack ?? err.message) : String(err),
+      });
     } finally {
       this.ticking = false;
       if (this.pendingWake) {
@@ -112,9 +120,9 @@ export class Dispatcher {
   }
 
   private async run(generation: QueuedGeneration, backend: BackendRecord) {
-    const detail = await this.deps.queue.detailForRun(generation.id);
-    if (!detail) return;
     try {
+      const detail = await this.deps.queue.detailForRun(generation.id);
+      if (!detail) return;
       await runClaimedGeneration(backend, detail, {
         queue: this.deps.queue,
         assetsRepository: this.deps.assetsRepository,
@@ -126,6 +134,16 @@ export class Dispatcher {
         progress: this.progress,
         onFreed: this.wake,
         pollIntervalMs: this.deps.pollIntervalMs,
+      });
+    } catch (err) {
+      await this.deps.logWriter.log({
+        level: "error",
+        source: "app",
+        message: "Generation run crashed",
+        backendId: backend.id,
+        generationId: generation.id,
+        details:
+          err instanceof Error ? (err.stack ?? err.message) : String(err),
       });
     } finally {
       this.wake();
@@ -145,15 +163,19 @@ export class Dispatcher {
       if (!row?.locked) return;
 
       for (const candidate of plan) {
-        const rows = await tx<{ id: string }[]>`
-          update generations
-          set state = 'starting', backend_id = ${candidate.backend.id}, started_at = ${this.deps.clock.now().toISOString()}
-          where id = ${candidate.generation.id} and state = 'queued'
-          returning id
-        `.catch((err) => {
-          if (isUniqueViolation(err)) return [];
-          throw err;
-        });
+        const rows = await tx
+          .savepoint(async (sp) => {
+            return sp<{ id: string }[]>`
+              update generations
+              set state = 'starting', backend_id = ${candidate.backend.id}, started_at = ${this.deps.clock.now().toISOString()}
+              where id = ${candidate.generation.id} and state = 'queued'
+              returning id
+            `;
+          })
+          .catch((err) => {
+            if (isUniqueViolation(err)) return [];
+            throw err;
+          });
         if (rows.length > 0) claimed.push(candidate);
       }
     });

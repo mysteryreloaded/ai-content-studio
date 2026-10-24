@@ -55,6 +55,9 @@ const MODEL_WITH_SEED = {
           max: 1000,
         },
       ],
+      // issue #48 CEO review: read off this flag, not `inputs`, since a
+      // hidden Seed still sets it but isn't in `inputs`.
+      hasSeed: true,
     },
   ],
 };
@@ -240,6 +243,167 @@ describe("WorkbenchPage", () => {
     await userEvent.click(view.getByRole("button", { name: "Generate" }));
 
     expect(await view.findByText(/This Model changed; reloaded/)).toBeTruthy();
+  });
+
+  describe("Value carrying across Modes and model_changed (issue #48 AC6)", () => {
+    const PROMPT_ID = "p1";
+    const ASPECT_ID = "a1";
+
+    const promptInput = {
+      id: PROMPT_ID,
+      group: "describe" as const,
+      label: "Prompt",
+      help: "",
+      required: false,
+      placeholder: null,
+      kind: "text" as const,
+      multiline: false,
+      maxLength: 2000,
+      default: "",
+    };
+
+    const MODEL_TWO_MODES = {
+      ...MODEL,
+      // A revision/mode id pair distinct from every other test's, since
+      // `parseInputValues` caches its schema by that pair for the
+      // process's lifetime (immutable revisions): reusing one here
+      // would reuse another test's cached shape instead of this Mode's.
+      revision: 201,
+      modes: [
+        {
+          id: "tm-mode1",
+          name: "Default",
+          description: "",
+          inputs: [promptInput],
+          menuGroup: "prompt" as const,
+        },
+        {
+          id: "tm-mode2",
+          name: "Other",
+          description: "",
+          inputs: [promptInput],
+          menuGroup: "prompt" as const,
+        },
+      ],
+    };
+
+    test("switching Mode keeps the value of an Input the new Mode also shows", async () => {
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
+          return Response.json({ model: MODEL_TWO_MODES });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ submissions: [] });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      const promptField = await view.findByLabelText("Prompt");
+      await userEvent.type(promptField, "a dog");
+      await userEvent.click(view.getByRole("radio", { name: "Other" }));
+
+      expect((view.getByLabelText("Prompt") as HTMLInputElement).value).toBe(
+        "a dog",
+      );
+    });
+
+    const ASPECT_INPUT = {
+      id: ASPECT_ID,
+      group: "settings" as const,
+      label: "Aspect",
+      help: "",
+      required: false,
+      placeholder: null,
+      kind: "select" as const,
+      options: [
+        { id: "square", label: "Square" },
+        { id: "wide", label: "Wide" },
+        { id: "tall", label: "Tall" },
+      ],
+      default: null,
+    };
+
+    const MODEL_WITH_ASPECT = {
+      ...MODEL,
+      revision: 202,
+      modes: [
+        {
+          id: "wa-mode1",
+          name: "Default",
+          description: "",
+          inputs: [promptInput, ASPECT_INPUT],
+          menuGroup: "prompt" as const,
+        },
+      ],
+    };
+
+    test("409 model_changed keeps a value that still parses, drops one that doesn't", async () => {
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
+          return Response.json({ model: MODEL_WITH_ASPECT });
+        }
+        if (
+          call.url.endsWith("/api/models/ltx/generations") &&
+          call.method === "GET"
+        ) {
+          return Response.json({ submissions: [] });
+        }
+        if (
+          call.url.endsWith("/api/models/ltx/generations") &&
+          call.method === "POST"
+        ) {
+          return Response.json(
+            {
+              error: "model_changed",
+              model: {
+                ...MODEL_WITH_ASPECT,
+                revision: 203,
+                modes: [
+                  {
+                    id: "wa-mode1",
+                    name: "Default",
+                    description: "",
+                    inputs: [
+                      promptInput,
+                      {
+                        ...ASPECT_INPUT,
+                        options: [{ id: "square", label: "Square" }],
+                      },
+                    ],
+                    menuGroup: "prompt" as const,
+                  },
+                ],
+              },
+            },
+            { status: 409 },
+          );
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await userEvent.type(await view.findByLabelText("Prompt"), "a dog");
+      await userEvent.selectOptions(view.getByLabelText("Aspect"), "wide");
+
+      await userEvent.click(view.getByRole("button", { name: "Generate" }));
+      await view.findByText(/This Model changed; reloaded/);
+
+      expect((view.getByLabelText("Prompt") as HTMLInputElement).value).toBe(
+        "a dog",
+      );
+      expect((view.getByLabelText("Aspect") as HTMLSelectElement).value).toBe(
+        "",
+      );
+    });
   });
 
   test("adds a Queued card to Submissions when a change event arrives for this Model", async () => {

@@ -1,7 +1,11 @@
-// A Mode's output nodes and Path (ADR 0001, issue #42).
+// A Mode's output nodes and Path (ADR 0001, issue #42), and a Mode's
+// per-Input settings (issue #48): hidden, optional, required or fixed,
+// with an optional Mode-specific label.
 
+import { applyInputValues, fieldKey } from "./input.js";
+import type { ComfyFieldSpec, InputDefinition } from "./input.js";
 import { computePath } from "./path.js";
-import type { Workflow } from "./types.js";
+import type { NodeFieldValue, Workflow } from "./types.js";
 
 export type AssetKind = "video" | "image" | "audio";
 
@@ -105,12 +109,48 @@ export function resolveModeOutputNodes(
   return { ok: true, outputNodes };
 }
 
-/** A Mode's Path (ADR 0001): its output nodes plus everything upstream. */
+/**
+ * Writes a Mode's fixed Input values into its Workflow (issue #48 CEO
+ * review round): ADR 0001 follows a `ComfySwitchNode` branch whose value
+ * is "known before sending", and a fixed value is known exactly that way
+ * — the same as a value `buildPrompt` later writes for a real Generation.
+ * Callers computing a Mode's Path or relevant Inputs (`computeModePath`,
+ * `relevantInputs`) must run this first, or a switch fixed to the side
+ * opposite the Workflow's own literal computes the wrong Path: showing
+ * the other side's Inputs, never writing its own, and checking the wrong
+ * side's node types for Backend enablement.
+ */
+export function applyModeFixedValues(
+  workflow: Workflow,
+  inputs: readonly InputDefinition[],
+  settings: readonly ModeInputSetting[],
+): Workflow {
+  const { fixedValues } = resolveModeInputs(inputs, settings);
+  // Only the fixed Inputs themselves go to applyInputValues: handed every
+  // Input, it also writes each blank one's own default (hidden ones too),
+  // which isn't a fixed value and must leave the Workflow's own literal
+  // alone.
+  const fixedInputs = inputs.filter((input) => input.id in fixedValues);
+  return applyInputValues(
+    workflow,
+    fixedInputs,
+    fixedValues as Record<string, string | number | undefined>,
+  );
+}
+
+/**
+ * A Mode's Path (ADR 0001): its output nodes plus everything upstream.
+ * `unresolvableFields` (issue #48) keeps both sides of a switch steered
+ * by a field in that set, rather than pruning one on a value a visible
+ * Input could still change. Pass a Workflow already run through
+ * {@link applyModeFixedValues} so a fixed value picks its switch's side.
+ */
 export function computeModePath(
   workflow: Workflow,
   outputNodeIds: readonly string[],
+  unresolvableFields?: ReadonlySet<string>,
 ) {
-  return computePath(workflow, outputNodeIds);
+  return computePath(workflow, outputNodeIds, unresolvableFields);
 }
 
 /** A Mode's name: 1-60 characters, unique among the Model's other Modes (case-insensitive). */
@@ -126,4 +166,250 @@ export function validateModeName(
     return "a Mode with this name already exists";
   }
   return null;
+}
+
+/**
+ * One Input's state within one Mode (issue #48): hidden, optional,
+ * required, or fixed to a value. An Input with no setting for a given
+ * Mode defaults to optional with no label override (every Mode's Path
+ * Inputs showed this way before the Mode × Input grid existed).
+ */
+export type ModeInputState = "hidden" | "optional" | "required" | "fixed";
+
+export interface ModeInputSetting {
+  inputId: string;
+  state: ModeInputState;
+  /** Only meaningful when `state` is "fixed": an option id (select), or a literal text/number value. */
+  fixedValue: NodeFieldValue;
+  /** Blank means this Mode uses the Input's own label. */
+  label: string;
+}
+
+/** Finds `inputId`'s setting for this Mode, or the optional/no-label default when it has none. */
+export function modeInputSetting(
+  settings: readonly ModeInputSetting[],
+  inputId: string,
+): ModeInputSetting {
+  return (
+    settings.find((setting) => setting.inputId === inputId) ?? {
+      inputId,
+      state: "optional",
+      fixedValue: null,
+      label: "",
+    }
+  );
+}
+
+/**
+ * Validates one Mode's `ModeInputSetting`s against its Model's Inputs:
+ * each setting's Input must exist, at most one setting per Input, a
+ * fixed value must respect that Input's options or range, and a label
+ * override must be 1-60 characters.
+ */
+export function validateModeInputSettings(
+  settings: readonly ModeInputSetting[],
+  inputs: readonly InputDefinition[],
+): string[] {
+  const errors: string[] = [];
+  const byId = new Map(inputs.map((input) => [input.id, input]));
+  const seen = new Set<string>();
+
+  for (const setting of settings) {
+    if (seen.has(setting.inputId)) {
+      errors.push(`Input "${setting.inputId}" has more than one setting`);
+      continue;
+    }
+    seen.add(setting.inputId);
+
+    const input = byId.get(setting.inputId);
+    if (!input) {
+      errors.push(`Input "${setting.inputId}" is not on this Model`);
+      continue;
+    }
+
+    if (setting.label !== "" && setting.label.length > 60) {
+      errors.push(`"${input.label}"'s Mode label must be 1-60 characters`);
+    }
+
+    if (setting.state !== "fixed") continue;
+
+    if (input.kind === "text") {
+      if (typeof setting.fixedValue !== "string") {
+        errors.push(`"${input.label}"'s fixed value must be text`);
+      } else if (setting.fixedValue.length > input.maxLength) {
+        errors.push(`"${input.label}"'s fixed value is longer than max length`);
+      }
+    } else if (input.kind === "number") {
+      if (typeof setting.fixedValue !== "number") {
+        errors.push(`"${input.label}"'s fixed value must be a number`);
+      } else if (
+        setting.fixedValue < input.min ||
+        setting.fixedValue > input.max
+      ) {
+        errors.push(
+          `"${input.label}"'s fixed value must be between min and max`,
+        );
+      } else if (
+        input.numberMode === "integer" &&
+        !Number.isInteger(setting.fixedValue)
+      ) {
+        errors.push(`"${input.label}"'s fixed value must be a whole number`);
+      } else if (!isOnStep(setting.fixedValue, input.min, input.step)) {
+        errors.push(`"${input.label}"'s fixed value must sit on its step`);
+      }
+    } else if (input.kind === "select") {
+      if (
+        typeof setting.fixedValue !== "string" ||
+        !input.options.some((option) => option.id === setting.fixedValue)
+      ) {
+        errors.push(
+          `"${input.label}"'s fixed value must be one of its options`,
+        );
+      }
+    } else if (input.kind === "seed") {
+      // ADR 0007: blank always means "draw one"; fixing a Seed would
+      // make every Submission draw the same one, defeating the point.
+      errors.push(`"${input.label}" is a Seed and can't be fixed`);
+    } else if (input.kind === "image_upload") {
+      // issue #50/#48 CEO review: an Upload always takes a real Upload
+      // id (there's no Workflow-default fallback for a missing file),
+      // so a fixed bare file name isn't this Input's concern.
+      errors.push(`"${input.label}" is an Image Upload and can't be fixed`);
+    }
+  }
+
+  return errors;
+}
+
+function isOnStep(value: number, min: number, step: number): boolean {
+  if (step <= 0) return true;
+  const steps = (value - min) / step;
+  return Math.abs(steps - Math.round(steps)) < 1e-9;
+}
+
+/**
+ * The `fieldKey`s this Mode's visible (optional or required) Inputs are
+ * bound to (issue #48): fed into {@link computeModePath} so a switch
+ * steered by one of them keeps both branches on the Path, since a user
+ * could still change it.
+ */
+export function visibleModeBoundFields(
+  settings: readonly ModeInputSetting[],
+  inputs: readonly InputDefinition[],
+): Set<string> {
+  const fields = new Set<string>();
+  for (const input of inputs) {
+    const setting = modeInputSetting(settings, input.id);
+    if (setting.state === "hidden" || setting.state === "fixed") continue;
+    for (const binding of input.bindings) {
+      fields.add(fieldKey(binding.nodeId, binding.field));
+    }
+  }
+  return fields;
+}
+
+export interface ResolvedModeInputs {
+  /** The Inputs this Mode's form shows: optional or required, in the Admin's order, label overridden per Mode. */
+  formInputs: InputDefinition[];
+  /** `formInputs` ids whose value is required to submit. */
+  requiredIds: Set<string>;
+  /** Fixed Inputs' values, by Input id, for `applyInputValues`/`buildPrompt` to write regardless of what's submitted. */
+  fixedValues: Record<string, NodeFieldValue>;
+}
+
+/**
+ * Resolves a Mode's relevant Inputs (those with a binding on its Path)
+ * against its `ModeInputSetting`s (issue #48): splits them into what the
+ * form shows (optional/required, labelled per this Mode) and what's
+ * fixed, excluding hidden ones from both.
+ */
+export function resolveModeInputs(
+  inputs: readonly InputDefinition[],
+  settings: readonly ModeInputSetting[],
+): ResolvedModeInputs {
+  const formInputs: InputDefinition[] = [];
+  const requiredIds = new Set<string>();
+  const fixedValues: Record<string, NodeFieldValue> = {};
+
+  for (const input of inputs) {
+    const setting = modeInputSetting(settings, input.id);
+    if (setting.state === "hidden") continue;
+    if (setting.state === "fixed") {
+      fixedValues[input.id] = setting.fixedValue;
+      continue;
+    }
+    formInputs.push(
+      setting.label === "" ? input : { ...input, label: setting.label },
+    );
+    if (setting.state === "required") requiredIds.add(input.id);
+  }
+
+  return { formInputs, requiredIds, fixedValues };
+}
+
+/**
+ * Which Workbench Mode menu group a Mode falls under (issue #48),
+ * grouped by what its *required* Inputs ask the user to start from (an
+ * optional Upload doesn't commit the user to that path). Upload Input
+ * kinds land in later issues (#50, #66); until then every Mode groups
+ * as "prompt".
+ */
+export type ModeMenuGroup = "prompt" | "images" | "audio" | "video";
+
+const UPLOAD_KIND_GROUPS: Record<string, ModeMenuGroup> = {
+  image_upload: "images",
+  audio_upload: "audio",
+  video_upload: "video",
+};
+
+/**
+ * The Mode menu group any shown Upload puts this Mode in; "prompt" when
+ * none is shown. An Upload always takes a real Upload id regardless of
+ * its grid state (issue #48 CEO review: there's no Workflow-default
+ * fallback for a missing file), so "optional" is shown-and-required the
+ * same as "required" — only "hidden" keeps a Mode out of its group.
+ */
+export function modeMenuGroup(
+  inputs: readonly InputDefinition[],
+  settings: readonly ModeInputSetting[],
+): ModeMenuGroup {
+  for (const input of inputs) {
+    const group = UPLOAD_KIND_GROUPS[input.kind as string];
+    if (!group) continue;
+    const setting = modeInputSetting(settings, input.id);
+    if (setting.state === "hidden") continue;
+    return group;
+  }
+  return "prompt";
+}
+
+/**
+ * Carries a Mode's `ModeInputSetting`s forward across an Inputs edit
+ * (issue #48): drops a setting whose Input no longer exists, and
+ * reverts a fixed setting whose value no longer validates against that
+ * Input's current options/range (e.g. an option or a wider range was
+ * narrowed away) to "optional" rather than leaving a stale, unchecked
+ * fixed value in place.
+ */
+export function reviseModeInputSettings(
+  settings: readonly ModeInputSetting[],
+  inputs: readonly InputDefinition[],
+): ModeInputSetting[] {
+  const byId = new Map(inputs.map((input) => [input.id, input]));
+  const revised: ModeInputSetting[] = [];
+  for (const setting of settings) {
+    if (!byId.has(setting.inputId)) continue;
+    if (setting.state !== "fixed") {
+      revised.push(setting);
+      continue;
+    }
+    const stillValid =
+      validateModeInputSettings([setting], inputs).length === 0;
+    revised.push(
+      stillValid
+        ? setting
+        : { ...setting, state: "optional", fixedValue: null },
+    );
+  }
+  return revised;
 }

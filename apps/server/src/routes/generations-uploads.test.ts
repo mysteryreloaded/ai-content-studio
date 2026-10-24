@@ -338,4 +338,130 @@ describe("POST /:slug/generations with an Image Upload Input", () => {
       fake.stop();
     }
   });
+
+  test("a hidden Image Upload Input doesn't 400 every Submit (issue #48 CEO review)", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const { app } = await build();
+      const json = { "content-type": "application/json" };
+      const admin = await headersFor("admin@example.com", "admin");
+
+      const createRes = await app.request("/api/admin/models", {
+        method: "POST",
+        headers: { ...admin, ...json },
+        body: JSON.stringify({ name: "Img", workflow: WORKFLOW }),
+      });
+      const { model } = (await createRes.json()) as {
+        model: { id: string; slug: string; version: number };
+      };
+      const backendRes = await app.request("/api/admin/backends", {
+        method: "POST",
+        headers: { ...admin, ...json },
+        body: JSON.stringify({ name: "Fake", baseUrl: fake.url, auth: "none" }),
+      });
+      const backend = (await backendRes.json()) as { id: string };
+      await app.request(`/api/admin/models/${model.id}/backends`, {
+        method: "POST",
+        headers: { ...admin, ...json },
+        body: JSON.stringify({ backendId: backend.id }),
+      });
+      clock.advance(30_000);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      const inputsRes = await app.request(
+        `/api/admin/models/${model.id}/inputs`,
+        {
+          method: "PUT",
+          headers: { ...admin, ...json },
+          body: JSON.stringify({ version: model.version, inputs: INPUTS }),
+        },
+      );
+      const afterInputs = (await inputsRes.json()) as {
+        record: { version: number; currentRevision: number };
+      };
+
+      const modesRes = await app.request(
+        `/api/admin/models/${model.id}/modes`,
+        {
+          method: "PUT",
+          headers: { ...admin, ...json },
+          body: JSON.stringify({
+            version: afterInputs.record.version,
+            modes: [
+              {
+                name: "Default",
+                description: "",
+                outputNodeIds: ["2"],
+                inputSettings: [
+                  {
+                    inputId: UPLOAD_INPUT_ID,
+                    state: "hidden",
+                    fixedValue: null,
+                    label: "",
+                  },
+                ],
+              },
+            ],
+          }),
+        },
+      );
+      const afterModes = (await modesRes.json()) as {
+        record: { version: number };
+        modes: Array<{ id: string }>;
+      };
+
+      const enableRes = await app.request(
+        `/api/admin/models/${model.id}/enable`,
+        {
+          method: "POST",
+          headers: { ...admin, ...json },
+          body: JSON.stringify({ version: afterModes.record.version }),
+        },
+      );
+      expect(enableRes.status).toBe(200);
+      const enabled = (await enableRes.json()) as { currentRevision: number };
+
+      const user = await headersFor("user@example.com", "user");
+      const workbench = await app.request(`/api/models/${model.slug}`, {
+        headers: user,
+      });
+      const { model: shown } = (await workbench.json()) as {
+        model: { modes: Array<{ id: string; inputs: unknown[] }> };
+      };
+      // Hidden, so it never reaches the Workbench form.
+      expect(shown.modes[0]?.inputs).toEqual([]);
+      const modeId = shown.modes[0]?.id as string;
+
+      const res = await app.request(`/api/models/${model.slug}/generations`, {
+        method: "POST",
+        headers: { ...user, ...json },
+        body: JSON.stringify({
+          modeId,
+          revision: enabled.currentRevision,
+          values: {},
+        }),
+      });
+      expect(res.status).toBe(201);
+
+      const { generations: created } = (await res.json()) as {
+        generations: Array<{ id: string }>;
+      };
+      const generation = created[0];
+      if (!generation) throw new Error("no generation created");
+      const { db } = await testDb;
+      const [row] = await db
+        .select()
+        .from(generations)
+        .where(eq(generations.id, generation.id));
+      const prompt = row?.builtPrompt as Record<
+        string,
+        { inputs: Record<string, unknown> }
+      >;
+      // The hidden Input isn't resolved against an Upload; the Workflow's
+      // own literal stands, same as any other hidden Input.
+      expect(prompt["1"]?.inputs.image).toBe("example.png");
+    } finally {
+      fake.stop();
+    }
+  });
 });

@@ -543,6 +543,16 @@ describe("buildInputValuesSchema / parseInputValues", () => {
     expect(schema.safeParse({}).success).toBe(true);
   });
 
+  test("requiredIds (issue #48) rejects a blank/missing required Input", () => {
+    const required = buildInputValuesSchema(
+      [textInput, numberInput, selectInput],
+      new Set(["prompt"]),
+    );
+    expect(required.safeParse({ prompt: "" }).success).toBe(false);
+    expect(required.safeParse({}).success).toBe(false);
+    expect(required.safeParse({ prompt: "hi" }).success).toBe(true);
+  });
+
   test("toInputIssues maps a failure onto path/code/message", () => {
     const result = schema.safeParse({ steps: 1000 });
     if (result.success) throw new Error("expected failure");
@@ -582,6 +592,49 @@ describe("relevantInputs", () => {
     expect(relevantInputs([onPath, offPath], workflow, ["3"])).toEqual([
       onPath,
     ]);
+  });
+
+  test("keeps an Input on a branch only reachable via a visible Input's bound switch field (issue #48)", () => {
+    const switchWorkflow: Workflow = {
+      prim: { class_type: "PrimitiveBoolean", inputs: { value: true } },
+      switch: {
+        class_type: "ComfySwitchNode",
+        inputs: { switch: ["prim", 0], on_true: ["a", 0], on_false: ["b", 0] },
+      },
+      a: { class_type: "LoadImage", inputs: {} },
+      b: {
+        class_type: "LoadImage",
+        inputs: { strength: 1 },
+      },
+      out: { class_type: "SaveImage", inputs: { image: ["switch", 0] } },
+    };
+    const onFalseBranch: NumberInputDefinition = {
+      id: "strength",
+      kind: "number",
+      group: "settings",
+      label: "Strength",
+      help: "",
+      default: null,
+      numberMode: "decimal",
+      min: 0,
+      max: 1,
+      step: 0.1,
+      bindings: [
+        { nodeId: "b", field: "strength", classType: "LoadImage", title: null },
+      ],
+    };
+
+    expect(relevantInputs([onFalseBranch], switchWorkflow, ["out"])).toEqual(
+      [],
+    );
+    expect(
+      relevantInputs(
+        [onFalseBranch],
+        switchWorkflow,
+        ["out"],
+        new Set(["prim::value"]),
+      ),
+    ).toEqual([onFalseBranch]);
   });
 });
 

@@ -10,12 +10,17 @@ import { type RouteEntry, guardedRoute } from "../auth/access.js";
 import type { AppEnv } from "../auth/app-env.js";
 import type { Database } from "../db/client.js";
 import { getCapsStatus } from "../generations/caps.js";
+import { deleteStorageFor } from "../generations/deletion.js";
 import type { GenerationEvent } from "../generations/events.js";
 import type { GenerationEvents } from "../generations/events.js";
 import type { GenerationsRepository } from "../generations/repository.js";
+import type { Storage } from "../storage/storage.js";
 
 /** The AC asks for "every few seconds"; Bun.serve's own idle socket timeout is 10s. */
 const HEARTBEAT_INTERVAL_MS = 5_000;
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** A Hono app served from `Bun.serve({ fetch: app.fetch })` gets the `Server` as `c.env`. */
 interface BunServerEnv {
@@ -26,12 +31,13 @@ function sseEvent(event: string, data: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
-/** `/api/generations`: the signed-in user's own Generation stream (issue #43). */
+/** `/api/generations`: the signed-in user's own Generation stream (issue #43), detail dialog and delete (issue #57). */
 export function generationsRoute(
   db: Database,
   generationsRepository: GenerationsRepository,
   generationEvents: GenerationEvents,
   clock: Clock,
+  storage: Storage,
   routes: RouteEntry[],
 ): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
@@ -157,6 +163,86 @@ export function generationsRoute(
       });
 
       return c.body(body);
+    },
+  );
+
+  // `/api/generations/:id`: one Generation's own detail (issue #57's
+  // AC) — the owner only; a missing id or someone else's Generation
+  // both come back 404, so a pasted link can't be used to probe which
+  // ids exist. Registered after the static `/caps` and `/stream` paths
+  // above, which must win over this one matching "caps"/"stream" as an
+  // `:id`.
+  guardedRoute(
+    app,
+    routes,
+    "/api/generations",
+    "get",
+    "/:id",
+    "active",
+    async (c) => {
+      const session = c.get("session");
+      if (!session) return c.json({ error: "unauthorized" }, 401);
+
+      const id = c.req.param("id");
+      if (!id || !UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+
+      const detail = await generationsRepository.getDetailForUser(
+        id,
+        session.user.id,
+      );
+      if (!detail) return c.json({ error: "not found" }, 404);
+      return c.json(detail);
+    },
+  );
+
+  // `/api/generations/:id` DELETE (issue #57's AC): one ended
+  // Generation, into a Tombstone. 404 for anything not this user's own,
+  // already deleted, or still under way.
+  guardedRoute(
+    app,
+    routes,
+    "/api/generations",
+    "delete",
+    "/:id",
+    "active",
+    async (c) => {
+      const session = c.get("session");
+      if (!session) return c.json({ error: "unauthorized" }, 401);
+
+      const id = c.req.param("id");
+      if (!id || !UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+
+      const keys = await generationsRepository.deleteGeneration(
+        id,
+        session.user.id,
+        clock.now(),
+      );
+      if (!keys) return c.json({ error: "not found" }, 404);
+      await deleteStorageFor(storage, keys);
+      return c.json({ ok: true });
+    },
+  );
+
+  // `/api/generations` DELETE (issue #57's AC: "Delete all" on the
+  // Workbench): every one of this user's own ended Generations, each
+  // into a Tombstone. Under-way ones are left alone.
+  guardedRoute(
+    app,
+    routes,
+    "/api/generations",
+    "delete",
+    "/",
+    "active",
+    async (c) => {
+      const session = c.get("session");
+      if (!session) return c.json({ error: "unauthorized" }, 401);
+
+      const keys = await generationsRepository.deleteAllForUser(
+        session.user.id,
+        clock.now(),
+      );
+      await deleteStorageFor(storage, keys);
+      return c.json({ ok: true });
     },
   );
 

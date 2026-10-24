@@ -244,6 +244,7 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
       generationsRepository,
       generationEvents,
       deps.clock,
+      storage,
       routes,
     ),
   );
@@ -255,7 +256,11 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
         generationsRepository,
         generationEvents,
         wakeDispatcher: dispatcher.wake,
+        clock: deps.clock,
       },
+      generationsRepository,
+      storage,
+      deps.clock,
       routes,
     ),
   );

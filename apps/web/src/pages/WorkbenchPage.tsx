@@ -10,7 +10,11 @@ import {
   renderMarkdown,
   toInputIssues,
 } from "@ai-content-studio/shared";
-import type { CapsStatus, InputDefinition } from "@ai-content-studio/shared";
+import type {
+  CapsStatus,
+  GenerationInputSetting,
+  InputDefinition,
+} from "@ai-content-studio/shared";
 import {
   type MouseEvent as ReactMouseEvent,
   useCallback,
@@ -19,7 +23,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { Link, Navigate, useParams } from "react-router-dom";
+import { Link, Navigate, useParams, useSearchParams } from "react-router-dom";
 import { Footer } from "../Footer.js";
 import {
   httpUploadApi,
@@ -762,6 +766,8 @@ function GenerationDetailDialog({
 /** A Model's Workbench at its slug (issue #43, #44, #61): pick the Mode, press Generate, watch it dispatch, run and play its Asset live. */
 export function WorkbenchPage() {
   const { slug = "" } = useParams();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const reuseGenerationId = searchParams.get("reuse");
   const { session } = useSession();
   const { paused, notice } = usePauseNotice();
   const pauseNoticeText = effectiveNoticeText(paused, notice);
@@ -770,6 +776,8 @@ export function WorkbenchPage() {
   const [notFound, setNotFound] = useState(false);
   const [selectedModeId, setSelectedModeId] = useState<string | null>(null);
   const [values, setValues] = useState<Record<string, string>>({});
+  const [reuseNotice, setReuseNotice] = useState<string | null>(null);
+  const [deletingAll, setDeletingAll] = useState(false);
   /** 1-4 (issue #47); only meaningful when the Mode's Path holds a bound Seed Input. */
   const [count, setCount] = useState(1);
   const [issuesByInputId, setIssuesByInputId] = useState<
@@ -1024,6 +1032,83 @@ export function WorkbenchPage() {
       cancelled = true;
     };
   }, [slug, selectMode]);
+
+  // "Reuse these settings" (issue #57's AC): `?reuse=<generationId>`
+  // refills this Mode's form from a past Generation's own settings,
+  // flagging whatever no longer fits the current revision and
+  // clearing a gone Upload with a note, rather than guessing at it.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `searchParams`/`setSearchParams` deliberately excluded — this only ever runs off `reuseGenerationId` itself, and re-running it because its own cleanup just changed `searchParams` would loop.
+  useEffect(() => {
+    if (!model || !reuseGenerationId) return;
+    let cancelled = false;
+
+    fetch(`/api/generations/${reuseGenerationId}`)
+      .then((res) => {
+        if (!res.ok) throw new Error(`unexpected status ${res.status}`);
+        return res.json() as Promise<{
+          modelId: string;
+          modelDeleted: boolean;
+          modeId: string;
+          settings: GenerationInputSetting[];
+        }>;
+      })
+      .then((detail) => {
+        if (cancelled) return;
+        if (detail.modelDeleted || detail.modelId !== model.id) {
+          setReuseNotice("That Generation's Model can't be reused.");
+          return;
+        }
+        const targetMode =
+          model.modes.find((mode) => mode.id === detail.modeId) ?? null;
+        if (!targetMode) {
+          setReuseNotice(
+            "That Generation's Mode no longer exists; pick a Mode and settings yourself.",
+          );
+          return;
+        }
+        selectMode(targetMode);
+
+        const reused: Record<string, string> = {};
+        const dropped: string[] = [];
+        for (const setting of detail.settings) {
+          const input = targetMode.inputs.find((i) => i.id === setting.inputId);
+          if (!input) {
+            dropped.push(`${setting.label} (no longer on this Mode)`);
+            continue;
+          }
+          if (setting.kind === "points") {
+            dropped.push(`${setting.label} (redraw the points)`);
+            continue;
+          }
+          if (setting.kind === "upload") {
+            if (setting.upload) reused[input.id] = setting.upload.id;
+            else dropped.push(`${setting.label} (its Upload is gone)`);
+            continue;
+          }
+          reused[input.id] = String(setting.value);
+        }
+        setValues((current) => ({ ...current, ...reused }));
+        setReuseNotice(
+          dropped.length === 0
+            ? "Reused that Generation's settings."
+            : `Reused that Generation's settings. Not carried over: ${dropped.join(", ")}.`,
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setReuseNotice("Could not reuse that Generation.");
+      })
+      .finally(() => {
+        if (!cancelled) {
+          const next = new URLSearchParams(searchParams);
+          next.delete("reuse");
+          setSearchParams(next, { replace: true });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [model, reuseGenerationId, selectMode]);
 
   useEffect(() => {
     if (!model) return;
@@ -1393,6 +1478,34 @@ export function WorkbenchPage() {
     }
   }
 
+  /** "Delete all" (issue #57's AC): every one of this user's own ended Generations, into a Tombstone, across every Model — not just this one. */
+  async function handleDeleteAll() {
+    if (
+      !window.confirm(
+        "Delete every ended Generation across every Model? This can't be undone.",
+      )
+    ) {
+      return;
+    }
+    setDeletingAll(true);
+    try {
+      const res = await fetch("/api/generations", { method: "DELETE" });
+      if (!res.ok) throw new Error(`unexpected status ${res.status}`);
+      setSubmissions((current) =>
+        current
+          .map((submission) => ({
+            ...submission,
+            generations: submission.generations.filter(
+              (g) => !DONE_STATES.has(g.state),
+            ),
+          }))
+          .filter((submission) => submission.generations.length > 0),
+      );
+    } finally {
+      setDeletingAll(false);
+    }
+  }
+
   return (
     <>
       <main className="workbench">
@@ -1402,6 +1515,9 @@ export function WorkbenchPage() {
           <h1>{model.name}</h1>
           {model.description && <p>{model.description}</p>}
           {model.attribution && <p>{model.attribution}</p>}
+          {reuseNotice && (
+            <output className="workbench-reuse-notice">{reuseNotice}</output>
+          )}
           <p>
             <Link to={`/gallery?model=${model.id}`}>View in Gallery</Link>
           </p>
@@ -1544,6 +1660,17 @@ export function WorkbenchPage() {
           <aside className="workbench-submissions" aria-label="Submissions">
             <h2>Submissions</h2>
             {submissions.length === 0 && <p>No Submissions yet.</p>}
+            {submissions.some((submission) =>
+              submission.generations.some((g) => DONE_STATES.has(g.state)),
+            ) && (
+              <button
+                type="button"
+                disabled={deletingAll}
+                onClick={() => void handleDeleteAll()}
+              >
+                Delete all
+              </button>
+            )}
             <ul>
               {submissions.map((submission) => {
                 const hasUnfinished = submission.generations.some(

@@ -169,6 +169,13 @@
       "when": 1792832400001,
       "tag": "0023_rich_skreet",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1792842406320,
+      "tag": "0024_tiresome_santa_claus",
+      "breakpoints": true
     }
   ]
 }

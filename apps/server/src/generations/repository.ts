@@ -5,12 +5,36 @@
 import { DAY_MS } from "@ai-content-studio/shared";
 import type {
   Clock,
+  GenerationInputSetting,
   InputDefinition,
   Workflow,
 } from "@ai-content-studio/shared";
-import { and, desc, eq, inArray, lt, notInArray, or } from "drizzle-orm";
+import {
+  type ModeInputSetting,
+  resolveGenerationSettings,
+} from "@ai-content-studio/shared";
+import {
+  and,
+  desc,
+  eq,
+  inArray,
+  isNull,
+  lt,
+  notInArray,
+  or,
+  sql,
+} from "drizzle-orm";
 import type { Database } from "../db/client.js";
-import { assets, generations, models, modes, users } from "../db/schema.js";
+import {
+  assets,
+  generations,
+  modelRevisions,
+  models,
+  modes,
+  uploads,
+  users,
+  workflows,
+} from "../db/schema.js";
 import {
   ConcurrentCapExceeded,
   DailyCapExceeded,
@@ -28,6 +52,13 @@ export type GenerationState =
   | "failed"
   | "cancelling"
   | "cancelled";
+
+/** Issue #57: a Generation past any of these states can be deleted (into a Tombstone) or have its detail's "run time" shown. */
+const ENDED_STATES: readonly GenerationState[] = [
+  "succeeded",
+  "failed",
+  "cancelled",
+];
 
 export interface AssetSummary {
   id: string;
@@ -50,6 +81,11 @@ export interface GenerationRecord {
   tries: number;
   error: string | null;
   submittedAt: Date;
+  startedAt: Date | null;
+  /** Issue #57: when this Generation reached a terminal state; null while under way. */
+  endedAt: Date | null;
+  /** Issue #57: set once this Generation (or its Submission) was deleted — a Tombstone. */
+  deletedAt: Date | null;
   assets: AssetSummary[];
 }
 
@@ -105,6 +141,47 @@ export interface GalleryModelOption {
   name: string;
   /** Sorts last in the filter (issue #56's AC), even though it's still shown for a user's past Submissions. */
   deleted: boolean;
+}
+
+/** One Asset's facts for the detail dialog (issue #57's AC): resolution, duration, fps, size. */
+export interface GenerationAssetDetail extends AssetSummary {
+  size: number;
+  width: number | null;
+  height: number | null;
+  durationMs: number | null;
+  fps: number | null;
+}
+
+/** A Generation's own detail (issue #57): owner-only, 404 otherwise. */
+export interface GenerationDetail {
+  id: string;
+  state: GenerationState;
+  error: string | null;
+  tries: number;
+  submittedAt: Date;
+  startedAt: Date | null;
+  endedAt: Date | null;
+  deletedAt: Date | null;
+  modelId: string;
+  modelSlug: string;
+  modelName: string;
+  modelAttribution: string;
+  modelDeleted: boolean;
+  modeId: string;
+  modeName: string;
+  assets: GenerationAssetDetail[];
+  /** Empty for a Tombstone, which has nothing left to resolve. */
+  settings: GenerationInputSetting[];
+}
+
+/** Storage keys {@link GenerationsRepository.finishDelete} collected, for the route to delete from `Storage` once the Tombstone is committed. */
+export interface DeletedStorageKeys {
+  assets: {
+    storageKey: string;
+    posterKey: string | null;
+    thumbnailKey: string | null;
+  }[];
+  uploads: { storageKey: string; thumbnailKey: string | null }[];
 }
 
 /** Where a Model's "prompt" field lives, and the value it has when a user leaves it blank (issue #47). */
@@ -188,6 +265,9 @@ function toRecord(
     tries: row.tries,
     error: row.error,
     submittedAt: row.submittedAt,
+    startedAt: row.startedAt,
+    endedAt: row.endedAt,
+    deletedAt: row.deletedAt,
     assets: [...assetRows]
       .sort((a, b) => a.sortOrder - b.sortOrder)
       .map(toAssetSummary),
@@ -611,4 +691,292 @@ export class GenerationsRepository {
         deleted: row.deletedAt !== null,
       }));
   }
+
+  /**
+   * One Generation's own detail (issue #57): the owner only — the route
+   * turns `null` into a 404, same for a non-owner as for a missing id. A
+   * Tombstone (`deletedAt` set) has no settings left to resolve: its
+   * `builtPrompt`/Uploads are already cleared, so `settings` comes back
+   * empty rather than resolved against emptied data.
+   */
+  async getDetailForUser(
+    generationId: string,
+    userId: string,
+  ): Promise<GenerationDetail | null> {
+    const [row] = await this.db
+      .select({ generation: generations, mode: modes, model: models })
+      .from(generations)
+      .innerJoin(modes, eq(modes.id, generations.modeId))
+      .innerJoin(models, eq(models.id, generations.modelId))
+      .where(eq(generations.id, generationId));
+    if (!row || row.generation.userId !== userId) return null;
+
+    const assetRows = await this.db
+      .select()
+      .from(assets)
+      .where(eq(assets.generationId, generationId));
+
+    const settings = row.generation.deletedAt
+      ? []
+      : await this.resolveSettings(row.generation, row.mode.inputSettings);
+
+    return {
+      id: row.generation.id,
+      state: row.generation.state,
+      error: row.generation.error,
+      tries: row.generation.tries,
+      submittedAt: row.generation.submittedAt,
+      startedAt: row.generation.startedAt,
+      endedAt: row.generation.endedAt,
+      deletedAt: row.generation.deletedAt,
+      modelId: row.generation.modelId,
+      modelSlug: row.model.slug,
+      modelName: row.model.name,
+      modelAttribution: row.model.attribution,
+      modelDeleted: row.model.deletedAt !== null,
+      modeId: row.generation.modeId,
+      modeName: row.mode.name,
+      assets: [...assetRows]
+        .sort((a, b) => a.sortOrder - b.sortOrder)
+        .map(toAssetDetail),
+      settings,
+    };
+  }
+
+  private async resolveSettings(
+    generation: GenerationRow,
+    modeInputSettings: unknown,
+  ): Promise<GenerationInputSetting[]> {
+    const [revision] = await this.db
+      .select()
+      .from(modelRevisions)
+      .where(eq(modelRevisions.id, generation.revisionId));
+    if (!revision) return [];
+
+    const [workflowRow] = await this.db
+      .select()
+      .from(workflows)
+      .where(eq(workflows.hash, revision.workflowHash));
+    if (!workflowRow) return [];
+
+    const uploadIds = generation.uploadIds;
+    const uploadRows =
+      uploadIds.length === 0
+        ? []
+        : await this.db
+            .select()
+            .from(uploads)
+            .where(inArray(uploads.id, uploadIds));
+
+    const trimmedFromIds = uploadRows
+      .map((upload) => upload.trimmedFromId)
+      .filter((id): id is string => id !== null);
+    const trimmedFromRows =
+      trimmedFromIds.length === 0
+        ? []
+        : await this.db
+            .select({ id: uploads.id, originalName: uploads.originalName })
+            .from(uploads)
+            .where(inArray(uploads.id, trimmedFromIds));
+    const trimmedFromNameById = new Map(
+      trimmedFromRows.map((row) => [row.id, row.originalName]),
+    );
+
+    const uploadLookups = uploadRows.map((upload) => ({
+      id: upload.id,
+      extension: upload.extension ?? "",
+      facts: {
+        id: upload.id,
+        name: upload.originalName,
+        size: upload.size,
+        durationMs: upload.durationMs,
+        width: upload.width,
+        height: upload.height,
+        thumbnailKey: upload.thumbnailKey,
+        trimmedFromName: upload.trimmedFromId
+          ? (trimmedFromNameById.get(upload.trimmedFromId) ?? null)
+          : null,
+      },
+    }));
+
+    return resolveGenerationSettings({
+      inputs: revision.inputs as InputDefinition[],
+      modeInputSettings: modeInputSettings as ModeInputSetting[],
+      workflow: workflowRow.json as Workflow,
+      builtPrompt: generation.builtPrompt as Workflow,
+      uploads: uploadLookups,
+    });
+  }
+
+  /**
+   * Deletes one ended Generation (issue #57's AC), into a Tombstone:
+   * `null` when it's missing, not this user's, already deleted, or
+   * still under way (nothing to delete yet — cancel it first).
+   */
+  async deleteGeneration(
+    generationId: string,
+    userId: string,
+    now: Date,
+  ): Promise<DeletedStorageKeys | null> {
+    const [row] = await this.db
+      .select({
+        state: generations.state,
+        userId: generations.userId,
+        deletedAt: generations.deletedAt,
+      })
+      .from(generations)
+      .where(eq(generations.id, generationId));
+    if (
+      !row ||
+      row.userId !== userId ||
+      row.deletedAt !== null ||
+      !ENDED_STATES.includes(row.state)
+    ) {
+      return null;
+    }
+    return this.finishDelete([generationId], now);
+  }
+
+  /**
+   * Deletes a whole Submission (issue #57's AC): `null` when any of its
+   * Generations is missing from this user's own, already deleted, or
+   * still under way — cancel it first, same as deleting one.
+   */
+  async deleteSubmission(
+    submissionId: string,
+    userId: string,
+    now: Date,
+  ): Promise<DeletedStorageKeys | null> {
+    const rows = await this.db
+      .select({
+        id: generations.id,
+        state: generations.state,
+        userId: generations.userId,
+        deletedAt: generations.deletedAt,
+      })
+      .from(generations)
+      .where(eq(generations.submissionId, submissionId));
+    if (
+      rows.length === 0 ||
+      rows.some(
+        (row) =>
+          row.userId !== userId ||
+          row.deletedAt !== null ||
+          !ENDED_STATES.includes(row.state),
+      )
+    ) {
+      return null;
+    }
+    return this.finishDelete(
+      rows.map((row) => row.id),
+      now,
+    );
+  }
+
+  /** "Delete all" on the Workbench (issue #57's AC): every one of this user's own ended, not-yet-deleted Generations. Under-way ones are left alone. */
+  async deleteAllForUser(
+    userId: string,
+    now: Date,
+  ): Promise<DeletedStorageKeys> {
+    const rows = await this.db
+      .select({ id: generations.id, state: generations.state })
+      .from(generations)
+      .where(
+        and(eq(generations.userId, userId), isNull(generations.deletedAt)),
+      );
+    const ids = rows
+      .filter((row) => ENDED_STATES.includes(row.state))
+      .map((row) => row.id);
+    if (ids.length === 0) return { assets: [], uploads: [] };
+    return this.finishDelete(ids, now);
+  }
+
+  /**
+   * Turns `ids` into Tombstones (issue #57, ADR 0011): deletes their
+   * Assets outright, clears `builtPrompt`/`nodeTypes`/`uploadIds` and
+   * sets `deletedAt`, then sweeps any Upload those Generations used that
+   * no other, non-deleted Generation of this user still references.
+   * Returns the storage keys the caller (the route) must delete from
+   * `Storage` — this repository never touches it directly.
+   */
+  private async finishDelete(
+    ids: readonly string[],
+    now: Date,
+  ): Promise<DeletedStorageKeys> {
+    const assetRows = await this.db
+      .select()
+      .from(assets)
+      .where(inArray(assets.generationId, ids));
+    const genRows = await this.db
+      .select({ id: generations.id, uploadIds: generations.uploadIds })
+      .from(generations)
+      .where(inArray(generations.id, ids));
+    const uploadIdSet = new Set<string>();
+    for (const row of genRows) {
+      for (const uploadId of row.uploadIds) uploadIdSet.add(uploadId);
+    }
+
+    await this.db.transaction(async (tx) => {
+      await tx.delete(assets).where(inArray(assets.generationId, ids));
+      await tx
+        .update(generations)
+        .set({
+          deletedAt: now,
+          builtPrompt: {},
+          nodeTypes: [],
+          uploadIds: [],
+        })
+        .where(inArray(generations.id, ids));
+    });
+
+    const uploadKeys: DeletedStorageKeys["uploads"] = [];
+    for (const uploadId of uploadIdSet) {
+      const [stillUsed] = await this.db
+        .select({ id: generations.id })
+        .from(generations)
+        .where(
+          and(
+            isNull(generations.deletedAt),
+            sql`${generations.uploadIds} @> ARRAY[${uploadId}]::uuid[]`,
+          ),
+        )
+        .limit(1);
+      if (stillUsed) continue;
+
+      const [uploadRow] = await this.db
+        .select()
+        .from(uploads)
+        .where(eq(uploads.id, uploadId));
+      if (!uploadRow) continue;
+      await this.db.delete(uploads).where(eq(uploads.id, uploadId));
+      uploadKeys.push({
+        storageKey: uploadRow.storageKey,
+        thumbnailKey: uploadRow.thumbnailKey,
+      });
+    }
+
+    return {
+      assets: assetRows.map((row) => ({
+        storageKey: row.storageKey,
+        posterKey: row.posterKey,
+        thumbnailKey: row.thumbnailKey,
+      })),
+      uploads: uploadKeys,
+    };
+  }
+}
+
+function toAssetDetail(row: AssetRow): GenerationAssetDetail {
+  return {
+    id: row.id,
+    nodeId: row.nodeId,
+    sortOrder: row.sortOrder,
+    kind: row.kind,
+    contentType: row.contentType,
+    size: row.size,
+    width: row.width,
+    height: row.height,
+    durationMs: row.durationMs,
+    fps: row.fps,
+  };
 }

@@ -62,7 +62,7 @@ export function effectiveCapsFor(
   };
 }
 
-/** Toward the daily Cap: this user's own Generations submitted since `since`, excluding failed ones and a cancel that never left `queued`. */
+/** Toward the daily Cap: this user's own Generations submitted since `since`, excluding failed ones, a cancel that never left `queued`, and a Test (issue #74's AC: "don't count toward Caps"). */
 export async function countDailyForUser(
   db: Queryable,
   userId: string,
@@ -77,12 +77,13 @@ export async function countDailyForUser(
         gt(generations.submittedAt, since),
         notInArray(generations.state, ["failed"]),
         not(CANCELLED_WHILE_QUEUED),
+        eq(generations.isTest, false),
       ),
     );
   return Number(row?.count ?? 0);
 }
 
-/** Toward the concurrent Cap: this user's own Generations still queued through saving (a cancel frees its slot once it's `cancelled`, issue #54's AC). */
+/** Toward the concurrent Cap: this user's own Generations still queued through saving (a cancel frees its slot once it's `cancelled`, issue #54's AC), excluding a Test (issue #74's AC). */
 export async function countConcurrentForUser(
   db: Queryable,
   userId: string,
@@ -94,6 +95,7 @@ export async function countConcurrentForUser(
       and(
         eq(generations.userId, userId),
         notInArray(generations.state, ["succeeded", "failed", "cancelled"]),
+        eq(generations.isTest, false),
       ),
     );
   return Number(row?.count ?? 0);
@@ -114,6 +116,7 @@ export async function oldestCountedSubmittedAt(
         gt(generations.submittedAt, since),
         notInArray(generations.state, ["failed"]),
         not(CANCELLED_WHILE_QUEUED),
+        eq(generations.isTest, false),
       ),
     )
     .orderBy(generations.submittedAt)

@@ -322,6 +322,13 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
       generationsRepository,
       routes,
       deps.env.MAX_UPLOAD_MB,
+      {
+        generationEvents,
+        clock: deps.clock,
+        uploadsRepository,
+        hasFreeDisk: diskHasRoom,
+        wakeDispatcher: dispatcher.wake,
+      },
     ),
   );
   app.route("/api/admin/audit", adminAuditRoute(deps.db, routes));

@@ -337,16 +337,19 @@ export class Dispatcher {
 
   /** Builds the match plan, then claims each pair inside one advisory-locked transaction. */
   private async claimBatch(): Promise<(ClaimPlan & { tries: number })[]> {
-    // A Pause refuses every new claim outright (issue #59's AC): queued
-    // Generations wait untouched, while anything already `starting`/
-    // `running`/`saving` keeps going in the runner, which this never
-    // touches. `&&` short-circuits past the `await` entirely when no
-    // `isPaused` dep is wired (every production caller wires one; a few
-    // tests construct a bare DispatcherDeps and rely on tick()'s claim
-    // happening fully synchronously under a stubbed clock).
-    if (this.deps.isPaused && (await this.isPaused())) return [];
+    // A Pause refuses every new claim of a real Submission outright
+    // (issue #59's AC): queued Generations wait untouched, while
+    // anything already `starting`/`running`/`saving` keeps going in the
+    // runner, which this never touches. A Test (issue #74's AC: "tests
+    // run... during a Pause") is the one exception, so a Pause narrows
+    // the plan to Tests only rather than skipping it outright. `&&`
+    // short-circuits past the `await` entirely when no `isPaused` dep is
+    // wired (every production caller wires one; a few tests construct a
+    // bare DispatcherDeps and rely on tick()'s claim happening fully
+    // synchronously under a stubbed clock).
+    const paused = Boolean(this.deps.isPaused) && (await this.isPaused());
 
-    const plan = await this.buildPlan();
+    const plan = await this.buildPlan(paused);
     if (plan.length === 0) return [];
 
     const claimed: (ClaimPlan & { tries: number })[] = [];
@@ -421,10 +424,16 @@ export class Dispatcher {
     }
   }
 
-  /** The greedy match: fewest-starting-or-running user first, then oldest, matched to the first eligible free Backend. */
-  private async buildPlan(): Promise<ClaimPlan[]> {
+  /**
+   * The greedy match: fewest-starting-or-running user first, then
+   * oldest, matched to the first eligible free Backend. `testsOnly`
+   * (issue #74) is set while generating is Paused: only a Test may
+   * still claim a Backend then, a real Submission's own queued rows are
+   * left untouched.
+   */
+  private async buildPlan(testsOnly: boolean): Promise<ClaimPlan[]> {
     const [
-      queued,
+      queuedAll,
       activeCounts,
       busyBackendIds,
       pendingCancelBackendIds,
@@ -436,6 +445,9 @@ export class Dispatcher {
       this.deps.queue.pendingCancelBackendIds(),
       this.deps.backendRepository.list(),
     ]);
+    const queued = testsOnly
+      ? queuedAll.filter((generation) => generation.isTest)
+      : queuedAll;
     if (queued.length === 0) return [];
 
     const free = allBackends.filter(
@@ -468,7 +480,16 @@ export class Dispatcher {
         attachedCache.set(generation.modelId, attached);
       }
 
-      for (const backend of attached) {
+      // Issue #74: a Test pinned to a specific Backend only ever
+      // considers that one, instead of any attached Backend able to run
+      // it (Any, the normal rule, and a Test's own default too).
+      const candidateBackends = generation.pinnedBackendId
+        ? attached.filter(
+            (backend) => backend.id === generation.pinnedBackendId,
+          )
+        : attached;
+
+      for (const backend of candidateBackends) {
         const candidate = freeById.get(backend.id);
         if (!candidate) continue;
         const nodeTypes =

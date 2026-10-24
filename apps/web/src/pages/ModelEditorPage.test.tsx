@@ -124,10 +124,24 @@ function renderEditor() {
   return render(<RouterProvider router={router} />);
 }
 
+/** Issue #74: the editor opens the same per-user Generations stream the Workbench/Gallery do, to keep a Test's progress live. */
+class FakeEventSource {
+  listeners: Record<string, Array<(event: { data: string }) => void>> = {};
+  constructor(public url: string) {}
+  addEventListener(type: string, cb: (event: { data: string }) => void) {
+    const list = this.listeners[type] ?? [];
+    list.push(cb);
+    this.listeners[type] = list;
+  }
+  close() {}
+}
+
 let originalConfirm: typeof window.confirm;
 
 beforeEach(() => {
   originalConfirm = window.confirm;
+  (globalThis as unknown as { EventSource: unknown }).EventSource =
+    FakeEventSource;
 });
 
 afterEach(() => {
@@ -406,6 +420,226 @@ describe("ModelEditorPage", () => {
         },
       ],
     });
+  });
+
+  test("Test runs the unsaved draft Mode, and a failure shows the server's reasons (issue #74)", async () => {
+    const calls = mockFetch((call) => {
+      if (call.method === "GET") return respondGet(call.url);
+      if (call.method === "POST" && call.url.endsWith("/test")) {
+        return Response.json(
+          {
+            error: "mode_has_errors",
+            reasons: ["needs at least one attached Backend"],
+          },
+          { status: 400 },
+        );
+      }
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+
+    await view.findByText("LTX 2.5");
+    await userEvent.click(view.getByText("Add Mode"));
+    await userEvent.type(view.getByLabelText("Mode name"), "Default");
+    await userEvent.click(view.getByRole("button", { name: "Add" }));
+
+    await userEvent.click(view.getByText("Test"));
+    await userEvent.click(view.getByText("Run test"));
+
+    const sent = calls.find(
+      (c) => c.method === "POST" && c.url.endsWith("/test"),
+    );
+    expect(sent?.body).toEqual({
+      mode: {
+        name: "Default",
+        description: "",
+        outputNodeIds: ["1"],
+        inputSettings: [],
+      },
+      inputs: [],
+      values: {},
+      backendId: null,
+    });
+    expect(
+      await view.findByText("needs at least one attached Backend"),
+    ).toBeTruthy();
+  });
+
+  test("typing into a Number Input sends a number in the Test POST body, not the typed string (CEO review round 2)", async () => {
+    const DETAIL_NUMBER = {
+      ...DETAIL,
+      modes: [
+        {
+          id: "mode-1",
+          sortOrder: 0,
+          name: "Mode 1",
+          description: "",
+          outputNodes: [
+            { nodeId: "1", classType: "LoadImage", title: null, kind: null },
+          ],
+          inputSettings: [],
+        },
+      ],
+      inputs: [
+        {
+          id: "steps-input",
+          kind: "number",
+          group: "describe",
+          label: "Steps",
+          help: "",
+          numberMode: "integer",
+          min: 1,
+          max: 100,
+          step: 1,
+          default: null,
+          bindings: [
+            {
+              nodeId: "1",
+              field: "image",
+              classType: "LoadImage",
+              title: null,
+            },
+          ],
+        },
+      ],
+    };
+
+    const calls = mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1")) {
+        return Response.json(DETAIL_NUMBER);
+      }
+      if (call.method === "GET") return Response.json(NO_BACKENDS);
+      if (call.method === "POST" && call.url.endsWith("/test")) {
+        return Response.json({
+          generation: {
+            id: "g1",
+            submissionId: "s1",
+            modeId: "mode-1",
+            modeName: "Mode 1",
+            state: "queued",
+            error: null,
+            submittedAt: new Date().toISOString(),
+            isTest: true,
+            assets: [],
+          },
+        });
+      }
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+
+    await userEvent.click(await view.findByText("Test"));
+    await userEvent.type(view.getByLabelText("Steps"), "5");
+    await userEvent.click(view.getByText("Run test"));
+
+    const sent = calls.find(
+      (c) => c.method === "POST" && c.url.endsWith("/test"),
+    );
+    expect(sent?.body?.values).toEqual({ "steps-input": 5 });
+  });
+
+  test("an Image Upload Input can be tested: pick, upload, Run test sends its Upload id (issue #74 CEO review)", async () => {
+    const UPLOAD_INPUT_ID = "img-input";
+    const UPLOAD_ID = "upload-1";
+    const DETAIL_UPLOAD = {
+      ...DETAIL,
+      modes: [
+        {
+          id: "mode-1",
+          sortOrder: 0,
+          name: "Mode 1",
+          description: "",
+          outputNodes: [
+            { nodeId: "1", classType: "LoadImage", title: null, kind: null },
+          ],
+          inputSettings: [],
+        },
+      ],
+      inputs: [
+        {
+          id: UPLOAD_INPUT_ID,
+          kind: "image_upload",
+          group: "describe",
+          label: "Start frame",
+          help: "",
+          maxSizeMb: 5,
+          maxLongSide: null,
+          bindings: [
+            {
+              nodeId: "1",
+              field: "image",
+              classType: "LoadImage",
+              title: null,
+            },
+          ],
+        },
+      ],
+    };
+
+    const posts: FetchCall[] = [];
+    mockFetch(async (call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1")) {
+        return Response.json(DETAIL_UPLOAD);
+      }
+      if (call.method === "GET") return Response.json(NO_BACKENDS);
+      if (call.url === "/api/uploads") {
+        return Response.json(
+          { upload: { id: UPLOAD_ID, chunkSize: 16 * 1024 * 1024 } },
+          { status: 201 },
+        );
+      }
+      if (call.url.startsWith(`/api/uploads/${UPLOAD_ID}/chunk`)) {
+        return Response.json({ offset: 4 });
+      }
+      if (call.url === `/api/uploads/${UPLOAD_ID}/complete`) {
+        return Response.json({
+          upload: {
+            id: UPLOAD_ID,
+            width: 10,
+            height: 10,
+            durationMs: null,
+            browserPlayable: null,
+          },
+        });
+      }
+      if (call.method === "POST" && call.url.endsWith("/test")) {
+        posts.push(call);
+        return Response.json({
+          generation: {
+            id: "g1",
+            submissionId: "s1",
+            modeId: "mode-1",
+            modeName: "Mode 1",
+            state: "queued",
+            error: null,
+            submittedAt: new Date().toISOString(),
+            isTest: true,
+            assets: [],
+          },
+        });
+      }
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+
+    await userEvent.click(await view.findByText("Test"));
+    expect(await view.findByText("Your files")).toBeTruthy();
+    await userEvent.upload(
+      view.getByLabelText("Start frame"),
+      new File(["PNG!"], "frame.png", { type: "image/png" }),
+    );
+    await view.findByText("frame.png");
+
+    await userEvent.click(view.getByText("Run test"));
+
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]?.body?.values).toEqual({ [UPLOAD_INPUT_ID]: UPLOAD_ID });
   });
 
   test("Enable shows the server's reasons when the Model isn't ready", async () => {

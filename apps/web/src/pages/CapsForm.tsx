@@ -22,7 +22,10 @@ export function CapsForm() {
 
   useEffect(() => {
     fetch("/api/admin/site-settings")
-      .then((res) => res.json() as Promise<AdminCaps>)
+      .then((res) => {
+        if (!res.ok) throw new Error("failed to load site settings");
+        return res.json() as Promise<AdminCaps>;
+      })
       .then((data) => {
         setSettings(data);
         setDailyCap(String(data.dailyCap));

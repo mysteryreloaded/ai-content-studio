@@ -15,8 +15,8 @@ export const USER_CAP_OVERRIDE_MIN = 0;
 export const USER_CAP_OVERRIDE_MAX = 1_000;
 
 export const siteCapsFieldsSchema = z.object({
-  dailyCap: z.coerce.number().int().min(SITE_CAP_MIN).max(SITE_CAP_MAX),
-  concurrentCap: z.coerce.number().int().min(SITE_CAP_MIN).max(SITE_CAP_MAX),
+  dailyCap: z.number().int().min(SITE_CAP_MIN).max(SITE_CAP_MAX),
+  concurrentCap: z.number().int().min(SITE_CAP_MIN).max(SITE_CAP_MAX),
 });
 
 export type SiteCapsFields = z.infer<typeof siteCapsFieldsSchema>;

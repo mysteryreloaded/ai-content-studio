@@ -9,6 +9,8 @@ export interface SessionUser {
   status: "pending" | "active" | "disabled";
   /** Issue #60: null until this user accepts the Site terms' current version. */
   termsAcceptedVersion: number | null;
+  /** Issue #50: the Operator's MAX_UPLOAD_MB, so a too-large file is refused on pick. */
+  maxUploadMb?: number;
 }
 
 export type SessionState =

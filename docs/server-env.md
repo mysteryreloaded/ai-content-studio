@@ -107,7 +107,20 @@ be called with an Admin session.
 The floor, in GB, the retention jobs (issue #69) try to keep free on
 `DATA_DIR`'s disk. The Overview's `disk_low` Problem fires once free
 space drops below twice this value, so an Admin has warning before
-retention's own floor is hit. Defaults to `10`.
+retention's own floor is hit. Below this floor, the studio also refuses
+new Upload chunks and new Submissions with "storage is full, try later"
+(issue #50); saving a running Generation's Assets ignores it. Defaults
+to `10`.
+
+## `max_upload_mb`
+
+### `MAX_UPLOAD_MB`
+
+The largest Upload, in MB (1 MB = 1,048,576 bytes), a user may send
+(issue #50). Checked when an Upload is created, on every chunk and when
+it completes; also the ceiling on an Image Upload Input's own max size,
+and sent to the browser in the current-user response so a too-large
+file is refused on pick. Defaults to `500`.
 
 ## `ffmpeg_concurrency`
 

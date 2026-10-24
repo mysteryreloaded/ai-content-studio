@@ -192,25 +192,28 @@ describe("every route's access level is declared and enforced", () => {
       .set({ termsBody: "Do not be evil.", termsVersion: 1 })
       .where(eq(siteSettings.singleton, true));
 
-    const [noTermsUser] = await db
-      .insert(users)
-      .values({
-        googleSub: "sub-no-terms",
-        email: "no-terms@example.com",
-        name: "No Terms User",
-        role: "admin",
-        status: "active",
-      })
-      .returning();
-    if (!noTermsUser) throw new Error("failed to insert test user");
-    const noTermsUserId = noTermsUser.id;
-
     const SAME_ORIGIN_HEADERS = { "Sec-Fetch-Site": "same-origin" };
 
-    // A fresh session per request: sign-out deletes the one it's called
-    // with, which must not affect any other route's request.
+    // A fresh user (and so a fresh, unaccepted session) per request: this
+    // sweep calls every route, including `POST /api/terms/accept` itself
+    // (a `signed-in` route), which would otherwise accept the terms for
+    // one shared user partway through and make every later route in the
+    // list wrongly pass the gate for the rest of the sweep.
+    let nextUserSuffix = 0;
     async function cookieFor(): Promise<string> {
-      const session = await createSession(db, clock, noTermsUserId);
+      nextUserSuffix += 1;
+      const [user] = await db
+        .insert(users)
+        .values({
+          googleSub: `sub-no-terms-${nextUserSuffix}`,
+          email: `no-terms-${nextUserSuffix}@example.com`,
+          name: "No Terms User",
+          role: "admin",
+          status: "active",
+        })
+        .returning();
+      if (!user) throw new Error("failed to insert test user");
+      const session = await createSession(db, clock, user.id);
       return `${SESSION_COOKIE_NAME}=${session.cookieValue}`;
     }
 

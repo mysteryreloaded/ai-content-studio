@@ -11,6 +11,10 @@
         "typescript": "^5.7.3",
       },
     },
+    "apps/fake-comfyui": {
+      "name": "@ai-content-studio/fake-comfyui",
+      "version": "0.0.0",
+    },
     "apps/server": {
       "name": "@ai-content-studio/server",
       "version": "0.0.0",
@@ -24,6 +28,7 @@
         "zod": "^4.6.7",
       },
       "devDependencies": {
+        "@ai-content-studio/fake-comfyui": "workspace:*",
         "drizzle-kit": "^0.31.11",
       },
     },
@@ -52,6 +57,8 @@
     },
   },
   "packages": {
+    "@ai-content-studio/fake-comfyui": ["@ai-content-studio/fake-comfyui@workspace:apps/fake-comfyui"],
+
     "@ai-content-studio/server": ["@ai-content-studio/server@workspace:apps/server"],
 
     "@ai-content-studio/shared": ["@ai-content-studio/shared@workspace:packages/shared"],

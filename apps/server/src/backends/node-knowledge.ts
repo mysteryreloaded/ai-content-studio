@@ -67,6 +67,16 @@ function parseFieldSpecs(
         if ((extra as { image_upload?: unknown } | undefined)?.image_upload) {
           parsed.imageUpload = true;
         }
+        // Issue #49: an INT/FLOAT widget's own min/max/step, so checkModel
+        // can flag an Input whose range or step grid don't match it.
+        if (parsed.type === "INT" || parsed.type === "FLOAT") {
+          const bounds = extra as
+            | { min?: unknown; max?: unknown; step?: unknown }
+            | undefined;
+          if (typeof bounds?.min === "number") parsed.min = bounds.min;
+          if (typeof bounds?.max === "number") parsed.max = bounds.max;
+          if (typeof bounds?.step === "number") parsed.step = bounds.step;
+        }
         fields[field] = parsed;
       }
     }

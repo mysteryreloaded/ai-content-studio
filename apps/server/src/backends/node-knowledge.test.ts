@@ -102,7 +102,7 @@ describe("NodeKnowledge", () => {
 
       const specs = await knowledge.fieldSpecsFor(backend);
       const kSampler = specs?.get("KSampler");
-      expect(kSampler?.steps).toEqual({ type: "INT" });
+      expect(kSampler?.steps).toEqual({ type: "INT", min: 1, max: 10000 });
       expect(kSampler?.sampler_name?.type).toBe("COMBO");
       expect(kSampler?.sampler_name?.options).toContain("euler");
     } finally {

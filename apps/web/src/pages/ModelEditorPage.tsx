@@ -2,10 +2,13 @@ import {
   MODEL_ATTRIBUTION_MAX_LENGTH,
   MODEL_TERMS_MAX_LENGTH,
   applyModeFixedValues,
+  checkModel,
   computeModePath,
   fieldKey,
+  hasBlockingErrors,
   isValidModelLicenseUrl,
   listBindableFields,
+  modeBackendGaps,
   modeInputSetting,
   relevantInputs,
   renderMarkdown,
@@ -14,10 +17,12 @@ import {
 } from "@ai-content-studio/shared";
 import type {
   BindableField,
+  CheckModelBackend,
   ImageUploadInputDefinition,
   InputDefinition,
   ModeInputSetting,
   ModeInputState,
+  ModelIssue,
   NumberInputDefinition,
   SeedInputDefinition,
   SelectInputDefinition,
@@ -25,7 +30,7 @@ import type {
   TextInputDefinition,
   Workflow,
 } from "@ai-content-studio/shared";
-import { type FormEvent, useEffect, useRef, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useBlocker, useNavigate, useParams } from "react-router-dom";
 import { useSession } from "../useSession.js";
 
@@ -321,6 +326,32 @@ interface AdminBackendSummary {
   baseUrl: string;
 }
 
+/** `GET /:id/object-info`'s JSON shape (issue #49): a Backend's `/object_info` knowledge, plain enough to send over the wire. */
+interface ObjectInfoBackendJson {
+  id: string;
+  name: string;
+  enabled: boolean;
+  reachable: boolean;
+  nodeTypes: string[];
+  fieldSpecs: Record<string, Record<string, unknown>>;
+}
+
+/** Turns `object-info`'s JSON back into `checkModel`'s `CheckModelBackend`s, so the rail runs live, client-side. */
+function toCheckModelBackends(
+  backends: ObjectInfoBackendJson[],
+): CheckModelBackend[] {
+  return backends.map((backend) => ({
+    id: backend.id,
+    name: backend.name,
+    enabled: backend.enabled,
+    reachable: backend.reachable,
+    nodeTypes: new Set(backend.nodeTypes),
+    fieldSpecs: new Map(
+      Object.entries(backend.fieldSpecs),
+    ) as CheckModelBackend["fieldSpecs"],
+  }));
+}
+
 interface AttachedBackendEntry {
   backend: AdminBackendSummary;
   reachable: boolean;
@@ -413,6 +444,7 @@ export function ModelEditorPage() {
   const [allBackends, setAllBackends] = useState<AdminBackendSummary[] | null>(
     null,
   );
+  const [objectInfo, setObjectInfo] = useState<ObjectInfoBackendJson[]>([]);
   const [attachBackendId, setAttachBackendId] = useState("");
   const [attachError, setAttachError] = useState<string | null>(null);
   const [modesDraft, setModesDraft] = useState<DraftMode[] | null>(null);
@@ -508,6 +540,23 @@ export function ModelEditorPage() {
       .catch(() => setBackendsLoadError("could not load Backends"));
   }
 
+  /** `/object-info` (issue #49): each attached Backend's node knowledge, for the live rail. */
+  function loadObjectInfo() {
+    if (!id) return;
+    fetch(`/api/admin/models/${id}/object-info`)
+      .then((res) =>
+        res.ok
+          ? (res.json() as Promise<{ backends: ObjectInfoBackendJson[] }>)
+          : null,
+      )
+      .then((body) => {
+        if (body) setObjectInfo(body.backends);
+      })
+      .catch(() => {
+        /* the rail just runs without Backend-aware checks */
+      });
+  }
+
   function loadAllBackends() {
     fetch("/api/admin/backends")
       .then((res) =>
@@ -527,6 +576,7 @@ export function ModelEditorPage() {
   useEffect(() => {
     loadAttachedBackends();
     loadAllBackends();
+    loadObjectInfo();
   }, [id]);
 
   async function handleAttach(event: FormEvent) {
@@ -547,6 +597,7 @@ export function ModelEditorPage() {
 
     setAttachBackendId("");
     loadAttachedBackends();
+    loadObjectInfo();
   }
 
   async function handleDetach(backendId: string) {
@@ -555,6 +606,7 @@ export function ModelEditorPage() {
       method: "DELETE",
     });
     loadAttachedBackends();
+    loadObjectInfo();
   }
 
   function addMode() {
@@ -715,6 +767,7 @@ export function ModelEditorPage() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           version: detail.model.version,
+          ...(mustDisableToSave ? { disable: true } : {}),
           modes: modesDraft.map(withoutKey).map((mode) => ({
             ...mode,
             inputSettings: mode.inputSettings.filter((s) =>
@@ -784,6 +837,7 @@ export function ModelEditorPage() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           version: detail.model.version,
+          ...(mustDisableToSave ? { disable: true } : {}),
           inputs: inputsDraft,
         }),
       });
@@ -878,6 +932,33 @@ export function ModelEditorPage() {
       setSavingTerms(false);
     }
   }
+
+  // issue #49: checkModel runs live, client-side, against whatever's in
+  // the drafts right now — the rail updates on every edit, before Save.
+  const checkModelBackends = useMemo(
+    () => toCheckModelBackends(objectInfo),
+    [objectInfo],
+  );
+  const modelIssues: ModelIssue[] = useMemo(() => {
+    if (!detail || !modesDraft || !inputsDraft) return [];
+    return checkModel(
+      {
+        workflow: detail.workflow,
+        inputs: inputsDraft,
+        modes: modesDraft.map((mode) => ({
+          id: mode.key,
+          name: mode.name,
+          outputNodeIds: mode.outputNodeIds,
+          inputSettings: mode.inputSettings,
+        })),
+      },
+      checkModelBackends,
+    );
+  }, [detail, modesDraft, inputsDraft, checkModelBackends]);
+  const modelHasErrors = hasBlockingErrors(modelIssues);
+  // An enabled Model with errors can only be saved by disabling it (issue
+  // #49): Modes/Inputs then offer "Save and disable" instead of Save.
+  const mustDisableToSave = detail?.model.state === "enabled" && modelHasErrors;
 
   const editingMode =
     editingModeIndex !== null ? (modesDraft?.[editingModeIndex] ?? null) : null;
@@ -998,7 +1079,9 @@ export function ModelEditorPage() {
 
       <button
         type="button"
-        disabled={togglingState}
+        disabled={
+          togglingState || (detail.model.state !== "enabled" && modelHasErrors)
+        }
         onClick={() => void handleToggleState()}
       >
         {detail.model.state === "enabled" ? "Disable" : "Enable"}
@@ -1010,6 +1093,8 @@ export function ModelEditorPage() {
           ))}
         </ul>
       )}
+
+      <ModelCheckRail issues={modelIssues} />
 
       {detail.outsideServiceNotes.length > 0 && (
         <ul>
@@ -1082,32 +1167,73 @@ export function ModelEditorPage() {
                 <th>Name</th>
                 <th>Base URL</th>
                 <th>Missing node types</th>
+                <th>Can't run</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {attachedBackends.map((entry) => (
-                <tr key={entry.backend.id}>
-                  <td>{entry.backend.name}</td>
-                  <td>{entry.backend.baseUrl}</td>
-                  <td>
-                    {entry.note
-                      ? entry.note
-                      : entry.missingNodeTypes &&
-                          entry.missingNodeTypes.length > 0
-                        ? entry.missingNodeTypes.join(", ")
-                        : "none"}
-                  </td>
-                  <td>
-                    <button
-                      type="button"
-                      onClick={() => void handleDetach(entry.backend.id)}
-                    >
-                      Detach
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {attachedBackends.map((entry) => {
+                const thisBackend = checkModelBackends.find(
+                  (b) => b.id === entry.backend.id,
+                );
+                const gapsByMode =
+                  detail && modesDraft && thisBackend
+                    ? modesDraft
+                        .filter((mode) => mode.outputNodeIds.length > 0)
+                        .flatMap((mode) => {
+                          const checkMode = {
+                            id: mode.key,
+                            name: mode.name,
+                            outputNodeIds: mode.outputNodeIds,
+                            inputSettings: mode.inputSettings,
+                          };
+                          return modeBackendGaps(
+                            {
+                              workflow: detail.workflow,
+                              inputs: detail.inputs ?? [],
+                              modes: [checkMode],
+                            },
+                            checkMode,
+                            [thisBackend],
+                          )
+                            .filter((gap) => gap.missingNodeType !== null)
+                            .map((gap) => ({ mode, gap }));
+                        })
+                    : [];
+                return (
+                  <tr key={entry.backend.id}>
+                    <td>{entry.backend.name}</td>
+                    <td>{entry.backend.baseUrl}</td>
+                    <td>
+                      {entry.note
+                        ? entry.note
+                        : entry.missingNodeTypes &&
+                            entry.missingNodeTypes.length > 0
+                          ? entry.missingNodeTypes.join(", ")
+                          : "none"}
+                    </td>
+                    <td>
+                      {gapsByMode.length === 0
+                        ? "every Mode"
+                        : gapsByMode.map(({ mode, gap }) => (
+                            <div key={mode.key}>
+                              Can't run "{mode.name || "this Mode"}": missing{" "}
+                              {gap.missingNodeType} (pack{" "}
+                              {gap.pack ?? "unknown"})
+                            </div>
+                          ))}
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        onClick={() => void handleDetach(entry.backend.id)}
+                      >
+                        Detach
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}
@@ -1240,7 +1366,7 @@ export function ModelEditorPage() {
           disabled={savingModes || !modesDirty}
           onClick={() => void handleSaveModes()}
         >
-          Save Modes
+          {mustDisableToSave ? "Save and disable" : "Save Modes"}
         </button>
         {modesSaveError && <p role="alert">{modesSaveError}</p>}
       </section>
@@ -1785,7 +1911,7 @@ export function ModelEditorPage() {
           disabled={savingInputs || !inputsDirty}
           onClick={() => void handleSaveInputs()}
         >
-          Save Inputs
+          {mustDisableToSave ? "Save and disable" : "Save Inputs"}
         </button>
         {inputsSaveError && <p role="alert">{inputsSaveError}</p>}
       </section>
@@ -1905,6 +2031,37 @@ const MODE_INPUT_STATES: ModeInputState[] = [
   "required",
   "fixed",
 ];
+
+/**
+ * The Model's live rail (issue #49): every error and warning `checkModel`
+ * currently finds, recomputed on each render against whatever's in the
+ * Modes/Inputs drafts right now — before either is saved.
+ */
+function ModelCheckRail({ issues }: { issues: ModelIssue[] }) {
+  if (issues.length === 0) return null;
+  const errors = issues.filter((issue) => issue.severity === "error");
+  const warnings = issues.filter((issue) => issue.severity === "warning");
+
+  return (
+    <section aria-label="Model checks">
+      <h3>Checks</h3>
+      {errors.length > 0 && (
+        <ul role="alert">
+          {errors.map((issue) => (
+            <li key={issue.message}>Error: {issue.message}</li>
+          ))}
+        </ul>
+      )}
+      {warnings.length > 0 && (
+        <ul>
+          {warnings.map((issue) => (
+            <li key={issue.message}>Warning: {issue.message}</li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
 
 /** One grid cell's fixed-value editor, matching the Input's own kind (issue #48: "fixed values respect options and ranges"). */
 function FixedValueEditor({

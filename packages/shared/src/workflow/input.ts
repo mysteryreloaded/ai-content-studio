@@ -179,6 +179,10 @@ export interface ComfyFieldSpec {
   options?: readonly string[];
   /** Issue #50: the Backend flags this loader field `image_upload` (ComfyUI's `LoadImage.image`). */
   imageUpload?: boolean;
+  /** An INT/FLOAT field's own range and step, when the Backend reports them (issue #49). */
+  min?: number;
+  max?: number;
+  step?: number;
 }
 
 export interface BindingValidationContext {

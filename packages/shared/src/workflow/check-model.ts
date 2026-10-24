@@ -92,6 +92,16 @@ export interface CheckModelMode {
   id: string;
   name: string;
   outputNodeIds: readonly string[];
+  /**
+   * Each output node's classType as last resolved and saved, keyed by
+   * node id, when known (ADR-0010, CEO review on issue #71): a
+   * re-uploaded Workflow can keep a node id in place while giving it a
+   * different class (e.g. a SaveImage swapped for a VHS_VideoCombine),
+   * silently turning a Mode that saved images into one that now runs a
+   * video save node under a stale "image" `kind`. Omit it (fresh output
+   * node picks, not yet saved) to skip this check.
+   */
+  outputNodeClassTypes?: Readonly<Record<string, string>>;
   inputSettings: readonly ModeInputSetting[];
 }
 
@@ -341,6 +351,19 @@ export function checkModel(
       model.inputs,
     )) {
       issues.push({ severity: "error", message, modeId: mode.id });
+    }
+
+    if (mode.outputNodeClassTypes) {
+      for (const node of outcome.outputNodes) {
+        const savedClassType = mode.outputNodeClassTypes[node.nodeId];
+        if (savedClassType !== undefined && savedClassType !== node.classType) {
+          issues.push({
+            severity: "error",
+            message: `Mode "${mode.name}"'s output node "${node.nodeId}" is now a ${node.classType}, not the ${savedClassType} it was saved against; rebind it`,
+            modeId: mode.id,
+          });
+        }
+      }
     }
 
     const { workflow, path } = pathFor(model, mode);

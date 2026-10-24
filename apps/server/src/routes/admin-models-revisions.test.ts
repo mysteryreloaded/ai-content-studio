@@ -72,6 +72,19 @@ const WORKFLOW_RUNNABLE_BREAKS_OUTPUT = {
   "2": { class_type: "KSampler", inputs: { model: ["1", 0], steps: 20 } },
 };
 
+/**
+ * Node "3" keeps its id but is now a VHS_VideoCombine (CEO review): a
+ * Mode saved against it as a SaveImage would silently run and keep its
+ * stale "image" kind if checkModel didn't catch the classType change.
+ * Node "4" is a genuine SaveImage the rebind picker can repoint onto.
+ */
+const WORKFLOW_RUNNABLE_OUTPUT_BECOMES_VIDEO = {
+  "1": { class_type: "CheckpointLoaderSimple", inputs: {} },
+  "2": { class_type: "KSampler", inputs: { model: ["1", 0], steps: 20 } },
+  "3": { class_type: "VHS_VideoCombine", inputs: { images: ["2", 0] } },
+  "4": { class_type: "SaveImage", inputs: { images: ["2", 0] } },
+};
+
 describe("Workflow re-upload and revisions/restore (issue #71)", () => {
   const testDb = createTestDatabase("admin_models_revisions_route_test");
   const clock = new FakeClock();
@@ -187,7 +200,7 @@ describe("Workflow re-upload and revisions/restore (issue #71)", () => {
     expect(enableRes.status).toBe(200);
     const enabled = (await enableRes.json()) as { version: number };
 
-    return { model, headers, version: enabled.version };
+    return { model, headers, version: enabled.version, backendId: backend.id };
   }
 
   test("PUT /:id/workflow replaces the Workflow and bumps the revision", async () => {
@@ -227,7 +240,7 @@ describe("Workflow re-upload and revisions/restore (issue #71)", () => {
     const fake = startFakeComfyUi({ port: 0 });
     try {
       const { app } = await build();
-      const { model, headers, version } = await buildEnabledModel(
+      const { model, headers, version, backendId } = await buildEnabledModel(
         app,
         fake.url,
       );
@@ -264,6 +277,14 @@ describe("Workflow re-upload and revisions/restore (issue #71)", () => {
         record: { state: string };
       };
       expect(disabled.record.state).toBe("disabled");
+
+      // Stops this Backend's health monitor before the shared FakeClock
+      // (reused test-to-test) can advance into a poll for a row a later
+      // test's cleanup has already deleted.
+      await app.request(`/api/admin/backends/${backendId}?version=1`, {
+        method: "DELETE",
+        headers,
+      });
     } finally {
       await fake.stop();
     }
@@ -273,7 +294,7 @@ describe("Workflow re-upload and revisions/restore (issue #71)", () => {
     const fake = startFakeComfyUi({ port: 0 });
     try {
       const { app } = await build();
-      const { model, headers, version } = await buildEnabledModel(
+      const { model, headers, version, backendId } = await buildEnabledModel(
         app,
         fake.url,
       );
@@ -352,6 +373,11 @@ describe("Workflow re-upload and revisions/restore (issue #71)", () => {
         record: { state: string };
       };
       expect(disabled.record.state).toBe("disabled");
+
+      await app.request(`/api/admin/backends/${backendId}?version=1`, {
+        method: "DELETE",
+        headers,
+      });
     } finally {
       await fake.stop();
     }
@@ -441,5 +467,213 @@ describe("Workflow re-upload and revisions/restore (issue #71)", () => {
       },
     );
     expect(res.status).toBe(404);
+  });
+
+  test("PUT /:id/workflow 400s when a Mode's output node's class changed, and the rebind picker fixes it without disabling", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const { app } = await build();
+      const { model, headers, version, backendId } = await buildEnabledModel(
+        app,
+        fake.url,
+      );
+
+      const blockedRes = await app.request(
+        `/api/admin/models/${model.id}/workflow`,
+        {
+          method: "PUT",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({
+            version,
+            workflow: WORKFLOW_RUNNABLE_OUTPUT_BECOMES_VIDEO,
+          }),
+        },
+      );
+      expect(blockedRes.status).toBe(400);
+      const blockedBody = (await blockedRes.json()) as {
+        error: string;
+        reasons: string[];
+      };
+      expect(blockedBody.error).toContain("disable");
+      expect(blockedBody.reasons.some((r) => r.includes("rebind"))).toBe(true);
+
+      const rebindRes = await app.request(
+        `/api/admin/models/${model.id}/workflow`,
+        {
+          method: "PUT",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({
+            version,
+            workflow: WORKFLOW_RUNNABLE_OUTPUT_BECOMES_VIDEO,
+            rebind: [{ nodeId: "3", newNodeId: "4" }],
+          }),
+        },
+      );
+      expect(rebindRes.status).toBe(200);
+      const rebound = (await rebindRes.json()) as {
+        record: { state: string };
+        modes: {
+          outputNodes: {
+            nodeId: string;
+            classType: string;
+            kind: string | null;
+            title: string | null;
+          }[];
+        }[];
+      };
+      expect(rebound.record.state).toBe("enabled");
+      expect(rebound.modes[0]?.outputNodes).toEqual([
+        { nodeId: "4", classType: "SaveImage", kind: "image", title: null },
+      ]);
+
+      // Stops this Backend's health monitor before the shared FakeClock
+      // (reused test-to-test) can advance into a poll for a row the next
+      // test's cleanup has already deleted.
+      await app.request(`/api/admin/backends/${backendId}?version=1`, {
+        method: "DELETE",
+        headers,
+      });
+    } finally {
+      await fake.stop();
+    }
+  });
+
+  test("POST restore refuses a max-null Seed Input onto an enabled Model, like updateInputs", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const { app } = await build();
+      const { model, headers, version, backendId } = await buildEnabledModel(
+        app,
+        fake.url,
+      );
+
+      // Revision 2 (pre-enable, from buildEnabledModel's Modes save) has
+      // no Inputs; add a max-null Seed there via another Inputs save
+      // while disabled, then restore straight to it while enabled.
+      const disableRes = await app.request(
+        `/api/admin/models/${model.id}/disable`,
+        {
+          method: "POST",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({ version }),
+        },
+      );
+      const disabled = (await disableRes.json()) as { version: number };
+
+      const inputsRes = await app.request(
+        `/api/admin/models/${model.id}/inputs`,
+        {
+          method: "PUT",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({
+            version: disabled.version,
+            inputs: [
+              {
+                id: "00000000-0000-0000-0000-000000000099",
+                kind: "seed",
+                group: "settings",
+                label: "Seed",
+                help: "",
+                max: null,
+                bindings: [
+                  {
+                    nodeId: "2",
+                    field: "steps",
+                    classType: "KSampler",
+                    title: null,
+                  },
+                ],
+              },
+            ],
+          }),
+        },
+      );
+      expect(inputsRes.status).toBe(200);
+      const { record: afterInputs } = (await inputsRes.json()) as {
+        record: { version: number };
+      };
+
+      const enableRes = await app.request(
+        `/api/admin/models/${model.id}/enable`,
+        {
+          method: "POST",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({ version: afterInputs.version }),
+        },
+      );
+      expect(enableRes.status).toBe(400);
+
+      // Enable refuses the max-null Seed too, so get back to enabled by
+      // restoring the earlier, Seed-less revision, then try restoring
+      // the max-null-Seed revision back onto that enabled Model.
+      const revisionsRes = await app.request(
+        `/api/admin/models/${model.id}/revisions`,
+        { headers },
+      );
+      const { revisions } = (await revisionsRes.json()) as {
+        revisions: { revisionNumber: number; inputCount: number }[];
+      };
+      const seedRevision = revisions.find((r) => r.inputCount === 1);
+      const seedlessRevision = revisions.find((r) => r.inputCount === 0);
+      if (!seedRevision || !seedlessRevision) {
+        throw new Error("expected both a Seed and a Seed-less revision");
+      }
+
+      const restoreSeedlessRes = await app.request(
+        `/api/admin/models/${model.id}/revisions/${seedlessRevision.revisionNumber}/restore`,
+        {
+          method: "POST",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({ version: afterInputs.version }),
+        },
+      );
+      expect(restoreSeedlessRes.status).toBe(200);
+      const { record: afterRestoreSeedless } =
+        (await restoreSeedlessRes.json()) as { record: { version: number } };
+
+      const enableAgainRes = await app.request(
+        `/api/admin/models/${model.id}/enable`,
+        {
+          method: "POST",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({ version: afterRestoreSeedless.version }),
+        },
+      );
+      expect(enableAgainRes.status).toBe(200);
+      const enabled = (await enableAgainRes.json()) as { version: number };
+
+      const blockedRestore = await app.request(
+        `/api/admin/models/${model.id}/revisions/${seedRevision.revisionNumber}/restore`,
+        {
+          method: "POST",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({ version: enabled.version }),
+        },
+      );
+      expect(blockedRestore.status).toBe(400);
+      const blockedBody = (await blockedRestore.json()) as {
+        reasons: string[];
+      };
+      expect(blockedBody.reasons.some((r) => r.includes("needs a max"))).toBe(
+        true,
+      );
+
+      const disabledRestore = await app.request(
+        `/api/admin/models/${model.id}/revisions/${seedRevision.revisionNumber}/restore`,
+        {
+          method: "POST",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({ version: enabled.version, disable: true }),
+        },
+      );
+      expect(disabledRestore.status).toBe(200);
+
+      await app.request(`/api/admin/backends/${backendId}?version=1`, {
+        method: "DELETE",
+        headers,
+      });
+    } finally {
+      await fake.stop();
+    }
   });
 });

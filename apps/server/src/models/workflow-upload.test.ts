@@ -29,6 +29,24 @@ const WORKFLOW_V2_BROKEN_NODE_2: Workflow = {
   "2": { class_type: "KSampler", inputs: { model: ["1", 0] } },
 };
 
+/** Node "2" is gone; node "3" is a fresh SaveImage a rebind can repoint onto (CEO review). */
+const WORKFLOW_V3_RENAMED_NODE_2: Workflow = {
+  "1": { class_type: "LoadImage", inputs: { image: "c.png" } },
+  "3": {
+    class_type: "SaveImage",
+    inputs: { images: ["1", 0], filename_prefix: "y" },
+  },
+};
+
+/** Node "1" is gone; node "4" is a fresh LoadImage a rebind can repoint an Input binding onto. */
+const WORKFLOW_V4_RENAMED_NODE_1: Workflow = {
+  "4": { class_type: "LoadImage", inputs: { image: "d.png" } },
+  "2": {
+    class_type: "SaveImage",
+    inputs: { images: ["4", 0], filename_prefix: "z" },
+  },
+};
+
 describe("ModelRepository.uploadWorkflow", () => {
   const testDb = createTestDatabase("workflow_upload_repository_test");
   const clock = new FakeClock();
@@ -125,6 +143,112 @@ describe("ModelRepository.uploadWorkflow", () => {
         SYSTEM,
       ),
     ).rejects.toBeInstanceOf(NotFound);
+  });
+
+  test("rebind repoints a Mode's output node onto a node of the new Workflow, re-resolving it fresh", async () => {
+    const repository = await repo();
+    const { record: created } = await repository.createFromWorkflow(
+      "M1",
+      WORKFLOW_V1,
+      SYSTEM,
+    );
+    const { record: withMode } = await repository.updateModes(
+      created.id,
+      [{ name: "Default", description: "", outputNodeIds: ["2"] }],
+      created.version,
+      SYSTEM,
+    );
+
+    const result = await repository.uploadWorkflow(
+      created.id,
+      WORKFLOW_V3_RENAMED_NODE_2,
+      withMode.version,
+      SYSTEM,
+      [{ nodeId: "2", newNodeId: "3" }],
+    );
+
+    expect(result.modes[0]?.outputNodes).toEqual([
+      { nodeId: "3", classType: "SaveImage", title: null, kind: "image" },
+    ]);
+  });
+
+  test("rebind repoints an Input's binding onto a node of the new Workflow", async () => {
+    const repository = await repo();
+    const { record: created } = await repository.createFromWorkflow(
+      "M1",
+      WORKFLOW_V1,
+      SYSTEM,
+    );
+    const { record: withMode } = await repository.updateModes(
+      created.id,
+      [{ name: "Default", description: "", outputNodeIds: ["2"] }],
+      created.version,
+      SYSTEM,
+    );
+    const { record: withInput } = await repository.updateInputs(
+      created.id,
+      [
+        {
+          id: "00000000-0000-0000-0000-000000000001",
+          kind: "text",
+          group: "describe",
+          label: "Prefix",
+          help: "",
+          multiline: false,
+          maxLength: 2000,
+          default: "",
+          bindings: [
+            {
+              nodeId: "1",
+              field: "image",
+              classType: "LoadImage",
+              title: null,
+            },
+          ],
+        },
+      ],
+      withMode.version,
+      SYSTEM,
+    );
+
+    const result = await repository.uploadWorkflow(
+      created.id,
+      WORKFLOW_V4_RENAMED_NODE_1,
+      withInput.version,
+      SYSTEM,
+      [{ nodeId: "1", newNodeId: "4" }],
+    );
+
+    expect(result.inputs[0]?.bindings).toEqual([
+      { nodeId: "4", field: "image", classType: "LoadImage", title: null },
+    ]);
+  });
+
+  test("rebind that still leaves a binding broken fails validation (ValidationFailed)", async () => {
+    const repository = await repo();
+    const { record: created } = await repository.createFromWorkflow(
+      "M1",
+      WORKFLOW_V1,
+      SYSTEM,
+    );
+    const { record: withMode } = await repository.updateModes(
+      created.id,
+      [{ name: "Default", description: "", outputNodeIds: ["2"] }],
+      created.version,
+      SYSTEM,
+    );
+
+    await expect(
+      repository.uploadWorkflow(
+        created.id,
+        WORKFLOW_V3_RENAMED_NODE_2,
+        withMode.version,
+        SYSTEM,
+        // "1" exists but isn't a valid output node class-wise for this
+        // test's purposes isn't the point; "ghost" simply doesn't exist.
+        [{ nodeId: "2", newNodeId: "ghost" }],
+      ),
+    ).rejects.toBeInstanceOf(ValidationFailed);
   });
 
   test("writes an Audit entry", async () => {

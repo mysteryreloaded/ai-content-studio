@@ -218,6 +218,18 @@ export interface WorkflowUploadResult {
   outsideServiceNotes: OutsideServiceNote[];
 }
 
+/**
+ * Repoints every Mode output node and Input binding at `nodeId` onto
+ * `newNodeId` instead (issue #71's rebind picker, CEO review): a single
+ * node-id remap, applied uniformly wherever that old node id is
+ * referenced, matching how `uploadWorkflow` already carries bindings
+ * forward "by node id" in the first place.
+ */
+export interface RebindEntry {
+  nodeId: string;
+  newNodeId: string;
+}
+
 /** One numbered Model revision, listed in the editor's Revisions section (issue #71). */
 export interface RevisionSummary {
   revisionNumber: number;
@@ -790,14 +802,23 @@ export class ModelRepository {
    * node id — a node whose class and value-holding field still exist
    * there keeps working; one that doesn't is now broken, which
    * `checkModel` reports as an error against the new Workflow the next
-   * time it runs, same as any other missing binding (ADR-0010). Always
-   * makes a new revision, same reasoning as {@link updateModes}.
+   * time it runs, same as any other missing binding (ADR-0010). `rebind`
+   * (CEO review) repoints any number of broken node ids onto a node of
+   * the new Workflow before anything is carried forward: each Mode's
+   * output nodes are re-resolved fresh (new classType/kind/title) and
+   * every Input is re-validated the same way `updateInputs` validates
+   * one, so a rebind that actually fixes everything needn't disable an
+   * enabled Model. Always makes a new revision, same reasoning as
+   * {@link updateModes}.
    */
   async uploadWorkflow(
     id: string,
     rawWorkflow: unknown,
     expectedVersion: number,
     actor: AuditActor,
+    rebind?: RebindEntry[],
+    fieldSpecs?: ReadonlyMap<string, Record<string, ComfyFieldSpec>>,
+    maxUploadMb?: number,
   ): Promise<{
     record: ModelRecord;
     modes: ModeRecord[];
@@ -856,6 +877,87 @@ export class ModelRepository {
       if (!currentRevision) throw new Error("current revision missing");
 
       const currentModes = await listModesForRevision(tx, currentRevision.id);
+      const currentInputs = currentRevision.inputs as InputDefinition[];
+
+      let newModeInputs: ModeRecord[] = currentModes;
+      let newInputs: InputDefinition[] = currentInputs;
+
+      if (rebind && rebind.length > 0) {
+        const remap = new Map(
+          rebind.map((entry) => [entry.nodeId, entry.newNodeId]),
+        );
+        const rebindErrors: ValidationError[] = [];
+
+        newModeInputs = currentModes.map((mode, index) => {
+          const outputNodeIds = mode.outputNodes.map(
+            (node) => remap.get(node.nodeId) ?? node.nodeId,
+          );
+          const outcome = resolveModeOutputNodes(
+            parsed.workflow,
+            outputNodeIds,
+          );
+          if (!outcome.ok) {
+            for (const message of outcome.errors) {
+              rebindErrors.push({
+                field: `modes[${index}].outputNodes`,
+                message,
+              });
+            }
+            return mode;
+          }
+          return { ...mode, outputNodes: outcome.outputNodes };
+        });
+
+        const rebindOutputNodeIds = new Set(
+          newModeInputs.flatMap((mode) =>
+            mode.outputNodes.map((node) => node.nodeId),
+          ),
+        );
+        const usedFields = new Set<string>();
+        const labelsSoFar: string[] = [];
+        const idsSoFar: string[] = [];
+
+        newInputs = currentInputs.map((input) => ({
+          ...input,
+          bindings: input.bindings.map((binding) => {
+            const newNodeId = remap.get(binding.nodeId);
+            if (!newNodeId) return binding;
+            const node = parsed.workflow[newNodeId];
+            return {
+              ...binding,
+              nodeId: newNodeId,
+              classType: node?.class_type ?? binding.classType,
+              title: node?._meta?.title ?? null,
+            };
+          }),
+        }));
+
+        newInputs.forEach((def, index) => {
+          const ctx: BindingValidationContext = {
+            workflow: parsed.workflow,
+            outputNodeIds: rebindOutputNodeIds,
+            usedFields,
+            fieldSpecs,
+            maxUploadMb,
+          };
+          const defErrors = validateInputDefinition(
+            def,
+            labelsSoFar,
+            ctx,
+            idsSoFar,
+          );
+          for (const message of defErrors) {
+            rebindErrors.push({ field: `inputs[${index}]`, message });
+          }
+          labelsSoFar.push(def.label);
+          idsSoFar.push(def.id);
+          for (const binding of def.bindings) {
+            usedFields.add(fieldKey(binding.nodeId, binding.field));
+          }
+        });
+
+        if (rebindErrors.length > 0) throw new ValidationFailed(rebindErrors);
+      }
 
       const hash = hashWorkflow(parsed.workflow);
       await tx
@@ -886,14 +988,14 @@ export class ModelRepository {
           modelId: id,
           revisionNumber: newRevisionNumber,
           workflowHash: hash,
-          inputs: currentRevision.inputs,
+          inputs: newInputs,
         })
         .returning();
       if (!newRevision) throw new Error("insert returned no row");
 
-      if (currentModes.length > 0) {
+      if (newModeInputs.length > 0) {
         await tx.insert(modes).values(
-          currentModes.map((mode) => ({
+          newModeInputs.map((mode) => ({
             revisionId: newRevision.id,
             sortOrder: mode.sortOrder,
             name: mode.name,
@@ -918,7 +1020,7 @@ export class ModelRepository {
       return {
         record: toRecord(row),
         modes: newModes,
-        inputs: currentRevision.inputs as InputDefinition[],
+        inputs: newInputs,
         outsideServiceNotes: notes,
       };
     });

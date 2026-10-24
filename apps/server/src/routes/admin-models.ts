@@ -7,11 +7,13 @@ import {
   hasBlockingErrors,
   modelTermsFieldsSchema,
   parseApiFormatWorkflow,
+  resolveModeOutputNodes,
   reviseModeInputSettings,
 } from "@ai-content-studio/shared";
 import type {
   ComfyFieldSpec,
   InputDefinition,
+  Workflow,
 } from "@ai-content-studio/shared";
 import { and, desc, eq } from "drizzle-orm";
 import { Hono } from "hono";
@@ -37,8 +39,69 @@ import {
   SlugTaken,
   StaleVersion,
 } from "../models/repository.js";
-import type { ModeInput, ModelRepository } from "../models/repository.js";
+import type {
+  ModeInput,
+  ModeRecord,
+  ModelRepository,
+  RebindEntry,
+} from "../models/repository.js";
 import { ValidationFailed } from "../models/validation.js";
+
+/**
+ * `outputNodeIds` plus each output node's saved classType, keyed by node
+ * id (issue #71's rebind check): `checkModel` flags an output node whose
+ * class changed since it was last resolved and saved.
+ */
+function checkModelOutputNodes(mode: ModeRecord) {
+  return {
+    outputNodeIds: mode.outputNodes.map((node) => node.nodeId),
+    outputNodeClassTypes: Object.fromEntries(
+      mode.outputNodes.map((node) => [node.nodeId, node.classType]),
+    ),
+  };
+}
+
+/**
+ * Previews a `rebind` (issue #71's rebind picker, CEO review) against
+ * `workflow`, the same way `ModelRepository.uploadWorkflow` applies it
+ * for real: each Mode's output nodes re-resolved fresh, each Input
+ * binding's node id (and snapshotted classType/title) repointed. Used
+ * only for the enabled-Model precheck below — the repository re-derives
+ * and re-validates this itself before persisting anything.
+ */
+function applyRebind(
+  workflow: Workflow,
+  modeRecords: readonly ModeRecord[],
+  inputs: readonly InputDefinition[],
+  rebind: RebindEntry[],
+): { modes: ModeRecord[]; inputs: InputDefinition[] } {
+  const remap = new Map(rebind.map((entry) => [entry.nodeId, entry.newNodeId]));
+
+  const modes = modeRecords.map((mode) => {
+    const outputNodeIds = mode.outputNodes.map(
+      (node) => remap.get(node.nodeId) ?? node.nodeId,
+    );
+    const outcome = resolveModeOutputNodes(workflow, outputNodeIds);
+    return outcome.ok ? { ...mode, outputNodes: outcome.outputNodes } : mode;
+  });
+
+  const reboundInputs = inputs.map((input) => ({
+    ...input,
+    bindings: input.bindings.map((binding) => {
+      const newNodeId = remap.get(binding.nodeId);
+      if (!newNodeId) return binding;
+      const node = workflow[newNodeId];
+      return {
+        ...binding,
+        nodeId: newNodeId,
+        classType: node?.class_type ?? binding.classType,
+        title: node?._meta?.title ?? null,
+      };
+    }),
+  }));
+
+  return { modes, inputs: reboundInputs };
+}
 
 const createSchema = z.object({
   name: z.string(),
@@ -164,6 +227,12 @@ const inputsSchema = z.object({
   inputs: z.array(inputDefinitionSchema),
   /** Issue #49: an enabled Model with errors can only be saved by disabling it. */
   disable: z.boolean().optional(),
+});
+
+/** One node-id repoint, in the same PUT as a Workflow replace (issue #71's rebind picker). */
+const rebindEntrySchema = z.object({
+  nodeId: z.string(),
+  newNodeId: z.string(),
 });
 
 function idParam(c: Context<AppEnv>): string {
@@ -595,7 +664,7 @@ export function adminModelsRoute(
               modes: detail.modes.map((mode) => ({
                 id: mode.id,
                 name: mode.name,
-                outputNodeIds: mode.outputNodes.map((node) => node.nodeId),
+                ...checkModelOutputNodes(mode),
                 inputSettings: reviseModeInputSettings(
                   mode.inputSettings,
                   parsed.data.inputs as InputDefinition[],
@@ -681,7 +750,7 @@ export function adminModelsRoute(
           modes: detail.modes.map((mode) => ({
             id: mode.id,
             name: mode.name,
-            outputNodeIds: mode.outputNodes.map((node) => node.nodeId),
+            ...checkModelOutputNodes(mode),
             inputSettings: mode.inputSettings,
           })) satisfies CheckModelMode[],
         },
@@ -759,31 +828,63 @@ export function adminModelsRoute(
       if (!versionResult.success)
         return c.json({ error: "version is required" }, 400);
 
+      const rebindResult = z
+        .array(rebindEntrySchema)
+        .optional()
+        .safeParse(body.rebind);
+      if (!rebindResult.success) return c.json({ error: "invalid input" }, 400);
+      const rebind = rebindResult.data;
+
       const disable = body.disable === true;
 
       const detail = await repository.get(id);
       if (!detail) return c.json({ error: "not found" }, 404);
 
+      const attached = await modelBackends.listForModel(id);
+      const specsByBackend = await Promise.all(
+        attached.map((backend) => backendsService.fieldSpecsFor(backend)),
+      );
+      const fieldSpecs = new Map<string, Record<string, ComfyFieldSpec>>();
+      for (const specs of specsByBackend) {
+        if (!specs) continue;
+        for (const [classType, fields] of specs) {
+          fieldSpecs.set(classType, {
+            ...fieldSpecs.get(classType),
+            ...fields,
+          });
+        }
+      }
+
       // Issue #71: re-uploading the Workflow keeps every Mode's output
       // nodes and every Input's bindings exactly as they were, by node
       // id; this is the same "errors block saving an enabled Model"
       // gate the Modes/Inputs routes run, checked against the proposed
-      // new Workflow before it's persisted.
+      // new Workflow before it's persisted. A `rebind` (CEO review) is
+      // previewed here the same way the repository applies it for real,
+      // so a rebind that fixes everything doesn't need "disable" too.
       if (detail.model.state === "enabled" && !disable) {
         const parsed = parseApiFormatWorkflow(body.workflow);
         if (parsed.ok) {
-          const attached = await modelBackends.listForModel(id);
           const objectInfo = toCheckModelBackends(
             await buildObjectInfo(attached, backendsService),
           );
+          const rebound =
+            rebind && rebind.length > 0
+              ? applyRebind(
+                  parsed.workflow,
+                  detail.modes,
+                  detail.inputs,
+                  rebind,
+                )
+              : { modes: detail.modes, inputs: detail.inputs };
           const issues = checkModel(
             {
               workflow: parsed.workflow,
-              inputs: detail.inputs,
-              modes: detail.modes.map((mode) => ({
+              inputs: rebound.inputs,
+              modes: rebound.modes.map((mode) => ({
                 id: mode.id,
                 name: mode.name,
-                outputNodeIds: mode.outputNodes.map((node) => node.nodeId),
+                ...checkModelOutputNodes(mode),
                 inputSettings: mode.inputSettings,
               })) satisfies CheckModelMode[],
             },
@@ -811,6 +912,9 @@ export function adminModelsRoute(
           body.workflow,
           versionResult.data,
           adminActorFrom(c),
+          rebind,
+          fieldSpecs,
+          maxUploadMb,
         );
         if (disable) {
           const record = await repository.setState(
@@ -881,8 +985,17 @@ export function adminModelsRoute(
       // the restored state is run through the same enabled-Model gate a
       // normal Modes/Inputs save is, offering "Restore and disable"
       // when it still has errors (e.g. a Backend attached since that
-      // old revision was current no longer covers it).
+      // old revision was current no longer covers it). A restored Seed
+      // Input with no max is refused the same way `updateInputs` refuses
+      // one (ADR 0007): checkModel itself doesn't carry that rule.
       if (detail.model.state === "enabled" && !disable) {
+        const seedReasons = target.inputs
+          .filter((def) => def.kind === "seed" && def.max === null)
+          .map(
+            (def) =>
+              `Seed Input "${def.label}" needs a max while the Model is enabled`,
+          );
+
         const attached = await modelBackends.listForModel(id);
         const objectInfo = toCheckModelBackends(
           await buildObjectInfo(attached, backendsService),
@@ -894,20 +1007,24 @@ export function adminModelsRoute(
             modes: target.modes.map((mode) => ({
               id: mode.id,
               name: mode.name,
-              outputNodeIds: mode.outputNodes.map((node) => node.nodeId),
+              ...checkModelOutputNodes(mode),
               inputSettings: mode.inputSettings,
             })) satisfies CheckModelMode[],
           },
           objectInfo,
         );
-        if (hasBlockingErrors(issues)) {
+        const reasons = [
+          ...seedReasons,
+          ...issues
+            .filter((issue) => issue.severity === "error")
+            .map((issue) => issue.message),
+        ];
+        if (reasons.length > 0) {
           return c.json(
             {
               error:
                 "has errors; restore and disable this Model to save it anyway",
-              reasons: issues
-                .filter((issue) => issue.severity === "error")
-                .map((issue) => issue.message),
+              reasons,
             },
             400,
           );

@@ -49,7 +49,7 @@ const SAME_ORIGIN_HEADERS = { "Sec-Fetch-Site": "same-origin" };
 
 const WORKFLOW = {
   "1": { class_type: "LoadImage", inputs: { image: "a.png" } },
-  "2": { class_type: "KSampler", inputs: { model: ["1", 0] } },
+  "2": { class_type: "KSampler", inputs: { seed: 0, model: ["1", 0] } },
   "3": { class_type: "SaveImage", inputs: { images: ["2", 0] } },
 };
 
@@ -174,6 +174,200 @@ describe("/api/models/:slug and :slug/generations", () => {
     };
   }
 
+  /** Like `buildEnabledModel`, but with a Seed Input bound to node "2"'s `seed` field (issue #47). */
+  async function buildEnabledModelWithSeed(
+    app: Awaited<ReturnType<typeof build>>["app"],
+    adminHeaders: Record<string, string>,
+    fakeUrl: string,
+    max = 1000,
+  ) {
+    const createRes = await app.request("/api/admin/models", {
+      method: "POST",
+      headers: { ...adminHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ name: "LTX Seeded", workflow: WORKFLOW }),
+    });
+    const { model } = (await createRes.json()) as {
+      model: { id: string; slug: string; version: number };
+    };
+
+    const backendRes = await app.request("/api/admin/backends", {
+      method: "POST",
+      headers: { ...adminHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ name: "Fake2", baseUrl: fakeUrl, auth: "none" }),
+    });
+    const backend = (await backendRes.json()) as { id: string };
+
+    await app.request(`/api/admin/models/${model.id}/backends`, {
+      method: "POST",
+      headers: { ...adminHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ backendId: backend.id }),
+    });
+
+    clock.advance(30_000);
+    await flushMicrotasks();
+
+    const inputsRes = await app.request(
+      `/api/admin/models/${model.id}/inputs`,
+      {
+        method: "PUT",
+        headers: { ...adminHeaders, "content-type": "application/json" },
+        body: JSON.stringify({
+          version: model.version,
+          inputs: [
+            {
+              id: "66666666-6666-6666-6666-666666666666",
+              kind: "seed",
+              group: "settings",
+              label: "Seed",
+              help: "",
+              max,
+              bindings: [
+                {
+                  nodeId: "2",
+                  field: "seed",
+                  classType: "KSampler",
+                  title: null,
+                },
+              ],
+            },
+          ],
+        }),
+      },
+    );
+    const { record: afterInputs } = (await inputsRes.json()) as {
+      record: { version: number };
+    };
+
+    const modesRes = await app.request(`/api/admin/models/${model.id}/modes`, {
+      method: "PUT",
+      headers: { ...adminHeaders, "content-type": "application/json" },
+      body: JSON.stringify({
+        version: afterInputs.version,
+        modes: [{ name: "Default", description: "", outputNodeIds: ["3"] }],
+      }),
+    });
+    const { record: afterModes, modes } = (await modesRes.json()) as {
+      record: { id: string; version: number; currentRevision: number };
+      modes: Array<{ id: string; name: string }>;
+    };
+
+    const enableRes = await app.request(
+      `/api/admin/models/${model.id}/enable`,
+      {
+        method: "POST",
+        headers: { ...adminHeaders, "content-type": "application/json" },
+        body: JSON.stringify({ version: afterModes.version }),
+      },
+    );
+    expect(enableRes.status).toBe(200);
+
+    return {
+      modelId: model.id,
+      slug: model.slug as string,
+      modeId: modes[0]?.id as string,
+      revision: afterModes.currentRevision,
+      seedInputId: "66666666-6666-6666-6666-666666666666",
+    };
+  }
+
+  /** Like `buildEnabledModel`, but with a text Input bound to node "1"'s `image` field, standing in for a prompt (issue #47). */
+  async function buildEnabledModelWithPrompt(
+    app: Awaited<ReturnType<typeof build>>["app"],
+    adminHeaders: Record<string, string>,
+    fakeUrl: string,
+  ) {
+    const createRes = await app.request("/api/admin/models", {
+      method: "POST",
+      headers: { ...adminHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ name: "LTX Prompt", workflow: WORKFLOW }),
+    });
+    const { model } = (await createRes.json()) as {
+      model: { id: string; slug: string; version: number };
+    };
+
+    const backendRes = await app.request("/api/admin/backends", {
+      method: "POST",
+      headers: { ...adminHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ name: "Fake3", baseUrl: fakeUrl, auth: "none" }),
+    });
+    const backend = (await backendRes.json()) as { id: string };
+
+    await app.request(`/api/admin/models/${model.id}/backends`, {
+      method: "POST",
+      headers: { ...adminHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ backendId: backend.id }),
+    });
+
+    clock.advance(30_000);
+    await flushMicrotasks();
+
+    const promptInputId = "77777777-7777-7777-7777-777777777777";
+    const inputsRes = await app.request(
+      `/api/admin/models/${model.id}/inputs`,
+      {
+        method: "PUT",
+        headers: { ...adminHeaders, "content-type": "application/json" },
+        body: JSON.stringify({
+          version: model.version,
+          inputs: [
+            {
+              id: promptInputId,
+              kind: "text",
+              group: "describe",
+              label: "Prompt",
+              help: "",
+              default: "",
+              multiline: true,
+              maxLength: 2000,
+              bindings: [
+                {
+                  nodeId: "1",
+                  field: "image",
+                  classType: "LoadImage",
+                  title: null,
+                },
+              ],
+            },
+          ],
+        }),
+      },
+    );
+    const { record: afterInputs } = (await inputsRes.json()) as {
+      record: { version: number };
+    };
+
+    const modesRes = await app.request(`/api/admin/models/${model.id}/modes`, {
+      method: "PUT",
+      headers: { ...adminHeaders, "content-type": "application/json" },
+      body: JSON.stringify({
+        version: afterInputs.version,
+        modes: [{ name: "Default", description: "", outputNodeIds: ["3"] }],
+      }),
+    });
+    const { record: afterModes, modes } = (await modesRes.json()) as {
+      record: { id: string; version: number; currentRevision: number };
+      modes: Array<{ id: string; name: string }>;
+    };
+
+    const enableRes = await app.request(
+      `/api/admin/models/${model.id}/enable`,
+      {
+        method: "POST",
+        headers: { ...adminHeaders, "content-type": "application/json" },
+        body: JSON.stringify({ version: afterModes.version }),
+      },
+    );
+    expect(enableRes.status).toBe(200);
+
+    return {
+      modelId: model.id,
+      slug: model.slug as string,
+      modeId: modes[0]?.id as string,
+      revision: afterModes.currentRevision,
+      promptInputId,
+    };
+  }
+
   test("GET /api/models lists enabled Models without a session (issue #65)", async () => {
     const fake = startFakeComfyUi({ port: 0 });
     try {
@@ -264,15 +458,21 @@ describe("/api/models/:slug and :slug/generations", () => {
       });
       expect(res.status).toBe(201);
       const body = (await res.json()) as {
-        generation: { id: string; state: string; userId: string };
+        generations: Array<{ id: string; state: string; userId: string }>;
       };
-      expect(body.generation.state).toBe("queued");
-      expect(body.generation.userId).toBe(userId);
+      expect(body.generations.length).toBe(1);
+      const generation = body.generations[0] as {
+        id: string;
+        state: string;
+        userId: string;
+      };
+      expect(generation.state).toBe("queued");
+      expect(generation.userId).toBe(userId);
 
       const [row] = await db
         .select()
         .from(generations)
-        .where(eq(generations.id, body.generation.id));
+        .where(eq(generations.id, generation.id));
       expect(row?.nodeTypes.sort()).toEqual([
         "KSampler",
         "LoadImage",
@@ -283,7 +483,7 @@ describe("/api/models/:slug and :slug/generations", () => {
         { inputs: Record<string, unknown> }
       >;
       expect(prompt["3"]?.inputs.filename_prefix).toBe(
-        `studio/${body.generation.id}/`,
+        `studio/${generation.id}/`,
       );
 
       backendsService.stop();
@@ -487,6 +687,268 @@ describe("/api/models/:slug and :slug/generations", () => {
     } finally {
       fake.stop();
     }
+  });
+
+  describe("Seeds and 1-4 variants per Submission (issue #47)", () => {
+    test("submits with no Seed Input and ignores an extra count: always 1 Generation", async () => {
+      const fake = startFakeComfyUi({ port: 0 });
+      try {
+        const { app, backendsService } = await build();
+        const { headers: adminHeaders } = await headersFor("admin");
+        const { slug, modeId } = await buildEnabledModel(
+          app,
+          adminHeaders,
+          fake.url,
+        );
+
+        const { headers: userHeaders } = await headersFor("user");
+        const res = await app.request(`/api/models/${slug}/generations`, {
+          method: "POST",
+          headers: { ...userHeaders, "content-type": "application/json" },
+          body: JSON.stringify({ modeId, revision: 2, count: 4 }),
+        });
+        expect(res.status).toBe(201);
+        const body = (await res.json()) as { generations: Array<unknown> };
+        expect(body.generations.length).toBe(1);
+
+        backendsService.stop();
+      } finally {
+        fake.stop();
+      }
+    });
+
+    test("a Seed Input's count creates that many Generations sharing submission_id and submitted_at", async () => {
+      const fake = startFakeComfyUi({ port: 0 });
+      try {
+        const { app, backendsService } = await build();
+        const { db } = await testDb;
+        const { headers: adminHeaders } = await headersFor("admin");
+        const { slug, modeId, revision } = await buildEnabledModelWithSeed(
+          app,
+          adminHeaders,
+          fake.url,
+        );
+
+        const { headers: userHeaders } = await headersFor("user");
+        const res = await app.request(`/api/models/${slug}/generations`, {
+          method: "POST",
+          headers: { ...userHeaders, "content-type": "application/json" },
+          body: JSON.stringify({ modeId, revision, count: 3 }),
+        });
+        expect(res.status).toBe(201);
+        const body = (await res.json()) as {
+          generations: Array<{ id: string; submissionId: string }>;
+        };
+        expect(body.generations.length).toBe(3);
+        const submissionIds = new Set(
+          body.generations.map((g) => g.submissionId),
+        );
+        expect(submissionIds.size).toBe(1);
+
+        const rows = await db
+          .select()
+          .from(generations)
+          .where(
+            eq(
+              generations.submissionId,
+              body.generations[0]?.submissionId as string,
+            ),
+          );
+        expect(rows.length).toBe(3);
+        const submittedAts = new Set(
+          rows.map((r) => r.submittedAt.toISOString()),
+        );
+        expect(submittedAts.size).toBe(1);
+
+        // Random seeds drawn below 2^53, consecutive s, s+1, s+2 (ADR 0007).
+        const seeds = rows
+          .map((r) => {
+            const prompt = r.builtPrompt as Record<
+              string,
+              { inputs: Record<string, unknown> }
+            >;
+            return prompt["2"]?.inputs.seed as number;
+          })
+          .sort((a, b) => a - b);
+        expect(seeds[1]).toBe((seeds[0] as number) + 1);
+        expect(seeds[2]).toBe((seeds[0] as number) + 2);
+        expect(seeds[0]).toBeGreaterThanOrEqual(0);
+        expect(seeds[2]).toBeLessThan(Number.MAX_SAFE_INTEGER);
+
+        backendsService.stop();
+      } finally {
+        fake.stop();
+      }
+    });
+
+    test("a user-supplied seed runs s, s+1, ... s+count-1", async () => {
+      const fake = startFakeComfyUi({ port: 0 });
+      try {
+        const { app, backendsService } = await build();
+        const { db } = await testDb;
+        const { headers: adminHeaders } = await headersFor("admin");
+        const { slug, modeId, revision, seedInputId } =
+          await buildEnabledModelWithSeed(app, adminHeaders, fake.url);
+
+        const { headers: userHeaders } = await headersFor("user");
+        const res = await app.request(`/api/models/${slug}/generations`, {
+          method: "POST",
+          headers: { ...userHeaders, "content-type": "application/json" },
+          body: JSON.stringify({
+            modeId,
+            revision,
+            count: 2,
+            values: { [seedInputId]: 500 },
+          }),
+        });
+        expect(res.status).toBe(201);
+        const body = (await res.json()) as {
+          generations: Array<{ id: string }>;
+        };
+
+        const rows = await db
+          .select()
+          .from(generations)
+          .where(eq(generations.id, body.generations[0]?.id as string));
+        const other = await db
+          .select()
+          .from(generations)
+          .where(eq(generations.id, body.generations[1]?.id as string));
+        const seedsSeen = [...rows, ...other]
+          .map((r) => {
+            const prompt = r.builtPrompt as Record<
+              string,
+              { inputs: Record<string, unknown> }
+            >;
+            return prompt["2"]?.inputs.seed as number;
+          })
+          .sort((a, b) => a - b);
+        expect(seedsSeen).toEqual([500, 501]);
+
+        backendsService.stop();
+      } finally {
+        fake.stop();
+      }
+    });
+
+    test("refuses a seed where s + count - 1 exceeds the Seed Input's max", async () => {
+      const fake = startFakeComfyUi({ port: 0 });
+      try {
+        const { app, backendsService } = await build();
+        const { headers: adminHeaders } = await headersFor("admin");
+        const { slug, modeId, revision, seedInputId } =
+          await buildEnabledModelWithSeed(app, adminHeaders, fake.url, 10);
+
+        const { headers: userHeaders } = await headersFor("user");
+        const res = await app.request(`/api/models/${slug}/generations`, {
+          method: "POST",
+          headers: { ...userHeaders, "content-type": "application/json" },
+          body: JSON.stringify({
+            modeId,
+            revision,
+            count: 4,
+            values: { [seedInputId]: 9 },
+          }),
+        });
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toBe("invalid_seed");
+
+        backendsService.stop();
+      } finally {
+        fake.stop();
+      }
+    });
+
+    test("refuses a count outside 1-4", async () => {
+      const fake = startFakeComfyUi({ port: 0 });
+      try {
+        const { app, backendsService } = await build();
+        const { headers: adminHeaders } = await headersFor("admin");
+        const { slug, modeId, revision } = await buildEnabledModelWithSeed(
+          app,
+          adminHeaders,
+          fake.url,
+        );
+
+        const { headers: userHeaders } = await headersFor("user");
+        const res = await app.request(`/api/models/${slug}/generations`, {
+          method: "POST",
+          headers: { ...userHeaders, "content-type": "application/json" },
+          body: JSON.stringify({ modeId, revision, count: 5 }),
+        });
+        expect(res.status).toBe(400);
+
+        backendsService.stop();
+      } finally {
+        fake.stop();
+      }
+    });
+
+    test("the Submissions list shows a custom prompt as-is, and a blank one as a default", async () => {
+      const fake = startFakeComfyUi({ port: 0 });
+      try {
+        const { app, backendsService } = await build();
+        const { headers: adminHeaders } = await headersFor("admin");
+        const { slug, modeId, revision, promptInputId } =
+          await buildEnabledModelWithPrompt(app, adminHeaders, fake.url);
+
+        const { headers: userHeaders } = await headersFor("user");
+        await app.request(`/api/models/${slug}/generations`, {
+          method: "POST",
+          headers: { ...userHeaders, "content-type": "application/json" },
+          body: JSON.stringify({
+            modeId,
+            revision,
+            values: { [promptInputId]: "a custom prompt" },
+          }),
+        });
+
+        const listRes = await app.request(`/api/models/${slug}/generations`, {
+          headers: userHeaders,
+        });
+        const body = (await listRes.json()) as {
+          submissions: Array<{ prompt: string | null }>;
+        };
+        expect(body.submissions[0]?.prompt).toBe("a custom prompt");
+
+        backendsService.stop();
+      } finally {
+        fake.stop();
+      }
+    });
+
+    test("a blank prompt shows the Workflow's own value, prefixed", async () => {
+      const fake = startFakeComfyUi({ port: 0 });
+      try {
+        const { app, backendsService } = await build();
+        const { headers: adminHeaders } = await headersFor("admin");
+        const { slug, modeId, revision } = await buildEnabledModelWithPrompt(
+          app,
+          adminHeaders,
+          fake.url,
+        );
+
+        const { headers: userHeaders } = await headersFor("user");
+        await app.request(`/api/models/${slug}/generations`, {
+          method: "POST",
+          headers: { ...userHeaders, "content-type": "application/json" },
+          body: JSON.stringify({ modeId, revision }),
+        });
+
+        const listRes = await app.request(`/api/models/${slug}/generations`, {
+          headers: userHeaders,
+        });
+        const body = (await listRes.json()) as {
+          submissions: Array<{ prompt: string | null }>;
+        };
+        expect(body.submissions[0]?.prompt).toBe("Default prompt: a.png");
+
+        backendsService.stop();
+      } finally {
+        fake.stop();
+      }
+    });
   });
 
   describe("Model terms and Attribution (issue #61)", () => {

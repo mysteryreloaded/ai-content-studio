@@ -817,6 +817,15 @@ export class ModelRepository {
         }
       });
 
+      // At most one Seed Input per Model (issue #47).
+      const seedCount = input.filter((def) => def.kind === "seed").length;
+      if (seedCount > 1) {
+        errors.push({
+          field: "inputs",
+          message: "a Model can have at most one Seed Input",
+        });
+      }
+
       if (errors.length > 0) throw new ValidationFailed(errors);
 
       const beforeInputs = currentRevision.inputs as InputDefinition[];

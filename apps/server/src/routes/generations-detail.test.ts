@@ -1,5 +1,5 @@
 // `/api/generations/:id` (issue #57): one Generation's own detail, and
-// deleting it, a whole Submission, or everything, into a Tombstone.
+// deleting it or a whole Submission, into a Tombstone.
 
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { startFakeComfyUi } from "@ai-content-studio/fake-comfyui";
@@ -15,6 +15,7 @@ import {
   modelBackends,
   modelRevisions,
   models,
+  uploads,
   users,
   workflows,
 } from "../db/schema.js";
@@ -72,6 +73,7 @@ describe("/api/generations/:id (issue #57)", () => {
   beforeEach(async () => {
     const { db } = await testDb;
     await db.delete(assets);
+    await db.delete(uploads);
     await db.delete(generations);
     await db.delete(logEntries);
     await db.delete(modelBackends);
@@ -445,7 +447,7 @@ describe("/api/generations/:id (issue #57)", () => {
     }
   });
 
-  test("Delete all tombstones every ended Generation of this user, leaving under-way ones alone", async () => {
+  test("a Tombstone is left out of the Gallery and the Workbench's recent list, but still counts toward the daily Cap", async () => {
     const fake = startFakeComfyUi({ port: 0 });
     try {
       const { app, backendsService } = await build();
@@ -454,7 +456,7 @@ describe("/api/generations/:id (issue #57)", () => {
       const model = await buildEnabledModel(app, adminHeaders, fake.url, "M");
       const { headers: userHeaders } = await headersFor("user");
 
-      const { generationId: endedId } = await submit(
+      const { generationId } = await submit(
         app,
         userHeaders,
         model.slug,
@@ -463,33 +465,135 @@ describe("/api/generations/:id (issue #57)", () => {
       await db
         .update(generations)
         .set({ state: "succeeded", endedAt: clock.now() })
-        .where(eq(generations.id, endedId));
+        .where(eq(generations.id, generationId));
 
-      const { generationId: queuedId } = await submit(
-        app,
-        userHeaders,
-        model.slug,
-        model.modeId,
-      );
-
-      const del = await app.request("/api/generations", {
+      const del = await app.request(`/api/generations/${generationId}`, {
         method: "DELETE",
         headers: userHeaders,
       });
       expect(del.status).toBe(200);
 
-      const [endedRow] = await db
-        .select()
-        .from(generations)
-        .where(eq(generations.id, endedId));
-      expect(endedRow?.deletedAt).not.toBeNull();
+      const galleryRes = await app.request("/api/gallery", {
+        headers: userHeaders,
+      });
+      expect(galleryRes.status).toBe(200);
+      const gallery = (await galleryRes.json()) as {
+        submissions: Array<{ submissionId: string }>;
+      };
+      expect(gallery.submissions).toEqual([]);
 
-      const [queuedRow] = await db
+      const recentRes = await app.request(
+        `/api/models/${model.slug}/generations`,
+        { headers: userHeaders },
+      );
+      expect(recentRes.status).toBe(200);
+      const recent = (await recentRes.json()) as {
+        submissions: Array<{ submissionId: string }>;
+      };
+      expect(recent.submissions).toEqual([]);
+
+      const capsRes = await app.request("/api/generations/caps", {
+        headers: userHeaders,
+      });
+      expect(capsRes.status).toBe(200);
+      const caps = (await capsRes.json()) as { dailyUsed: number };
+      expect(caps.dailyUsed).toBe(1);
+
+      backendsService.stop();
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("deleting a Generation drops an Upload used only there, but keeps one a non-deleted Generation still shares", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const { app, backendsService } = await build();
+      const { db } = await testDb;
+      const { headers: adminHeaders } = await headersFor("admin");
+      const model = await buildEnabledModel(app, adminHeaders, fake.url, "M");
+      const { headers: userHeaders, userId } = await headersFor("user");
+
+      const { generationId: deletedId } = await submit(
+        app,
+        userHeaders,
+        model.slug,
+        model.modeId,
+      );
+      const [deletedRow] = await db
         .select()
         .from(generations)
-        .where(eq(generations.id, queuedId));
-      expect(queuedRow?.deletedAt).toBeNull();
-      expect(queuedRow?.state).toBe("queued");
+        .where(eq(generations.id, deletedId));
+      if (!deletedRow) throw new Error("missing Generation");
+
+      const sharedUploadId = crypto.randomUUID();
+      const onlyUploadId = crypto.randomUUID();
+      const now = clock.now();
+      await db.insert(uploads).values([
+        {
+          id: sharedUploadId,
+          userId,
+          status: "complete",
+          originalName: "shared.png",
+          declaredType: "image/png",
+          size: 10,
+          storageKey: "uploads/test/shared.png",
+          createdAt: now,
+        },
+        {
+          id: onlyUploadId,
+          userId,
+          status: "complete",
+          originalName: "only.png",
+          declaredType: "image/png",
+          size: 10,
+          storageKey: "uploads/test/only.png",
+          createdAt: now,
+        },
+      ]);
+      await db
+        .update(generations)
+        .set({
+          state: "succeeded",
+          endedAt: now,
+          uploadIds: [sharedUploadId, onlyUploadId],
+        })
+        .where(eq(generations.id, deletedId));
+
+      // A second, non-deleted Generation that still uses the shared Upload.
+      await db.insert(generations).values({
+        id: crypto.randomUUID(),
+        modelId: deletedRow.modelId,
+        revisionId: deletedRow.revisionId,
+        modeId: deletedRow.modeId,
+        userId: deletedRow.userId,
+        submissionId: crypto.randomUUID(),
+        state: "succeeded",
+        queuedAt: deletedRow.submittedAt,
+        endedAt: now,
+        builtPrompt: deletedRow.builtPrompt,
+        nodeTypes: deletedRow.nodeTypes,
+        uploadIds: [sharedUploadId],
+        submittedAt: deletedRow.submittedAt,
+      });
+
+      const del = await app.request(`/api/generations/${deletedId}`, {
+        method: "DELETE",
+        headers: userHeaders,
+      });
+      expect(del.status).toBe(200);
+
+      const [sharedRow] = await db
+        .select()
+        .from(uploads)
+        .where(eq(uploads.id, sharedUploadId));
+      expect(sharedRow).toBeDefined();
+
+      const [onlyRow] = await db
+        .select()
+        .from(uploads)
+        .where(eq(uploads.id, onlyUploadId));
+      expect(onlyRow).toBeUndefined();
 
       backendsService.stop();
     } finally {

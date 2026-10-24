@@ -156,14 +156,14 @@ function mockFetch(handler: (call: FetchCall) => Response | Promise<Response>) {
   }) as typeof fetch;
 }
 
-function renderWorkbench() {
+function renderWorkbench(initialEntry = "/models/ltx") {
   (globalThis as unknown as { EventSource: unknown }).EventSource =
     FakeEventSource;
   FakeEventSource.instances = [];
 
   const router = createMemoryRouter(
     [{ path: "/models/:slug", element: <WorkbenchPage /> }],
-    { initialEntries: ["/models/ltx"] },
+    { initialEntries: [initialEntry] },
   );
   return render(<RouterProvider router={router} />);
 }
@@ -1488,6 +1488,143 @@ describe("WorkbenchPage", () => {
       // so before the fix this fell back to `defaultWidth` (null here),
       // showing "Set a size first." instead of the picker.
       expect(await view.findByText(/0\/10 points picked/)).toBeTruthy();
+    });
+  });
+
+  describe("Reuse these settings (issue #57)", () => {
+    const VIDEO_INPUT_ID = "11111111-1111-4111-8111-111111111111";
+    const POINTS_INPUT_ID = "22222222-2222-4222-8222-222222222222";
+
+    function reuseModel() {
+      return {
+        ...MODEL,
+        modes: [
+          {
+            id: "mode-points",
+            name: "Default",
+            description: "",
+            inputs: [
+              {
+                id: VIDEO_INPUT_ID,
+                kind: "video_upload",
+                group: "describe",
+                label: "Clip",
+                help: "",
+                placeholder: null,
+                maxSizeMb: 50,
+                maxLongSide: null,
+                minDurationMs: 0,
+                maxDurationMs: 10_000,
+                trimmable: true,
+              },
+              {
+                id: POINTS_INPUT_ID,
+                kind: "points",
+                group: "describe",
+                label: "Who to replace",
+                help: "",
+                placeholder: null,
+                videoInputId: VIDEO_INPUT_ID,
+                widthInputId: null,
+                heightInputId: null,
+                defaultWidth: 512,
+                defaultHeight: 512,
+              },
+            ],
+          },
+        ],
+      };
+    }
+
+    function reuseServer(detail: Record<string, unknown>) {
+      mockFetch(async (call) => {
+        if (call.url.endsWith("/api/models/ltx")) {
+          return Response.json({ model: reuseModel() });
+        }
+        if (
+          call.url.endsWith("/api/models/ltx/generations") &&
+          call.method === "GET"
+        ) {
+          return Response.json({ submissions: [] });
+        }
+        if (call.url === "/api/generations/g0") {
+          return Response.json(detail);
+        }
+        throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+      });
+    }
+
+    test("carries Points over when the video Upload it was drawn on also carries over", async () => {
+      reuseServer({
+        modelId: "m1",
+        modelDeleted: false,
+        modeId: "mode-points",
+        settings: [
+          {
+            inputId: VIDEO_INPUT_ID,
+            label: "Clip",
+            kind: "upload",
+            display: "clip.mp4",
+            upload: {
+              id: "upload-1",
+              name: "clip.mp4",
+              size: 100,
+              durationMs: 2000,
+              width: 640,
+              height: 480,
+              thumbnailKey: null,
+              trimmedFromName: null,
+            },
+          },
+          {
+            inputId: POINTS_INPUT_ID,
+            label: "Who to replace",
+            kind: "points",
+            display: "1 point",
+            points: [{ x: 300, y: 200 }],
+            frameWidth: 512,
+            frameHeight: 512,
+          },
+        ],
+      });
+
+      const view = renderWorkbench("/models/ltx?reuse=g0");
+      expect(
+        await view.findByText("Reused that Generation's settings."),
+      ).toBeTruthy();
+    });
+
+    test("drops Points, noting it, when the video Upload it was drawn on is gone", async () => {
+      reuseServer({
+        modelId: "m1",
+        modelDeleted: false,
+        modeId: "mode-points",
+        settings: [
+          {
+            inputId: VIDEO_INPUT_ID,
+            label: "Clip",
+            kind: "upload",
+            display: "None",
+            upload: null,
+          },
+          {
+            inputId: POINTS_INPUT_ID,
+            label: "Who to replace",
+            kind: "points",
+            display: "1 point",
+            points: [{ x: 300, y: 200 }],
+            frameWidth: 512,
+            frameHeight: 512,
+          },
+        ],
+      });
+
+      const view = renderWorkbench("/models/ltx?reuse=g0");
+      const notice = await view.findByText(/Not carried over/);
+      expect(notice.textContent).toContain("Clip (its Upload is gone)");
+      expect(notice.textContent).toContain(
+        "Who to replace (redraw the points)",
+      );
     });
   });
 });

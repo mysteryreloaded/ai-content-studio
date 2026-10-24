@@ -8,6 +8,7 @@ import {
   isPointInCrop,
   parseInputValues,
   renderMarkdown,
+  resolvePointsFractions,
   toInputIssues,
 } from "@ai-content-studio/shared";
 import type {
@@ -716,7 +717,6 @@ export function WorkbenchPage() {
   const [selectedModeId, setSelectedModeId] = useState<string | null>(null);
   const [values, setValues] = useState<Record<string, string>>({});
   const [reuseNotice, setReuseNotice] = useState<string | null>(null);
-  const [deletingAll, setDeletingAll] = useState(false);
   /** 1-4 (issue #47); only meaningful when the Mode's Path holds a bound Seed Input. */
   const [count, setCount] = useState(1);
   const [issuesByInputId, setIssuesByInputId] = useState<
@@ -774,6 +774,14 @@ export function WorkbenchPage() {
   >(new Set());
   /** Issue #54: which Submission's Cancel request most recently failed, so the button's user sees why it's still enabled. */
   const [cancelErrorSubmissionId, setCancelErrorSubmissionId] = useState<
+    string | null
+  >(null);
+  /** Issue #57's AC: disables a Submission's own Delete all button while its request is in flight. */
+  const [deletingSubmissionIds, setDeletingSubmissionIds] = useState<
+    Set<string>
+  >(new Set());
+  /** Issue #57's AC: which Submission's Delete all request most recently failed. */
+  const [deleteErrorSubmissionId, setDeleteErrorSubmissionId] = useState<
     string | null
   >(null);
   /** This user's Caps and usage (issue #53), for the Workbench foot. */
@@ -1009,6 +1017,9 @@ export function WorkbenchPage() {
 
         const reused: Record<string, string> = {};
         const dropped: string[] = [];
+        const pointsSettings: Array<
+          Extract<GenerationInputSetting, { kind: "points" }>
+        > = [];
         for (const setting of detail.settings) {
           const input = targetMode.inputs.find((i) => i.id === setting.inputId);
           if (!input) {
@@ -1016,7 +1027,9 @@ export function WorkbenchPage() {
             continue;
           }
           if (setting.kind === "points") {
-            dropped.push(`${setting.label} (redraw the points)`);
+            // Deferred: whether its points carry over depends on
+            // whether the Video Upload it was drawn on is reused too.
+            pointsSettings.push(setting);
             continue;
           }
           if (setting.kind === "upload") {
@@ -1025,6 +1038,37 @@ export function WorkbenchPage() {
             continue;
           }
           reused[input.id] = String(setting.value);
+        }
+        for (const setting of pointsSettings) {
+          const input = targetMode.inputs.find((i) => i.id === setting.inputId);
+          const videoSetting =
+            input?.kind === "points"
+              ? detail.settings.find(
+                  (
+                    s,
+                  ): s is Extract<GenerationInputSetting, { kind: "upload" }> =>
+                    s.kind === "upload" && s.inputId === input.videoInputId,
+                )
+              : undefined;
+          if (
+            input?.kind === "points" &&
+            reused[input.videoInputId] &&
+            videoSetting?.upload?.width &&
+            videoSetting.upload.height &&
+            setting.frameWidth !== null &&
+            setting.frameHeight !== null
+          ) {
+            const fractions = resolvePointsFractions(
+              setting.points,
+              videoSetting.upload.width,
+              videoSetting.upload.height,
+              setting.frameWidth,
+              setting.frameHeight,
+            );
+            reused[input.id] = encodePointsValue(fractions);
+          } else {
+            dropped.push(`${setting.label} (redraw the points)`);
+          }
         }
         setValues((current) => ({ ...current, ...reused }));
         setReuseNotice(
@@ -1378,6 +1422,34 @@ export function WorkbenchPage() {
     }
   }, []);
 
+  /** "Delete all" (issue #57's AC): a whole Submission, once every one of its Generations has ended, into Tombstones. */
+  const handleDeleteSubmission = useCallback(async (submissionId: string) => {
+    if (!window.confirm("Delete this Submission? This can't be undone.")) {
+      return;
+    }
+    setDeletingSubmissionIds((current) => new Set(current).add(submissionId));
+    setDeleteErrorSubmissionId(null);
+    try {
+      const res = await fetch(`/api/submissions/${submissionId}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) throw new Error(`unexpected status ${res.status}`);
+      setSubmissions((current) =>
+        current.filter(
+          (submission) => submission.submissionId !== submissionId,
+        ),
+      );
+    } catch {
+      setDeleteErrorSubmissionId(submissionId);
+    } finally {
+      setDeletingSubmissionIds((current) => {
+        const next = new Set(current);
+        next.delete(submissionId);
+        return next;
+      });
+    }
+  }, []);
+
   if (session.status === "loading") return null;
   if (session.status === "signed-out") return <Navigate to="/" replace />;
   if (notFound) {
@@ -1414,34 +1486,6 @@ export function WorkbenchPage() {
       setTermsDialog(null);
     } finally {
       setAccepting(false);
-    }
-  }
-
-  /** "Delete all" (issue #57's AC): every one of this user's own ended Generations, into a Tombstone, across every Model — not just this one. */
-  async function handleDeleteAll() {
-    if (
-      !window.confirm(
-        "Delete every ended Generation across every Model? This can't be undone.",
-      )
-    ) {
-      return;
-    }
-    setDeletingAll(true);
-    try {
-      const res = await fetch("/api/generations", { method: "DELETE" });
-      if (!res.ok) throw new Error(`unexpected status ${res.status}`);
-      setSubmissions((current) =>
-        current
-          .map((submission) => ({
-            ...submission,
-            generations: submission.generations.filter(
-              (g) => !DONE_STATES.has(g.state),
-            ),
-          }))
-          .filter((submission) => submission.generations.length > 0),
-      );
-    } finally {
-      setDeletingAll(false);
     }
   }
 
@@ -1599,17 +1643,6 @@ export function WorkbenchPage() {
           <aside className="workbench-submissions" aria-label="Submissions">
             <h2>Submissions</h2>
             {submissions.length === 0 && <p>No Submissions yet.</p>}
-            {submissions.some((submission) =>
-              submission.generations.some((g) => DONE_STATES.has(g.state)),
-            ) && (
-              <button
-                type="button"
-                disabled={deletingAll}
-                onClick={() => void handleDeleteAll()}
-              >
-                Delete all
-              </button>
-            )}
             <ul>
               {submissions.map((submission) => {
                 const hasUnfinished = submission.generations.some(
@@ -1631,7 +1664,7 @@ export function WorkbenchPage() {
                         </span>
                       )}
                     </button>
-                    {hasUnfinished && (
+                    {hasUnfinished ? (
                       <button
                         type="button"
                         disabled={cancellingSubmissionIds.has(
@@ -1643,9 +1676,24 @@ export function WorkbenchPage() {
                       >
                         Cancel
                       </button>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={deletingSubmissionIds.has(
+                          submission.submissionId,
+                        )}
+                        onClick={() =>
+                          void handleDeleteSubmission(submission.submissionId)
+                        }
+                      >
+                        Delete all
+                      </button>
                     )}
                     {cancelErrorSubmissionId === submission.submissionId && (
                       <p role="alert">Could not cancel. Please try again.</p>
+                    )}
+                    {deleteErrorSubmissionId === submission.submissionId && (
+                      <p role="alert">Could not delete. Please try again.</p>
                     )}
                     <ul>
                       {submission.generations.map((generation) => (

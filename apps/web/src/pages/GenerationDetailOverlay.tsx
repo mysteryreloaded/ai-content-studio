@@ -152,7 +152,7 @@ function SettingRow({ setting }: { setting: GenerationInputSetting }) {
               : ""}
             {setting.upload.trimmedFromName
               ? ` · trimmed from ${setting.upload.trimmedFromName}`
-              : " · None"}
+              : null}
           </span>
         ) : (
           <span className="generation-detail-setting-value">None</span>

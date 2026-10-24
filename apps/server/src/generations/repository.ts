@@ -453,7 +453,11 @@ export class GenerationsRepository {
       .from(generations)
       .innerJoin(modes, eq(modes.id, generations.modeId))
       .where(
-        and(eq(generations.modelId, modelId), eq(generations.userId, userId)),
+        and(
+          eq(generations.modelId, modelId),
+          eq(generations.userId, userId),
+          isNull(generations.deletedAt),
+        ),
       )
       .orderBy(desc(generations.submittedAt))
       .limit(200);
@@ -630,7 +634,10 @@ export class GenerationsRepository {
     cursor?: { submittedAt: Date; submissionId: string };
     limit: number;
   }): Promise<GalleryPage> {
-    const clauses = [eq(generations.userId, params.userId)];
+    const clauses = [
+      eq(generations.userId, params.userId),
+      isNull(generations.deletedAt),
+    ];
     if (params.modelId) clauses.push(eq(generations.modelId, params.modelId));
     if (params.stateFilter) {
       clauses.push(
@@ -668,7 +675,12 @@ export class GenerationsRepository {
       .from(generations)
       .innerJoin(modes, eq(modes.id, generations.modeId))
       .innerJoin(models, eq(models.id, generations.modelId))
-      .where(inArray(generations.submissionId, orderedIds));
+      .where(
+        and(
+          inArray(generations.submissionId, orderedIds),
+          isNull(generations.deletedAt),
+        ),
+      );
 
     const assetsById = await assetsByGenerationId(
       this.db,
@@ -916,24 +928,6 @@ export class GenerationsRepository {
       rows.map((row) => row.id),
       now,
     );
-  }
-
-  /** "Delete all" on the Workbench (issue #57's AC): every one of this user's own ended, not-yet-deleted Generations. Under-way ones are left alone. */
-  async deleteAllForUser(
-    userId: string,
-    now: Date,
-  ): Promise<DeletedStorageKeys> {
-    const rows = await this.db
-      .select({ id: generations.id, state: generations.state })
-      .from(generations)
-      .where(
-        and(eq(generations.userId, userId), isNull(generations.deletedAt)),
-      );
-    const ids = rows
-      .filter((row) => ENDED_STATES.includes(row.state))
-      .map((row) => row.id);
-    if (ids.length === 0) return { assets: [], uploads: [] };
-    return this.finishDelete(ids, now);
   }
 
   /**

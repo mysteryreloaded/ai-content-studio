@@ -223,28 +223,5 @@ export function generationsRoute(
     },
   );
 
-  // `/api/generations` DELETE (issue #57's AC: "Delete all" on the
-  // Workbench): every one of this user's own ended Generations, each
-  // into a Tombstone. Under-way ones are left alone.
-  guardedRoute(
-    app,
-    routes,
-    "/api/generations",
-    "delete",
-    "/",
-    "active",
-    async (c) => {
-      const session = c.get("session");
-      if (!session) return c.json({ error: "unauthorized" }, 401);
-
-      const keys = await generationsRepository.deleteAllForUser(
-        session.user.id,
-        clock.now(),
-      );
-      await deleteStorageFor(storage, keys);
-      return c.json({ ok: true });
-    },
-  );
-
   return app;
 }

@@ -78,6 +78,12 @@ export function requireAccess(access: AccessLevel): Handler<AppEnv> {
 
     if (access === "admin") {
       if (session.user.status !== "active" || session.user.role !== "admin") {
+        await c.get("logWriter")?.log({
+          level: "warning",
+          source: "app",
+          message: `non-Admin called an admin route: ${c.req.method} ${c.req.path}`,
+          userId: session.user.id,
+        });
         return c.json({ error: "forbidden" }, 403);
       }
       return next();

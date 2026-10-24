@@ -10,6 +10,7 @@ import { createTestDatabase } from "../test/database.js";
 import {
   LOGO_STORAGE_KEY,
   getSiteSettings,
+  updateSitePrivacy,
   updateSiteSettings,
   updateSiteTerms,
 } from "./site-settings-store.js";
@@ -280,5 +281,60 @@ describe("Site settings and Site terms have independent concurrency locks", () =
       contact: "",
     });
     expect(brandingResult.ok).toBe(true);
+  });
+
+  test("saves up to 3 footer links as part of the branding save", async () => {
+    const { db } = await testDb;
+    const storage = createLocalStorage(await rootPromise);
+    const current = await getSiteSettings(db);
+
+    const result = await updateSiteSettings(db, clock, storage, admin, {
+      version: current.version,
+      title: current.title,
+      landingText: current.landingText,
+      accent: current.accent,
+      signUpMode: current.signUpMode,
+      contact: current.contact,
+      footerLinks: [{ label: "Imprint", url: "https://example.com/imprint" }],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.settings.footerLinks).toEqual([
+      { label: "Imprint", url: "https://example.com/imprint" },
+    ]);
+  });
+
+  test("updateSitePrivacy saves the body, stamps privacyUpdatedAt and writes an Audit entry", async () => {
+    const { db } = await testDb;
+    const current = await getSiteSettings(db);
+
+    const result = await updateSitePrivacy(db, clock, admin, {
+      revision: current.privacyRevision,
+      body: "We keep your data on our own server.",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.settings.privacyBody).toBe(
+      "We keep your data on our own server.",
+    );
+    expect(result.settings.privacyUpdatedAt).not.toBeNull();
+    expect(result.settings.privacyRevision).toBe(current.privacyRevision + 1);
+
+    const [entry] = await db
+      .select()
+      .from(auditEntries)
+      .where(eq(auditEntries.action, "update-privacy"));
+    expect(entry?.targetType).toBe("site_settings");
+  });
+
+  test("updateSitePrivacy rejects a stale revision", async () => {
+    const { db } = await testDb;
+    const current = await getSiteSettings(db);
+
+    const result = await updateSitePrivacy(db, clock, admin, {
+      revision: current.privacyRevision - 1,
+      body: "stale write",
+    });
+    expect(result).toEqual({ ok: false, reason: "stale" });
   });
 });

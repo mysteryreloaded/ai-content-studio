@@ -4,15 +4,18 @@ import type { AppEnv } from "../auth/app-env.js";
 import {
   BACKGROUND_STORAGE_KEY,
   LOGO_STORAGE_KEY,
+  activeTermsVersion,
   getSiteSettings,
 } from "../branding/site-settings-store.js";
 import type { Database } from "../db/client.js";
+import type { ModelRepository } from "../models/repository.js";
 import type { Storage } from "../storage/storage.js";
 
 /** `/api/site-settings`: the public branding the landing page (and `index.html`) read. */
 export function siteSettingsRoute(
   db: Database,
   storage: Storage,
+  modelRepository: ModelRepository,
   routes: RouteEntry[] = [],
 ): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
@@ -30,9 +33,14 @@ export function siteSettingsRoute(
         title: settings.title,
         landingText: settings.landingText,
         accent: settings.accent,
+        signUpMode: settings.signUpMode,
         contact: settings.contact,
         hasLogo: settings.logo !== null,
         hasBackground: settings.background !== null,
+        hasTerms: activeTermsVersion(settings) !== null,
+        footerLinks: settings.footerLinks,
+        hasNonVideoEnabledModel:
+          await modelRepository.hasEnabledNonVideoModel(),
       });
     },
   );

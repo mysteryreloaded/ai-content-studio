@@ -1,4 +1,4 @@
-import type { Clock } from "@ai-content-studio/shared";
+import type { Clock, FooterLink } from "@ai-content-studio/shared";
 import { eq } from "drizzle-orm";
 import { recordAuditEntry } from "../audit/audit.js";
 import type { AuditActor, AuditImage } from "../audit/audit.js";
@@ -28,6 +28,10 @@ export interface SiteSettingsSnapshot {
   termsVersion: number | null;
   termsVersionCreatedAt: Date | null;
   termsRevision: number;
+  privacyBody: string;
+  privacyUpdatedAt: Date | null;
+  privacyRevision: number;
+  footerLinks: FooterLink[];
 }
 
 /**
@@ -55,6 +59,7 @@ export interface SiteSettingsUpdateInput {
   accent: string;
   signUpMode: "open" | "approval";
   contact: string;
+  footerLinks?: FooterLink[];
   logo?: SiteSettingsUpdateImage;
   background?: SiteSettingsUpdateImage;
 }
@@ -99,6 +104,10 @@ function rowToSnapshot(
     termsVersion: row.termsVersion,
     termsVersionCreatedAt: row.termsVersionCreatedAt,
     termsRevision: row.termsRevision,
+    privacyBody: row.privacyBody,
+    privacyUpdatedAt: row.privacyUpdatedAt,
+    privacyRevision: row.privacyRevision,
+    footerLinks: row.footerLinks as FooterLink[],
   };
 }
 
@@ -113,6 +122,7 @@ function brandingAuditSnapshot(settings: SiteSettingsSnapshot) {
     contact: settings.contact,
     logo: settings.logo,
     background: settings.background,
+    footerLinks: settings.footerLinks,
   };
 }
 
@@ -187,6 +197,7 @@ export async function updateSiteSettings(
         accent: input.accent,
         signUpMode: input.signUpMode,
         contact: input.contact,
+        footerLinks: input.footerLinks ?? current.footerLinks,
         updatedAt: now,
         ...logoColumns,
         ...backgroundColumns,
@@ -290,6 +301,65 @@ export async function updateSiteTerms(
         termsVersion: after.termsVersion,
         askAgain: input.askAgain,
       },
+    });
+
+    return { ok: true, settings: after };
+  });
+}
+
+export interface SitePrivacyUpdateInput {
+  /** `privacyRevision`, independent of `version` and `termsRevision`, so saving one form never races another into a 409. */
+  revision: number;
+  body: string;
+}
+
+export type SitePrivacyUpdateResult =
+  | { ok: true; settings: SiteSettingsSnapshot }
+  | { ok: false; reason: "stale" };
+
+/**
+ * Saves the Privacy policy's Operator part (issue #65). Unlike Site
+ * terms, nobody accepts it, so there is no version to track — only
+ * `privacyUpdatedAt`, shown as "Last updated" on `/privacy`.
+ */
+export async function updateSitePrivacy(
+  db: Database,
+  clock: Clock,
+  actor: AuditActor,
+  input: SitePrivacyUpdateInput,
+): Promise<SitePrivacyUpdateResult> {
+  return db.transaction(async (tx) => {
+    const [current] = await tx.select().from(siteSettings).limit(1);
+    if (!current) throw new Error("site_settings row is missing");
+    if (current.privacyRevision !== input.revision) {
+      return { ok: false, reason: "stale" };
+    }
+
+    const before = rowToSnapshot(current);
+    const now = clock.now();
+    const body = input.body.trim();
+
+    const [updated] = await tx
+      .update(siteSettings)
+      .set({
+        privacyRevision: current.privacyRevision + 1,
+        privacyBody: body,
+        privacyUpdatedAt: now,
+        updatedAt: now,
+      })
+      .where(eq(siteSettings.singleton, true))
+      .returning();
+    if (!updated) throw new Error("site_settings update affected no row");
+
+    const after = rowToSnapshot(updated);
+
+    await recordAuditEntry(tx, clock, {
+      actor,
+      targetType: "site_settings",
+      targetId: "singleton",
+      action: "update-privacy",
+      before: { privacyBody: before.privacyBody },
+      after: { privacyBody: after.privacyBody },
     });
 
     return { ok: true, settings: after };

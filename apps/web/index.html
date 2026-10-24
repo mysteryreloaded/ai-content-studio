@@ -3,6 +3,21 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      Issue #65/#31: applies the stored System/Light/Dark choice before
+      first paint, so there's no flash of the wrong theme. Mirrored by
+      useTheme.ts for every later change.
+    -->
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem("ai-content-studio:theme");
+          if (stored === "light" || stored === "dark") {
+            document.documentElement.setAttribute("data-theme", stored);
+          }
+        } catch (e) {}
+      })();
+    </script>
     <title>AI Content Studio</title>
   </head>
   <body>

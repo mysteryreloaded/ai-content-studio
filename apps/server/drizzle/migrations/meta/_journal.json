@@ -120,6 +120,13 @@
       "when": 1792823431709,
       "tag": "0016_worried_wildside",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1792826617909,
+      "tag": "0017_harsh_sprite",
+      "breakpoints": true
     }
   ]
 }

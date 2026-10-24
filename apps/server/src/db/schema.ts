@@ -82,6 +82,16 @@ export const siteSettings = pgTable("site_settings", {
    */
   blockedWords: jsonb("blocked_words").notNull().default([]),
   blockedWordsRevision: integer("blocked_words_revision").notNull().default(1),
+  /**
+   * Issue #53: the daily Cap (rolling 24h) and the concurrent Cap (queued
+   * through saving), both Admin-editable defaults; a user's own override
+   * lives on `users` instead. `capsRevision` is its own
+   * optimistic-concurrency token, independent of the other Site settings
+   * forms', so saving one never races another into a spurious 409.
+   */
+  dailyCap: integer("daily_cap").notNull().default(20),
+  concurrentCap: integer("concurrent_cap").notNull().default(4),
+  capsRevision: integer("caps_revision").notNull().default(1),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -141,6 +151,14 @@ export const users = pgTable("users", {
   /** Issue #60: null until this user accepts the Site terms' current `termsVersion`. */
   termsAcceptedVersion: integer("terms_accepted_version"),
   termsAcceptedAt: timestamp("terms_accepted_at", { withTimezone: true }),
+  /**
+   * Issue #53: this user's own Cap, 0-1,000, overriding the Site default
+   * (null means "use the Site default"); 0 blocks them from generating
+   * at all. Editing these is a later (user-management) ticket; this
+   * ticket only stores and enforces them.
+   */
+  dailyCapOverride: integer("daily_cap_override"),
+  concurrentCapOverride: integer("concurrent_cap_override"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

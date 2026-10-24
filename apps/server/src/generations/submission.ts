@@ -23,6 +23,7 @@ import {
   type ModelRepository,
   activeModelTermsVersion,
 } from "../models/repository.js";
+import { ConcurrentCapExceeded, DailyCapExceeded } from "./caps.js";
 import type { GenerationEvents } from "./events.js";
 import {
   type CreateGenerationInput,
@@ -94,6 +95,9 @@ export class BlockedWordSubmitted extends Error {
   }
 }
 
+/** This Submission would put the user over their daily or concurrent Cap (409, issue #53): refused whole. */
+export { ConcurrentCapExceeded, DailyCapExceeded };
+
 export interface SubmitGenerationParams {
   slug: string;
   modeId: string;
@@ -116,6 +120,8 @@ export interface SubmissionDeps {
   logWriter: LogEntryWriter;
   /** The Admin's blocked words list, current as of this call (issue #66). */
   getBlockedWords: () => Promise<string[]>;
+  /** The Site's default Caps, current as of this call (issue #53); a user's own override, read inside the locked transaction, may still win. */
+  getSiteCaps: () => Promise<{ dailyCap: number; concurrentCap: number }>;
   /** Wakes the dispatcher (issue #44): a fresh queued Generation may be dispatchable right away. */
   onGenerationQueued?: () => void;
 }
@@ -278,9 +284,12 @@ export async function submitGeneration(
     });
   }
 
+  const siteCaps = await deps.getSiteCaps();
   const records = await deps.generationsRepository.createSubmission(
     params.userId,
     creations,
+    siteCaps,
+    deps.clock,
   );
 
   const generations: GenerationSummary[] = records.map((record) => ({

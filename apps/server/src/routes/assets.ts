@@ -5,7 +5,11 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { type RouteEntry, guardedRoute } from "../auth/access.js";
 import type { AppEnv } from "../auth/app-env.js";
-import type { AssetsRepository } from "../generations/assets-repository.js";
+import type {
+  AssetWithOwner,
+  AssetsRepository,
+} from "../generations/assets-repository.js";
+import { downloadFileName } from "../generations/download-name.js";
 import type { Storage } from "../storage/storage.js";
 
 const UUID_RE =
@@ -43,6 +47,41 @@ function parseRange(
   return { start, end };
 }
 
+/** `/api/assets/:id`'s owner check, shared by the Asset itself and its `/poster` and `/thumb` (issue #45). */
+async function loadOwnedAsset(
+  c: Context<AppEnv>,
+  assetsRepository: AssetsRepository,
+): Promise<AssetWithOwner | null> {
+  const id = idParam(c);
+  if (!UUID_RE.test(id)) return null;
+
+  const asset = await assetsRepository.getWithOwner(id);
+  const session = c.get("session");
+  if (
+    !session ||
+    !asset ||
+    (asset.ownerId !== session.user.id && session.user.role !== "admin")
+  ) {
+    return null;
+  }
+  return asset;
+}
+
+/** Serves one file in full, with the usual private/immutable caching (issue #44, #45). */
+function serveFile(
+  c: Context<AppEnv>,
+  storage: Storage,
+  storageKey: string,
+  contentType: string,
+  size: number,
+): Response {
+  const file = Bun.file(storage.absolutePath(storageKey));
+  c.header("Cache-Control", "private, max-age=31536000, immutable");
+  c.header("Content-Type", contentType);
+  c.header("Content-Length", String(size));
+  return c.body(file.stream(), 200);
+}
+
 export function assetsRoute(
   assetsRepository: AssetsRepository,
   storage: Storage,
@@ -58,27 +97,33 @@ export function assetsRoute(
     "/:id",
     "active",
     async (c) => {
-      const id = idParam(c);
-      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
-
-      const asset = await assetsRepository.getWithOwner(id);
-      const session = c.get("session");
-      if (!session) return c.json({ error: "unauthorized" }, 401);
-      if (
-        !asset ||
-        (asset.ownerId !== session.user.id && session.user.role !== "admin")
-      ) {
-        return c.json({ error: "not found" }, 404);
+      const asset = await loadOwnedAsset(c, assetsRepository);
+      if (!asset) {
+        return c.json(
+          { error: c.get("session") ? "not found" : "unauthorized" },
+          c.get("session") ? 404 : 401,
+        );
       }
 
-      const file = Bun.file(storage.absolutePath(asset.storageKey));
       const size = asset.size;
+
+      if (c.req.query("download") === "1") {
+        const name = downloadFileName(
+          asset.modelSlug,
+          asset.modeName,
+          asset.generationId,
+          asset,
+          await assetsRepository.listForGeneration(asset.generationId),
+        );
+        c.header("Content-Disposition", `attachment; filename="${name}"`);
+      }
 
       c.header("Accept-Ranges", "bytes");
       c.header("Cache-Control", "private, max-age=31536000, immutable");
       c.header("Content-Type", asset.contentType);
 
       const range = parseRange(c.req.header("range"), size);
+      const file = Bun.file(storage.absolutePath(asset.storageKey));
       if (!range) {
         c.header("Content-Length", String(size));
         return c.body(file.stream(), 200);
@@ -87,6 +132,48 @@ export function assetsRoute(
       c.header("Content-Range", `bytes ${range.start}-${range.end}/${size}`);
       c.header("Content-Length", String(range.end - range.start + 1));
       return c.body(file.slice(range.start, range.end + 1).stream(), 206);
+    },
+  );
+
+  guardedRoute(
+    app,
+    routes,
+    "/api/assets",
+    "get",
+    "/:id/poster",
+    "active",
+    async (c) => {
+      const asset = await loadOwnedAsset(c, assetsRepository);
+      if (!asset?.posterKey) {
+        return c.json(
+          { error: c.get("session") ? "not found" : "unauthorized" },
+          c.get("session") ? 404 : 401,
+        );
+      }
+      const stat = await storage.stat(asset.posterKey);
+      if (!stat) return c.json({ error: "not found" }, 404);
+      return serveFile(c, storage, asset.posterKey, "image/jpeg", stat.size);
+    },
+  );
+
+  guardedRoute(
+    app,
+    routes,
+    "/api/assets",
+    "get",
+    "/:id/thumb",
+    "active",
+    async (c) => {
+      const asset = await loadOwnedAsset(c, assetsRepository);
+      if (!asset?.thumbnailKey) {
+        return c.json(
+          { error: c.get("session") ? "not found" : "unauthorized" },
+          c.get("session") ? 404 : 401,
+        );
+      }
+      const stat = await storage.stat(asset.thumbnailKey);
+      if (!stat) return c.json({ error: "not found" }, 404);
+      return serveFile(c, storage, asset.thumbnailKey, "image/webp", stat.size);
     },
   );
 

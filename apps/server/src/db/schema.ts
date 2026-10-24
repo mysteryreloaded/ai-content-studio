@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   boolean,
+  doublePrecision,
   index,
   integer,
   jsonb,
@@ -490,6 +491,11 @@ export const generations = pgTable(
  * `sortOrder` mirrors the Mode's own output node order, so the first
  * (sortOrder 0) is the main Asset. Idempotent on (generation, node id,
  * ComfyUI file name): a retried save can't double-write the same file.
+ *
+ * Issue #45: `size` and `storageKey` hold the *finished* file (video is
+ * re-muxed in place, metadata-stripped and comment-tagged); the finishing
+ * facts below are null when finishing couldn't read the file (never
+ * attempted for audio's poster/thumbnail, which it doesn't have).
  */
 export const assets = pgTable(
   "assets",
@@ -505,6 +511,12 @@ export const assets = pgTable(
     contentType: text("content_type").notNull(),
     size: integer("size").notNull(),
     storageKey: text("storage_key").notNull(),
+    posterKey: text("poster_key"),
+    thumbnailKey: text("thumbnail_key"),
+    width: integer("width"),
+    height: integer("height"),
+    durationMs: integer("duration_ms"),
+    fps: doublePrecision("fps"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

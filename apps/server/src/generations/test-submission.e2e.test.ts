@@ -214,6 +214,11 @@ describe("submitTestGeneration end-to-end (issue #74)", () => {
       backendsService.watch(backend);
       forceReachable(backendsService, backend.id);
 
+      const entriesBefore = await db
+        .select()
+        .from(auditEntries)
+        .where(eq(auditEntries.targetId, model.id));
+
       const { generation } = await submitTestGeneration(
         {
           modelId: model.id,
@@ -265,11 +270,14 @@ describe("submitTestGeneration end-to-end (issue #74)", () => {
       expect(revisionRow?.isTest).toBe(true);
       expect(revisionRow?.revisionNumber).toBeLessThan(0);
 
-      const entries = await db
+      const entriesAfter = await db
         .select()
         .from(auditEntries)
         .where(eq(auditEntries.targetId, model.id));
-      expect(entries).toHaveLength(0);
+      expect(entriesAfter).toHaveLength(entriesBefore.length);
+      expect(entriesAfter.map((e) => e.id).sort()).toEqual(
+        entriesBefore.map((e) => e.id).sort(),
+      );
 
       const tests = await generationsRepository.listRecentTestsForModel(
         model.id,

@@ -29,6 +29,8 @@ import {
 
 export interface RecoveryDeps extends RunnerDeps {
   backendRepository: BackendRepository;
+  /** Issue #77 CEO review: a restore drill's whole point is never reaching a production Backend, so recovery must skip the `/api/jobs/:id` read entirely while this is false, not just the Dispatcher's normal claiming. */
+  backendsEnabled: boolean;
 }
 
 export async function recoverInFlightGenerations(
@@ -62,7 +64,7 @@ async function recoverOne(
   const cancelling = item.state === "cancelling";
 
   const backend = await deps.backendRepository.get(item.backendId);
-  if (!backend) {
+  if (!backend || !deps.backendsEnabled) {
     if (cancelling) {
       // Nothing left to tell; cancel it anyway (issue #54's AC).
       await finalizeCancelled(deps, detail, item.backendId, item.tries, true);
@@ -73,7 +75,9 @@ async function recoverOne(
       detail,
       item.backendId,
       item.tries,
-      "its Backend no longer exists",
+      backend
+        ? "Backend contact is disabled (BACKENDS_ENABLED=false)"
+        : "its Backend no longer exists",
       "the GPU server couldn't run this",
     );
     return;

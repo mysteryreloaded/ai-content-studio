@@ -2,3 +2,9 @@ node_modules/
 dist/
 .env
 *.tsbuildinfo
+
+# Backups (issue #77): local secrets/staging, never committed.
+backup.env
+.backup-staging/
+restic-repo/
+.env.restored

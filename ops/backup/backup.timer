@@ -1,0 +1,12 @@
+[Unit]
+Description=AI Content Studio: daily encrypted backup, 03:30 + jitter
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+# Issue #77's AC: at most 30 minutes of jitter, so a fleet of these
+# doesn't all hit the same restic/S3 endpoint at once.
+RandomizedDelaySec=1800
+Persistent=true
+
+[Install]
+WantedBy=timers.target

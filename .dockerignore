@@ -6,3 +6,8 @@ node_modules
 .env
 .env.*
 !.env.example
+
+# Backups (issue #77): local secrets/staging, never shipped in the build context.
+backup.env
+.backup-staging/
+restic-repo/

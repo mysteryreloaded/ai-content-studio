@@ -10,6 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       comfyui: ${{ steps.filter.outputs.comfyui }}
+      backup: ${{ steps.filter.outputs.backup }}
     steps:
       - uses: actions/checkout@v5
       - uses: dorny/paths-filter@v3
@@ -21,6 +22,12 @@ jobs:
               - 'apps/server/src/backends/client.ts'
               - 'apps/fake-comfyui/**'
               - 'docs/ops/backend-kit.md'
+            backup:
+              - 'ops/backup/**'
+              - 'apps/server/src/storage/check-storage.ts'
+              - 'docker-compose.yml'
+              - 'Dockerfile'
+              - 'docs/ops/backup.md'
 
   ci:
     runs-on: ubuntu-latest
@@ -156,7 +163,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: ShellCheck
-        run: shellcheck ops/studio/upgrade.sh
+        run: shellcheck ops/studio/upgrade.sh ops/backup/backup.sh ops/backup/restore.sh
 
       - name: Validate Caddyfile
         run: |
@@ -179,3 +186,91 @@ jobs:
           context: .
           push: false
           platforms: linux/amd64
+
+  # Path-triggered (issue #77's AC): a real backup/restore round trip
+  # against the actual image — a canary row survives a dropped database
+  # and a wiped /data, and check-storage comes back clean afterwards.
+  backup-roundtrip:
+    needs: changes
+    if: needs.changes.outputs.backup == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image (loaded locally, tagged as the compose file expects)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: ghcr.io/mysteryreloaded/ai-content-studio:test
+
+      - name: Configure .env and backup.env
+        run: |
+          sed -e 's/^STUDIO_VERSION=$/STUDIO_VERSION=test/' \
+              -e 's/^DOMAIN=$/DOMAIN=example.com/' \
+              -e 's#^PUBLIC_URL=$#PUBLIC_URL=http://localhost:3000#' \
+              -e 's/^GOOGLE_CLIENT_ID=$/GOOGLE_CLIENT_ID=test-client/' \
+              -e 's/^GOOGLE_CLIENT_SECRET=$/GOOGLE_CLIENT_SECRET=test-secret/' \
+              -e 's/^ADMIN_EMAILS=$/ADMIN_EMAILS=admin@example.com/' \
+              -e 's#^SECRET_KEY=$#SECRET_KEY=4FRG13w9RuN5CeV10Lzfxl78MY+AJRJtGuKrBdYzgCY=#' \
+              .env.example > .env
+          mkdir -p restic-repo
+          {
+            echo "RESTIC_REPOSITORY=/restic-repo"
+            echo "RESTIC_PASSWORD=test-password"
+          } > backup.env
+
+      - name: Start the stack
+        run: docker compose up -d --wait studio postgres
+
+      - name: Seed a canary row
+        run: |
+          docker compose exec -T postgres psql -U postgres -d ai_content_studio \
+            -c "CREATE TABLE canary (v text); INSERT INTO canary VALUES ('round-trip');"
+
+      - name: Initialize the restic repository
+        run: docker compose --profile backup run --rm backup init
+
+      - name: Back up
+        run: ./ops/backup/backup.sh
+
+      # Issue #77 CEO review: `docker compose run` gives each run a
+      # random hostname, and restic's forget groups by host+paths, so a
+      # second backup proves the fixed `hostname:` (docker-compose.yml)
+      # keeps every snapshot in the one group retention prunes from.
+      - name: Back up again, to check both snapshots share one host
+        run: ./ops/backup/backup.sh
+
+      - name: Snapshots share a single host
+        run: |
+          hosts=$(docker compose --profile backup run --rm backup snapshots --json \
+            | jq -r '.[].hostname' | sort -u)
+          echo "$hosts"
+          [ "$(echo "$hosts" | wc -l)" -eq 1 ]
+
+      - name: Simulate disaster (drop the database, wipe /data)
+        run: |
+          docker compose exec -T postgres psql -U postgres -d ai_content_studio \
+            -c "DROP TABLE canary;"
+          docker compose exec -T studio find /data -mindepth 1 -delete
+
+      - name: Restore
+        run: ./ops/backup/restore.sh
+
+      - name: Canary row survived
+        run: |
+          docker compose exec -T postgres psql -U postgres -d ai_content_studio -tAc \
+            "SELECT v FROM canary;" | grep -qx "round-trip"
+
+      - name: check-storage reports nothing left to fix
+        run: |
+          docker compose exec -T studio \
+            bun run apps/server/src/storage/check-storage.ts
+
+      - name: Logs (only on failure, for debugging)
+        if: failure()
+        run: docker compose logs

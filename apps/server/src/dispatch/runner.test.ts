@@ -604,6 +604,7 @@ describe("boot recovery resumes polling instead of losing the try at once (issue
         decryptedCredentials: async () => null,
         // biome-ignore lint/suspicious/noExplicitAny: a hand-rolled fake standing in for BackendRepository
       } as any,
+      backendsEnabled: true,
     };
 
     fake.setUnreachable(true);

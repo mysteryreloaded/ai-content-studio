@@ -9,7 +9,8 @@
     "test": "bun test",
     "db:generate": "drizzle-kit generate",
     "db:check": "bun run src/db/check-migrations.ts",
-    "env:check": "bun run src/check-env-consistency.ts"
+    "env:check": "bun run src/check-env-consistency.ts",
+    "check-storage": "bun run src/storage/check-storage.ts"
   },
   "dependencies": {
     "@ai-content-studio/shared": "workspace:*",

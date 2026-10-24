@@ -88,8 +88,59 @@ services:
         max-size: "10m"
         max-file: "5"
 
+  # Issue #77: daily backups, run by ops/backup/backup.sh (never started
+  # by `docker compose up`, since it has a `profiles:` key but isn't the
+  # implicit "default" profile). `/data` is read-only here — this
+  # service only ever reads it, into one restic snapshot alongside the
+  # Postgres dump and `.env` that backup.sh stages under
+  # `.backup-staging` first.
+  backup:
+    image: restic/restic:0.17.3
+    profiles: ["backup"]
+    # Issue #77 CEO review: `docker compose run` gives this container a
+    # random hostname each time, and restic's snapshots/forget group by
+    # host+paths by default — without a fixed one, every run is its own
+    # group, so `forget --prune` never has more than one snapshot to
+    # prune from and retention never actually shrinks the repository.
+    hostname: ai-content-studio
+    env_file:
+      - path: backup.env
+        required: true
+    volumes:
+      - studio-data:/backup/data:ro
+      - ./.backup-staging:/backup/staging:ro
+      - restic-cache:/root/.cache/restic
+      # Only used when RESTIC_REPOSITORY (backup.env) is the local path
+      # `/restic-repo` — e.g. a drive mounted at ./restic-repo on the
+      # host. Harmless, and unused, with a remote repository (s3:,
+      # sftp:, b2:, rest:, ...).
+      - ./restic-repo:/restic-repo
+    entrypoint: ["restic"]
+
+  # Issue #77: the read-write counterpart `ops/backup/restore.sh` uses
+  # to restore a snapshot back in place — same paths as `backup`, so a
+  # plain `restic restore --target /` lands files exactly where they
+  # came from.
+  restore:
+    image: restic/restic:0.17.3
+    profiles: ["restore"]
+    # Same fixed host as `backup` (issue #77 CEO review): irrelevant to
+    # a restore itself, but keeps `restic snapshots`/`forget` output
+    # consistent when run from this service too.
+    hostname: ai-content-studio
+    env_file:
+      - path: backup.env
+        required: true
+    volumes:
+      - studio-data:/backup/data
+      - ./.backup-staging:/backup/staging
+      - restic-cache:/root/.cache/restic
+      - ./restic-repo:/restic-repo
+    entrypoint: ["restic"]
+
 volumes:
   postgres-data:
   studio-data:
   caddy-data:
   caddy-config:
+  restic-cache:

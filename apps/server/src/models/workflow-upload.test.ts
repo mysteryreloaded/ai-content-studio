@@ -47,6 +47,32 @@ const WORKFLOW_V4_RENAMED_NODE_1: Workflow = {
   },
 };
 
+/**
+ * Node "1" is gone (renamed "4", a rebind target); node "2" — the
+ * Mode's own output node — is also a different class now, but left
+ * un-rebound on purpose (CEO review: a partial rebind must still save,
+ * carrying what it doesn't name forward for checkModel to flag).
+ */
+const WORKFLOW_V5_PARTIAL: Workflow = {
+  "4": { class_type: "LoadImage", inputs: { image: "e.png" } },
+  "2": { class_type: "KSampler", inputs: { model: ["4", 0] } },
+};
+
+const POINTS_WORKFLOW_V1: Workflow = {
+  "1": { class_type: "VHS_LoadVideo", inputs: { video: "a.mp4" } },
+  "2": { class_type: "EmptyLatentImage", inputs: { width: 512, height: 512 } },
+  "3": { class_type: "PointsEditor", inputs: { points: "" } },
+  "4": { class_type: "SaveImage", inputs: { images: ["2", 0] } },
+};
+
+/** Node "4" (the Mode's own output) is gone, replaced by "5"; the video/Points Inputs' own nodes ("1"-"3") are untouched. */
+const POINTS_WORKFLOW_V2: Workflow = {
+  "1": { class_type: "VHS_LoadVideo", inputs: { video: "b.mp4" } },
+  "2": { class_type: "EmptyLatentImage", inputs: { width: 512, height: 512 } },
+  "3": { class_type: "PointsEditor", inputs: { points: "" } },
+  "5": { class_type: "SaveImage", inputs: { images: ["2", 0] } },
+};
+
 describe("ModelRepository.uploadWorkflow", () => {
   const testDb = createTestDatabase("workflow_upload_repository_test");
   const clock = new FakeClock();
@@ -249,6 +275,145 @@ describe("ModelRepository.uploadWorkflow", () => {
         [{ nodeId: "2", newNodeId: "ghost" }],
       ),
     ).rejects.toBeInstanceOf(ValidationFailed);
+  });
+
+  test("a partial rebind saves, carrying forward whatever it doesn't name (CEO review)", async () => {
+    const repository = await repo();
+    const { record: created } = await repository.createFromWorkflow(
+      "M1",
+      WORKFLOW_V1,
+      SYSTEM,
+    );
+    const { record: withMode } = await repository.updateModes(
+      created.id,
+      [{ name: "Default", description: "", outputNodeIds: ["2"] }],
+      created.version,
+      SYSTEM,
+    );
+    const { record: withInput } = await repository.updateInputs(
+      created.id,
+      [
+        {
+          id: "00000000-0000-0000-0000-000000000001",
+          kind: "text",
+          group: "describe",
+          label: "Prefix",
+          help: "",
+          multiline: false,
+          maxLength: 2000,
+          default: "",
+          bindings: [
+            {
+              nodeId: "1",
+              field: "image",
+              classType: "LoadImage",
+              title: null,
+            },
+          ],
+        },
+      ],
+      withMode.version,
+      SYSTEM,
+    );
+
+    // Only the Input's binding (node "1" -> "4") is named; the Mode's
+    // own output node ("2", now a KSampler) is left un-rebound and must
+    // not block the save — it carries forward exactly as the no-rebind
+    // path would, for checkModel to flag afterwards.
+    const result = await repository.uploadWorkflow(
+      created.id,
+      WORKFLOW_V5_PARTIAL,
+      withInput.version,
+      SYSTEM,
+      [{ nodeId: "1", newNodeId: "4" }],
+    );
+
+    expect(result.inputs[0]?.bindings).toEqual([
+      { nodeId: "4", field: "image", classType: "LoadImage", title: null },
+    ]);
+    expect(result.modes[0]?.outputNodes).toEqual([
+      { nodeId: "2", classType: "SaveImage", title: null, kind: "image" },
+    ]);
+  });
+
+  test("rebind on a Model with a Points Input works (round-2 CEO review: allInputs isn't needed here)", async () => {
+    const repository = await repo();
+    const { record: created } = await repository.createFromWorkflow(
+      "M1",
+      POINTS_WORKFLOW_V1,
+      SYSTEM,
+    );
+    const { record: withMode } = await repository.updateModes(
+      created.id,
+      [{ name: "Default", description: "", outputNodeIds: ["4"] }],
+      created.version,
+      SYSTEM,
+    );
+    const videoInputId = "00000000-0000-0000-0000-00000000000a";
+    const { record: withInputs } = await repository.updateInputs(
+      created.id,
+      [
+        {
+          id: videoInputId,
+          kind: "video_upload",
+          group: "describe",
+          label: "Clip",
+          help: "",
+          maxSizeMb: 50,
+          maxLongSide: null,
+          minDurationMs: 0,
+          maxDurationMs: 10_000,
+          trimmable: true,
+          bindings: [
+            {
+              nodeId: "1",
+              field: "video",
+              classType: "VHS_LoadVideo",
+              title: null,
+            },
+          ],
+        },
+        {
+          id: "00000000-0000-0000-0000-00000000000b",
+          kind: "points",
+          group: "describe",
+          label: "Who to replace",
+          help: "",
+          videoInputId,
+          widthField: { nodeId: "2", field: "width" },
+          heightField: { nodeId: "2", field: "height" },
+          bindings: [
+            {
+              nodeId: "3",
+              field: "points",
+              classType: "PointsEditor",
+              title: null,
+            },
+          ],
+        },
+      ],
+      withMode.version,
+      SYSTEM,
+    );
+
+    // Only the Mode's own output node ("4" -> "5") is rebound; the
+    // video/Points Inputs' nodes are untouched and must not be
+    // re-validated without `allInputs` (that's `updateInputs`'s job).
+    const result = await repository.uploadWorkflow(
+      created.id,
+      POINTS_WORKFLOW_V2,
+      withInputs.version,
+      SYSTEM,
+      [{ nodeId: "4", newNodeId: "5" }],
+    );
+
+    expect(result.modes[0]?.outputNodes).toEqual([
+      { nodeId: "5", classType: "SaveImage", title: null, kind: "image" },
+    ]);
+    expect(result.inputs.map((i) => i.kind)).toEqual([
+      "video_upload",
+      "points",
+    ]);
   });
 
   test("writes an Audit entry", async () => {

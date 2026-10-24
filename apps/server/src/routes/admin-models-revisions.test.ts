@@ -85,6 +85,20 @@ const WORKFLOW_RUNNABLE_OUTPUT_BECOMES_VIDEO = {
   "4": { class_type: "SaveImage", inputs: { images: ["2", 0] } },
 };
 
+/**
+ * Two things break at once (round-2 CEO review: a *partial* rebind):
+ * node "2" (a Steps Input's own binding) is gone, renamed "6"; node "3"
+ * (the Mode's own output) keeps its id but is now a VHS_VideoCombine.
+ * Node "7" is a fresh SaveImage the rebind picker can repoint the
+ * Mode's output onto — leaving node "2"/"6" un-rebound on purpose.
+ */
+const WORKFLOW_PARTIAL_REBIND = {
+  "1": { class_type: "CheckpointLoaderSimple", inputs: {} },
+  "6": { class_type: "KSampler", inputs: { model: ["1", 0], steps: 20 } },
+  "3": { class_type: "VHS_VideoCombine", inputs: { images: ["6", 0] } },
+  "7": { class_type: "SaveImage", inputs: { images: ["6", 0] } },
+};
+
 describe("Workflow re-upload and revisions/restore (issue #71)", () => {
   const testDb = createTestDatabase("admin_models_revisions_route_test");
   const clock = new FakeClock();
@@ -529,6 +543,112 @@ describe("Workflow re-upload and revisions/restore (issue #71)", () => {
       // Stops this Backend's health monitor before the shared FakeClock
       // (reused test-to-test) can advance into a poll for a row the next
       // test's cleanup has already deleted.
+      await app.request(`/api/admin/backends/${backendId}?version=1`, {
+        method: "DELETE",
+        headers,
+      });
+    } finally {
+      await fake.stop();
+    }
+  });
+
+  test("PUT /:id/workflow with a partial rebind 400s, then saves and disables with disable: true (round-2 CEO review)", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const { app } = await build();
+      const { model, headers, version, backendId } = await buildEnabledModel(
+        app,
+        fake.url,
+      );
+
+      const inputsRes = await app.request(
+        `/api/admin/models/${model.id}/inputs`,
+        {
+          method: "PUT",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({
+            version,
+            inputs: [
+              {
+                id: "00000000-0000-0000-0000-000000000001",
+                kind: "number",
+                group: "settings",
+                label: "Steps",
+                help: "",
+                numberMode: "integer",
+                min: 1,
+                max: 50,
+                step: 1,
+                default: null,
+                bindings: [
+                  {
+                    nodeId: "2",
+                    field: "steps",
+                    classType: "KSampler",
+                    title: null,
+                  },
+                ],
+              },
+            ],
+          }),
+        },
+      );
+      expect(inputsRes.status).toBe(200);
+      const { record: withInput } = (await inputsRes.json()) as {
+        record: { version: number };
+      };
+
+      // Two things break: the Steps Input's own binding (node "2", now
+      // renamed "6") and the Mode's own output node ("3", now a
+      // VHS_VideoCombine). Only the Mode's output is rebound (onto the
+      // fresh "7"); the Input's binding is left on "Leave broken".
+      const blockedRes = await app.request(
+        `/api/admin/models/${model.id}/workflow`,
+        {
+          method: "PUT",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({
+            version: withInput.version,
+            workflow: WORKFLOW_PARTIAL_REBIND,
+            rebind: [{ nodeId: "3", newNodeId: "7" }],
+          }),
+        },
+      );
+      expect(blockedRes.status).toBe(400);
+      const blockedBody = (await blockedRes.json()) as {
+        error: string;
+        reasons: string[];
+      };
+      expect(blockedBody.error).toContain("disable");
+      // The rebound output node is no longer a reason; only the
+      // untouched, still-broken Steps Input binding is left.
+      expect(blockedBody.reasons.some((r) => r.includes("rebind"))).toBe(false);
+
+      const disabledRes = await app.request(
+        `/api/admin/models/${model.id}/workflow`,
+        {
+          method: "PUT",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({
+            version: withInput.version,
+            workflow: WORKFLOW_PARTIAL_REBIND,
+            rebind: [{ nodeId: "3", newNodeId: "7" }],
+            disable: true,
+          }),
+        },
+      );
+      expect(disabledRes.status).toBe(200);
+      const disabled = (await disabledRes.json()) as {
+        record: { state: string };
+        modes: { outputNodes: { nodeId: string; classType: string }[] }[];
+        inputs: { bindings: { nodeId: string }[] }[];
+      };
+      expect(disabled.record.state).toBe("disabled");
+      expect(disabled.modes[0]?.outputNodes[0]?.nodeId).toBe("7");
+      // The untouched Steps Input's binding carries forward verbatim,
+      // still pointed at the now-missing node "2".
+      expect(disabled.inputs[0]?.bindings[0]?.nodeId).toBe("2");
+
       await app.request(`/api/admin/backends/${backendId}?version=1`, {
         method: "DELETE",
         headers,

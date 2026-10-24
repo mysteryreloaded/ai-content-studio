@@ -17,6 +17,7 @@ import {
   parseApiFormatWorkflow,
   resolveModeOutputNodes,
   reviseModeInputSettings,
+  validateBinding,
   validateInputDefinition,
   validateModeInputSettings,
   validateModeName,
@@ -888,7 +889,16 @@ export class ModelRepository {
         );
         const rebindErrors: ValidationError[] = [];
 
+        // Only a Mode with a remapped output node is re-resolved; one
+        // with none (even a broken one left on "Leave broken") carries
+        // forward exactly as the no-rebind path already does, for
+        // checkModel to flag — a partial rebind must save (with
+        // `disable: true`) without this touching what it wasn't asked
+        // to fix (CEO review).
         newModeInputs = currentModes.map((mode, index) => {
+          if (!mode.outputNodes.some((node) => remap.has(node.nodeId))) {
+            return mode;
+          }
           const outputNodeIds = mode.outputNodes.map(
             (node) => remap.get(node.nodeId) ?? node.nodeId,
           );
@@ -908,15 +918,6 @@ export class ModelRepository {
           return { ...mode, outputNodes: outcome.outputNodes };
         });
 
-        const rebindOutputNodeIds = new Set(
-          newModeInputs.flatMap((mode) =>
-            mode.outputNodes.map((node) => node.nodeId),
-          ),
-        );
-        const usedFields = new Set<string>();
-        const labelsSoFar: string[] = [];
-        const idsSoFar: string[] = [];
-
         newInputs = currentInputs.map((input) => ({
           ...input,
           bindings: input.bindings.map((binding) => {
@@ -932,28 +933,55 @@ export class ModelRepository {
           }),
         }));
 
-        newInputs.forEach((def, index) => {
-          const ctx: BindingValidationContext = {
-            workflow: parsed.workflow,
-            outputNodeIds: rebindOutputNodeIds,
-            usedFields,
-            fieldSpecs,
-            maxUploadMb,
-          };
-          const defErrors = validateInputDefinition(
-            def,
-            labelsSoFar,
-            ctx,
-            idsSoFar,
-          );
-          for (const message of defErrors) {
-            rebindErrors.push({ field: `inputs[${index}]`, message });
+        // `usedFields` starts from every binding this rebind doesn't
+        // touch, so a remapped binding can still be refused for landing
+        // on a field one of those already holds; only a remapped
+        // binding is itself checked — not the rest of its own Input's
+        // shape (that's `updateInputs`'s job, and it needs `allInputs`
+        // this partial pass has no reason to assemble).
+        const usedFields = new Set<string>();
+        for (const input of currentInputs) {
+          for (const binding of input.bindings) {
+            if (!remap.has(binding.nodeId)) {
+              usedFields.add(fieldKey(binding.nodeId, binding.field));
+            }
           }
-          labelsSoFar.push(def.label);
-          idsSoFar.push(def.id);
-          for (const binding of def.bindings) {
+        }
+        const outputNodeIds = new Set(
+          newModeInputs.flatMap((mode) =>
+            mode.outputNodes.map((node) => node.nodeId),
+          ),
+        );
+
+        newInputs.forEach((input, inputIndex) => {
+          const before = currentInputs[inputIndex];
+          input.bindings.forEach((binding, bindingIndex) => {
+            const beforeBinding = before?.bindings[bindingIndex];
+            if (!beforeBinding || !remap.has(beforeBinding.nodeId)) return;
+
+            const ctx: BindingValidationContext = {
+              workflow: parsed.workflow,
+              outputNodeIds,
+              usedFields,
+              fieldSpecs,
+              maxUploadMb,
+            };
+            const error = validateBinding(
+              input.kind,
+              binding.nodeId,
+              binding.field,
+              ctx,
+              binding.classType,
+            );
+            if (error) {
+              rebindErrors.push({
+                field: `inputs[${inputIndex}].bindings[${bindingIndex}]`,
+                message: error,
+              });
+              return;
+            }
             usedFields.add(fieldKey(binding.nodeId, binding.field));
-          }
+          });
         });
 
         if (rebindErrors.length > 0) throw new ValidationFailed(rebindErrors);

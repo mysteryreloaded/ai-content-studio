@@ -461,4 +461,155 @@ describe("/api/models/:slug and :slug/generations", () => {
       fake.stop();
     }
   });
+
+  describe("Model terms and Attribution (issue #61)", () => {
+    async function setTerms(
+      app: Awaited<ReturnType<typeof build>>["app"],
+      adminHeaders: Record<string, string>,
+      modelId: string,
+      overrides: Partial<{
+        termsBody: string;
+        licenseUrl: string;
+        attribution: string;
+        askAgain: boolean;
+      }> = {},
+    ) {
+      const getRes = await app.request(`/api/admin/models/${modelId}`, {
+        headers: adminHeaders,
+      });
+      const { model } = (await getRes.json()) as {
+        model: { termsRevision: number };
+      };
+      const res = await app.request(`/api/admin/models/${modelId}/terms`, {
+        method: "PUT",
+        headers: { ...adminHeaders, "content-type": "application/json" },
+        body: JSON.stringify({
+          revision: model.termsRevision,
+          termsBody: "Be nice.",
+          licenseUrl: "https://example.com/license",
+          attribution: "Model by Example Corp",
+          askAgain: false,
+          ...overrides,
+        }),
+      });
+      return (await res.json()) as { termsVersion: number | null };
+    }
+
+    test("the Workbench detail carries terms and Attribution, unaccepted at first", async () => {
+      const fake = startFakeComfyUi({ port: 0 });
+      try {
+        const { app, backendsService } = await build();
+        const { headers: adminHeaders } = await headersFor("admin");
+        const { modelId, slug } = await buildEnabledModel(
+          app,
+          adminHeaders,
+          fake.url,
+        );
+        await setTerms(app, adminHeaders, modelId);
+
+        const { headers: userHeaders } = await headersFor("user");
+        const res = await app.request(`/api/models/${slug}`, {
+          headers: userHeaders,
+        });
+        const body = (await res.json()) as {
+          model: {
+            attribution: string;
+            terms: {
+              version: number;
+              body: string;
+              licenseUrl: string;
+              accepted: boolean;
+            } | null;
+          };
+        };
+        expect(body.model.attribution).toBe("Model by Example Corp");
+        expect(body.model.terms?.version).toBe(1);
+        expect(body.model.terms?.body).toBe("Be nice.");
+        expect(body.model.terms?.accepted).toBe(false);
+
+        backendsService.stop();
+      } finally {
+        fake.stop();
+      }
+    });
+
+    test("submitting without accepting gets model_terms_required; queued work stays untouched", async () => {
+      const fake = startFakeComfyUi({ port: 0 });
+      try {
+        const { app, backendsService } = await build();
+        const { db } = await testDb;
+        const { headers: adminHeaders } = await headersFor("admin");
+        const { modelId, slug, modeId } = await buildEnabledModel(
+          app,
+          adminHeaders,
+          fake.url,
+        );
+        await setTerms(app, adminHeaders, modelId);
+
+        const { headers: userHeaders } = await headersFor("user");
+        const res = await app.request(`/api/models/${slug}/generations`, {
+          method: "POST",
+          headers: { ...userHeaders, "content-type": "application/json" },
+          body: JSON.stringify({ modeId, revision: 2 }),
+        });
+        expect(res.status).toBe(409);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).toBe("model_terms_required");
+
+        const rows = await db.select().from(generations);
+        expect(rows).toEqual([]);
+
+        backendsService.stop();
+      } finally {
+        fake.stop();
+      }
+    });
+
+    test("accepting the current version lets the Generation through; a re-ask gates it again", async () => {
+      const fake = startFakeComfyUi({ port: 0 });
+      try {
+        const { app, backendsService } = await build();
+        const { headers: adminHeaders } = await headersFor("admin");
+        const { modelId, slug, modeId } = await buildEnabledModel(
+          app,
+          adminHeaders,
+          fake.url,
+        );
+        await setTerms(app, adminHeaders, modelId);
+
+        const { headers: userHeaders } = await headersFor("user");
+        const acceptRes = await app.request(
+          `/api/models/${slug}/terms/accept`,
+          { method: "POST", headers: userHeaders },
+        );
+        expect(acceptRes.status).toBe(200);
+
+        const submitRes = await app.request(`/api/models/${slug}/generations`, {
+          method: "POST",
+          headers: { ...userHeaders, "content-type": "application/json" },
+          body: JSON.stringify({ modeId, revision: 2 }),
+        });
+        expect(submitRes.status).toBe(201);
+
+        // "Ask everyone to accept again" invalidates that acceptance.
+        await setTerms(app, adminHeaders, modelId, { askAgain: true });
+
+        const secondSubmitRes = await app.request(
+          `/api/models/${slug}/generations`,
+          {
+            method: "POST",
+            headers: { ...userHeaders, "content-type": "application/json" },
+            body: JSON.stringify({ modeId, revision: 2 }),
+          },
+        );
+        expect(secondSubmitRes.status).toBe(409);
+        const body = (await secondSubmitRes.json()) as { error: string };
+        expect(body.error).toBe("model_terms_required");
+
+        backendsService.stop();
+      } finally {
+        fake.stop();
+      }
+    });
+  });
 });

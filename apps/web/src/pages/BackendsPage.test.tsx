@@ -1,12 +1,7 @@
-// A DOM is registered only for this file's run (not a global preload),
-// since bun test runs every file in one process and other files (the
-// server's) must keep Bun's own fetch/Response untouched. It must be
-// registered before @testing-library/react is imported, since that
-// module binds its `screen` helper to `document.body` at import time.
-import { afterAll, afterEach, describe, expect, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-
-await GlobalRegistrator.register();
+// See ../test/happy-dom-setup.ts for why this is registered once, here,
+// before @testing-library/react is imported, and never unregistered.
+import { afterEach, describe, expect, test } from "bun:test";
+import { BUN_FETCH } from "../test/happy-dom-setup.js";
 
 const { cleanup, render, screen, waitFor } = await import(
   "@testing-library/react"
@@ -15,10 +10,9 @@ const { BackendsPage } = await import("./BackendsPage.js");
 
 afterEach(() => {
   cleanup();
-});
-
-afterAll(async () => {
-  await GlobalRegistrator.unregister();
+  // A mocked fetch must never leak into the next test, in this file or
+  // another's — bun test runs every file in one process.
+  globalThis.fetch = BUN_FETCH;
 });
 
 const BACKEND = {

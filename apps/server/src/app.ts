@@ -17,6 +17,7 @@ import type { Database } from "./db/client.js";
 import type { Env } from "./env.js";
 import { logUnhandledError } from "./error-logging.js";
 import type { Logger } from "./logger.js";
+import { adminAuditRoute } from "./routes/admin-audit.js";
 import { adminBackendsRoute } from "./routes/admin-backends.js";
 import { adminLogsRoute } from "./routes/admin-logs.js";
 import { adminSiteSettingsRoute } from "./routes/admin-site-settings.js";
@@ -118,6 +119,7 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
     ),
   );
   app.route("/api/admin/logs", adminLogsRoute(deps.db, deps.clock, routes));
+  app.route("/api/admin/audit", adminAuditRoute(deps.db, routes));
 
   if (deps.env.OIDC_ISSUER) {
     const issuerUrl = new URL(deps.env.OIDC_ISSUER);

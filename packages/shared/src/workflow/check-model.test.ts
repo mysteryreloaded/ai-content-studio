@@ -236,8 +236,8 @@ describe("checkModel", () => {
     ).toBe(true);
   });
 
-  test("no step-grid error when the Input's min already sits on the grid", () => {
-    const input = stepsInput({ min: 1, max: 97 });
+  test("no step-grid error when the Input's own step grid is a subset of the field's", () => {
+    const input = stepsInput({ min: 1, max: 97, step: 4 });
     const backends = [
       backend("b1", {
         fieldSpecs: new Map([
@@ -249,6 +249,27 @@ describe("checkModel", () => {
     expect(issues.some((issue) => issue.message.includes("multiple of"))).toBe(
       false,
     );
+  });
+
+  test("errors when the Input's min sits on the grid but its own step doesn't divide the field's", () => {
+    // min 1, step 1 on a field that only takes 1 + a multiple of 4 would
+    // let an Admin pick 2, which the field itself rejects.
+    const input = stepsInput({ min: 1, max: 97, step: 1 });
+    const backends = [
+      backend("b1", {
+        fieldSpecs: new Map([
+          ["KSampler", { steps: { type: "INT", min: 1, max: 100, step: 4 } }],
+        ]),
+      }),
+    ];
+    const issues = checkModel(model({ inputs: [input] }), backends);
+    expect(
+      issues.some(
+        (issue) =>
+          issue.severity === "error" &&
+          issue.message === '"Steps": this field takes 1 + a multiple of 4',
+      ),
+    ).toBe(true);
   });
 
   test("errors when a fixed Input value is outside its options", () => {

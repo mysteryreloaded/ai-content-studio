@@ -177,6 +177,94 @@ describe("checkModel's save gate and object-info route (issue #49)", () => {
     return { model, headers, version: enabled.version, backendId: backend.id };
   }
 
+  test("POST /:id/enable 400s via checkModel even when checkEnableReadiness alone would pass", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const { app, backendsService } = await build();
+      const headers = await adminHeaders();
+
+      const createRes = await app.request("/api/admin/models", {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ name: "LTX", workflow: WORKFLOW }),
+      });
+      const { model } = (await createRes.json()) as {
+        model: { id: string; version: number };
+      };
+
+      const backendRes = await app.request("/api/admin/backends", {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ name: "Fake", baseUrl: fake.url, auth: "none" }),
+      });
+      const backend = (await backendRes.json()) as { id: string };
+      await app.request(`/api/admin/models/${model.id}/backends`, {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ backendId: backend.id }),
+      });
+      clock.advance(30_000);
+      await flushMicrotasks();
+
+      const modesRes = await app.request(
+        `/api/admin/models/${model.id}/modes`,
+        {
+          method: "PUT",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({
+            version: model.version,
+            modes: [
+              {
+                name: "Default",
+                description: "",
+                outputNodeIds: ["3"],
+                inputSettings: [],
+              },
+            ],
+          }),
+        },
+      );
+      const { record: afterModes } = (await modesRes.json()) as {
+        record: { version: number };
+      };
+
+      // checkEnableReadiness doesn't check Input ranges, so this save is
+      // allowed while the Model is still a draft.
+      const inputsRes = await app.request(
+        `/api/admin/models/${model.id}/inputs`,
+        {
+          method: "PUT",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({
+            version: afterModes.version,
+            inputs: [STEPS_INPUT],
+          }),
+        },
+      );
+      expect(inputsRes.status).toBe(200);
+      const { record: afterInputs } = (await inputsRes.json()) as {
+        record: { version: number };
+      };
+
+      const enableRes = await app.request(
+        `/api/admin/models/${model.id}/enable`,
+        {
+          method: "POST",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({ version: afterInputs.version }),
+        },
+      );
+
+      expect(enableRes.status).toBe(400);
+      const body = (await enableRes.json()) as { reasons: string[] };
+      expect(body.reasons.some((r) => r.includes("own range"))).toBe(true);
+
+      backendsService.stop();
+    } finally {
+      fake.stop();
+    }
+  });
+
   test("GET /:id/object-info reports a Backend's node types, field specs and reachability", async () => {
     const fake = startFakeComfyUi({ port: 0 });
     try {
@@ -284,6 +372,78 @@ describe("checkModel's save gate and object-info route (issue #49)", () => {
               inputSettings: [],
             },
           ],
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { record: { state: string } };
+      expect(body.record.state).toBe("disabled");
+
+      backendsService.stop();
+    } finally {
+      fake.stop();
+    }
+  });
+
+  const STEPS_INPUT = {
+    id: "22222222-2222-2222-2222-222222222222",
+    kind: "number",
+    group: "settings",
+    label: "Steps",
+    help: "",
+    numberMode: "integer",
+    // Fake ComfyUI's KSampler.steps is INT min 1 max 10000; this range
+    // exceeds it, which checkModel flags as an error.
+    min: 1,
+    max: 20000,
+    step: 1,
+    default: null,
+    bindings: [
+      { nodeId: "2", field: "steps", classType: "KSampler", title: null },
+    ],
+  };
+
+  test("PUT /:id/inputs 400s when saving the enabled Model would leave it with errors", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const { app, backendsService } = await build();
+      const { model, headers, version } = await buildEnabledModel(
+        app,
+        fake.url,
+      );
+
+      const res = await app.request(`/api/admin/models/${model.id}/inputs`, {
+        method: "PUT",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ version, inputs: [STEPS_INPUT] }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { reasons: string[] };
+      expect(body.reasons.some((r) => r.includes("own range"))).toBe(true);
+
+      backendsService.stop();
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("PUT /:id/inputs with disable:true saves anyway and disables the Model", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const { app, backendsService } = await build();
+      const { model, headers, version } = await buildEnabledModel(
+        app,
+        fake.url,
+      );
+
+      const res = await app.request(`/api/admin/models/${model.id}/inputs`, {
+        method: "PUT",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({
+          version,
+          disable: true,
+          inputs: [STEPS_INPUT],
         }),
       });
 

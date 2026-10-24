@@ -280,7 +280,8 @@ export function checkModel(
           spec.step !== undefined &&
           spec.step > 1 &&
           spec.min !== undefined &&
-          !isOnStep(input.min, spec.min, spec.step)
+          (!isOnStep(input.min, spec.min, spec.step) ||
+            !isOnStep(input.step, 0, spec.step))
         ) {
           issues.push({
             severity: "error",

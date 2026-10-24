@@ -444,7 +444,13 @@ export function ModelEditorPage() {
   const [allBackends, setAllBackends] = useState<AdminBackendSummary[] | null>(
     null,
   );
-  const [objectInfo, setObjectInfo] = useState<ObjectInfoBackendJson[]>([]);
+  // null until the first successful load (issue #49 CEO review): checkModel
+  // treats an empty Backend list as an error, so staying null — rather than
+  // defaulting to [] — keeps the rail from flagging a healthy Model as
+  // backend-less while /object-info is still in flight or has failed.
+  const [objectInfo, setObjectInfo] = useState<ObjectInfoBackendJson[] | null>(
+    null,
+  );
   const [attachBackendId, setAttachBackendId] = useState("");
   const [attachError, setAttachError] = useState<string | null>(null);
   const [modesDraft, setModesDraft] = useState<DraftMode[] | null>(null);
@@ -936,11 +942,12 @@ export function ModelEditorPage() {
   // issue #49: checkModel runs live, client-side, against whatever's in
   // the drafts right now — the rail updates on every edit, before Save.
   const checkModelBackends = useMemo(
-    () => toCheckModelBackends(objectInfo),
+    () => (objectInfo === null ? null : toCheckModelBackends(objectInfo)),
     [objectInfo],
   );
   const modelIssues: ModelIssue[] = useMemo(() => {
-    if (!detail || !modesDraft || !inputsDraft) return [];
+    if (!detail || !modesDraft || !inputsDraft || !checkModelBackends)
+      return [];
     return checkModel(
       {
         workflow: detail.workflow,
@@ -1173,7 +1180,7 @@ export function ModelEditorPage() {
             </thead>
             <tbody>
               {attachedBackends.map((entry) => {
-                const thisBackend = checkModelBackends.find(
+                const thisBackend = checkModelBackends?.find(
                   (b) => b.id === entry.backend.id,
                 );
                 const gapsByMode =

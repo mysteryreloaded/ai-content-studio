@@ -649,8 +649,33 @@ export function adminModelsRoute(
         attached,
         backendsService,
       );
-      if (!readiness.ok) {
-        return c.json({ error: "not ready", reasons: readiness.reasons }, 400);
+
+      // Issue #49: checkModel's errors block enabling too, not just
+      // saving an already-enabled Model — otherwise the API (or a stale
+      // tab) could enable a Model checkModel itself calls broken.
+      const objectInfo = toCheckModelBackends(
+        await buildObjectInfo(attached, backendsService),
+      );
+      const issues = checkModel(
+        {
+          workflow: detail.workflow,
+          inputs: detail.inputs,
+          modes: detail.modes.map((mode) => ({
+            id: mode.id,
+            name: mode.name,
+            outputNodeIds: mode.outputNodes.map((node) => node.nodeId),
+            inputSettings: mode.inputSettings,
+          })) satisfies CheckModelMode[],
+        },
+        objectInfo,
+      );
+      const checkModelReasons = issues
+        .filter((issue) => issue.severity === "error")
+        .map((issue) => issue.message);
+
+      const reasons = [...readiness.reasons, ...checkModelReasons];
+      if (reasons.length > 0) {
+        return c.json({ error: "not ready", reasons }, 400);
       }
 
       try {

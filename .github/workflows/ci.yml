@@ -238,6 +238,20 @@ jobs:
       - name: Back up
         run: ./ops/backup/backup.sh
 
+      # Issue #77 CEO review: `docker compose run` gives each run a
+      # random hostname, and restic's forget groups by host+paths, so a
+      # second backup proves the fixed `hostname:` (docker-compose.yml)
+      # keeps every snapshot in the one group retention prunes from.
+      - name: Back up again, to check both snapshots share one host
+        run: ./ops/backup/backup.sh
+
+      - name: Snapshots share a single host
+        run: |
+          hosts=$(docker compose --profile backup run --rm backup snapshots --json \
+            | jq -r '.[].hostname' | sort -u)
+          echo "$hosts"
+          [ "$(echo "$hosts" | wc -l)" -eq 1 ]
+
       - name: Simulate disaster (drop the database, wipe /data)
         run: |
           docker compose exec -T postgres psql -U postgres -d ai_content_studio \

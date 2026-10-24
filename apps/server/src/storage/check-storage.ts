@@ -13,7 +13,7 @@
 // Tombstone-shaped fix for an Upload, so those are reported only.
 
 import type { Dirent } from "node:fs";
-import { readdir } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import type { Database } from "../db/client.js";
 import { createDatabase } from "../db/client.js";
@@ -29,6 +29,21 @@ export interface MissingFile {
   key: string;
   source: MissingSource;
   generationId?: string;
+  /** Only set on an Asset's own `storageKey`, not its poster/thumbnail (issue #77 CEO review): only a missing main file should tombstone the Generation. */
+  primary?: boolean;
+}
+
+/** An hour's grace for a file whose row insert hasn't landed yet (issue #77 CEO review): `runner.ts`'s `saveAssets` and the Upload transcode write a file, then insert its row — a file younger than this during that window looks orphaned (or its Asset looks missing) but isn't. */
+const RACE_GRACE_MS = 60 * 60 * 1000;
+
+/** `runner.ts`'s `finishAsset` (issue #45) and `c2pa.ts`'s signer (issue #75) write under these names before renaming over the final file; never treat one as orphaned, whatever its age. */
+function isInProgressTempName(name: string): boolean {
+  return (
+    name.includes(".tmp-") ||
+    name.includes(".finishing-") ||
+    name.includes(".c2pa-manifest-") ||
+    name.includes(".c2pa-signing-")
+  );
 }
 
 export interface CheckStorageReport {
@@ -40,8 +55,13 @@ export interface CheckStorageReport {
   tombstonedGenerationIds: string[];
 }
 
-/** Every file under `root`, relative to it, skipping in-progress `*.tmp-*` writes (storage.ts's `writeResponseBody`). */
-async function listFiles(root: string, dir = root): Promise<string[]> {
+interface FoundFile {
+  key: string;
+  mtimeMs: number;
+}
+
+/** Every file under `root`, relative to it, skipping in-progress writes (storage.ts's `*.tmp-*`, and Asset finishing/signing's own temp names). */
+async function listFiles(root: string, dir = root): Promise<FoundFile[]> {
   let entries: Dirent[];
   try {
     entries = await readdir(dir, { withFileTypes: true });
@@ -50,13 +70,14 @@ async function listFiles(root: string, dir = root): Promise<string[]> {
     throw error;
   }
 
-  const files: string[] = [];
+  const files: FoundFile[] = [];
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       files.push(...(await listFiles(root, full)));
-    } else if (entry.isFile() && !entry.name.includes(".tmp-")) {
-      files.push(path.relative(root, full).split(path.sep).join("/"));
+    } else if (entry.isFile() && !isInProgressTempName(entry.name)) {
+      const key = path.relative(root, full).split(path.sep).join("/");
+      files.push({ key, mtimeMs: (await stat(full)).mtimeMs });
     }
   }
   return files;
@@ -96,6 +117,7 @@ export async function checkStorage(
       key: row.storageKey,
       source: "asset",
       generationId: row.generationId,
+      primary: true,
     });
     if (row.posterKey) {
       referenced.set(row.posterKey, {
@@ -134,12 +156,21 @@ export async function checkStorage(
     });
   }
 
-  const onDisk = new Set(await listFiles(dataDir));
+  const onDisk = new Map(
+    (await listFiles(dataDir)).map((file) => [file.key, file.mtimeMs]),
+  );
 
   const missing = [...referenced.values()].filter(
     (ref) => !onDisk.has(ref.key),
   );
-  const orphaned = [...onDisk].filter((key) => !referenced.has(key));
+  // A file younger than RACE_GRACE_MS isn't reported (or deleted) as
+  // orphaned: saveAssets/the Upload transcode write it before inserting
+  // its row, so one freshly written during that window has no row yet
+  // but isn't actually abandoned (issue #77 CEO review).
+  const orphaned = [...onDisk.entries()]
+    .filter(([key]) => !referenced.has(key))
+    .filter(([, mtimeMs]) => now.getTime() - mtimeMs >= RACE_GRACE_MS)
+    .map(([key]) => key);
 
   const report: CheckStorageReport = {
     missing,
@@ -155,10 +186,16 @@ export async function checkStorage(
     report.deletedOrphans.push(key);
   }
 
+  // Only the Asset's own file missing tombstones the Generation (issue
+  // #77 CEO review): a missing poster/thumbnail alone leaves the
+  // intact main file (and its Asset row) untouched.
   const generationIds = [
     ...new Set(
       missing
-        .filter((item) => item.source === "asset" && item.generationId)
+        .filter(
+          (item) =>
+            item.source === "asset" && item.primary && item.generationId,
+        )
         .map((item) => item.generationId as string),
     ),
   ];
@@ -212,8 +249,13 @@ if (import.meta.main) {
     });
     printReport(report, fix);
 
+    // Only a missing primary Asset file is actually resolved by --fix
+    // (tombstoned); a missing poster/thumbnail alone isn't touched
+    // (issue #77 CEO review), so it stays unresolved.
     const unresolvedMissing = fix
-      ? report.missing.filter((item) => item.source !== "asset")
+      ? report.missing.filter(
+          (item) => !(item.source === "asset" && item.primary),
+        )
       : report.missing;
     const unresolvedOrphaned = fix ? [] : report.orphaned;
     if (unresolvedMissing.length > 0 || unresolvedOrphaned.length > 0) {

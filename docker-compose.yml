@@ -97,6 +97,12 @@ services:
   backup:
     image: restic/restic:0.17.3
     profiles: ["backup"]
+    # Issue #77 CEO review: `docker compose run` gives this container a
+    # random hostname each time, and restic's snapshots/forget group by
+    # host+paths by default — without a fixed one, every run is its own
+    # group, so `forget --prune` never has more than one snapshot to
+    # prune from and retention never actually shrinks the repository.
+    hostname: ai-content-studio
     env_file:
       - path: backup.env
         required: true
@@ -118,6 +124,10 @@ services:
   restore:
     image: restic/restic:0.17.3
     profiles: ["restore"]
+    # Same fixed host as `backup` (issue #77 CEO review): irrelevant to
+    # a restore itself, but keeps `restic snapshots`/`forget` output
+    # consistent when run from this service too.
+    hostname: ai-content-studio
     env_file:
       - path: backup.env
         required: true

@@ -209,6 +209,7 @@ export class Dispatcher {
     await recoverInFlightGenerations({
       ...this.runnerDeps(),
       backendRepository: this.deps.backendRepository,
+      backendsEnabled: this.deps.backendsService.enabled,
     });
   }
 

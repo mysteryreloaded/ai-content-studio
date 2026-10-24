@@ -10,7 +10,7 @@ import {
   expect,
   test,
 } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { startFakeComfyUi } from "@ai-content-studio/fake-comfyui";
@@ -236,6 +236,12 @@ describe("checkStorage (issue #77)", () => {
     await writeFile(full, "bytes");
   }
 
+  async function ageDiskFile(relativeKey: string, msAgo: number) {
+    const full = path.join(dataDir, relativeKey);
+    const when = new Date(clock.now().getTime() - msAgo);
+    await utimes(full, when, when);
+  }
+
   test("reports a missing Asset file and an orphaned file, touching nothing without --fix", async () => {
     const fake = startFakeComfyUi({ port: 0 });
     try {
@@ -268,6 +274,9 @@ describe("checkStorage (issue #77)", () => {
       // Not written to disk: this is the missing file.
 
       await writeDiskFile("generations/orphan/leftover.png");
+      // Aged past the write-then-insert race window (issue #77 CEO
+      // review), so this is unambiguously a genuine orphan.
+      await ageDiskFile("generations/orphan/leftover.png", 2 * 60 * 60 * 1000);
 
       const storage = createLocalStorage(dataDir);
       const report = await checkStorage(db, storage, dataDir, clock.now(), {
@@ -326,6 +335,9 @@ describe("checkStorage (issue #77)", () => {
         storageKey: "generations/missing/out.png",
       });
       await writeDiskFile("generations/orphan/leftover.png");
+      // Aged past the write-then-insert race window (issue #77 CEO
+      // review), so this is unambiguously a genuine orphan.
+      await ageDiskFile("generations/orphan/leftover.png", 2 * 60 * 60 * 1000);
 
       const storage = createLocalStorage(dataDir);
       const report = await checkStorage(db, storage, dataDir, clock.now(), {
@@ -422,5 +434,115 @@ describe("checkStorage (issue #77)", () => {
       key: "branding/background.png",
       source: "branding",
     });
+  });
+
+  test("--fix never deletes a freshly written file that has no row yet (issue #77 CEO review: the saveAssets/Upload write-then-insert race)", async () => {
+    const { db } = await testDb;
+    await writeDiskFile("generations/racing/out.png");
+    // Anchored to right now: looks exactly like a file saveAssets just
+    // wrote, moments before its Asset row lands.
+    await ageDiskFile("generations/racing/out.png", 0);
+
+    const storage = createLocalStorage(dataDir);
+    const report = await checkStorage(db, storage, dataDir, clock.now(), {
+      fix: true,
+    });
+
+    expect(report.orphaned).toEqual([]);
+    expect(report.deletedOrphans).toEqual([]);
+    const stat = await storage.stat("generations/racing/out.png");
+    expect(stat).not.toBeNull();
+  });
+
+  test("--fix still deletes a genuinely old orphan, past the write-then-insert race window", async () => {
+    const { db } = await testDb;
+    await writeDiskFile("generations/stale/out.png");
+    await ageDiskFile("generations/stale/out.png", 2 * 60 * 60 * 1000);
+
+    const storage = createLocalStorage(dataDir);
+    const report = await checkStorage(db, storage, dataDir, clock.now(), {
+      fix: true,
+    });
+
+    expect(report.orphaned).toEqual(["generations/stale/out.png"]);
+    expect(report.deletedOrphans).toEqual(["generations/stale/out.png"]);
+    const stat = await storage.stat("generations/stale/out.png");
+    expect(stat).toBeNull();
+  });
+
+  test("--fix never deletes an Asset finishing/signing temp file, however old", async () => {
+    const { db } = await testDb;
+    await writeDiskFile("generations/finishing/out.finishing-abc123.png");
+    await ageDiskFile(
+      "generations/finishing/out.finishing-abc123.png",
+      2 * 60 * 60 * 1000,
+    );
+
+    const storage = createLocalStorage(dataDir);
+    const report = await checkStorage(db, storage, dataDir, clock.now(), {
+      fix: true,
+    });
+
+    expect(report.orphaned).toEqual([]);
+    const stat = await storage.stat(
+      "generations/finishing/out.finishing-abc123.png",
+    );
+    expect(stat).not.toBeNull();
+  });
+
+  test("--fix tombstones only on a missing main Asset file, never on a missing poster/thumbnail alone", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const { app, backendsService } = await build();
+      const { db } = await testDb;
+      const { headers: adminHeaders } = await headersFor("admin");
+      const model = await buildEnabledModel(app, adminHeaders, fake.url, "M");
+      const { headers: userHeaders } = await headersFor("user");
+
+      const { generationId } = await submit(
+        app,
+        userHeaders,
+        model.slug,
+        model.modeId,
+      );
+      await db
+        .update(generations)
+        .set({ state: "succeeded", endedAt: clock.now() })
+        .where(eq(generations.id, generationId));
+      await writeDiskFile("generations/intact/out.png");
+      await db.insert(assets).values({
+        generationId,
+        nodeId: "3",
+        sortOrder: 0,
+        kind: "video",
+        comfyuiFilename: "out.png",
+        contentType: "image/png",
+        size: 10,
+        storageKey: "generations/intact/out.png",
+        thumbnailKey: "generations/intact/thumb.png",
+      });
+      // thumbnailKey never written to disk: this is the missing file.
+
+      const storage = createLocalStorage(dataDir);
+      const report = await checkStorage(db, storage, dataDir, clock.now(), {
+        fix: true,
+      });
+
+      expect(report.missing).toHaveLength(1);
+      expect(report.missing[0]?.key).toBe("generations/intact/thumb.png");
+      expect(report.tombstonedGenerationIds).toEqual([]);
+
+      const [row] = await db
+        .select()
+        .from(generations)
+        .where(eq(generations.id, generationId));
+      expect(row?.deletedAt).toBeNull();
+      const stat = await storage.stat("generations/intact/out.png");
+      expect(stat).not.toBeNull();
+
+      backendsService.stop();
+    } finally {
+      fake.stop();
+    }
   });
 });

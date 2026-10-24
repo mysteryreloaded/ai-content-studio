@@ -808,6 +808,7 @@ describe("Reliable dispatch (issue #55)", () => {
         storage,
         backendRepository,
         backendsService,
+        backendsEnabled: backendsService.enabled,
         generationEvents,
         logWriter: createLogEntryWriter(db, systemClock, silentLogger()),
         clock: systemClock,
@@ -900,6 +901,7 @@ describe("Reliable dispatch (issue #55)", () => {
         storage,
         backendRepository,
         backendsService,
+        backendsEnabled: backendsService.enabled,
         generationEvents,
         logWriter: createLogEntryWriter(db, systemClock, silentLogger()),
         clock: systemClock,
@@ -923,6 +925,96 @@ describe("Reliable dispatch (issue #55)", () => {
       expect(generation?.tries).toBe(1);
     } finally {
       fake.stop();
+      await Bun.$`rm -rf ${tmpDir}`.quiet();
+    }
+  });
+
+  test("boot recovery never contacts a Backend while BACKENDS_ENABLED=false (issue #77 CEO review: a restore drill)", async () => {
+    const tmpDir = `/tmp/reliability-e2e-${randomUUID()}`;
+    const {
+      db,
+      modelRepository,
+      modelBackendsRepository,
+      backendRepository,
+      backendsService,
+      generationsRepository,
+      assetsRepository,
+      storage,
+      queue,
+      generationEvents,
+      dispatcher,
+    } = await setup(tmpDir);
+
+    try {
+      const user = await insertUser(db, "recoverdrill@example.com");
+      const { model, mode, revisionId } = await createModelWithMode(
+        modelRepository,
+        "RecoverDrill",
+      );
+      // No fake ComfyUI is started at all: a baseUrl nobody listens on,
+      // so if recovery tried to reach it, readJobWithGrace would hang
+      // retrying for its full 2-minute grace window (real time, this
+      // suite's systemClock) instead of returning almost at once.
+      const backend = await backendRepository.create(
+        { name: "Unreachable", baseUrl: "http://127.0.0.1:1", auth: "none" },
+        SYSTEM,
+      );
+      await modelBackendsRepository.attach(model.id, backend.id, SYSTEM);
+      backendsService.watch(backend);
+      forceReachable(backendsService, backend.id);
+
+      const generationId = randomUUID();
+      const { prompt, nodeTypes } = buildFrozenPrompt(
+        WORKFLOW,
+        ["2"],
+        generationId,
+      );
+      await generationsRepository.create({
+        id: generationId,
+        modelId: model.id,
+        revisionId,
+        modeId: mode.id,
+        modeName: mode.name,
+        userId: user.id,
+        submissionId: randomUUID(),
+        builtPrompt: prompt,
+        nodeTypes,
+        submittedAt: systemClock.now(),
+      });
+      await db
+        .update(generations)
+        .set({ state: "running", backendId: backend.id, tries: 1 })
+        .where(eq(generations.id, generationId));
+
+      await recoverInFlightGenerations({
+        queue,
+        assetsRepository,
+        storage,
+        backendRepository,
+        backendsService,
+        backendsEnabled: false,
+        generationEvents,
+        logWriter: createLogEntryWriter(db, systemClock, silentLogger()),
+        clock: systemClock,
+        // biome-ignore lint/suspicious/noExplicitAny: test-only access to the Dispatcher's private ProgressTracker
+        progress: (dispatcher as any).progress,
+        onFreed: () => {},
+        media: new MediaRunner(2),
+        siteName: "localhost",
+        c2pa: null,
+        getSiteTitle: async () => "localhost",
+      });
+
+      const summaries =
+        await generationsRepository.listRecentSubmissionsForModel(
+          model.id,
+          user.id,
+          8,
+        );
+      const generation = summaries[0]?.generations[0];
+      expect(generation?.state).toBe("queued");
+      expect(generation?.tries).toBe(1);
+    } finally {
       await Bun.$`rm -rf ${tmpDir}`.quiet();
     }
   });

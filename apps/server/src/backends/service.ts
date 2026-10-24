@@ -28,6 +28,11 @@ export class BackendsService {
     });
   }
 
+  /** Issue #77 CEO review: boot recovery skips contacting a Backend (a restore drill's whole point) while this is false. */
+  get enabled(): boolean {
+    return this.backendsEnabled;
+  }
+
   /** Admins see this banner whenever BACKENDS_ENABLED=false. */
   get disabledBanner(): string | null {
     return this.backendsEnabled

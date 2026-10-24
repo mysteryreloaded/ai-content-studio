@@ -124,10 +124,24 @@ function renderEditor() {
   return render(<RouterProvider router={router} />);
 }
 
+/** Issue #74: the editor opens the same per-user Generations stream the Workbench/Gallery do, to keep a Test's progress live. */
+class FakeEventSource {
+  listeners: Record<string, Array<(event: { data: string }) => void>> = {};
+  constructor(public url: string) {}
+  addEventListener(type: string, cb: (event: { data: string }) => void) {
+    const list = this.listeners[type] ?? [];
+    list.push(cb);
+    this.listeners[type] = list;
+  }
+  close() {}
+}
+
 let originalConfirm: typeof window.confirm;
 
 beforeEach(() => {
   originalConfirm = window.confirm;
+  (globalThis as unknown as { EventSource: unknown }).EventSource =
+    FakeEventSource;
 });
 
 afterEach(() => {
@@ -406,6 +420,51 @@ describe("ModelEditorPage", () => {
         },
       ],
     });
+  });
+
+  test("Test runs the unsaved draft Mode, and a failure shows the server's reasons (issue #74)", async () => {
+    const calls = mockFetch((call) => {
+      if (call.method === "GET") return respondGet(call.url);
+      if (call.method === "POST" && call.url.endsWith("/test")) {
+        return Response.json(
+          {
+            error: "mode_has_errors",
+            reasons: ["needs at least one attached Backend"],
+          },
+          { status: 400 },
+        );
+      }
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+
+    await view.findByText("LTX 2.5");
+    await userEvent.click(view.getByText("Add Mode"));
+    await userEvent.type(view.getByLabelText("Mode name"), "Default");
+    await userEvent.click(view.getByRole("button", { name: "Add" }));
+
+    await userEvent.click(view.getByText("Test"));
+    await userEvent.click(view.getByText("Run test"));
+
+    const sent = calls.find(
+      (c) => c.method === "POST" && c.url.endsWith("/test"),
+    );
+    expect(sent?.body).toEqual({
+      mode: {
+        name: "Default",
+        description: "",
+        outputNodeIds: ["1"],
+        inputSettings: [],
+      },
+      inputs: [],
+      values: {},
+      backendId: null,
+    });
+    expect(
+      await view.findByText("needs at least one attached Backend"),
+    ).toBeTruthy();
   });
 
   test("Enable shows the server's reasons when the Model isn't ready", async () => {

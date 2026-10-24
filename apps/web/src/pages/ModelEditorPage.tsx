@@ -390,6 +390,27 @@ function toCheckModelBackends(
   }));
 }
 
+/** One Test run (issue #74), as the `/test` and `/tests` endpoints and the SSE stream return it. */
+interface TestRun {
+  id: string;
+  submissionId: string;
+  modeId: string;
+  modeName: string;
+  state: string;
+  error: string | null;
+  submittedAt: string;
+  isTest?: boolean;
+  modelId?: string;
+  assets: { id: string; kind: string }[];
+}
+
+function sortedTestRuns(runs: TestRun[]): TestRun[] {
+  const byId = new Map(runs.map((run) => [run.id, run]));
+  return [...byId.values()]
+    .sort((a, b) => (a.submittedAt < b.submittedAt ? 1 : -1))
+    .slice(0, 5);
+}
+
 interface AttachedBackendEntry {
   backend: AdminBackendSummary;
   reachable: boolean;
@@ -511,6 +532,17 @@ export function ModelEditorPage() {
   const [askAgain, setAskAgain] = useState(false);
   const [savingTerms, setSavingTerms] = useState(false);
   const [termsSaveError, setTermsSaveError] = useState<string | null>(null);
+  // Issue #74: which Mode's test form is open, its draft values and
+  // chosen Backend, and the last 5 Tests (persisted server-side, so
+  // they're still here after leaving and returning to this page).
+  const [testOpenForModeKey, setTestOpenForModeKey] = useState<string | null>(
+    null,
+  );
+  const [testValues, setTestValues] = useState<Record<string, string>>({});
+  const [testBackendId, setTestBackendId] = useState("");
+  const [testSubmitting, setTestSubmitting] = useState(false);
+  const [testError, setTestError] = useState<string[] | null>(null);
+  const [testRuns, setTestRuns] = useState<TestRun[]>([]);
   // Set right before navigating away after a successful delete: `dirty`
   // is still computed from this render's (pre-setForm(null)) state when
   // the blocker runs, since state updates haven't flushed yet, so without
@@ -553,6 +585,40 @@ export function ModelEditorPage() {
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: reload only when the route's :id changes
   useEffect(load, [id]);
+
+  // Issue #74's AC: "the last 5 tests are listed" — loaded once up
+  // front so they're there even before the SSE stream below (re)) opens.
+  useEffect(() => {
+    if (!id) return;
+    fetch(`/api/admin/models/${id}/tests`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body: { tests: TestRun[] } | null) => {
+        if (body && Array.isArray(body.tests)) {
+          setTestRuns(sortedTestRuns(body.tests));
+        }
+      })
+      .catch(() => {});
+  }, [id]);
+
+  // Issue #74's AC: "the test survives leaving the editor" — this is the
+  // same per-user Generation stream the Workbench uses, so a Test
+  // already under way shows its live progress right away on return,
+  // not just once it's loaded from `/tests`.
+  useEffect(() => {
+    if (!id) return;
+    const source = new EventSource("/api/generations/stream");
+    source.addEventListener("change", (event) => {
+      const generation = JSON.parse((event as MessageEvent).data) as TestRun;
+      if (!generation.isTest || generation.modelId !== id) return;
+      setTestRuns((prev) =>
+        sortedTestRuns([
+          generation,
+          ...prev.filter((run) => run.id !== generation.id),
+        ]),
+      );
+    });
+    return () => source.close();
+  }, [id]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: a different :id gets its own "open on" decision
   useEffect(() => {
@@ -829,6 +895,69 @@ export function ModelEditorPage() {
       load();
     } finally {
       setSavingModes(false);
+    }
+  }
+
+  /** Opens (or closes) a Mode's test form, resetting its draft values and Backend pick. */
+  function toggleTestForm(mode: DraftMode) {
+    if (testOpenForModeKey === mode.key) {
+      setTestOpenForModeKey(null);
+      return;
+    }
+    setTestOpenForModeKey(mode.key);
+    setTestValues({});
+    setTestBackendId("");
+    setTestError(null);
+  }
+
+  async function handleTestSubmit(mode: DraftMode) {
+    if (!detail) return;
+    const inputs = inputsDraft ?? detail.inputs ?? [];
+    setTestSubmitting(true);
+    setTestError(null);
+
+    try {
+      const currentInputIds = new Set(inputs.map((input) => input.id));
+      const res = await fetch(`/api/admin/models/${detail.model.id}/test`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          mode: {
+            name: mode.name,
+            description: mode.description,
+            outputNodeIds: mode.outputNodeIds,
+            inputSettings: mode.inputSettings.filter((s) =>
+              currentInputIds.has(s.inputId),
+            ),
+          },
+          inputs,
+          values: testValues,
+          backendId: testBackendId || null,
+        }),
+      });
+
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const payload = body as {
+          reasons?: string[];
+          message?: string;
+          error?: string;
+          issues?: { message: string }[];
+        };
+        const reasons =
+          payload.reasons ??
+          payload.issues?.map((issue) => issue.message) ??
+          (payload.message || payload.error
+            ? [payload.message ?? payload.error ?? "test failed"]
+            : ["test failed"]);
+        setTestError(reasons);
+        return;
+      }
+
+      const { generation } = body as { generation: TestRun };
+      setTestRuns((prev) => sortedTestRuns([generation, ...prev]));
+    } finally {
+      setTestSubmitting(false);
     }
   }
 
@@ -1376,6 +1505,25 @@ export function ModelEditorPage() {
 
             {detail && <ModeSheetFacts mode={mode} detail={detail} />}
 
+            <button type="button" onClick={() => toggleTestForm(mode)}>
+              {testOpenForModeKey === mode.key ? "Close test" : "Test"}
+            </button>
+            {detail && testOpenForModeKey === mode.key && (
+              <TestPanel
+                mode={mode}
+                detail={detail}
+                inputsDraft={inputsDraft ?? detail.inputs ?? []}
+                attachedBackends={attachedBackends}
+                values={testValues}
+                onValuesChange={setTestValues}
+                backendId={testBackendId}
+                onBackendIdChange={setTestBackendId}
+                submitting={testSubmitting}
+                errors={testError}
+                onSubmit={() => void handleTestSubmit(mode)}
+              />
+            )}
+
             <button
               type="button"
               aria-pressed={editingModeIndex === index}
@@ -1418,6 +1566,8 @@ export function ModelEditorPage() {
           {mustDisableToSave ? "Save and disable" : "Save Modes"}
         </button>
         {modesSaveError && <p role="alert">{modesSaveError}</p>}
+
+        {testRuns.length > 0 && <RecentTests runs={testRuns} />}
       </section>
 
       {termsForm && (
@@ -2207,6 +2357,232 @@ function ModelCheckRail({ issues }: { issues: ModelIssue[] }) {
         <ul>
           {warnings.map((issue) => (
             <li key={issue.message}>Warning: {issue.message}</li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function testRunStateLabel(run: TestRun): string {
+  switch (run.state) {
+    case "queued":
+      return "Queued";
+    case "starting":
+      return "Starting…";
+    case "running":
+      return "Running…";
+    case "saving":
+      return "Saving…";
+    case "succeeded":
+      return "Done";
+    case "failed":
+      return "Failed";
+    case "cancelling":
+      return "Cancelling…";
+    case "cancelled":
+      return "Cancelled";
+    default:
+      return run.state;
+  }
+}
+
+const TEST_UNFINISHED_STATES = new Set([
+  "queued",
+  "starting",
+  "running",
+  "saving",
+  "cancelling",
+]);
+
+/** Inline progress for one Test, with Cancel while it's still under way (issue #74's AC). */
+function TestRunRow({ run }: { run: TestRun }) {
+  const [cancelling, setCancelling] = useState(false);
+  const unfinished = TEST_UNFINISHED_STATES.has(run.state);
+
+  async function handleCancel() {
+    setCancelling(true);
+    try {
+      await fetch(`/api/submissions/${run.submissionId}/cancel`, {
+        method: "POST",
+      });
+    } finally {
+      setCancelling(false);
+    }
+  }
+
+  return (
+    <li>
+      {run.modeName}: {testRunStateLabel(run)}
+      {run.state === "failed" && run.error && <span> — {run.error}</span>}
+      {run.state === "succeeded" && run.assets.length > 0 && (
+        <a href={`/api/assets/${run.assets[0]?.id}`}> View</a>
+      )}
+      {unfinished && (
+        <button
+          type="button"
+          disabled={cancelling || run.state === "cancelling"}
+          onClick={() => void handleCancel()}
+        >
+          Cancel
+        </button>
+      )}
+    </li>
+  );
+}
+
+/** The last 5 Tests (issue #74's AC), newest first; persisted server-side, so they're here on return too. */
+function RecentTests({ runs }: { runs: TestRun[] }) {
+  return (
+    <section aria-label="Recent tests">
+      <h4>Last 5 tests</h4>
+      <ul>
+        {runs.map((run) => (
+          <TestRunRow key={run.id} run={run} />
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/** One Test form field, by the relevant Input's own kind (issue #74). Upload Inputs aren't supported here yet — a Mode needing one can't be tested until that's added. */
+function TestField({
+  input,
+  value,
+  onChange,
+}: {
+  input: InputDefinition;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  if (input.kind === "text") {
+    return (
+      <input
+        aria-label={input.label}
+        value={value}
+        maxLength={input.maxLength}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    );
+  }
+  if (input.kind === "number" || input.kind === "seed") {
+    return (
+      <input
+        aria-label={input.label}
+        type="number"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={input.kind === "seed" ? "blank = random" : undefined}
+      />
+    );
+  }
+  if (input.kind === "select") {
+    return (
+      <select
+        aria-label={input.label}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      >
+        <option value="">Choose…</option>
+        {input.options.map((option) => (
+          <option key={option.id} value={option.id}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    );
+  }
+  return (
+    <p>Testing a Mode with a "{input.label}" Upload isn't supported yet.</p>
+  );
+}
+
+/**
+ * A Mode's test form (issue #74): the editor's own unsaved Mode and
+ * Inputs, run against Any or one chosen attached Backend — on an
+ * unnumbered revision that never becomes current, blocked only while
+ * the Mode has an error.
+ */
+function TestPanel({
+  mode,
+  detail,
+  inputsDraft,
+  attachedBackends,
+  values,
+  onValuesChange,
+  backendId,
+  onBackendIdChange,
+  submitting,
+  errors,
+  onSubmit,
+}: {
+  mode: DraftMode;
+  detail: ModelDetail;
+  inputsDraft: InputDefinition[];
+  attachedBackends: AttachedBackendEntry[] | null;
+  values: Record<string, string>;
+  onValuesChange: (values: Record<string, string>) => void;
+  backendId: string;
+  onBackendIdChange: (id: string) => void;
+  submitting: boolean;
+  errors: string[] | null;
+  onSubmit: () => void;
+}) {
+  const unresolvable = visibleModeBoundFields(
+    mode.inputSettings ?? [],
+    inputsDraft,
+  );
+  const workflow = workflowForMode(mode, inputsDraft, detail.workflow);
+  const relevant =
+    mode.outputNodeIds.length === 0
+      ? []
+      : relevantInputs(inputsDraft, workflow, mode.outputNodeIds, unresolvable);
+  const { formInputs } = resolveModeInputs(relevant, mode.inputSettings ?? []);
+
+  return (
+    <section aria-label={`Test ${mode.name || "this Mode"}`}>
+      {mode.outputNodeIds.length === 0 && (
+        <p role="alert">Pick at least one output node before testing.</p>
+      )}
+
+      <label htmlFor={`test-backend-${mode.key}`}>Backend</label>
+      <select
+        id={`test-backend-${mode.key}`}
+        value={backendId}
+        onChange={(event) => onBackendIdChange(event.target.value)}
+      >
+        <option value="">Any</option>
+        {(attachedBackends ?? []).map((entry) => (
+          <option key={entry.backend.id} value={entry.backend.id}>
+            {entry.backend.name}
+          </option>
+        ))}
+      </select>
+
+      {formInputs.map((input) => (
+        <div key={input.id}>
+          <span>{input.label}</span>
+          <TestField
+            input={input}
+            value={values[input.id] ?? ""}
+            onChange={(value) =>
+              onValuesChange({ ...values, [input.id]: value })
+            }
+          />
+        </div>
+      ))}
+
+      <button
+        type="button"
+        disabled={submitting || mode.outputNodeIds.length === 0}
+        onClick={onSubmit}
+      >
+        Run test
+      </button>
+      {errors && (
+        <ul role="alert">
+          {errors.map((reason) => (
+            <li key={reason}>{reason}</li>
           ))}
         </ul>
       )}

@@ -7,8 +7,10 @@ import {
   hasBlockingErrors,
   modelTermsFieldsSchema,
   reviseModeInputSettings,
+  toInputIssues,
 } from "@ai-content-studio/shared";
 import type {
+  Clock,
   ComfyFieldSpec,
   InputDefinition,
 } from "@ai-content-studio/shared";
@@ -22,7 +24,21 @@ import type { AppEnv } from "../auth/app-env.js";
 import type { BackendsService } from "../backends/service.js";
 import type { Database } from "../db/client.js";
 import { auditEntries } from "../db/schema.js";
+import type { GenerationEvents } from "../generations/events.js";
 import type { GenerationsRepository } from "../generations/repository.js";
+import {
+  InvalidInputValues,
+  InvalidSeed,
+  InvalidUploads,
+} from "../generations/submission.js";
+import {
+  TestBackendNotAttached,
+  TestModeHasErrors,
+  TestModelNotFound,
+  TestNoBackend,
+  TestSubmissionStorageFull,
+  submitTestGeneration,
+} from "../generations/test-submission.js";
 import { checkEnableReadiness } from "../models/enablement.js";
 import { NotFound as BackendNotFound } from "../models/model-backends.js";
 import type { ModelBackendsRepository } from "../models/model-backends.js";
@@ -38,6 +54,7 @@ import {
 } from "../models/repository.js";
 import type { ModeInput, ModelRepository } from "../models/repository.js";
 import { ValidationFailed } from "../models/validation.js";
+import type { UploadsRepository } from "../uploads/repository.js";
 
 const createSchema = z.object({
   name: z.string(),
@@ -165,6 +182,20 @@ const inputsSchema = z.object({
   disable: z.boolean().optional(),
 });
 
+/** Issue #74: a Test runs the editor's own unsaved draft Mode and Inputs, so the body carries them whole rather than a saved revision's id. */
+const testSchema = z.object({
+  mode: z.object({
+    name: z.string(),
+    description: z.string(),
+    outputNodeIds: z.array(z.string()),
+    inputSettings: z.array(modeInputSettingSchema).default([]),
+  }),
+  inputs: z.array(inputDefinitionSchema),
+  values: z.record(z.string(), z.unknown()),
+  /** A specific attached Backend's id, or null for Any. */
+  backendId: z.string().regex(UUID_RE).nullable(),
+});
+
 function idParam(c: Context<AppEnv>): string {
   const id = c.req.param("id");
   if (!id) throw new Error("id param missing");
@@ -190,6 +221,14 @@ export function adminModelsRoute(
   routes: RouteEntry[],
   /** Issue #50: the ceiling on an Image Upload Input's max size. */
   maxUploadMb?: number,
+  /** Issue #74: wired only when the caller wants `/:id/test` enabled (every production caller does). */
+  testDeps?: {
+    generationEvents: GenerationEvents;
+    clock: Clock;
+    uploadsRepository: UploadsRepository;
+    hasFreeDisk: () => Promise<boolean>;
+    wakeDispatcher: () => void;
+  },
 ): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   const basePath = "/api/admin/models";
@@ -762,6 +801,119 @@ export function adminModelsRoute(
         )
         .orderBy(desc(auditEntries.createdAt));
       return c.json({ entries });
+    },
+  );
+
+  // Issue #74: runs one Generation of the editor's own unsaved draft
+  // Mode and Inputs, on an unnumbered revision that never becomes
+  // current. Bypasses Pause, a disabled Model, Caps and Model terms;
+  // still blocked while the Mode has a `checkModel` error.
+  guardedRoute(
+    app,
+    routes,
+    basePath,
+    "post",
+    "/:id/test",
+    "admin",
+    async (c) => {
+      const id = idParam(c);
+      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+      if (!testDeps) return c.json({ error: "not available" }, 501);
+
+      const session = c.get("session");
+      if (!session) return c.json({ error: "unauthorized" }, 401);
+
+      const body = await readJsonBody(c);
+      if (body === null) return c.json({ error: "invalid JSON body" }, 400);
+
+      const parsed = testSchema.safeParse(body);
+      if (!parsed.success) {
+        return c.json(
+          { error: "invalid input", issues: parsed.error.issues },
+          400,
+        );
+      }
+
+      try {
+        const { generation, prompt } = await submitTestGeneration(
+          {
+            modelId: id,
+            userId: session.user.id,
+            mode: parsed.data.mode,
+            inputs: parsed.data.inputs as InputDefinition[],
+            values: parsed.data.values,
+            backendId: parsed.data.backendId,
+          },
+          {
+            modelRepository: repository,
+            modelBackendsRepository: modelBackends,
+            backendsService,
+            generationsRepository,
+            generationEvents: testDeps.generationEvents,
+            clock: testDeps.clock,
+            uploadsRepository: testDeps.uploadsRepository,
+            hasFreeDisk: testDeps.hasFreeDisk,
+            onGenerationQueued: testDeps.wakeDispatcher,
+          },
+        );
+        return c.json({ generation, prompt }, 201);
+      } catch (err) {
+        if (err instanceof TestModelNotFound) {
+          return c.json({ error: "not found" }, 404);
+        }
+        if (err instanceof TestModeHasErrors) {
+          return c.json(
+            { error: "mode_has_errors", reasons: err.reasons },
+            400,
+          );
+        }
+        if (err instanceof TestBackendNotAttached) {
+          return c.json({ error: err.message }, 400);
+        }
+        if (err instanceof TestNoBackend) {
+          return c.json({ error: "no_backend", message: err.message }, 400);
+        }
+        if (err instanceof TestSubmissionStorageFull) {
+          return c.json({ error: "storage_full", message: err.message }, 507);
+        }
+        if (err instanceof InvalidUploads) {
+          return c.json({ error: "invalid", issues: err.issues }, 400);
+        }
+        if (err instanceof InvalidInputValues) {
+          return c.json(
+            { error: "invalid", issues: toInputIssues(err.zodError) },
+            400,
+          );
+        }
+        if (err instanceof InvalidSeed) {
+          return c.json({ error: "invalid_seed", message: err.message }, 400);
+        }
+        return handleError(c, err);
+      }
+    },
+  );
+
+  // Issue #74's AC: "the last 5 tests are listed".
+  guardedRoute(
+    app,
+    routes,
+    basePath,
+    "get",
+    "/:id/tests",
+    "admin",
+    async (c) => {
+      const id = idParam(c);
+      if (!UUID_RE.test(id)) return c.json({ tests: [] });
+
+      const session = c.get("session");
+      if (!session) return c.json({ error: "unauthorized" }, 401);
+
+      const tests = await generationsRepository.listRecentTestsForModel(
+        id,
+        session.user.id,
+        5,
+      );
+      return c.json({ tests });
     },
   );
 

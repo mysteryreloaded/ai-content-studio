@@ -22,7 +22,7 @@ import {
   validateModeName,
 } from "@ai-content-studio/shared";
 import type { Clock } from "@ai-content-studio/shared";
-import { and, asc, eq, isNull, max } from "drizzle-orm";
+import { and, asc, eq, isNull, max, min } from "drizzle-orm";
 import type { AuditActor } from "../audit/audit.js";
 import { recordAuditEntry } from "../audit/audit.js";
 import type { Database, Transaction } from "../db/client.js";
@@ -620,6 +620,78 @@ export class ModelRepository {
       modes: await listModesForRevision(this.db, revision.id),
       inputs: revision.inputs as InputDefinition[],
     };
+  }
+
+  /**
+   * Makes a Test's own revision (issue #74): an unnumbered, unaudited
+   * snapshot of whatever's unsaved in the editor right now — the current
+   * revision's Workflow, the caller's own draft Inputs, and one draft
+   * Mode (already validated against `checkModel` by the caller). Never
+   * touches `models.currentRevision` or `version`, and writes no Audit
+   * entry, so a Test never becomes current and leaves no trace on the
+   * Model's own History.
+   */
+  async createTestRevision(
+    modelId: string,
+    inputs: InputDefinition[],
+    mode: {
+      name: string;
+      description: string;
+      outputNodes: ResolvedOutputNode[];
+      inputSettings: ModeInputSetting[];
+    },
+  ): Promise<{ revisionId: string; modeId: string }> {
+    return await this.db.transaction(async (tx) => {
+      const [before] = await tx
+        .select()
+        .from(models)
+        .where(and(eq(models.id, modelId), isNull(models.deletedAt)));
+      if (!before) throw new NotFound();
+
+      const [currentRevision] = await tx
+        .select()
+        .from(modelRevisions)
+        .where(
+          and(
+            eq(modelRevisions.modelId, modelId),
+            eq(modelRevisions.revisionNumber, before.currentRevision),
+          ),
+        );
+      if (!currentRevision) throw new Error("current revision missing");
+
+      const [lowest] = await tx
+        .select({ lowest: min(modelRevisions.revisionNumber) })
+        .from(modelRevisions)
+        .where(eq(modelRevisions.modelId, modelId));
+      const testRevisionNumber = Math.min(0, Number(lowest?.lowest ?? 0)) - 1;
+
+      const [testRevision] = await tx
+        .insert(modelRevisions)
+        .values({
+          modelId,
+          revisionNumber: testRevisionNumber,
+          workflowHash: currentRevision.workflowHash,
+          inputs,
+          isTest: true,
+        })
+        .returning();
+      if (!testRevision) throw new Error("insert returned no row");
+
+      const [testMode] = await tx
+        .insert(modes)
+        .values({
+          revisionId: testRevision.id,
+          sortOrder: 0,
+          name: mode.name,
+          description: mode.description,
+          outputNodes: mode.outputNodes,
+          inputSettings: mode.inputSettings,
+        })
+        .returning();
+      if (!testMode) throw new Error("insert returned no row");
+
+      return { revisionId: testRevision.id, modeId: testMode.id };
+    });
   }
 
   /**

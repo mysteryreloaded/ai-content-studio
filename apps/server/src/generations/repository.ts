@@ -51,6 +51,8 @@ export interface GenerationRecord {
   error: string | null;
   submittedAt: Date;
   assets: AssetSummary[];
+  /** Issue #74: a test run of the Model editor's own unsaved state, never counted toward Caps and never current. */
+  isTest: boolean;
 }
 
 export interface GenerationSummary extends GenerationRecord {
@@ -156,6 +158,10 @@ export interface CreateGenerationInput {
   /** Issue #50: the Uploads `builtPrompt` names. */
   uploadIds?: string[];
   submittedAt: Date;
+  /** Issue #74: true for a Test run; defaults false for a real Submission. */
+  isTest?: boolean;
+  /** Issue #74: the Backend a Test pinned itself to, or null/undefined for Any. */
+  pinnedBackendId?: string | null;
 }
 
 type GenerationRow = typeof generations.$inferSelect;
@@ -188,6 +194,7 @@ function toRecord(
     tries: row.tries,
     error: row.error,
     submittedAt: row.submittedAt,
+    isTest: row.isTest,
     assets: [...assetRows]
       .sort((a, b) => a.sortOrder - b.sortOrder)
       .map(toAssetSummary),
@@ -230,6 +237,8 @@ export class GenerationsRepository {
         uploadIds: input.uploadIds ?? [],
         submittedAt: input.submittedAt,
         queuedAt: input.submittedAt,
+        isTest: input.isTest ?? false,
+        pinnedBackendId: input.pinnedBackendId ?? null,
       })
       .returning();
     if (!row) throw new Error("insert returned no row");
@@ -405,6 +414,42 @@ export class GenerationsRepository {
         ),
       };
     });
+  }
+
+  /** This Model's last `limit` Tests, this Admin's own (issue #74's AC: "the last 5 tests are listed"). */
+  async listRecentTestsForModel(
+    modelId: string,
+    userId: string,
+    limit: number,
+  ): Promise<GenerationSummary[]> {
+    const rows = await this.db
+      .select({ generation: generations, mode: modes, model: models })
+      .from(generations)
+      .innerJoin(modes, eq(modes.id, generations.modeId))
+      .innerJoin(models, eq(models.id, generations.modelId))
+      .where(
+        and(
+          eq(generations.modelId, modelId),
+          eq(generations.userId, userId),
+          eq(generations.isTest, true),
+        ),
+      )
+      .orderBy(desc(generations.submittedAt))
+      .limit(limit);
+
+    const assetsById = await assetsByGenerationId(
+      this.db,
+      rows.map((row) => row.generation.id),
+    );
+    return rows.map((row) => ({
+      ...toRecord(
+        row.generation,
+        row.mode.name,
+        assetsById.get(row.generation.id) ?? [],
+      ),
+      modelSlug: row.model.slug,
+      modelName: row.model.name,
+    }));
   }
 
   /** Whether this Model has any Generation that isn't done yet (issue #43, #44: refuses deleting it). */

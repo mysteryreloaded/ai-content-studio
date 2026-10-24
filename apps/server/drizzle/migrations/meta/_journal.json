@@ -169,6 +169,13 @@
       "when": 1792832400001,
       "tag": "0023_rich_skreet",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1792839521393,
+      "tag": "0024_huge_titanium_man",
+      "breakpoints": true
     }
   ]
 }

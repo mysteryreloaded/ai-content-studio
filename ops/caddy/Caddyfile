@@ -1,7 +1,9 @@
 {
-	# Caddy's own access log is off; the studio already logs each
-	# request (apps/server/src/app.ts), so a second copy would just
-	# duplicate request_id-less lines with no way to correlate them.
+	# Caddy's admin API isn't needed by this stack, so it's disabled.
+	# Access logging is off by default (it's opt-in in Caddy) and stays
+	# that way here: the studio already logs each request
+	# (apps/server/src/app.ts), so a second copy would just duplicate
+	# request_id-less lines with no way to correlate them.
 	admin off
 }
 
@@ -18,6 +20,7 @@
 	# and refreshes itself until the real app answers again.
 	handle_errors {
 		@unavailable expression {http.error.status_code} in [502, 503]
+		header @unavailable Content-Type "text/html; charset=utf-8"
 		respond @unavailable <<HTML
 <!doctype html>
 <html>

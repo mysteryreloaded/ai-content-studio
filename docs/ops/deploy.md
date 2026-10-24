@@ -8,8 +8,13 @@ Backend, see [backend-kit.md](backend-kit.md); that's a separate host.
 
 1. Install [Docker Engine](https://docs.docker.com/engine/install/) with
    the Compose plugin on the VPS that will host the studio.
-2. Copy `docker-compose.yml` and `.env.example` to that host, in the same
-   directory.
+2. Copy `docker-compose.yml`, `.env.example`, `ops/caddy/Caddyfile` and
+   `ops/studio/upgrade.sh` to that host, keeping the same relative layout
+   (`ops/caddy/Caddyfile` and `ops/studio/upgrade.sh` next to
+   `docker-compose.yml`, not flattened) — Compose bind-mounts the
+   Caddyfile from that path and `upgrade.sh` finds the compose directory
+   from its own. Easiest: clone the repo at the release tag you're
+   deploying and work from there instead of copying files individually.
 3. Copy `.env.example` to `.env` and fill it in: `STUDIO_VERSION` (a
    released version, from the
    [package's GHCR page](https://github.com/mysteryreloaded/ai-content-studio/pkgs/container/ai-content-studio) —

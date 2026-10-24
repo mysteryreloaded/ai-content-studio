@@ -65,6 +65,12 @@ jobs:
       - name: ShellCheck
         run: shellcheck ops/studio/upgrade.sh
 
+      - name: Validate Caddyfile
+        run: |
+          docker run --rm -e DOMAIN=example.com \
+            -v "$PWD/ops/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            caddy:2.10-alpine caddy validate --config /etc/caddy/Caddyfile
+
       - name: Compose config is valid
         run: |
           sed -e 's/^STUDIO_VERSION=$/STUDIO_VERSION=test/' \

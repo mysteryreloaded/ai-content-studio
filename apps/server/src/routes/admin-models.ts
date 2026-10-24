@@ -107,6 +107,11 @@ const inputDefinitionSchema = z.discriminatedUnion("kind", [
     ),
     default: z.string().nullable(),
   }),
+  z.object({
+    ...inputBaseSchema,
+    kind: z.literal("seed"),
+    max: z.number().nullable(),
+  }),
 ]);
 
 const inputsSchema = z.object({

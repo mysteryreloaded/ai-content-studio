@@ -11,6 +11,7 @@ import {
 } from "./input.js";
 import type {
   NumberInputDefinition,
+  SeedInputDefinition,
   SelectInputDefinition,
   TextInputDefinition,
 } from "./input.js";
@@ -665,5 +666,84 @@ describe("applyInputValues / buildPrompt", () => {
       quality: "slow",
     });
     expect(applied["2"]?.inputs.steps).toBe(40);
+  });
+});
+
+describe("Seed Input (issue #47)", () => {
+  const ctx = {
+    workflow,
+    outputNodeIds: new Set(["3"]),
+    usedFields: new Set<string>(),
+  };
+
+  function seedInput(
+    overrides: Partial<SeedInputDefinition> = {},
+  ): SeedInputDefinition {
+    return {
+      id: "66666666-6666-6666-6666-666666666666",
+      kind: "seed",
+      group: "settings",
+      label: "Seed",
+      help: "",
+      max: 1000,
+      bindings: [
+        { nodeId: "2", field: "seed", classType: "KSampler", title: null },
+      ],
+      ...overrides,
+    };
+  }
+
+  test("accepts a Seed Input bound to one INT field, with a max", () => {
+    expect(validateInputDefinition(seedInput(), [], ctx)).toEqual([]);
+  });
+
+  test("refuses more than one bound field", () => {
+    const errors = validateInputDefinition(
+      seedInput({
+        bindings: [
+          { nodeId: "2", field: "seed", classType: "KSampler", title: null },
+          { nodeId: "2", field: "steps", classType: "KSampler", title: null },
+        ],
+      }),
+      [],
+      ctx,
+    );
+    expect(errors.some((e) => e.includes("exactly one"))).toBe(true);
+  });
+
+  test("refuses a non-whole-number field, when known", () => {
+    const floatCtx = {
+      ...ctx,
+      fieldSpecs: new Map([["KSampler", { seed: { type: "FLOAT" } }]]),
+    };
+    const errors = validateInputDefinition(seedInput(), [], floatCtx);
+    expect(errors.some((e) => e.includes("whole-number"))).toBe(true);
+  });
+
+  test("accepts a null max (checked at enable time, not here)", () => {
+    expect(validateInputDefinition(seedInput({ max: null }), [], ctx)).toEqual(
+      [],
+    );
+  });
+
+  test("refuses a max at or above 2^53", () => {
+    const errors = validateInputDefinition(
+      seedInput({ max: 2 ** 53 }),
+      [],
+      ctx,
+    );
+    expect(errors.some((e) => e.includes("below"))).toBe(true);
+  });
+
+  test("writes the submitted seed straight to its bound field, no default fallback", () => {
+    const applied = applyInputValues(workflow, [seedInput()], {
+      "66666666-6666-6666-6666-666666666666": 42,
+    });
+    expect(applied["2"]?.inputs.seed).toBe(42);
+  });
+
+  test("leaves the Workflow's own seed when blank", () => {
+    const applied = applyInputValues(workflow, [seedInput()], {});
+    expect(applied["2"]?.inputs.seed).toBe(0);
   });
 });

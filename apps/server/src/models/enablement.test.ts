@@ -18,6 +18,7 @@ function backend(id: string): BackendRecord {
     baseUrl: "http://localhost",
     auth: "none",
     headerName: null,
+    enabled: true,
     version: 1,
     deletedAt: null,
     createdAt: new Date(),

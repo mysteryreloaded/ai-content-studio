@@ -3,9 +3,25 @@
 // dispatcher moves them on.
 
 import type { Workflow } from "@ai-content-studio/shared";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, notInArray } from "drizzle-orm";
 import type { Database } from "../db/client.js";
-import { generations, models, modes } from "../db/schema.js";
+import { assets, generations, models, modes } from "../db/schema.js";
+
+export type GenerationState =
+  | "queued"
+  | "starting"
+  | "running"
+  | "saving"
+  | "succeeded"
+  | "failed";
+
+export interface AssetSummary {
+  id: string;
+  nodeId: string;
+  sortOrder: number;
+  kind: string;
+  contentType: string;
+}
 
 export interface GenerationRecord {
   id: string;
@@ -15,8 +31,10 @@ export interface GenerationRecord {
   modeName: string;
   userId: string;
   submissionId: string;
-  state: "queued";
+  state: GenerationState;
+  error: string | null;
   submittedAt: Date;
+  assets: AssetSummary[];
 }
 
 export interface GenerationSummary extends GenerationRecord {
@@ -46,8 +64,23 @@ export interface CreateGenerationInput {
 }
 
 type GenerationRow = typeof generations.$inferSelect;
+type AssetRow = typeof assets.$inferSelect;
 
-function toRecord(row: GenerationRow, modeName: string): GenerationRecord {
+function toAssetSummary(row: AssetRow): AssetSummary {
+  return {
+    id: row.id,
+    nodeId: row.nodeId,
+    sortOrder: row.sortOrder,
+    kind: row.kind,
+    contentType: row.contentType,
+  };
+}
+
+function toRecord(
+  row: GenerationRow,
+  modeName: string,
+  assetRows: readonly AssetRow[] = [],
+): GenerationRecord {
   return {
     id: row.id,
     modelId: row.modelId,
@@ -57,8 +90,30 @@ function toRecord(row: GenerationRow, modeName: string): GenerationRecord {
     userId: row.userId,
     submissionId: row.submissionId,
     state: row.state,
+    error: row.error,
     submittedAt: row.submittedAt,
+    assets: [...assetRows]
+      .sort((a, b) => a.sortOrder - b.sortOrder)
+      .map(toAssetSummary),
   };
+}
+
+async function assetsByGenerationId(
+  db: Database,
+  generationIds: readonly string[],
+): Promise<Map<string, AssetRow[]>> {
+  if (generationIds.length === 0) return new Map();
+  const rows = await db
+    .select()
+    .from(assets)
+    .where(inArray(assets.generationId, generationIds));
+  const byId = new Map<string, AssetRow[]>();
+  for (const row of rows) {
+    const list = byId.get(row.generationId) ?? [];
+    list.push(row);
+    byId.set(row.generationId, list);
+  }
+  return byId;
 }
 
 export class GenerationsRepository {
@@ -89,7 +144,12 @@ export class GenerationsRepository {
       .select({ generation: generations, mode: modes })
       .from(generations)
       .innerJoin(modes, eq(modes.id, generations.modeId))
-      .where(eq(generations.userId, userId))
+      .where(
+        and(
+          eq(generations.userId, userId),
+          notInArray(generations.state, ["succeeded", "failed"]),
+        ),
+      )
       .orderBy(desc(generations.submittedAt));
 
     if (rows.length === 0) return [];
@@ -100,11 +160,19 @@ export class GenerationsRepository {
       .from(models)
       .where(inArray(models.id, modelIds));
     const modelById = new Map(modelRows.map((row) => [row.id, row]));
+    const assetsById = await assetsByGenerationId(
+      this.db,
+      rows.map((row) => row.generation.id),
+    );
 
     return rows.map((row) => {
       const model = modelById.get(row.generation.modelId);
       return {
-        ...toRecord(row.generation, row.mode.name),
+        ...toRecord(
+          row.generation,
+          row.mode.name,
+          assetsById.get(row.generation.id) ?? [],
+        ),
         modelSlug: model?.slug ?? "",
         modelName: model?.name ?? "",
       };
@@ -140,6 +208,10 @@ export class GenerationsRepository {
     const modeNameById = new Map(
       rows.map((row) => [row.generation.id, row.mode.name]),
     );
+    const assetsById = await assetsByGenerationId(
+      this.db,
+      rows.map((row) => row.generation.id),
+    );
 
     return orderedSubmissionIds.slice(0, limit).map((submissionId) => {
       const submissionRows = bySubmission.get(submissionId) ?? [];
@@ -150,28 +222,42 @@ export class GenerationsRepository {
         modeName: modeNameById.get(first.id) ?? "",
         submittedAt: first.submittedAt,
         generations: submissionRows.map((row) =>
-          toRecord(row, modeNameById.get(row.id) ?? ""),
+          toRecord(
+            row,
+            modeNameById.get(row.id) ?? "",
+            assetsById.get(row.id) ?? [],
+          ),
         ),
       };
     });
   }
 
-  /** Whether this Model has any Generation that isn't done yet (issue #43: refuses deleting it). */
+  /** Whether this Model has any Generation that isn't done yet (issue #43, #44: refuses deleting it). */
   async hasUnfinishedForModel(modelId: string): Promise<boolean> {
     const [row] = await this.db
       .select({ id: generations.id })
       .from(generations)
-      .where(eq(generations.modelId, modelId))
+      .where(
+        and(
+          eq(generations.modelId, modelId),
+          notInArray(generations.state, ["succeeded", "failed"]),
+        ),
+      )
       .limit(1);
     return !!row;
   }
 
-  /** Whether this Backend has any Generation that isn't done yet (issue #43: refuses deleting it). */
+  /** Whether this Backend has any Generation that isn't done yet (issue #43, #44: refuses deleting it). */
   async hasUnfinishedForBackend(backendId: string): Promise<boolean> {
     const [row] = await this.db
       .select({ id: generations.id })
       .from(generations)
-      .where(eq(generations.backendId, backendId))
+      .where(
+        and(
+          eq(generations.backendId, backendId),
+          notInArray(generations.state, ["succeeded", "failed"]),
+        ),
+      )
       .limit(1);
     return !!row;
   }

@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export interface StorageStat {
@@ -11,6 +11,15 @@ export interface Storage {
   read(key: string): Promise<Buffer>;
   stat(key: string): Promise<StorageStat | null>;
   delete(key: string): Promise<void>;
+  /**
+   * Streams `response`'s body straight to a temp file, then renames it
+   * into place (issue #44: saving a Generation's Asset from a Backend's
+   * `/view`), so a reader never sees a partially-written file. Returns
+   * the bytes written.
+   */
+  writeResponseBody(key: string, response: Response): Promise<number>;
+  /** The absolute path for `key` (issue #44: Range-serving an Asset needs a real file, not just its bytes). */
+  absolutePath(key: string): string;
 }
 
 function resolveKeyPath(root: string, key: string): string {
@@ -45,6 +54,19 @@ export function createLocalStorage(root: string): Storage {
 
     async delete(key) {
       await rm(resolveKeyPath(root, key), { force: true });
+    },
+
+    async writeResponseBody(key, response) {
+      const filePath = resolveKeyPath(root, key);
+      await mkdir(path.dirname(filePath), { recursive: true });
+      const tmpPath = `${filePath}.tmp-${crypto.randomUUID()}`;
+      const bytesWritten = await Bun.write(tmpPath, response);
+      await rename(tmpPath, filePath);
+      return bytesWritten;
+    },
+
+    absolutePath(key) {
+      return resolveKeyPath(root, key);
     },
   };
 }

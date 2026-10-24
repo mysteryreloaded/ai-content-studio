@@ -35,6 +35,8 @@ export interface BackendRecord {
   baseUrl: string;
   auth: AuthKind;
   headerName: string | null;
+  /** Issue #44: an Admin's own on/off switch; the dispatcher skips a disabled Backend even while it's reachable. */
+  enabled: boolean;
   version: number;
   deletedAt: Date | null;
   createdAt: Date;
@@ -53,6 +55,7 @@ export function toRecord(row: Row): BackendRecord {
     baseUrl: row.baseUrl,
     auth: row.authKind,
     headerName: row.headerName,
+    enabled: row.enabled,
     version: row.version,
     deletedAt: row.deletedAt,
     createdAt: row.createdAt,
@@ -329,6 +332,45 @@ export class BackendRepository {
         snapshot(before, before.encryptedCredentials ? "unchanged" : "cleared"),
         null,
       );
+    });
+  }
+
+  /** Toggles a Backend's own on/off switch (issue #44); doesn't touch credentials. */
+  async setEnabled(
+    id: string,
+    enabled: boolean,
+    expectedVersion: number,
+    actor: AuditActor,
+  ): Promise<BackendRecord> {
+    return await this.db.transaction(async (tx) => {
+      const [before] = await tx
+        .select()
+        .from(backends)
+        .where(and(eq(backends.id, id), isNull(backends.deletedAt)));
+      if (!before) throw new NotFound();
+
+      const [row] = await tx
+        .update(backends)
+        .set({
+          enabled,
+          version: before.version + 1,
+          updatedAt: this.clock.now(),
+        })
+        .where(and(eq(backends.id, id), eq(backends.version, expectedVersion)))
+        .returning();
+      if (!row) throw new StaleVersion();
+
+      await writeBackendAuditEntry(
+        tx,
+        this.clock,
+        actor,
+        "update",
+        id,
+        { enabled: before.enabled },
+        { enabled: row.enabled },
+      );
+
+      return toRecord(row);
     });
   }
 

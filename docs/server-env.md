@@ -179,3 +179,20 @@ An optional RFC 3161 Time Authority URL (e.g.
 stays verifiable after the certificate expires. Requires
 `C2PA_CERT_PATH`/`C2PA_KEY_PATH` to be set; needs a live connection to
 that URL at signing time.
+
+## `asset_retention_days`
+
+### `ASSET_RETENTION_DAYS`
+
+How many days a Generation's Assets are kept before the retention job
+(issue #69) turns it into a Tombstone, the same as a user's own delete
+(CONTEXT.md, ADR 0011). Blank keeps every Asset forever — unlike every
+other numeric variable here, an empty string is accepted and means the
+same as leaving it unset, rather than failing validation.
+
+## `log_retention_days`
+
+### `LOG_RETENTION_DAYS`
+
+How many days a Log entry is kept before the retention job (issue #69)
+deletes it. Defaults to `30`.

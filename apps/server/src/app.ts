@@ -36,6 +36,7 @@ import { ModelRepository } from "./models/repository.js";
 import { hasFreeDisk } from "./problems/disk.js";
 import { ProblemsMonitor } from "./problems/monitor.js";
 import { ProblemsRegistry } from "./problems/problems.js";
+import { RetentionScheduler } from "./retention/scheduler.js";
 import { adminAuditRoute } from "./routes/admin-audit.js";
 import { adminBackendsRoute } from "./routes/admin-backends.js";
 import { adminLogsRoute } from "./routes/admin-logs.js";
@@ -83,6 +84,8 @@ export interface CreatedApp {
   problemsMonitor: ProblemsMonitor;
   /** Dispatches queued Generations to free Backends (issue #44): call `start()` after boot, `stop()` on shutdown. */
   dispatcher: Dispatcher;
+  /** The retention sweep (issue #69): call `start()` after boot, `stop()` on shutdown. */
+  retentionScheduler: RetentionScheduler;
   /** Boot recovery (issue #55): reattaches every Generation left `starting`/`running`/`saving` from a previous process. Call once, before `dispatcher.start()`. */
   recover: () => Promise<void>;
 }
@@ -213,6 +216,19 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
     isPaused,
   });
   wakeDispatcher = dispatcher.wake;
+
+  const retentionScheduler = new RetentionScheduler({
+    sql: deps.sql,
+    db: deps.db,
+    clock: deps.clock,
+    storage,
+    logWriter,
+    logger: deps.logger,
+    generationsRepository,
+    uploadsRepository,
+    assetRetentionDays: deps.env.ASSET_RETENTION_DAYS ?? null,
+    logRetentionDays: deps.env.LOG_RETENTION_DAYS,
+  });
 
   app.route(
     "/api/models",
@@ -399,6 +415,7 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
     backendsService,
     problemsMonitor,
     dispatcher,
+    retentionScheduler,
     recover: () => dispatcher.recover(),
   };
 }

@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import type { Handler, Hono } from "hono";
 import type { AppEnv } from "./app-env.js";
 
@@ -11,7 +12,8 @@ export type AccessLevel =
   | "signed-in"
   | "active"
   | "admin"
-  | "status-token";
+  | "status-token"
+  | "admin-or-status-token";
 
 export interface RouteEntry {
   method: string;
@@ -40,6 +42,18 @@ export function guardedRoute(
   app[method](path, requireAccess(access), ...handlers);
 }
 
+/** Constant-time comparison of a bearer header against `Bearer $expected`, so a wrong token can't be guessed byte-by-byte via timing. */
+function bearerTokenMatches(
+  header: string | undefined,
+  expected: string | undefined,
+): boolean {
+  if (!expected || !header) return false;
+  const expectedHeader = Buffer.from(`Bearer ${expected}`);
+  const actualHeader = Buffer.from(header);
+  if (expectedHeader.length !== actualHeader.length) return false;
+  return timingSafeEqual(expectedHeader, actualHeader);
+}
+
 function joinPaths(base: string, path: string): string {
   const joined = `${base}${path}`.replace(/\/+/g, "/");
   if (joined === "") return "/";
@@ -54,9 +68,20 @@ export function requireAccess(access: AccessLevel): Handler<AppEnv> {
     if (access === "public") return next();
 
     if (access === "status-token") {
-      const expected = process.env.STATUS_TOKEN;
       const header = c.req.header("authorization");
-      if (!expected || header !== `Bearer ${expected}`) {
+      if (!bearerTokenMatches(header, process.env.STATUS_TOKEN)) {
+        return c.json({ error: "forbidden" }, 403);
+      }
+      return next();
+    }
+
+    if (access === "admin-or-status-token") {
+      const header = c.req.header("authorization");
+      if (bearerTokenMatches(header, process.env.STATUS_TOKEN)) return next();
+
+      const session = c.get("session");
+      if (!session) return c.json({ error: "unauthorized" }, 401);
+      if (session.user.status !== "active" || session.user.role !== "admin") {
         return c.json({ error: "forbidden" }, 403);
       }
       return next();

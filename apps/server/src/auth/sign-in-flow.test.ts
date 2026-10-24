@@ -33,6 +33,8 @@ async function startTestServer() {
     DATA_DIR: "/tmp/ai-content-studio-test-data",
     SECRET_KEY: "4FRG13w9RuN5CeV10Lzfxl78MY+AJRJtGuKrBdYzgCY=",
     BACKENDS_ENABLED: false,
+    STATUS_TOKEN: undefined,
+    MIN_FREE_DISK_GB: 10,
   };
 
   const { app } = await createApp({

@@ -19,6 +19,8 @@ interface AdminBackend {
   auth: AuthKind;
   headerName: string | null;
   enabled: boolean;
+  /** Issue #55: takes no new Generations but finishes what it has, unlike `enabled` which also drops what's in flight. */
+  draining: boolean;
   version: number;
   health: BackendHealth;
 }
@@ -239,6 +241,23 @@ export function BackendsPage() {
     load();
   }
 
+  /** Issue #55: takes no new Generations but finishes what it has, so an Admin can service it without failing in-flight work. */
+  async function handleToggleDraining(backend: AdminBackend) {
+    const res = await fetch(`/api/admin/backends/${backend.id}/draining`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        draining: !backend.draining,
+        version: backend.version,
+      }),
+    });
+    if (res.status === 409) {
+      setLoadError("changed by someone else, reload");
+      return;
+    }
+    load();
+  }
+
   return (
     <section>
       <h2>Backends</h2>
@@ -255,6 +274,7 @@ export function BackendsPage() {
               <th>Name</th>
               <th>Base URL</th>
               <th>Enabled</th>
+              <th>Draining</th>
               <th>Health</th>
               <th>ComfyUI version</th>
               <th>VRAM</th>
@@ -273,6 +293,14 @@ export function BackendsPage() {
                       onClick={() => void handleToggleEnabled(backend)}
                     >
                       {backend.enabled ? "Enabled" : "Disabled"}
+                    </button>
+                  </td>
+                  <td>
+                    <button
+                      type="button"
+                      onClick={() => void handleToggleDraining(backend)}
+                    >
+                      {backend.draining ? "Draining" : "Not draining"}
                     </button>
                   </td>
                   <td>{healthLabel(backend)}</td>
@@ -305,7 +333,7 @@ export function BackendsPage() {
                 </tr>
                 {expandedLogsFor === backend.id && (
                   <tr>
-                    <td colSpan={6}>
+                    <td colSpan={7}>
                       {(recentLogs[backend.id]?.length ?? 0) === 0 ? (
                         <p>No recent Log entries for this Backend.</p>
                       ) : (

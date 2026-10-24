@@ -175,6 +175,8 @@ export const backends = pgTable(
     headerName: text("header_name"),
     /** Issue #44: an Admin's own on/off switch, separate from reachability — a disabled Backend is never dispatched to, even while reachable. */
     enabled: boolean("enabled").notNull().default(true),
+    /** Issue #55: an Admin's own "finish what you have, take nothing new" switch — unlike `enabled`, a draining Backend keeps its in-flight try. */
+    draining: boolean("draining").notNull().default(false),
     version: integer("version").notNull().default(1),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -443,6 +445,19 @@ export const generationState = pgEnum("generation_state", [
  * afterwards for history even once the Backend frees. `error` is set
  * only on `failed`. Progress (step counter, elapsed/estimate) is kept in
  * memory only (issue #44's AC), not persisted here.
+ *
+ * Issue #55 (reliable dispatch): `tries` counts tries made so far (at
+ * most 2) and also doubles as this row's own concurrency token — every
+ * write a try makes is conditioned on `tries` still matching the value
+ * it read at claim time, so a stale in-process runner's writes no-op
+ * once a watchdog or a later try has already moved the row on.
+ * `queuedAt` is when this row most recently became `queued` (first
+ * submitted, or requeued after a lost try); it resets on each requeue,
+ * unlike `submittedAt`. The "no usable Backend for 15 minutes" timeout
+ * is tracked separately, in the Dispatcher's own memory, from when a
+ * Model last had no usable Backend at all — not from `queuedAt` — so a
+ * Generation queued a while behind a busy (but usable) Backend doesn't
+ * fail the instant that Backend is drained or briefly unreachable.
  */
 export const generations = pgTable(
   "generations",
@@ -467,8 +482,10 @@ export const generations = pgTable(
     state: generationState("state").notNull().default("queued"),
     builtPrompt: jsonb("built_prompt").notNull(),
     nodeTypes: text("node_types").array().notNull(),
+    tries: integer("tries").notNull().default(0),
     error: text("error"),
     startedAt: timestamp("started_at", { withTimezone: true }),
+    queuedAt: timestamp("queued_at", { withTimezone: true }).notNull(),
     submittedAt: timestamp("submitted_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()

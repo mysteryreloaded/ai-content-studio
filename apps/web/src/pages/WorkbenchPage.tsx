@@ -297,14 +297,33 @@ function assetSrc(asset: AssetSummary): string {
 /** Plays the main (first) Asset in place once the Generation has succeeded. */
 function AssetPlayer({ asset }: { asset: AssetSummary }) {
   if (asset.kind === "video") {
-    // biome-ignore lint/a11y/useMediaCaption: a generated Asset has no captions to offer.
-    return <video controls src={assetSrc(asset)} className="workbench-asset" />;
+    return (
+      // biome-ignore lint/a11y/useMediaCaption: a generated Asset has no captions to offer.
+      <video
+        controls
+        poster={`/api/assets/${asset.id}/poster`}
+        src={assetSrc(asset)}
+        className="workbench-asset"
+      />
+    );
   }
   if (asset.kind === "audio") {
     // biome-ignore lint/a11y/useMediaCaption: a generated Asset has no captions to offer.
     return <audio controls src={assetSrc(asset)} className="workbench-asset" />;
   }
   return <img src={assetSrc(asset)} alt="" className="workbench-asset" />;
+}
+
+/** A Download link for `asset`, with the AI-generated reminder the AC asks for beside every Download (issue #45). */
+function DownloadAsset({ asset }: { asset: AssetSummary }) {
+  return (
+    <p className="workbench-download">
+      <a href={`/api/assets/${asset.id}?download=1`}>Download</a>{" "}
+      <span className="workbench-ai-reminder">
+        AI-generated: say so when you share it.
+      </span>
+    </p>
+  );
 }
 
 function GenerationCard({
@@ -325,7 +344,10 @@ function GenerationCard({
         <span role="alert">{generation.error}</span>
       )}
       {generation.state === "succeeded" && mainAsset && (
-        <AssetPlayer asset={mainAsset} />
+        <>
+          <AssetPlayer asset={mainAsset} />
+          <DownloadAsset asset={mainAsset} />
+        </>
       )}
     </li>
   );
@@ -1050,6 +1072,13 @@ const WORKBENCH_STYLE = `
 }
 .workbench-progress {
   opacity: 0.8;
+}
+.workbench-download {
+  margin: 0.25rem 0 0;
+  font-size: 0.85rem;
+}
+.workbench-ai-reminder {
+  opacity: 0.7;
 }
 .workbench-layout {
   display: flex;

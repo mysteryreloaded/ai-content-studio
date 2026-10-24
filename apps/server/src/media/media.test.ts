@@ -1,0 +1,87 @@
+// Real ffmpeg/ffprobe against tiny committed fixtures (issue #45's AC):
+// a 1.4s 64x48 5fps video, a 32x32 still and a 1s silent clip.
+
+import { describe, expect, test } from "bun:test";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { MediaCommandError, MediaRunner } from "./media.js";
+
+const FIXTURES = path.join(import.meta.dir, "fixtures");
+const VIDEO = path.join(FIXTURES, "tiny.mp4");
+const AUDIO = path.join(FIXTURES, "tiny.wav");
+
+describe("MediaRunner", () => {
+  test("probeVideo reads resolution, duration and fps", async () => {
+    const media = new MediaRunner(2);
+    const probe = await media.probeVideo(VIDEO);
+    expect(probe.width).toBe(64);
+    expect(probe.height).toBe(48);
+    expect(probe.fps).toBe(5);
+    expect(probe.durationMs).toBeGreaterThan(1000);
+    expect(probe.durationMs).toBeLessThan(2000);
+  });
+
+  test("probeAudioDurationMs reads duration", async () => {
+    const media = new MediaRunner(2);
+    const durationMs = await media.probeAudioDurationMs(AUDIO);
+    expect(durationMs).toBeGreaterThanOrEqual(950);
+    expect(durationMs).toBeLessThanOrEqual(1050);
+  });
+
+  test("finishVideo strips metadata, keeps the video playable and sets the comment tag", async () => {
+    const media = new MediaRunner(2);
+    const dir = await mkdtemp(path.join(tmpdir(), "media-test-"));
+    try {
+      const output = path.join(dir, "finished.mp4");
+      await media.finishVideo(
+        VIDEO,
+        output,
+        "AI-generated with Test on localhost, Generation abc123",
+      );
+
+      const probe = await media.probeVideo(output);
+      expect(probe.width).toBe(64);
+      expect(probe.height).toBe(48);
+
+      const stdout =
+        await Bun.$`ffprobe -v error -print_format json -show_format -show_streams ${output}`.text();
+      const parsed = JSON.parse(stdout) as {
+        format: { tags?: Record<string, string> };
+        streams: { tags?: Record<string, string> }[];
+      };
+      expect(parsed.format.tags?.comment).toBe(
+        "AI-generated with Test on localhost, Generation abc123",
+      );
+      // The source's own encoder tag ("Lavc... libx264") is gone; only the
+      // mp4 muxer's own default tags remain, which `-map_metadata -1`
+      // doesn't (and can't) touch.
+      expect(parsed.streams[0]?.tags?.encoder).toBeUndefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("extractPosterFrame pulls a readable first-frame JPEG", async () => {
+    const media = new MediaRunner(2);
+    const dir = await mkdtemp(path.join(tmpdir(), "media-test-"));
+    try {
+      const output = path.join(dir, "poster.jpg");
+      await media.extractPosterFrame(VIDEO, output);
+      const bytes = await readFile(output);
+      expect(bytes.length).toBeGreaterThan(0);
+      // JPEG magic bytes.
+      expect(bytes[0]).toBe(0xff);
+      expect(bytes[1]).toBe(0xd8);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a bad path rejects with MediaCommandError", async () => {
+    const media = new MediaRunner(2);
+    await expect(
+      media.probeVideo(path.join(FIXTURES, "missing.mp4")),
+    ).rejects.toBeInstanceOf(MediaCommandError);
+  });
+});

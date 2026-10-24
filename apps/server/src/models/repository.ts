@@ -5,20 +5,24 @@
 
 import {
   type OutsideServiceNote,
+  type ResolvedOutputNode,
   type Workflow,
   findMissingLinkTargets,
   findOutsideServiceNotes,
   parseApiFormatWorkflow,
+  resolveModeOutputNodes,
+  validateModeName,
 } from "@ai-content-studio/shared";
 import type { Clock } from "@ai-content-studio/shared";
 import { and, asc, eq, isNull, max } from "drizzle-orm";
 import type { AuditActor } from "../audit/audit.js";
 import { recordAuditEntry } from "../audit/audit.js";
 import type { Database, Transaction } from "../db/client.js";
-import { modelRevisions, models, workflows } from "../db/schema.js";
+import { modelRevisions, models, modes, workflows } from "../db/schema.js";
 import {
   MAX_WORKFLOW_BYTES,
   type ModelDetailsInput,
+  type ValidationError,
   ValidationFailed,
   slugify,
   validateModelDetails,
@@ -65,11 +69,51 @@ export interface ModelRecord {
   updatedAt: Date;
 }
 
+export interface ModeRecord {
+  id: string;
+  sortOrder: number;
+  name: string;
+  description: string;
+  outputNodes: ResolvedOutputNode[];
+}
+
+export interface ModeInput {
+  name: string;
+  description: string;
+  outputNodeIds: string[];
+}
+
 export interface ModelDetail {
   model: ModelRecord;
   workflowHash: string;
+  workflow: Workflow;
   nodes: Array<{ id: string; classType: string; title: string | null }>;
   outsideServiceNotes: OutsideServiceNote[];
+  modes: ModeRecord[];
+}
+
+type ModeRow = typeof modes.$inferSelect;
+
+function toModeRecord(row: ModeRow): ModeRecord {
+  return {
+    id: row.id,
+    sortOrder: row.sortOrder,
+    name: row.name,
+    description: row.description,
+    outputNodes: row.outputNodes as ResolvedOutputNode[],
+  };
+}
+
+async function listModesForRevision(
+  db: Database | Transaction,
+  revisionId: string,
+): Promise<ModeRecord[]> {
+  const rows = await db
+    .select()
+    .from(modes)
+    .where(eq(modes.revisionId, revisionId))
+    .orderBy(asc(modes.sortOrder));
+  return rows.map(toModeRecord);
 }
 
 function toRecord(row: ModelRow): ModelRecord {
@@ -406,8 +450,206 @@ export class ModelRepository {
     return {
       model: toRecord(row),
       workflowHash: revision.workflowHash,
+      workflow,
       nodes: nodesFrom(workflow),
       outsideServiceNotes: findOutsideServiceNotes(workflow),
+      modes: await listModesForRevision(this.db, revision.id),
     };
+  }
+
+  /**
+   * Replaces this Model's Modes, resolving each's output nodes against
+   * the current revision's Workflow (ADR 0001). Always makes a new
+   * revision, even when the Workflow itself doesn't change, since a
+   * Model revision is "one saved state of a Model's Workflow, Inputs and
+   * Modes".
+   */
+  async updateModes(
+    id: string,
+    input: ModeInput[],
+    expectedVersion: number,
+    actor: AuditActor,
+  ): Promise<{ record: ModelRecord; modes: ModeRecord[] }> {
+    return await this.db.transaction(async (tx) => {
+      const [before] = await tx
+        .select()
+        .from(models)
+        .where(and(eq(models.id, id), isNull(models.deletedAt)));
+      if (!before) throw new NotFound();
+
+      const [currentRevision] = await tx
+        .select()
+        .from(modelRevisions)
+        .where(
+          and(
+            eq(modelRevisions.modelId, id),
+            eq(modelRevisions.revisionNumber, before.currentRevision),
+          ),
+        );
+      if (!currentRevision) throw new Error("current revision missing");
+
+      const [workflowRow] = await tx
+        .select()
+        .from(workflows)
+        .where(eq(workflows.hash, currentRevision.workflowHash));
+      if (!workflowRow) throw new Error("Workflow missing for revision");
+      const workflow = workflowRow.json as Workflow;
+
+      const errors: ValidationError[] = [];
+      const namesSoFar: string[] = [];
+      const resolved: Array<{
+        name: string;
+        description: string;
+        outputNodes: ResolvedOutputNode[];
+      }> = [];
+
+      input.forEach((modeInput, index) => {
+        const nameError = validateModeName(modeInput.name, namesSoFar);
+        if (nameError) {
+          errors.push({ field: `modes[${index}].name`, message: nameError });
+        }
+        namesSoFar.push(modeInput.name);
+
+        const outcome = resolveModeOutputNodes(
+          workflow,
+          modeInput.outputNodeIds,
+        );
+        if (!outcome.ok) {
+          for (const message of outcome.errors) {
+            errors.push({ field: `modes[${index}].outputNodes`, message });
+          }
+          return;
+        }
+        resolved.push({
+          name: modeInput.name,
+          description: modeInput.description,
+          outputNodes: outcome.outputNodes,
+        });
+      });
+
+      if (errors.length > 0) throw new ValidationFailed(errors);
+
+      const beforeModes = await listModesForRevision(tx, currentRevision.id);
+
+      const newRevisionNumber = before.currentRevision + 1;
+      const [newRevision] = await tx
+        .insert(modelRevisions)
+        .values({
+          modelId: id,
+          revisionNumber: newRevisionNumber,
+          workflowHash: currentRevision.workflowHash,
+        })
+        .returning();
+      if (!newRevision) throw new Error("insert returned no row");
+
+      if (resolved.length > 0) {
+        await tx.insert(modes).values(
+          resolved.map((mode, index) => ({
+            revisionId: newRevision.id,
+            sortOrder: index,
+            name: mode.name,
+            description: mode.description,
+            outputNodes: mode.outputNodes,
+          })),
+        );
+      }
+
+      const [row] = await tx
+        .update(models)
+        .set({
+          currentRevision: newRevisionNumber,
+          version: before.version + 1,
+          updatedAt: this.clock.now(),
+        })
+        .where(and(eq(models.id, id), eq(models.version, expectedVersion)))
+        .returning();
+      if (!row) throw new StaleVersion();
+
+      const afterModes = await listModesForRevision(tx, newRevision.id);
+      await recordAuditEntry(tx, this.clock, {
+        actor,
+        targetType: "model",
+        targetId: id,
+        action: "update_modes",
+        before: beforeModes,
+        after: afterModes,
+      });
+
+      return { record: toRecord(row), modes: afterModes };
+    });
+  }
+
+  async setState(
+    id: string,
+    state: "enabled" | "disabled",
+    expectedVersion: number,
+    actor: AuditActor,
+  ): Promise<ModelRecord> {
+    return await this.db.transaction(async (tx) => {
+      const [before] = await tx
+        .select()
+        .from(models)
+        .where(and(eq(models.id, id), isNull(models.deletedAt)));
+      if (!before) throw new NotFound();
+
+      const [row] = await tx
+        .update(models)
+        .set({
+          state,
+          version: before.version + 1,
+          updatedAt: this.clock.now(),
+        })
+        .where(and(eq(models.id, id), eq(models.version, expectedVersion)))
+        .returning();
+      if (!row) throw new StaleVersion();
+
+      await recordAuditEntry(tx, this.clock, {
+        actor,
+        targetType: "model",
+        targetId: id,
+        action: state === "enabled" ? "enable" : "disable",
+        before: { state: before.state },
+        after: { state: row.state },
+      });
+
+      return toRecord(row);
+    });
+  }
+
+  /** Enabled Models for the signed-in Models home, in Admin order. */
+  async listEnabledSummaries(): Promise<
+    Array<{
+      id: string;
+      slug: string;
+      name: string;
+      description: string;
+      modeCount: number;
+    }>
+  > {
+    const rows = await this.db
+      .select({ model: models, revision: modelRevisions })
+      .from(models)
+      .innerJoin(
+        modelRevisions,
+        and(
+          eq(modelRevisions.modelId, models.id),
+          eq(modelRevisions.revisionNumber, models.currentRevision),
+        ),
+      )
+      .where(and(eq(models.state, "enabled"), isNull(models.deletedAt)))
+      .orderBy(asc(models.sortOrder));
+
+    const summaries = [];
+    for (const row of rows) {
+      const modeRows = await listModesForRevision(this.db, row.revision.id);
+      summaries.push({
+        id: row.model.id,
+        slug: row.model.slug,
+        name: row.model.name,
+        description: row.model.description,
+        modeCount: modeRows.length,
+      });
+    }
+    return summaries;
   }
 }

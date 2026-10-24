@@ -55,8 +55,12 @@ const DETAIL = {
     version: 1,
   },
   workflowHash: "hash1",
+  workflow: {
+    "1": { class_type: "LoadImage", inputs: {} },
+  },
   nodes: [{ id: "1", classType: "LoadImage", title: null }],
   outsideServiceNotes: [],
+  modes: [],
 };
 
 const NO_BACKENDS = { backends: [] };
@@ -358,5 +362,56 @@ describe("ModelEditorPage", () => {
 
     expect(await view.findByText("No Backends attached.")).toBeTruthy();
     expect(calls.some((c) => c.method === "DELETE")).toBe(true);
+  });
+
+  test("adds a Mode, picks an output node in the Workflow table, and saves it", async () => {
+    const calls = mockFetch((call) => {
+      if (call.method === "GET") return respondGet(call.url);
+      if (call.method === "PUT" && call.url.endsWith("/modes")) {
+        return Response.json({
+          record: { ...DETAIL.model, currentRevision: 2, version: 2 },
+          modes: [],
+        });
+      }
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+
+    await view.findByText("LTX 2.5");
+    await userEvent.click(view.getByText("Add Mode"));
+    await userEvent.type(view.getByLabelText("Mode name"), "Default");
+    await userEvent.click(view.getByRole("button", { name: "Add" }));
+
+    await userEvent.click(view.getByText("Save Modes"));
+
+    const saved = calls.find(
+      (c) => c.method === "PUT" && c.url.endsWith("/modes"),
+    );
+    expect(saved?.body).toEqual({
+      version: 1,
+      modes: [{ name: "Default", description: "", outputNodeIds: ["1"] }],
+    });
+  });
+
+  test("Enable shows the server's reasons when the Model isn't ready", async () => {
+    mockFetch((call) => {
+      if (call.method === "GET") return respondGet(call.url);
+      if (call.method === "POST" && call.url.endsWith("/enable")) {
+        return Response.json(
+          { error: "not ready", reasons: ["needs at least one Mode"] },
+          { status: 400 },
+        );
+      }
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+
+    await userEvent.click(await view.findByText("Enable"));
+
+    expect(await view.findByText("needs at least one Mode")).toBeTruthy();
   });
 });

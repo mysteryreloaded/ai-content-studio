@@ -246,9 +246,9 @@ export const models = pgTable(
 );
 
 /**
- * One saved, immutable, numbered state of a Model's Workflow (issue #40;
- * Inputs and Modes join this later). Never updated or deleted: a save makes
- * a new row with the next `revisionNumber` for that Model.
+ * One saved, immutable, numbered state of a Model's Workflow and Modes
+ * (issue #40, #42; Inputs join this later). Never updated or deleted: a
+ * save of either makes a new row with the next `revisionNumber`.
  */
 export const modelRevisions = pgTable(
   "model_revisions",
@@ -292,6 +292,38 @@ export const modelBackends = pgTable(
       .defaultNow(),
   },
   (table) => [primaryKey({ columns: [table.modelId, table.backendId] })],
+);
+
+/**
+ * A named preset of a Model revision (issue #42): its ordered output
+ * nodes (ADR 0001) resolved against that revision's Workflow at save
+ * time, so an old revision's Modes still read back even if the Admin
+ * later renames or removes those nodes in a newer Workflow. `sortOrder`
+ * is the Admin's own ordering within the revision. `outputNodes` is an
+ * ordered JSON array of `{ nodeId, classType, title, kind }`; the first
+ * entry is the main Asset.
+ */
+export const modes = pgTable(
+  "modes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    revisionId: uuid("revision_id")
+      .notNull()
+      .references(() => modelRevisions.id, { onDelete: "cascade" }),
+    sortOrder: integer("sort_order").notNull(),
+    name: text("name").notNull(),
+    description: text("description").notNull().default(""),
+    outputNodes: jsonb("output_nodes").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("modes_revision_name_unique").on(
+      table.revisionId,
+      sql`lower(${table.name})`,
+    ),
+  ],
 );
 
 /**

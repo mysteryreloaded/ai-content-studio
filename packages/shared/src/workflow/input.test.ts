@@ -3,13 +3,16 @@ import {
   applyInputValues,
   buildInputValuesSchema,
   buildPrompt,
+  imageUploadLimitIssue,
   listBindableFields,
   relevantInputs,
   toInputIssues,
+  uploadFileName,
   validateBinding,
   validateInputDefinition,
 } from "./input.js";
 import type {
+  ImageUploadInputDefinition,
   NumberInputDefinition,
   SelectInputDefinition,
   TextInputDefinition,
@@ -665,5 +668,151 @@ describe("applyInputValues / buildPrompt", () => {
       quality: "slow",
     });
     expect(applied["2"]?.inputs.steps).toBe(40);
+  });
+});
+
+describe("Image Upload Inputs (issue #50)", () => {
+  const loaderWorkflow: Workflow = {
+    "10": {
+      class_type: "LoadImage",
+      inputs: { image: "example.png" },
+    },
+    "11": {
+      class_type: "SaveImage",
+      inputs: { images: ["10", 0], filename_prefix: "ComfyUI" },
+    },
+  };
+  const uploadInput: ImageUploadInputDefinition = {
+    id: "8a3c1c5e-2d4b-4d55-9d0e-3f1f0f6b7a01",
+    kind: "image_upload",
+    group: "describe",
+    label: "Start frame",
+    help: "",
+    maxSizeMb: 20,
+    maxLongSide: 4096,
+    bindings: [
+      { nodeId: "10", field: "image", classType: "LoadImage", title: null },
+    ],
+  };
+  const ctx = {
+    workflow: loaderWorkflow,
+    outputNodeIds: new Set(["11"]),
+    usedFields: new Set<string>(),
+  };
+  const uploadId = "0c6b3d2a-6f6a-4b8e-9f8e-1a2b3c4d5e6f";
+
+  test("binds a loader field the Backend flags image_upload", () => {
+    const withSpecs = {
+      ...ctx,
+      fieldSpecs: new Map([
+        ["LoadImage", { image: { type: "COMBO", imageUpload: true } }],
+      ]),
+    };
+    expect(
+      validateBinding("image_upload", "10", "image", withSpecs),
+    ).toBeNull();
+  });
+
+  test("refuses a field the Backend reports without the image_upload flag", () => {
+    const withSpecs = {
+      ...ctx,
+      fieldSpecs: new Map([
+        ["LoadImage", { image: { type: "COMBO", options: ["a.png"] } }],
+      ]),
+    };
+    expect(validateBinding("image_upload", "10", "image", withSpecs)).toContain(
+      "image upload loader",
+    );
+  });
+
+  test("without the Backend's field shapes, falls back to a text field", () => {
+    expect(validateBinding("image_upload", "10", "image", ctx)).toBeNull();
+    expect(
+      validateBinding("image_upload", "12", "steps", {
+        ...ctx,
+        workflow: {
+          ...loaderWorkflow,
+          "12": { class_type: "KSampler", inputs: { steps: 20 } },
+        },
+      }),
+    ).toContain("image upload loader");
+  });
+
+  test("max size must be 1 to MAX_UPLOAD_MB, max long side a positive whole number", () => {
+    const withCeiling = { ...ctx, maxUploadMb: 500 };
+    expect(validateInputDefinition(uploadInput, [], withCeiling)).toEqual([]);
+    expect(
+      validateInputDefinition(
+        { ...uploadInput, maxSizeMb: 0 },
+        [],
+        withCeiling,
+      ),
+    ).toContain("max size must be 1-500 MB");
+    expect(
+      validateInputDefinition(
+        { ...uploadInput, maxSizeMb: 501 },
+        [],
+        withCeiling,
+      ),
+    ).toContain("max size must be 1-500 MB");
+    expect(
+      validateInputDefinition(
+        { ...uploadInput, maxLongSide: 0 },
+        [],
+        withCeiling,
+      ),
+    ).toContain("max long side must be a whole number of pixels, at least 1");
+    expect(
+      validateInputDefinition(
+        { ...uploadInput, maxLongSide: null },
+        [],
+        withCeiling,
+      ),
+    ).toEqual([]);
+  });
+
+  test("a shown Image Upload is always required and takes an Upload id", () => {
+    const schema = buildInputValuesSchema([uploadInput]);
+    expect(schema.safeParse({}).success).toBe(false);
+    expect(schema.safeParse({ [uploadInput.id]: "not-an-id" }).success).toBe(
+      false,
+    );
+    expect(schema.safeParse({ [uploadInput.id]: uploadId }).success).toBe(true);
+  });
+
+  test("buildPrompt writes the Upload's Backend file name into the loader field", () => {
+    const { prompt } = buildPrompt(
+      loaderWorkflow,
+      [uploadInput],
+      { [uploadInput.id]: uploadFileName(uploadId, "png") },
+      ["11"],
+      "gen-1",
+    );
+    expect(prompt["10"]?.inputs.image).toBe(`studio/${uploadId}.png`);
+  });
+
+  test("a missing value leaves the loader's own file name", () => {
+    const applied = applyInputValues(loaderWorkflow, [uploadInput], {});
+    expect(applied["10"]?.inputs.image).toBe("example.png");
+  });
+
+  test("imageUploadLimitIssue checks size and, once known, the long side", () => {
+    const mb = 1024 * 1024;
+    expect(imageUploadLimitIssue({ size: 20 * mb }, uploadInput)).toBeNull();
+    expect(imageUploadLimitIssue({ size: 20 * mb + 1 }, uploadInput)).toBe(
+      "is larger than 20 MB",
+    );
+    expect(
+      imageUploadLimitIssue(
+        { size: mb, width: 4097, height: 100 },
+        uploadInput,
+      ),
+    ).toBe("is larger than 4096 px on its long side");
+    expect(
+      imageUploadLimitIssue(
+        { size: mb, width: 5000, height: 5000 },
+        { ...uploadInput, maxLongSide: null },
+      ),
+    ).toBeNull();
   });
 });

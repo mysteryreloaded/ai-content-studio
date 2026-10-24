@@ -60,10 +60,62 @@ export interface SelectInputDefinition extends InputBase {
   default: string | null;
 }
 
+/**
+ * An Image Upload Input (issue #50): takes one still image Upload (PNG,
+ * JPEG or WebP). Its value is an Upload id; the prompt gets that Upload's
+ * Backend file name, `studio/<upload-id>.<ext>` (see {@link uploadFileName}).
+ * A shown one is always required.
+ */
+export interface ImageUploadInputDefinition extends InputBase {
+  kind: "image_upload";
+  /** Whole MB, 1 to the Operator's MAX_UPLOAD_MB. */
+  maxSizeMb: number;
+  /** The largest allowed width or height in pixels; null for no limit. */
+  maxLongSide: number | null;
+}
+
 export type InputDefinition =
   | TextInputDefinition
   | NumberInputDefinition
-  | SelectInputDefinition;
+  | SelectInputDefinition
+  | ImageUploadInputDefinition;
+
+export const BYTES_PER_MB = 1024 * 1024;
+
+/** The still image types an Image Upload accepts (issue #50), by MIME type. */
+export const IMAGE_UPLOAD_TYPES: Readonly<Record<string, string>> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/webp": "webp",
+};
+
+/**
+ * Why a file breaks an Image Upload Input's limits, or null (issue #50).
+ * The same check runs on pick (browser), at complete and at submit
+ * (server). Dimensions are skipped while still unknown.
+ */
+export function imageUploadLimitIssue(
+  file: { size: number; width?: number | null; height?: number | null },
+  limits: Pick<ImageUploadInputDefinition, "maxSizeMb" | "maxLongSide">,
+): string | null {
+  if (file.size > limits.maxSizeMb * BYTES_PER_MB) {
+    return `is larger than ${limits.maxSizeMb} MB`;
+  }
+  if (
+    limits.maxLongSide !== null &&
+    typeof file.width === "number" &&
+    typeof file.height === "number" &&
+    Math.max(file.width, file.height) > limits.maxLongSide
+  ) {
+    return `is larger than ${limits.maxLongSide} px on its long side`;
+  }
+  return null;
+}
+
+/** An Upload's file name on a Backend, under its `input/studio` folder (issue #50). */
+export function uploadFileName(uploadId: string, extension: string): string {
+  return `studio/${uploadId}.${extension}`;
+}
 
 export function isToggle(input: SelectInputDefinition): boolean {
   return input.options.length === 2;
@@ -111,6 +163,8 @@ export function listBindableFields(workflow: Workflow): BindableField[] {
 export interface ComfyFieldSpec {
   type: string;
   options?: readonly string[];
+  /** Issue #50: the Backend flags this loader field `image_upload` (ComfyUI's `LoadImage.image`). */
+  imageUpload?: boolean;
 }
 
 export interface BindingValidationContext {
@@ -125,6 +179,8 @@ export interface BindingValidationContext {
    * that need it fall back to the Workflow's own JSON value type.
    */
   fieldSpecs?: ReadonlyMap<string, Record<string, ComfyFieldSpec>>;
+  /** The Operator's MAX_UPLOAD_MB (issue #50), the ceiling on an Image Upload Input's max size. */
+  maxUploadMb?: number;
 }
 
 type JsValueKind = "string" | "number" | "boolean";
@@ -180,6 +236,12 @@ export function validateBinding(
   }
   if (kind === "number" && typeof value !== "number") {
     return `field "${field}" on node "${nodeId}" isn't a number field`;
+  }
+  if (kind === "image_upload") {
+    const spec = ctx.fieldSpecs?.get(node.class_type)?.[field];
+    if (spec ? !spec.imageUpload : typeof value !== "string") {
+      return `field "${field}" on node "${nodeId}" isn't an image upload loader field`;
+    }
   }
   return null;
 }
@@ -248,6 +310,25 @@ export function validateInputDefinition(
           );
         }
       }
+    }
+  } else if (input.kind === "image_upload") {
+    const ceiling = ctx.maxUploadMb ?? Number.POSITIVE_INFINITY;
+    if (
+      !Number.isInteger(input.maxSizeMb) ||
+      input.maxSizeMb < 1 ||
+      input.maxSizeMb > ceiling
+    ) {
+      errors.push(
+        Number.isFinite(ceiling)
+          ? `max size must be 1-${ceiling} MB`
+          : "max size must be a whole number of MB, at least 1",
+      );
+    }
+    if (
+      input.maxLongSide !== null &&
+      (!Number.isInteger(input.maxLongSide) || input.maxLongSide < 1)
+    ) {
+      errors.push("max long side must be a whole number of pixels, at least 1");
     }
   } else {
     if (input.options.length < 2 || input.options.length > 50) {
@@ -335,7 +416,8 @@ function isOnStep(value: number, min: number, step: number): boolean {
 /**
  * The zod object a Mode's relevant Inputs resolve to: strict (an unknown
  * key is a validation error), every Input optional (a blank one leaves its
- * fields as the Workflow has them), a number must sit on `min + k*step`,
+ * fields as the Workflow has them) except an Image Upload, which takes a
+ * required Upload id (issue #50), a number must sit on `min + k*step`,
  * and one-line text turns any line break into a space.
  */
 export function buildInputValuesSchema(
@@ -365,6 +447,10 @@ export function buildInputValuesSchema(
           { message: "must be a whole number" },
         )
         .optional();
+    } else if (input.kind === "image_upload") {
+      shape[input.id] = z
+        .string({ error: "pick a file" })
+        .regex(UUID_RE, { message: "must be an Upload id" });
     } else {
       const ids = input.options.map((option) => option.id);
       if (ids.length === 0) {
@@ -419,7 +505,13 @@ export function toInputIssues(error: z.ZodError): InputIssue[] {
   }));
 }
 
-/** Writes each Input's submitted (or default) value into every field it's bound to; a blank/absent Input leaves its fields untouched. */
+/**
+ * Writes each Input's submitted (or default) value into every field it's
+ * bound to; a blank/absent Input leaves its fields untouched. An Image
+ * Upload's value must already be its Backend file name
+ * ({@link uploadFileName}), not the bare Upload id: only the server knows
+ * the Upload's extension.
+ */
 export function applyInputValues(
   workflow: Workflow,
   inputs: readonly InputDefinition[],
@@ -450,7 +542,9 @@ export function applyInputValues(
       raw === undefined || raw === ""
         ? input.kind === "text"
           ? input.default || undefined
-          : (input.default ?? undefined)
+          : input.kind === "number"
+            ? (input.default ?? undefined)
+            : undefined
         : raw;
     if (value === undefined) continue;
 

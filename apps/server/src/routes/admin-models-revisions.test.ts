@@ -99,6 +99,34 @@ const WORKFLOW_PARTIAL_REBIND = {
   "7": { class_type: "SaveImage", inputs: { images: ["6", 0] } },
 };
 
+/**
+ * Round-3 CEO review's exact repro: only the Steps Input's own binding
+ * (node "2" -> "4") is rebound; the Mode's own output node ("3") keeps
+ * its id but is now a VHS_VideoCombine, left entirely untouched by the
+ * rebind. The route's precheck must not fresh-resolve it just because
+ * *some* rebind was sent.
+ */
+const WORKFLOW_INPUT_REBIND_MODE_UNTOUCHED = {
+  "1": { class_type: "CheckpointLoaderSimple", inputs: {} },
+  "4": { class_type: "KSampler", inputs: { model: ["1", 0], steps: 20 } },
+  "3": { class_type: "VHS_VideoCombine", inputs: { images: ["4", 0] } },
+};
+
+/** A Mode with two output nodes, "3" and "4" (main Asset "3"). */
+const WORKFLOW_TWO_OUTPUTS = {
+  "1": { class_type: "CheckpointLoaderSimple", inputs: {} },
+  "2": { class_type: "KSampler", inputs: { model: ["1", 0], steps: 20 } },
+  "3": { class_type: "SaveImage", inputs: { images: ["2", 0] } },
+  "4": { class_type: "SaveImage", inputs: { images: ["2", 0] } },
+};
+
+/** "3" is renamed "6" (a rebind target); "4" is simply gone, left on "Leave broken" within the very same Mode. */
+const WORKFLOW_TWO_OUTPUTS_MIXED = {
+  "1": { class_type: "CheckpointLoaderSimple", inputs: {} },
+  "2": { class_type: "KSampler", inputs: { model: ["1", 0], steps: 20 } },
+  "6": { class_type: "SaveImage", inputs: { images: ["2", 0] } },
+};
+
 describe("Workflow re-upload and revisions/restore (issue #71)", () => {
   const testDb = createTestDatabase("admin_models_revisions_route_test");
   const clock = new FakeClock();
@@ -194,6 +222,71 @@ describe("Workflow re-upload and revisions/restore (issue #71)", () => {
             name: "Default",
             description: "",
             outputNodeIds: ["3"],
+            inputSettings: [],
+          },
+        ],
+      }),
+    });
+    const { record: afterModes } = (await modesRes.json()) as {
+      record: { version: number };
+    };
+
+    const enableRes = await app.request(
+      `/api/admin/models/${model.id}/enable`,
+      {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ version: afterModes.version }),
+      },
+    );
+    expect(enableRes.status).toBe(200);
+    const enabled = (await enableRes.json()) as { version: number };
+
+    return { model, headers, version: enabled.version, backendId: backend.id };
+  }
+
+  /** Like {@link buildEnabledModel}, but with a caller-chosen Workflow and Mode output nodes (round-3 CEO review: exercising a multi-output Mode). */
+  async function buildEnabledModelWith(
+    app: Awaited<ReturnType<typeof build>>["app"],
+    fakeUrl: string,
+    workflow: Record<string, unknown>,
+    outputNodeIds: string[],
+  ) {
+    const headers = await adminHeaders();
+
+    const createRes = await app.request("/api/admin/models", {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({ name: "LTX", workflow }),
+    });
+    const { model } = (await createRes.json()) as {
+      model: { id: string; version: number };
+    };
+
+    const backendRes = await app.request("/api/admin/backends", {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({ name: "Fake", baseUrl: fakeUrl, auth: "none" }),
+    });
+    const backend = (await backendRes.json()) as { id: string };
+    await app.request(`/api/admin/models/${model.id}/backends`, {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({ backendId: backend.id }),
+    });
+    clock.advance(30_000);
+    await flushMicrotasks();
+
+    const modesRes = await app.request(`/api/admin/models/${model.id}/modes`, {
+      method: "PUT",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({
+        version: model.version,
+        modes: [
+          {
+            name: "Default",
+            description: "",
+            outputNodeIds,
             inputSettings: [],
           },
         ],
@@ -787,6 +880,156 @@ describe("Workflow re-upload and revisions/restore (issue #71)", () => {
         },
       );
       expect(disabledRestore.status).toBe(200);
+
+      await app.request(`/api/admin/backends/${backendId}?version=1`, {
+        method: "DELETE",
+        headers,
+      });
+    } finally {
+      await fake.stop();
+    }
+  });
+
+  test("PUT /:id/workflow 400s when only an Input is rebound and the Mode's own untouched output node changed class (round-3 CEO review)", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const { app } = await build();
+      const { model, headers, version, backendId } = await buildEnabledModel(
+        app,
+        fake.url,
+      );
+
+      const inputsRes = await app.request(
+        `/api/admin/models/${model.id}/inputs`,
+        {
+          method: "PUT",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({
+            version,
+            inputs: [
+              {
+                id: "00000000-0000-0000-0000-000000000001",
+                kind: "number",
+                group: "settings",
+                label: "Steps",
+                help: "",
+                numberMode: "integer",
+                min: 1,
+                max: 50,
+                step: 1,
+                default: null,
+                bindings: [
+                  {
+                    nodeId: "2",
+                    field: "steps",
+                    classType: "KSampler",
+                    title: null,
+                  },
+                ],
+              },
+            ],
+          }),
+        },
+      );
+      expect(inputsRes.status).toBe(200);
+      const { record: withInput } = (await inputsRes.json()) as {
+        record: { version: number };
+      };
+
+      // Only the Steps Input's own binding ("2" -> "4") is rebound; the
+      // Mode's own output node ("3") is left entirely untouched, even
+      // though it's now a VHS_VideoCombine under the same id. The
+      // precheck (admin-models.ts) must agree with the real save
+      // (repository.ts) that this node was never named by the rebind.
+      const blockedRes = await app.request(
+        `/api/admin/models/${model.id}/workflow`,
+        {
+          method: "PUT",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({
+            version: withInput.version,
+            workflow: WORKFLOW_INPUT_REBIND_MODE_UNTOUCHED,
+            rebind: [{ nodeId: "2", newNodeId: "4" }],
+          }),
+        },
+      );
+      expect(blockedRes.status).toBe(400);
+      const blockedBody = (await blockedRes.json()) as {
+        error: string;
+        reasons: string[];
+      };
+      expect(blockedBody.error).toContain("disable");
+      expect(blockedBody.reasons.some((r) => r.includes("rebind"))).toBe(true);
+
+      await app.request(`/api/admin/backends/${backendId}?version=1`, {
+        method: "DELETE",
+        headers,
+      });
+    } finally {
+      await fake.stop();
+    }
+  });
+
+  test("PUT /:id/workflow saves a Mode with one rebound and one 'Leave broken' output node, with disable: true (round-3 CEO review)", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const { app } = await build();
+      const { model, headers, version, backendId } =
+        await buildEnabledModelWith(app, fake.url, WORKFLOW_TWO_OUTPUTS, [
+          "3",
+          "4",
+        ]);
+
+      // "3" is rebound onto the fresh "6"; "4" simply doesn't exist in
+      // the new Workflow and is left on "Leave broken" within the same
+      // Mode — the touched node mustn't be blocked by its untouched
+      // sibling, nor vice versa.
+      const blockedRes = await app.request(
+        `/api/admin/models/${model.id}/workflow`,
+        {
+          method: "PUT",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({
+            version,
+            workflow: WORKFLOW_TWO_OUTPUTS_MIXED,
+            rebind: [{ nodeId: "3", newNodeId: "6" }],
+          }),
+        },
+      );
+      expect(blockedRes.status).toBe(400);
+      const blockedBody = (await blockedRes.json()) as { error: string };
+      expect(blockedBody.error).toContain("disable");
+
+      const disabledRes = await app.request(
+        `/api/admin/models/${model.id}/workflow`,
+        {
+          method: "PUT",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({
+            version,
+            workflow: WORKFLOW_TWO_OUTPUTS_MIXED,
+            rebind: [{ nodeId: "3", newNodeId: "6" }],
+            disable: true,
+          }),
+        },
+      );
+      expect(disabledRes.status).toBe(200);
+      const disabled = (await disabledRes.json()) as {
+        record: { state: string };
+        modes: {
+          outputNodes: {
+            nodeId: string;
+            classType: string;
+            kind: string | null;
+            title: string | null;
+          }[];
+        }[];
+      };
+      expect(disabled.record.state).toBe("disabled");
+      expect(disabled.modes[0]?.outputNodes).toEqual([
+        { nodeId: "6", classType: "SaveImage", kind: "image", title: null },
+        { nodeId: "4", classType: "SaveImage", kind: "image", title: null },
+      ]);
 
       await app.request(`/api/admin/backends/${backendId}?version=1`, {
         method: "DELETE",

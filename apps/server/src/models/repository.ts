@@ -231,6 +231,126 @@ export interface RebindEntry {
   newNodeId: string;
 }
 
+export interface RebindOutcome {
+  modes: ModeRecord[];
+  inputs: InputDefinition[];
+  errors: ValidationError[];
+}
+
+/**
+ * Applies `rebind` (issue #71's rebind picker; CEO review rounds 2-3):
+ * repoints only the output nodes and Input bindings it actually names,
+ * one at a time, leaving everything else — including a sibling output
+ * node or binding left on "Leave broken" in the very same Mode or Input
+ * — verbatim for `checkModel` to flag. A remapped output node is
+ * re-resolved alone (`resolveModeOutputNodes` on just that one node id,
+ * fresh classType/kind/title), never against its Mode's other, possibly
+ * still-broken nodes; a remapped binding is checked alone with
+ * `validateBinding`, never through the whole-Input `validateInputDefinition`
+ * (that's `updateInputs`'s job, and it needs `allInputs` this partial
+ * pass has no reason to assemble). Shared by `uploadWorkflow`'s real
+ * save and the `/workflow` route's enabled-Model precheck, so both
+ * agree on exactly what a rebind touches — the precheck disagreeing
+ * with the save is what let a Mode's untouched, now-differently-classed
+ * output node slip through as "fixed" in round 2.
+ */
+export function applyRebind(
+  workflow: Workflow,
+  modeRecords: readonly ModeRecord[],
+  inputs: readonly InputDefinition[],
+  rebind: readonly RebindEntry[],
+  fieldSpecs?: ReadonlyMap<string, Record<string, ComfyFieldSpec>>,
+  maxUploadMb?: number,
+): RebindOutcome {
+  const remap = new Map(rebind.map((entry) => [entry.nodeId, entry.newNodeId]));
+  const errors: ValidationError[] = [];
+
+  const modes = modeRecords.map((mode, modeIndex) => {
+    const outputNodes = mode.outputNodes.map((node, nodeIndex) => {
+      const newNodeId = remap.get(node.nodeId);
+      if (!newNodeId) return node;
+      const outcome = resolveModeOutputNodes(workflow, [newNodeId]);
+      if (!outcome.ok) {
+        for (const message of outcome.errors) {
+          errors.push({
+            field: `modes[${modeIndex}].outputNodes[${nodeIndex}]`,
+            message,
+          });
+        }
+        return node;
+      }
+      return outcome.outputNodes[0] ?? node;
+    });
+
+    const seen = new Set<string>();
+    for (const node of outputNodes) {
+      if (seen.has(node.nodeId)) {
+        errors.push({
+          field: `modes[${modeIndex}].outputNodes`,
+          message: `output node "${node.nodeId}" is named more than once`,
+        });
+      }
+      seen.add(node.nodeId);
+    }
+
+    return { ...mode, outputNodes };
+  });
+
+  const outputNodeIds = new Set(
+    modes.flatMap((mode) => mode.outputNodes.map((node) => node.nodeId)),
+  );
+
+  const usedFields = new Set<string>();
+  for (const input of inputs) {
+    for (const binding of input.bindings) {
+      if (!remap.has(binding.nodeId)) {
+        usedFields.add(fieldKey(binding.nodeId, binding.field));
+      }
+    }
+  }
+
+  const reboundInputs = inputs.map((input, inputIndex) => ({
+    ...input,
+    bindings: input.bindings.map((binding, bindingIndex) => {
+      const newNodeId = remap.get(binding.nodeId);
+      if (!newNodeId) return binding;
+
+      const node = workflow[newNodeId];
+      const rebound = {
+        ...binding,
+        nodeId: newNodeId,
+        classType: node?.class_type ?? binding.classType,
+        title: node?._meta?.title ?? null,
+      };
+      const ctx: BindingValidationContext = {
+        workflow,
+        outputNodeIds,
+        usedFields,
+        fieldSpecs,
+        maxUploadMb,
+      };
+      const error = validateBinding(
+        input.kind,
+        rebound.nodeId,
+        rebound.field,
+        ctx,
+        rebound.classType,
+      );
+      if (error) {
+        errors.push({
+          field: `inputs[${inputIndex}].bindings[${bindingIndex}]`,
+          message: error,
+        });
+        return binding;
+      }
+      usedFields.add(fieldKey(rebound.nodeId, rebound.field));
+      return rebound;
+    }),
+  }));
+
+  return { modes, inputs: reboundInputs, errors };
+}
+
 /** One numbered Model revision, listed in the editor's Revisions section (issue #71). */
 export interface RevisionSummary {
   revisionNumber: number;
@@ -884,107 +1004,18 @@ export class ModelRepository {
       let newInputs: InputDefinition[] = currentInputs;
 
       if (rebind && rebind.length > 0) {
-        const remap = new Map(
-          rebind.map((entry) => [entry.nodeId, entry.newNodeId]),
+        const outcome = applyRebind(
+          parsed.workflow,
+          currentModes,
+          currentInputs,
+          rebind,
+          fieldSpecs,
+          maxUploadMb,
         );
-        const rebindErrors: ValidationError[] = [];
-
-        // Only a Mode with a remapped output node is re-resolved; one
-        // with none (even a broken one left on "Leave broken") carries
-        // forward exactly as the no-rebind path already does, for
-        // checkModel to flag — a partial rebind must save (with
-        // `disable: true`) without this touching what it wasn't asked
-        // to fix (CEO review).
-        newModeInputs = currentModes.map((mode, index) => {
-          if (!mode.outputNodes.some((node) => remap.has(node.nodeId))) {
-            return mode;
-          }
-          const outputNodeIds = mode.outputNodes.map(
-            (node) => remap.get(node.nodeId) ?? node.nodeId,
-          );
-          const outcome = resolveModeOutputNodes(
-            parsed.workflow,
-            outputNodeIds,
-          );
-          if (!outcome.ok) {
-            for (const message of outcome.errors) {
-              rebindErrors.push({
-                field: `modes[${index}].outputNodes`,
-                message,
-              });
-            }
-            return mode;
-          }
-          return { ...mode, outputNodes: outcome.outputNodes };
-        });
-
-        newInputs = currentInputs.map((input) => ({
-          ...input,
-          bindings: input.bindings.map((binding) => {
-            const newNodeId = remap.get(binding.nodeId);
-            if (!newNodeId) return binding;
-            const node = parsed.workflow[newNodeId];
-            return {
-              ...binding,
-              nodeId: newNodeId,
-              classType: node?.class_type ?? binding.classType,
-              title: node?._meta?.title ?? null,
-            };
-          }),
-        }));
-
-        // `usedFields` starts from every binding this rebind doesn't
-        // touch, so a remapped binding can still be refused for landing
-        // on a field one of those already holds; only a remapped
-        // binding is itself checked — not the rest of its own Input's
-        // shape (that's `updateInputs`'s job, and it needs `allInputs`
-        // this partial pass has no reason to assemble).
-        const usedFields = new Set<string>();
-        for (const input of currentInputs) {
-          for (const binding of input.bindings) {
-            if (!remap.has(binding.nodeId)) {
-              usedFields.add(fieldKey(binding.nodeId, binding.field));
-            }
-          }
-        }
-        const outputNodeIds = new Set(
-          newModeInputs.flatMap((mode) =>
-            mode.outputNodes.map((node) => node.nodeId),
-          ),
-        );
-
-        newInputs.forEach((input, inputIndex) => {
-          const before = currentInputs[inputIndex];
-          input.bindings.forEach((binding, bindingIndex) => {
-            const beforeBinding = before?.bindings[bindingIndex];
-            if (!beforeBinding || !remap.has(beforeBinding.nodeId)) return;
-
-            const ctx: BindingValidationContext = {
-              workflow: parsed.workflow,
-              outputNodeIds,
-              usedFields,
-              fieldSpecs,
-              maxUploadMb,
-            };
-            const error = validateBinding(
-              input.kind,
-              binding.nodeId,
-              binding.field,
-              ctx,
-              binding.classType,
-            );
-            if (error) {
-              rebindErrors.push({
-                field: `inputs[${inputIndex}].bindings[${bindingIndex}]`,
-                message: error,
-              });
-              return;
-            }
-            usedFields.add(fieldKey(binding.nodeId, binding.field));
-          });
-        });
-
-        if (rebindErrors.length > 0) throw new ValidationFailed(rebindErrors);
+        if (outcome.errors.length > 0)
+          throw new ValidationFailed(outcome.errors);
+        newModeInputs = outcome.modes;
+        newInputs = outcome.inputs;
       }
 
       const hash = hashWorkflow(parsed.workflow);

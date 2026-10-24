@@ -7,13 +7,11 @@ import {
   hasBlockingErrors,
   modelTermsFieldsSchema,
   parseApiFormatWorkflow,
-  resolveModeOutputNodes,
   reviseModeInputSettings,
 } from "@ai-content-studio/shared";
 import type {
   ComfyFieldSpec,
   InputDefinition,
-  Workflow,
 } from "@ai-content-studio/shared";
 import { and, desc, eq } from "drizzle-orm";
 import { Hono } from "hono";
@@ -38,12 +36,12 @@ import {
   NotFound,
   SlugTaken,
   StaleVersion,
+  applyRebind,
 } from "../models/repository.js";
 import type {
   ModeInput,
   ModeRecord,
   ModelRepository,
-  RebindEntry,
 } from "../models/repository.js";
 import { ValidationFailed } from "../models/validation.js";
 
@@ -59,48 +57,6 @@ function checkModelOutputNodes(mode: ModeRecord) {
       mode.outputNodes.map((node) => [node.nodeId, node.classType]),
     ),
   };
-}
-
-/**
- * Previews a `rebind` (issue #71's rebind picker, CEO review) against
- * `workflow`, the same way `ModelRepository.uploadWorkflow` applies it
- * for real: each Mode's output nodes re-resolved fresh, each Input
- * binding's node id (and snapshotted classType/title) repointed. Used
- * only for the enabled-Model precheck below — the repository re-derives
- * and re-validates this itself before persisting anything.
- */
-function applyRebind(
-  workflow: Workflow,
-  modeRecords: readonly ModeRecord[],
-  inputs: readonly InputDefinition[],
-  rebind: RebindEntry[],
-): { modes: ModeRecord[]; inputs: InputDefinition[] } {
-  const remap = new Map(rebind.map((entry) => [entry.nodeId, entry.newNodeId]));
-
-  const modes = modeRecords.map((mode) => {
-    const outputNodeIds = mode.outputNodes.map(
-      (node) => remap.get(node.nodeId) ?? node.nodeId,
-    );
-    const outcome = resolveModeOutputNodes(workflow, outputNodeIds);
-    return outcome.ok ? { ...mode, outputNodes: outcome.outputNodes } : mode;
-  });
-
-  const reboundInputs = inputs.map((input) => ({
-    ...input,
-    bindings: input.bindings.map((binding) => {
-      const newNodeId = remap.get(binding.nodeId);
-      if (!newNodeId) return binding;
-      const node = workflow[newNodeId];
-      return {
-        ...binding,
-        nodeId: newNodeId,
-        classType: node?.class_type ?? binding.classType,
-        title: node?._meta?.title ?? null,
-      };
-    }),
-  }));
-
-  return { modes, inputs: reboundInputs };
 }
 
 const createSchema = z.object({
@@ -867,8 +823,10 @@ export function adminModelsRoute(
       // id; this is the same "errors block saving an enabled Model"
       // gate the Modes/Inputs routes run, checked against the proposed
       // new Workflow before it's persisted. A `rebind` (CEO review) is
-      // previewed here the same way the repository applies it for real,
-      // so a rebind that fixes everything doesn't need "disable" too.
+      // previewed here with the exact same `applyRebind` the repository
+      // uses for the real save, so a rebind that fixes everything
+      // doesn't need "disable" too, and the two can't disagree on what
+      // a rebind actually touched (round-3 CEO review).
       if (detail.model.state === "enabled" && !disable) {
         const parsed = parseApiFormatWorkflow(body.workflow);
         if (parsed.ok) {
@@ -882,8 +840,19 @@ export function adminModelsRoute(
                   detail.modes,
                   detail.inputs,
                   rebind,
+                  fieldSpecs,
+                  maxUploadMb,
                 )
-              : { modes: detail.modes, inputs: detail.inputs };
+              : { modes: detail.modes, inputs: detail.inputs, errors: [] };
+          if (rebound.errors.length > 0) {
+            return c.json(
+              {
+                error: "has errors; disable this Model to save it anyway",
+                reasons: rebound.errors.map((e) => e.message),
+              },
+              400,
+            );
+          }
           const issues = checkModel(
             {
               workflow: parsed.workflow,

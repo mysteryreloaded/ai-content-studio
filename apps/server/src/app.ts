@@ -25,6 +25,7 @@ import { authRoute } from "./routes/auth.js";
 import { healthRoute } from "./routes/health.js";
 import { modelsRoute } from "./routes/models.js";
 import { siteSettingsRoute } from "./routes/site-settings.js";
+import { termsRoute } from "./routes/terms.js";
 import { createLocalStorage } from "./storage/storage.js";
 
 export interface AppDeps {
@@ -118,6 +119,7 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
     ),
   );
   app.route("/api/admin/logs", adminLogsRoute(deps.db, deps.clock, routes));
+  app.route("/api/terms", termsRoute(deps.db, deps.clock, routes));
 
   if (deps.env.OIDC_ISSUER) {
     const issuerUrl = new URL(deps.env.OIDC_ISSUER);

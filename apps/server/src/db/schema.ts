@@ -30,6 +30,18 @@ export const siteSettings = pgTable("site_settings", {
   backgroundContentType: text("background_content_type"),
   backgroundHash: text("background_hash"),
   backgroundSize: integer("background_size"),
+  /**
+   * Issue #60: `termsBody` is the Markdown always shown on `/terms`, but
+   * `termsVersion` only moves when it's first set or a save ticks "Ask
+   * everyone to accept again" — a quiet text edit keeps everyone's
+   * acceptance. Null `termsVersion` means no terms are set, and the
+   * terms gate (`requireAccess`'s "active"/"admin" levels) is off.
+   */
+  termsBody: text("terms_body").notNull().default(""),
+  termsVersion: integer("terms_version"),
+  termsVersionCreatedAt: timestamp("terms_version_created_at", {
+    withTimezone: true,
+  }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -84,6 +96,9 @@ export const users = pgTable("users", {
   role: userRole("role").notNull().default("user"),
   status: userStatus("status").notNull().default("active"),
   pinned: boolean("pinned").notNull().default(false),
+  /** Issue #60: null until this user accepts the Site terms' current `termsVersion`. */
+  termsAcceptedVersion: integer("terms_accepted_version"),
+  termsAcceptedAt: timestamp("terms_accepted_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

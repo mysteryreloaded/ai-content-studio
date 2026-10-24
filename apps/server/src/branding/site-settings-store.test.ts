@@ -11,6 +11,7 @@ import {
   LOGO_STORAGE_KEY,
   getSiteSettings,
   updateSiteSettings,
+  updateSiteTerms,
 } from "./site-settings-store.js";
 
 describe("Site settings store", () => {
@@ -85,5 +86,109 @@ describe("Site settings store", () => {
 
     const after = await db.select().from(auditEntries);
     expect(after).toHaveLength(before.length);
+  });
+});
+
+describe("Site terms", () => {
+  const testDb = createTestDatabase("site_terms_store_test");
+  const clock = new FakeClock();
+
+  afterAll(async () => {
+    await (await testDb).close();
+  });
+
+  const admin = {
+    type: "admin" as const,
+    userId: "00000000-0000-0000-0000-00000000000b",
+    email: "admin@example.com",
+    ip: "203.0.113.1",
+    userAgent: "test-agent",
+    requestId: "req-terms",
+  };
+
+  test("the first non-blank save starts version 1 and writes an Audit entry with the full text", async () => {
+    const { db } = await testDb;
+    const current = await getSiteSettings(db);
+    expect(current.termsVersion).toBeNull();
+
+    const result = await updateSiteTerms(db, clock, admin, {
+      version: current.version,
+      body: "Be nice to the GPUs.",
+      askAgain: false,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.settings.termsVersion).toBe(1);
+    expect(result.settings.termsBody).toBe("Be nice to the GPUs.");
+    expect(result.settings.termsVersionCreatedAt).not.toBeNull();
+
+    const [entry] = await db
+      .select()
+      .from(auditEntries)
+      .where(eq(auditEntries.action, "update-terms"));
+    expect(entry?.action).toBe("update-terms");
+    expect((entry?.after as { termsBody: string }).termsBody).toBe(
+      "Be nice to the GPUs.",
+    );
+    expect((entry?.after as { askAgain: boolean }).askAgain).toBe(false);
+  });
+
+  test("a quiet edit keeps the version (and so keeps acceptances)", async () => {
+    const { db } = await testDb;
+    const current = await getSiteSettings(db);
+
+    const result = await updateSiteTerms(db, clock, admin, {
+      version: current.version,
+      body: "Be nice to the GPUs. (typo fixed)",
+      askAgain: false,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.settings.termsVersion).toBe(current.termsVersion);
+    expect(result.settings.termsBody).toBe("Be nice to the GPUs. (typo fixed)");
+  });
+
+  test("ticking 'ask everyone to accept again' bumps the version", async () => {
+    const { db } = await testDb;
+    const current = await getSiteSettings(db);
+
+    const result = await updateSiteTerms(db, clock, admin, {
+      version: current.version,
+      body: current.termsBody,
+      askAgain: true,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.settings.termsVersion).toBe((current.termsVersion ?? 0) + 1);
+  });
+
+  test("saving a blank body removes the terms and clears the version", async () => {
+    const { db } = await testDb;
+    const current = await getSiteSettings(db);
+
+    const result = await updateSiteTerms(db, clock, admin, {
+      version: current.version,
+      body: "",
+      askAgain: false,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.settings.termsVersion).toBeNull();
+    expect(result.settings.termsVersionCreatedAt).toBeNull();
+    expect(result.settings.termsBody).toBe("");
+  });
+
+  test("a stale version is refused with reason 'stale'", async () => {
+    const { db } = await testDb;
+    const result = await updateSiteTerms(db, clock, admin, {
+      version: 1,
+      body: "Someone else's edit",
+      askAgain: false,
+    });
+    expect(result).toEqual({ ok: false, reason: "stale" });
   });
 });

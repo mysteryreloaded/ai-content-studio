@@ -2,6 +2,7 @@ import {
   isAllowedImageContentType,
   maxBytesFor,
   siteSettingsFieldsSchema,
+  siteTermsFieldsSchema,
 } from "@ai-content-studio/shared";
 import type { Clock } from "@ai-content-studio/shared";
 import { Hono } from "hono";
@@ -13,6 +14,7 @@ import {
   type SiteSettingsUpdateImage,
   getSiteSettings,
   updateSiteSettings,
+  updateSiteTerms,
 } from "../branding/site-settings-store.js";
 import type { Database } from "../db/client.js";
 import type { Storage } from "../storage/storage.js";
@@ -105,6 +107,45 @@ export function adminSiteSettingsRoute(
         background,
       },
     );
+
+    if (!result.ok) {
+      return c.json({ error: "changed by someone else, reload" }, 409);
+    }
+
+    return c.json(result.settings);
+  });
+
+  guardedRoute(app, routes, basePath, "put", "/terms", "admin", async (c) => {
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "invalid JSON body" }, 400);
+    }
+
+    const versionResult = versionSchema.safeParse(
+      (body as Record<string, unknown> | null)?.version,
+    );
+    if (!versionResult.success) {
+      return c.json({ error: "version is required" }, 400);
+    }
+
+    const fieldsResult = siteTermsFieldsSchema.safeParse({
+      body: (body as Record<string, unknown> | null)?.body,
+      askAgain: (body as Record<string, unknown> | null)?.askAgain,
+    });
+    if (!fieldsResult.success) {
+      return c.json(
+        { error: "invalid site terms", issues: fieldsResult.error.issues },
+        400,
+      );
+    }
+
+    const result = await updateSiteTerms(db, clock, adminActorFrom(c), {
+      version: versionResult.data,
+      body: fieldsResult.data.body,
+      askAgain: fieldsResult.data.askAgain,
+    });
 
     if (!result.ok) {
       return c.json({ error: "changed by someone else, reload" }, 409);

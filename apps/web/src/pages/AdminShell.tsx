@@ -4,6 +4,7 @@ import { useSession } from "../useSession.js";
 import { BackendsPage } from "./BackendsPage.js";
 import { LogsPage } from "./LogsPage.js";
 import { SiteSettingsForm } from "./SiteSettingsForm.js";
+import { SiteTermsForm } from "./SiteTermsForm.js";
 
 const ERROR_BADGE_POLL_MS = 30_000;
 
@@ -66,6 +67,7 @@ export function AdminShell() {
           element={
             <>
               <SiteSettingsForm />
+              <SiteTermsForm />
               <BackendsPage />
             </>
           }

@@ -14,6 +14,8 @@ export interface SessionUser {
   picture: string | null;
   role: "user" | "admin";
   status: "pending" | "active" | "disabled";
+  /** Issue #60: null until this user accepts the Site terms' current version. */
+  termsAcceptedVersion: number | null;
 }
 
 export interface Session {
@@ -92,6 +94,7 @@ export async function readSession(
       picture: users.picture,
       role: users.role,
       status: users.status,
+      termsAcceptedVersion: users.termsAcceptedVersion,
     })
     .from(sessions)
     .innerJoin(users, eq(sessions.userId, users.id))
@@ -124,6 +127,7 @@ export async function readSession(
       picture: row.picture,
       role: row.role,
       status: row.status,
+      termsAcceptedVersion: row.termsAcceptedVersion,
     },
   };
 }

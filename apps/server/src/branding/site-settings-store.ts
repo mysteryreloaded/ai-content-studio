@@ -22,6 +22,9 @@ export interface SiteSettingsSnapshot {
   accent: string;
   logo: ImageSnapshot | null;
   background: ImageSnapshot | null;
+  termsBody: string;
+  termsVersion: number | null;
+  termsVersionCreatedAt: Date | null;
 }
 
 export interface SiteSettingsUpdateImage {
@@ -72,6 +75,9 @@ function rowToSnapshot(
             size: row.backgroundSize,
           }
         : null,
+    termsBody: row.termsBody,
+    termsVersion: row.termsVersion,
+    termsVersionCreatedAt: row.termsVersionCreatedAt,
   };
 }
 
@@ -162,6 +168,86 @@ export async function updateSiteSettings(
       before,
       after,
       images: images.length > 0 ? images : undefined,
+    });
+
+    return { ok: true, settings: after };
+  });
+}
+
+export interface SiteTermsUpdateInput {
+  version: number;
+  body: string;
+  askAgain: boolean;
+}
+
+export type SiteTermsUpdateResult =
+  | { ok: true; settings: SiteSettingsSnapshot }
+  | { ok: false; reason: "stale" };
+
+/**
+ * Saves the Site terms body and decides `termsVersion` (issue #60):
+ * blank keeps/clears "no terms set"; a first non-blank body starts
+ * version 1; `askAgain` bumps the version on top of that (new version,
+ * every acceptance cleared); any other save keeps the version, so a
+ * quiet text edit never re-asks anyone. The full before/after text and
+ * `askAgain` are kept in the Audit entry (ADR 0005) forever.
+ */
+export async function updateSiteTerms(
+  db: Database,
+  clock: Clock,
+  actor: AuditActor,
+  input: SiteTermsUpdateInput,
+): Promise<SiteTermsUpdateResult> {
+  return db.transaction(async (tx) => {
+    const [current] = await tx.select().from(siteSettings).limit(1);
+    if (!current) throw new Error("site_settings row is missing");
+    if (current.version !== input.version) {
+      return { ok: false, reason: "stale" };
+    }
+
+    const before = rowToSnapshot(current);
+    const now = clock.now();
+    const body = input.body.trim();
+
+    let termsVersion = current.termsVersion;
+    let termsVersionCreatedAt = current.termsVersionCreatedAt;
+    if (body === "") {
+      termsVersion = null;
+      termsVersionCreatedAt = null;
+    } else if (current.termsVersion === null || input.askAgain) {
+      termsVersion = (current.termsVersion ?? 0) + 1;
+      termsVersionCreatedAt = now;
+    }
+
+    const [updated] = await tx
+      .update(siteSettings)
+      .set({
+        version: current.version + 1,
+        termsBody: body,
+        termsVersion,
+        termsVersionCreatedAt,
+        updatedAt: now,
+      })
+      .where(eq(siteSettings.singleton, true))
+      .returning();
+    if (!updated) throw new Error("site_settings update affected no row");
+
+    const after = rowToSnapshot(updated);
+
+    await recordAuditEntry(tx, clock, {
+      actor,
+      targetType: "site_settings",
+      targetId: "singleton",
+      action: "update-terms",
+      before: {
+        termsBody: before.termsBody,
+        termsVersion: before.termsVersion,
+      },
+      after: {
+        termsBody: after.termsBody,
+        termsVersion: after.termsVersion,
+        askAgain: input.askAgain,
+      },
     });
 
     return { ok: true, settings: after };

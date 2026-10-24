@@ -62,8 +62,9 @@ export function UserPage() {
       <h2>{user.name}</h2>
       <Link to={`/admin/audit?targetType=user&targetId=${user.id}`}>
         History
-      </Link>
-
+      </Link>{" "}
+      <Link to={`/admin/generations?user=${user.id}`}>Generations</Link>{" "}
+      <Link to={`/admin/users/${user.id}/uploads`}>Uploads</Link>
       <dl>
         <dt>Email</dt>
         <dd>{user.email}</dd>
@@ -77,9 +78,7 @@ export function UserPage() {
         <dt>Joined</dt>
         <dd>{new Date(user.createdAt).toLocaleString()}</dd>
       </dl>
-
       {actionError && <p role="alert">{actionError}</p>}
-
       {canAct && user.status === "pending" && (
         <button type="button" onClick={() => void act("approve")}>
           Approve

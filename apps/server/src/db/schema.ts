@@ -568,6 +568,22 @@ export const generations = pgTable(
      * and times are left, and it still counts toward the daily Cap.
      */
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    /**
+     * Issue #68: set when an Admin removes this Generation for breaking
+     * the rules (CONTEXT.md's "Removal"). Unlike `deletedAt`, the row
+     * keeps its `builtPrompt`/`uploadIds` — an Admin can still see the
+     * values, prompt and Upload links until the owner's account is
+     * deleted — and only the Assets' files are deleted, same as a user
+     * delete. `removedReason` (≤ 500 chars) is the Admin's required
+     * reason, shown to Admins only; the owner sees a dismissable card
+     * with no reason. `removedDismissedAt` is the owner's own dismissal
+     * of that card; once set, the Gallery stops showing it.
+     */
+    removedAt: timestamp("removed_at", { withTimezone: true }),
+    removedReason: text("removed_reason"),
+    removedDismissedAt: timestamp("removed_dismissed_at", {
+      withTimezone: true,
+    }),
     queuedAt: timestamp("queued_at", { withTimezone: true }).notNull(),
     submittedAt: timestamp("submitted_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -695,6 +711,18 @@ export const uploads = pgTable(
     trimStartMs: integer("trim_start_ms"),
     trimEndMs: integer("trim_end_ms"),
     error: text("error"),
+    /**
+     * Issue #68: set when an Admin removes this Upload for breaking the
+     * rules. Its file is deleted (storageKey/thumbnailKey keep their
+     * values for history, but nothing at them any more); a Generation
+     * that still used it and hadn't ended fails with "an Upload was
+     * removed by an administrator" (generations/removal.ts); one that
+     * had already ended keeps its Assets and shows the Upload as
+     * removed. `removedReason` (≤ 500 chars) is the Admin's required
+     * reason, shown to Admins only.
+     */
+    removedAt: timestamp("removed_at", { withTimezone: true }),
+    removedReason: text("removed_reason"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
     completedAt: timestamp("completed_at", { withTimezone: true }),
   },

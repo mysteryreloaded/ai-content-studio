@@ -72,6 +72,8 @@ interface GenerationSummary {
   assets: AssetSummary[];
   /** Issue #74: a test run from the Model editor, marked in the Gallery. */
   isTest: boolean;
+  /** Issue #68: an Admin removed this Generation — shown as a dismissable card, until the owner dismisses it. */
+  removedAt: string | null;
 }
 
 interface GallerySubmission {
@@ -147,7 +149,11 @@ function GenerationCard({
         aria-label={`Open Generation ${generation.id}`}
       />
       {generation.isTest && <span className="gallery-card-test">Test</span>}
-      {generation.state === "succeeded" && mainAsset ? (
+      {generation.removedAt ? (
+        <div className="gallery-card-state">
+          <span role="alert">Removed by an administrator</span>
+        </div>
+      ) : generation.state === "succeeded" && mainAsset ? (
         <>
           {thumb ? (
             <img src={thumb} alt="" className="gallery-card-thumb" />
@@ -513,6 +519,11 @@ export function GalleryPage() {
     );
   }
 
+  /** Issue #68's AC: once the owner dismisses the "Removed by an administrator" card, it drops out of the Gallery for good. */
+  function handleDismissed(dismissedId: string) {
+    handleDeleted(dismissedId);
+  }
+
   if (session.status === "loading") return null;
   if (session.status === "signed-out") return <Navigate to="/" replace />;
 
@@ -532,6 +543,7 @@ export function GalleryPage() {
           onClose={closeOverlay}
           onNavigate={openGeneration}
           onDeleted={handleDeleted}
+          onDismissed={handleDismissed}
         />
       )}
       <main className="gallery">

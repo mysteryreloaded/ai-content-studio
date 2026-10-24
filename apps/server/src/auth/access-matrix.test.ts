@@ -170,6 +170,10 @@ describe("every route's access level is declared and enforced", () => {
       "POST /api/admin/models/:id/enable": 404,
       "POST /api/admin/models/:id/disable": 404,
       "POST /api/admin/models/:id/test": 404,
+      "GET /api/admin/generations/resolve/:id": 404,
+      "GET /api/admin/generations/:id": 404,
+      "POST /api/admin/generations/:id/remove": 404,
+      "POST /api/admin/uploads/:id/remove": 404,
     };
 
     // No Site terms are set in this test's database, so accepting them
@@ -207,6 +211,8 @@ describe("every route's access level is declared and enforced", () => {
       "POST /api/uploads/:id/trim": 404,
       "GET /api/uploads/:id": 404,
       "GET /api/uploads/:id/thumb": 404,
+      // Issue #68: no Generation with this fake id exists.
+      "POST /api/generations/:id/dismiss-removed": 404,
     };
 
     // A pending user has a session but no approval yet: `signed-in`

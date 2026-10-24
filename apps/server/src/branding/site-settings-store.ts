@@ -32,6 +32,8 @@ export interface SiteSettingsSnapshot {
   privacyUpdatedAt: Date | null;
   privacyRevision: number;
   footerLinks: FooterLink[];
+  blockedWords: string[];
+  blockedWordsRevision: number;
 }
 
 /**
@@ -108,6 +110,8 @@ function rowToSnapshot(
     privacyUpdatedAt: row.privacyUpdatedAt,
     privacyRevision: row.privacyRevision,
     footerLinks: row.footerLinks as FooterLink[],
+    blockedWords: row.blockedWords as string[],
+    blockedWordsRevision: row.blockedWordsRevision,
   };
 }
 
@@ -133,6 +137,15 @@ export async function getSiteSettings(
   const [row] = await db.select().from(siteSettings).limit(1);
   if (!row) throw new Error("site_settings row is missing");
   return rowToSnapshot(row);
+}
+
+/** The blocked words list alone (issue #66), for a Generation submit's check. */
+export async function getBlockedWords(db: Database): Promise<string[]> {
+  const [row] = await db
+    .select({ blockedWords: siteSettings.blockedWords })
+    .from(siteSettings)
+    .limit(1);
+  return (row?.blockedWords as string[] | undefined) ?? [];
 }
 
 /**
@@ -360,6 +373,59 @@ export async function updateSitePrivacy(
       action: "update-privacy",
       before: { privacyBody: before.privacyBody },
       after: { privacyBody: after.privacyBody },
+    });
+
+    return { ok: true, settings: after };
+  });
+}
+
+export interface SiteBlockedWordsUpdateInput {
+  /** `blockedWordsRevision`, independent of the other Site settings forms', so saving one never races another into a 409. */
+  revision: number;
+  words: string[];
+}
+
+export type SiteBlockedWordsUpdateResult =
+  | { ok: true; settings: SiteSettingsSnapshot }
+  | { ok: false; reason: "stale" };
+
+/** Saves the blocked words list (issue #66): already normalised, deduped and limit-checked by the caller. */
+export async function updateSiteBlockedWords(
+  db: Database,
+  clock: Clock,
+  actor: AuditActor,
+  input: SiteBlockedWordsUpdateInput,
+): Promise<SiteBlockedWordsUpdateResult> {
+  return db.transaction(async (tx) => {
+    const [current] = await tx.select().from(siteSettings).limit(1);
+    if (!current) throw new Error("site_settings row is missing");
+    if (current.blockedWordsRevision !== input.revision) {
+      return { ok: false, reason: "stale" };
+    }
+
+    const before = rowToSnapshot(current);
+    const now = clock.now();
+
+    const [updated] = await tx
+      .update(siteSettings)
+      .set({
+        blockedWordsRevision: current.blockedWordsRevision + 1,
+        blockedWords: input.words,
+        updatedAt: now,
+      })
+      .where(eq(siteSettings.singleton, true))
+      .returning();
+    if (!updated) throw new Error("site_settings update affected no row");
+
+    const after = rowToSnapshot(updated);
+
+    await recordAuditEntry(tx, clock, {
+      actor,
+      targetType: "site_settings",
+      targetId: "singleton",
+      action: "update-blocked-words",
+      before: { blockedWords: before.blockedWords },
+      after: { blockedWords: after.blockedWords },
     });
 
     return { ok: true, settings: after };

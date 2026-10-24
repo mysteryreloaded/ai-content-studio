@@ -1,9 +1,12 @@
 import {
   isAllowedImageContentType,
   maxBytesFor,
+  parseBlockedWordsList,
+  siteBlockedWordsFieldsSchema,
   sitePrivacyFieldsSchema,
   siteSettingsFieldsSchema,
   siteTermsFieldsSchema,
+  validateBlockedWordsList,
 } from "@ai-content-studio/shared";
 import type { Clock } from "@ai-content-studio/shared";
 import { Hono } from "hono";
@@ -14,6 +17,7 @@ import type { AppEnv } from "../auth/app-env.js";
 import {
   type SiteSettingsUpdateImage,
   getSiteSettings,
+  updateSiteBlockedWords,
   updateSitePrivacy,
   updateSiteSettings,
   updateSiteTerms,
@@ -211,6 +215,68 @@ export function adminSiteSettingsRoute(
 
     return c.json(result.settings);
   });
+
+  guardedRoute(
+    app,
+    routes,
+    basePath,
+    "put",
+    "/blocked-words",
+    "admin",
+    async (c) => {
+      let body: unknown;
+      try {
+        body = await c.req.json();
+      } catch {
+        return c.json({ error: "invalid JSON body" }, 400);
+      }
+
+      const revisionResult = versionSchema.safeParse(
+        (body as Record<string, unknown> | null)?.revision,
+      );
+      if (!revisionResult.success) {
+        return c.json({ error: "revision is required" }, 400);
+      }
+
+      const fieldsResult = siteBlockedWordsFieldsSchema.safeParse({
+        text: (body as Record<string, unknown> | null)?.text,
+      });
+      if (!fieldsResult.success) {
+        return c.json(
+          {
+            error: "invalid blocked words",
+            issues: fieldsResult.error.issues,
+          },
+          400,
+        );
+      }
+
+      const words = parseBlockedWordsList(fieldsResult.data.text);
+      const listError = validateBlockedWordsList(words);
+      if (listError) {
+        return c.json(
+          {
+            error: "invalid blocked words",
+            issues: [{ path: ["text"], code: "custom", message: listError }],
+          },
+          400,
+        );
+      }
+
+      const result = await updateSiteBlockedWords(
+        db,
+        clock,
+        adminActorFrom(c),
+        { revision: revisionResult.data, words },
+      );
+
+      if (!result.ok) {
+        return c.json({ error: "changed by someone else, reload" }, 409);
+      }
+
+      return c.json(result.settings);
+    },
+  );
 
   return app;
 }

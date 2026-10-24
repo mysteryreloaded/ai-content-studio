@@ -12,7 +12,10 @@ import { createLogEntryWriter } from "./backends/log-entries.js";
 import { BackendRepository } from "./backends/repository.js";
 import { BackendsService } from "./backends/service.js";
 import { injectBrandingIntoHtml } from "./branding/accent-html.js";
-import { getSiteSettings } from "./branding/site-settings-store.js";
+import {
+  getBlockedWords,
+  getSiteSettings,
+} from "./branding/site-settings-store.js";
 import type { Database } from "./db/client.js";
 import { Dispatcher } from "./dispatch/dispatcher.js";
 import { DispatchQueue } from "./dispatch/queue.js";
@@ -197,6 +200,8 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
         generationsRepository,
         generationEvents,
         clock: deps.clock,
+        logWriter,
+        getBlockedWords: () => getBlockedWords(deps.db),
         onGenerationQueued: dispatcher.wake,
       },
       routes,

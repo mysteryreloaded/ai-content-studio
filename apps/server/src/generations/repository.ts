@@ -2,7 +2,7 @@
 // This ticket only ever inserts `queued` rows; a later issue's
 // dispatcher moves them on.
 
-import type { Workflow } from "@ai-content-studio/shared";
+import type { InputDefinition, Workflow } from "@ai-content-studio/shared";
 import { and, desc, eq, inArray, notInArray } from "drizzle-orm";
 import type { Database } from "../db/client.js";
 import { assets, generations, models, modes, users } from "../db/schema.js";
@@ -59,13 +59,30 @@ export interface PromptBinding {
   unsetValue: string;
 }
 
+/** Where a Model's "prompt" field lives (issue #47): its first text Input's first binding, and the value it has when a user leaves it blank. */
+export function promptBindingFor(
+  inputs: readonly InputDefinition[],
+  workflow: Workflow,
+): PromptBinding | null {
+  const promptInput = inputs.find((input) => input.kind === "text");
+  const binding = promptInput?.bindings[0];
+  if (!promptInput || promptInput.kind !== "text" || !binding) return null;
+  const workflowValue = workflow[binding.nodeId]?.inputs[binding.field];
+  const placeholder = typeof workflowValue === "string" ? workflowValue : "";
+  return {
+    nodeId: binding.nodeId,
+    field: binding.field,
+    unsetValue: promptInput.default || placeholder,
+  };
+}
+
 /** A Submission's prompt (issue #47): the frozen value at `binding`, prefixed "Default prompt: " when it matches the Workflow's own unset value. */
-function promptFor(
-  row: GenerationRow,
+export function promptFor(
+  builtPrompt: Workflow,
   binding: PromptBinding | null | undefined,
 ): string | null {
   if (!binding) return null;
-  const node = (row.builtPrompt as Workflow)[binding.nodeId];
+  const node = builtPrompt[binding.nodeId];
   const value = node?.inputs[binding.field];
   if (typeof value !== "string") return null;
   return value === binding.unsetValue ? `Default prompt: ${value}` : value;
@@ -283,7 +300,7 @@ export class GenerationsRepository {
         modeId: first.modeId,
         modeName: modeNameById.get(first.id) ?? "",
         submittedAt: first.submittedAt,
-        prompt: promptFor(first, promptBinding),
+        prompt: promptFor(first.builtPrompt as Workflow, promptBinding),
         generations: submissionRows.map((row) =>
           toRecord(
             row,

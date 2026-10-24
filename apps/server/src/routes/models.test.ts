@@ -1000,6 +1000,74 @@ describe("/api/models/:slug and :slug/generations", () => {
       }
     });
 
+    test("refuses a null seed as an invalid issue on the seed's own path", async () => {
+      const fake = startFakeComfyUi({ port: 0 });
+      try {
+        const { app, backendsService } = await build();
+        const { headers: adminHeaders } = await headersFor("admin");
+        const { slug, modeId, revision, seedInputId } =
+          await buildEnabledModelWithSeed(app, adminHeaders, fake.url);
+
+        const { headers: userHeaders } = await headersFor("user");
+        const res = await app.request(`/api/models/${slug}/generations`, {
+          method: "POST",
+          headers: { ...userHeaders, "content-type": "application/json" },
+          body: JSON.stringify({
+            modeId,
+            revision,
+            values: { [seedInputId]: null },
+          }),
+        });
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as {
+          error: string;
+          issues: Array<{ path: string }>;
+        };
+        expect(body.error).toBe("invalid");
+        expect(body.issues.some((issue) => issue.path === seedInputId)).toBe(
+          true,
+        );
+
+        backendsService.stop();
+      } finally {
+        fake.stop();
+      }
+    });
+
+    test("refuses a string seed as an invalid issue on the seed's own path", async () => {
+      const fake = startFakeComfyUi({ port: 0 });
+      try {
+        const { app, backendsService } = await build();
+        const { headers: adminHeaders } = await headersFor("admin");
+        const { slug, modeId, revision, seedInputId } =
+          await buildEnabledModelWithSeed(app, adminHeaders, fake.url);
+
+        const { headers: userHeaders } = await headersFor("user");
+        const res = await app.request(`/api/models/${slug}/generations`, {
+          method: "POST",
+          headers: { ...userHeaders, "content-type": "application/json" },
+          body: JSON.stringify({
+            modeId,
+            revision,
+            values: { [seedInputId]: "not a number" },
+          }),
+        });
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as {
+          error: string;
+          issues: Array<{ path: string }>;
+        };
+        expect(body.error).toBe("invalid");
+        expect(body.issues.some((issue) => issue.path === seedInputId)).toBe(
+          true,
+        );
+
+        backendsService.stop();
+      } finally {
+        fake.stop();
+      }
+    });
+
     test("refuses a count outside 1-4", async () => {
       const fake = startFakeComfyUi({ port: 0 });
       try {

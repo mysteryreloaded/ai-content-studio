@@ -738,6 +738,25 @@ export function WorkbenchPage() {
         return;
       }
 
+      // The 201 carries this Submission's own prompt (issue #47 AC); SSE's
+      // `change` events, which have no prompt, would otherwise leave it
+      // blank until a reload.
+      const created = (await res.json()) as {
+        generations: GenerationSummary[];
+        prompt: string | null;
+      };
+      if (created.generations.length > 0) {
+        const submissionId = created.generations[0]?.submissionId;
+        setSubmissions((current) => {
+          const next = created.generations.reduce(upsertGeneration, current);
+          return next.map((submission) =>
+            submission.submissionId === submissionId
+              ? { ...submission, prompt: created.prompt }
+              : submission,
+          );
+        });
+      }
+
       setSubmitState({ status: "idle" });
     } catch {
       setSubmitState({ status: "error", message: "could not submit" });

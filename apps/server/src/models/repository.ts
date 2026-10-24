@@ -826,6 +826,20 @@ export class ModelRepository {
         });
       }
 
+      // An enabled Model's Seed Input must keep a max (ADR 0007): enabling
+      // already refuses a null one, so a later Input edit can't sneak one
+      // in while the Model stays enabled.
+      if (before.state === "enabled") {
+        for (const def of input) {
+          if (def.kind === "seed" && def.max === null) {
+            errors.push({
+              field: "inputs",
+              message: `Seed Input "${def.label}" needs a max while the Model is enabled`,
+            });
+          }
+        }
+      }
+
       if (errors.length > 0) throw new ValidationFailed(errors);
 
       const beforeInputs = currentRevision.inputs as InputDefinition[];

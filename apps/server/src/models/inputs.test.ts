@@ -219,6 +219,48 @@ describe("ModelRepository Inputs", () => {
     expect(inputs[0]?.kind).toBe("seed");
   });
 
+  test("refuses a Seed Input with no max while the Model is enabled (ADR 0007)", async () => {
+    const repository = await repo();
+    const { record: model } = await repository.createFromWorkflow(
+      "M1",
+      WORKFLOW,
+      SYSTEM,
+    );
+
+    const enabled = await repository.setState(
+      model.id,
+      "enabled",
+      model.version,
+      SYSTEM,
+    );
+
+    await expect(
+      repository.updateInputs(
+        model.id,
+        [seedInput({ max: null })],
+        enabled.version,
+        SYSTEM,
+      ),
+    ).rejects.toThrow(ValidationFailed);
+  });
+
+  test("allows a Seed Input with no max while the Model is disabled", async () => {
+    const repository = await repo();
+    const { record: model } = await repository.createFromWorkflow(
+      "M1",
+      WORKFLOW,
+      SYSTEM,
+    );
+
+    const { inputs } = await repository.updateInputs(
+      model.id,
+      [seedInput({ max: null })],
+      model.version,
+      SYSTEM,
+    );
+    expect(inputs[0]?.kind).toBe("seed");
+  });
+
   test("refuses binding filename_prefix on an output node", async () => {
     const repository = await repo();
     const { record: model } = await repository.createFromWorkflow(

@@ -9,7 +9,10 @@ import type { Context } from "hono";
 import { z } from "zod";
 import { type RouteEntry, guardedRoute } from "../auth/access.js";
 import type { AppEnv } from "../auth/app-env.js";
-import type { GenerationsRepository } from "../generations/repository.js";
+import {
+  type GenerationsRepository,
+  promptBindingFor,
+} from "../generations/repository.js";
 import {
   BlockedWordSubmitted,
   InvalidCount,
@@ -36,22 +39,6 @@ const submitSchema = z.object({
   /** 1-4 (issue #47); ignored when the Mode's Path holds no bound Seed Input. */
   count: z.number().int().min(1).max(4).optional(),
 });
-
-/** The Model's "prompt" field (issue #47): its first text Input's first binding, and the value it has when a user leaves it blank. */
-function promptBindingFor(
-  detail: NonNullable<Awaited<ReturnType<ModelRepository["getBySlug"]>>>,
-): { nodeId: string; field: string; unsetValue: string } | null {
-  const promptInput = detail.inputs.find((input) => input.kind === "text");
-  const binding = promptInput?.bindings[0];
-  if (!promptInput || promptInput.kind !== "text" || !binding) return null;
-  const workflowValue = detail.workflow[binding.nodeId]?.inputs[binding.field];
-  const placeholder = typeof workflowValue === "string" ? workflowValue : "";
-  return {
-    nodeId: binding.nodeId,
-    field: binding.field,
-    unsetValue: promptInput.default || placeholder,
-  };
-}
 
 /** The Workflow's own value for an Input's first binding, shown as its placeholder when blank. */
 function placeholderFor(
@@ -250,7 +237,7 @@ export function modelsRoute(
           detail.model.id,
           session.user.id,
           8,
-          promptBindingFor(detail),
+          promptBindingFor(detail.inputs, detail.workflow),
         );
       return c.json({ submissions });
     },
@@ -279,7 +266,7 @@ export function modelsRoute(
       if (!session) return c.json({ error: "unauthorized" }, 401);
 
       try {
-        const generations = await submitGeneration(
+        const { generations, prompt } = await submitGeneration(
           {
             slug: slugParam(c),
             modeId: parsed.data.modeId,
@@ -290,7 +277,7 @@ export function modelsRoute(
           },
           submissionDeps,
         );
-        return c.json({ generations }, 201);
+        return c.json({ generations, prompt }, 201);
       } catch (err) {
         if (err instanceof ModelNotFound) {
           return c.json({ error: "not found" }, 404);

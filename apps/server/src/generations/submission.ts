@@ -24,10 +24,12 @@ import {
   activeModelTermsVersion,
 } from "../models/repository.js";
 import type { GenerationEvents } from "./events.js";
-import type {
-  CreateGenerationInput,
-  GenerationRecord,
-  GenerationsRepository,
+import {
+  type CreateGenerationInput,
+  type GenerationSummary,
+  type GenerationsRepository,
+  promptBindingFor,
+  promptFor,
 } from "./repository.js";
 
 export class ModelNotFound extends Error {
@@ -142,10 +144,16 @@ async function hasUsableBackend(
   );
 }
 
+/** A Submission, just made: its Generations (enriched like the SSE events) and its prompt (issue #47 AC: shown right away, no reload needed). */
+export interface SubmissionResult {
+  generations: GenerationSummary[];
+  prompt: string | null;
+}
+
 export async function submitGeneration(
   params: SubmitGenerationParams,
   deps: SubmissionDeps,
-): Promise<GenerationRecord[]> {
+): Promise<SubmissionResult> {
   const detail = await deps.modelRepository.getBySlug(params.slug);
   if (!detail) throw new ModelNotFound();
 
@@ -189,20 +197,17 @@ export async function submitGeneration(
   }
   const count = requestedCount;
 
-  // The Seed Input's own value is validated/drawn separately, with
-  // `count` in mind (ADR 0007); strip it before the generic schema check.
+  // The Seed Input's own value shares the generic schema check (int,
+  // 0..bound), so a wrong-typed seed (null, a string, a bool) surfaces as
+  // an `invalid` issue on its own path rather than being coerced by
+  // `Number()`. A blank seed means "draw one" (ADR 0007), so it's dropped
+  // before parsing rather than failing the (non-optional-looking) check.
   const valuesForSchema = { ...params.values };
-  let rawSeed: unknown;
-  if (seedInput) {
-    rawSeed = valuesForSchema[seedInput.id];
+  if (seedInput && valuesForSchema[seedInput.id] === "") {
     delete valuesForSchema[seedInput.id];
   }
 
-  const schema = parseInputValues(
-    detail.revisionId,
-    mode.id,
-    relevant.filter((input) => !isSeedInput(input)),
-  );
+  const schema = parseInputValues(detail.revisionId, mode.id, relevant);
   const parsedValues = schema.safeParse(valuesForSchema);
   if (!parsedValues.success) throw new InvalidInputValues(parsedValues.error);
 
@@ -229,13 +234,15 @@ export async function submitGeneration(
   let baseSeed: number | null = null;
   if (seedInput) {
     const bound = seedBoundFor(seedInput);
-    if (rawSeed === undefined || rawSeed === "") {
+    const seedValue = (parsedValues.data as Record<string, number | undefined>)[
+      seedInput.id
+    ];
+    if (seedValue === undefined) {
       baseSeed = randomSeedBase(count, bound);
     } else {
-      const seedNumber = Number(rawSeed);
-      const error = validateSeedRange(seedNumber, count, bound);
+      const error = validateSeedRange(seedValue, count, bound);
       if (error) throw new InvalidSeed(error);
-      baseSeed = seedNumber;
+      baseSeed = seedValue;
     }
   }
 
@@ -276,17 +283,22 @@ export async function submitGeneration(
     creations,
   );
 
-  for (const record of records) {
+  const generations: GenerationSummary[] = records.map((record) => ({
+    ...record,
+    modelSlug: detail.model.slug,
+    modelName: detail.model.name,
+  }));
+
+  for (const generation of generations) {
     deps.generationEvents.publish(params.userId, {
       type: "change",
-      generation: {
-        ...record,
-        modelSlug: detail.model.slug,
-        modelName: detail.model.name,
-      },
+      generation,
     });
   }
   deps.onGenerationQueued?.();
 
-  return records;
+  const promptBinding = promptBindingFor(detail.inputs, detail.workflow);
+  const prompt = promptFor(creations[0]?.builtPrompt ?? {}, promptBinding);
+
+  return { generations, prompt };
 }

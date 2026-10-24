@@ -1,13 +1,143 @@
-import { renderMarkdown } from "@ai-content-studio/shared";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  parseInputValues,
+  renderMarkdown,
+  toInputIssues,
+} from "@ai-content-studio/shared";
+import type { InputDefinition } from "@ai-content-studio/shared";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, useParams } from "react-router-dom";
 import { Footer } from "../Footer.js";
 import { useSession } from "../useSession.js";
+
+interface WorkbenchInputOption {
+  id: string;
+  label: string;
+}
+
+type WorkbenchInput = {
+  id: string;
+  group: "describe" | "settings";
+  label: string;
+  help: string;
+  placeholder: string | number | boolean | null;
+} & (
+  | {
+      kind: "text";
+      multiline: boolean;
+      maxLength: number;
+      default: string;
+    }
+  | {
+      kind: "number";
+      numberMode: "integer" | "decimal";
+      min: number;
+      max: number;
+      step: number;
+      default: number | null;
+    }
+  | {
+      kind: "select";
+      options: WorkbenchInputOption[];
+      default: string | null;
+    }
+);
 
 interface WorkbenchMode {
   id: string;
   name: string;
   description: string;
+  inputs: WorkbenchInput[];
+}
+
+interface InputIssue {
+  path: string;
+  code: string;
+  message: string;
+}
+
+/** The form's starting values for `mode`'s Inputs: each Input's own default, or blank. */
+function initialValuesFor(mode: WorkbenchMode): Record<string, string> {
+  const values: Record<string, string> = {};
+  for (const input of mode.inputs) {
+    values[input.id] =
+      input.default === null || input.default === undefined
+        ? ""
+        : String(input.default);
+  }
+  return values;
+}
+
+/** The submitted payload for `mode`'s Inputs: blank values are left out, a number is parsed. */
+function valuesPayload(
+  mode: WorkbenchMode,
+  values: Record<string, string>,
+): Record<string, string | number> {
+  const payload: Record<string, string | number> = {};
+  for (const input of mode.inputs) {
+    const raw = values[input.id];
+    if (raw === undefined || raw === "") continue;
+    payload[input.id] = input.kind === "number" ? Number(raw) : raw;
+  }
+  return payload;
+}
+
+/** `WorkbenchInput` carries everything `buildInputValuesSchema` needs; `bindings`/`group`/`help` are unused filler (the Workbench never sees them). */
+function toInputDefinition(input: WorkbenchInput): InputDefinition {
+  const base = {
+    id: input.id,
+    group: "describe" as const,
+    label: input.label,
+    help: input.help,
+    bindings: [],
+  };
+  if (input.kind === "text") {
+    return {
+      ...base,
+      kind: "text",
+      multiline: input.multiline,
+      maxLength: input.maxLength,
+      default: input.default,
+    };
+  }
+  if (input.kind === "number") {
+    return {
+      ...base,
+      kind: "number",
+      numberMode: input.numberMode,
+      min: input.min,
+      max: input.max,
+      step: input.step,
+      default: input.default,
+    };
+  }
+  return {
+    ...base,
+    kind: "select",
+    options: input.options.map((option) => ({
+      id: option.id,
+      label: option.label,
+      values: [],
+    })),
+    default: input.default,
+  };
+}
+
+/** Live, client-side validation (issue #46): the same `parseInputValues` schema the server uses, so field issues show before submit. */
+function liveIssuesFor(
+  revision: number,
+  mode: WorkbenchMode,
+  values: Record<string, string>,
+): Record<string, string> {
+  const schema = parseInputValues(
+    String(revision),
+    mode.id,
+    mode.inputs.map(toInputDefinition),
+  );
+  const result = schema.safeParse(valuesPayload(mode, values));
+  if (result.success) return {};
+  return Object.fromEntries(
+    toInputIssues(result.error).map((issue) => [issue.path, issue.message]),
+  );
 }
 
 interface ModelTerms {
@@ -316,6 +446,10 @@ export function WorkbenchPage() {
   const [model, setModel] = useState<WorkbenchModel | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [selectedModeId, setSelectedModeId] = useState<string | null>(null);
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [issuesByInputId, setIssuesByInputId] = useState<
+    Record<string, string>
+  >({});
   const [submissions, setSubmissions] = useState<SubmissionSummary[]>([]);
   const [submitState, setSubmitState] = useState<SubmitState>({
     status: "idle",
@@ -336,6 +470,27 @@ export function WorkbenchPage() {
   const [accepting, setAccepting] = useState(false);
   const [selectedSubmission, setSelectedSubmission] =
     useState<SubmissionSummary | null>(null);
+
+  const selectedMode =
+    model?.modes.find((m) => m.id === selectedModeId) ?? null;
+
+  const selectMode = useCallback((mode: WorkbenchMode) => {
+    setSelectedModeId(mode.id);
+    setValues(initialValuesFor(mode));
+    setIssuesByInputId({});
+  }, []);
+
+  // Live validation (issue #46): the same parseInputValues schema the
+  // server uses as the form resolver, so issues show before submit.
+  const liveIssuesByInputId = useMemo(() => {
+    if (!model || !selectedMode) return {};
+    return liveIssuesFor(model.revision, selectedMode, values);
+  }, [model, selectedMode, values]);
+
+  const displayedIssuesByInputId = {
+    ...liveIssuesByInputId,
+    ...issuesByInputId,
+  };
 
   const modelRef = useRef(model);
   modelRef.current = model;
@@ -358,7 +513,8 @@ export function WorkbenchPage() {
       .then((body) => {
         if (cancelled || !body) return;
         setModel(body.model);
-        setSelectedModeId(body.model.modes[0]?.id ?? null);
+        const firstMode = body.model.modes[0];
+        if (firstMode) selectMode(firstMode);
         // Blocking dialog the first time a user opens a Model with terms,
         // and again whenever re-asked (issue #61).
         if (body.model.terms && !body.model.terms.accepted) {
@@ -372,7 +528,7 @@ export function WorkbenchPage() {
     return () => {
       cancelled = true;
     };
-  }, [slug]);
+  }, [slug, selectMode]);
 
   useEffect(() => {
     if (!model) return;
@@ -440,16 +596,30 @@ export function WorkbenchPage() {
 
   const handleGenerate = useCallback(async () => {
     const current = modelRef.current;
-    if (!current || !selectedModeId) return;
+    const mode = current?.modes.find((m) => m.id === selectedModeId);
+    if (!current || !mode) return;
+
+    const issues = liveIssuesFor(current.revision, mode, values);
+    if (Object.keys(issues).length > 0) {
+      setIssuesByInputId(issues);
+      setSubmitState({
+        status: "error",
+        message: "Check the highlighted fields.",
+      });
+      return;
+    }
+
     setSubmitState({ status: "submitting" });
+    setIssuesByInputId({});
 
     try {
       const res = await fetch(`/api/models/${current.slug}/generations`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          modeId: selectedModeId,
+          modeId: mode.id,
           revision: current.revision,
+          values: valuesPayload(mode, values),
         }),
       });
 
@@ -460,11 +630,10 @@ export function WorkbenchPage() {
         };
         if (body.error === "model_changed" && body.model) {
           setModel(body.model);
-          setSelectedModeId(
-            body.model.modes.find((m) => m.id === selectedModeId)?.id ??
-              body.model.modes[0]?.id ??
-              null,
+          const stillSelected = body.model.modes.find(
+            (m) => m.id === selectedModeId,
           );
+          selectMode(stillSelected ?? body.model.modes[0] ?? mode);
           setSubmitState({
             status: "error",
             message:
@@ -499,7 +668,20 @@ export function WorkbenchPage() {
         const body = (await res.json().catch(() => ({}))) as {
           error?: string;
           message?: string;
+          issues?: InputIssue[];
         };
+        if (body.error === "invalid" && body.issues) {
+          setIssuesByInputId(
+            Object.fromEntries(
+              body.issues.map((issue) => [issue.path, issue.message]),
+            ),
+          );
+          setSubmitState({
+            status: "error",
+            message: "Check the highlighted fields.",
+          });
+          return;
+        }
         setSubmitState({
           status: "error",
           message:
@@ -512,7 +694,7 @@ export function WorkbenchPage() {
     } catch {
       setSubmitState({ status: "error", message: "could not submit" });
     }
-  }, [selectedModeId]);
+  }, [selectedModeId, values, selectMode]);
 
   if (session.status === "loading") return null;
   if (session.status === "signed-out") return <Navigate to="/" replace />;
@@ -607,12 +789,36 @@ export function WorkbenchPage() {
                       name="mode"
                       value={mode.id}
                       checked={selectedModeId === mode.id}
-                      onChange={() => setSelectedModeId(mode.id)}
+                      onChange={() => selectMode(mode)}
                     />
                     {mode.name}
                   </label>
                 ))}
               </fieldset>
+            )}
+
+            {selectedMode && (
+              <InputGroups
+                mode={selectedMode}
+                values={values}
+                setValues={(update) => {
+                  setValues((current) => {
+                    const next = update(current);
+                    const changedIds = Object.keys(next).filter(
+                      (id) => next[id] !== current[id],
+                    );
+                    if (changedIds.length > 0) {
+                      setIssuesByInputId((issues) => {
+                        const remaining = { ...issues };
+                        for (const id of changedIds) delete remaining[id];
+                        return remaining;
+                      });
+                    }
+                    return next;
+                  });
+                }}
+                issuesByInputId={displayedIssuesByInputId}
+              />
             )}
 
             {submitState.status === "error" && (
@@ -666,6 +872,174 @@ export function WorkbenchPage() {
       <Footer />
     </>
   );
+}
+
+interface InputGroupsProps {
+  mode: WorkbenchMode;
+  values: Record<string, string>;
+  setValues: (
+    update: (current: Record<string, string>) => Record<string, string>,
+  ) => void;
+  issuesByInputId: Record<string, string>;
+}
+
+const GROUP_LABELS: Record<WorkbenchInput["group"], string> = {
+  describe: "Describe it",
+  settings: "Settings",
+};
+
+/** The Workbench's Inputs, grouped as Describe it and Settings, in the Admin's order (issue #46). */
+function InputGroups({
+  mode,
+  values,
+  setValues,
+  issuesByInputId,
+}: InputGroupsProps) {
+  function setValue(inputId: string, value: string) {
+    setValues((current) => ({ ...current, [inputId]: value }));
+  }
+
+  return (
+    <>
+      {(["describe", "settings"] as const).map((group) => {
+        const inputs = mode.inputs.filter((input) => input.group === group);
+        if (inputs.length === 0) return null;
+        return (
+          <fieldset key={group}>
+            <legend>{GROUP_LABELS[group]}</legend>
+            {inputs.map((input) => (
+              <InputField
+                key={input.id}
+                input={input}
+                value={values[input.id] ?? ""}
+                onChange={(value) => setValue(input.id, value)}
+                issue={issuesByInputId[input.id]}
+              />
+            ))}
+          </fieldset>
+        );
+      })}
+    </>
+  );
+}
+
+interface InputFieldProps {
+  input: WorkbenchInput;
+  value: string;
+  onChange: (value: string) => void;
+  issue: string | undefined;
+}
+
+/** One Input's field: a blank, optional Input shows the Workflow's own value as its placeholder (issue #46). */
+function InputField({ input, value, onChange, issue }: InputFieldProps) {
+  const placeholder =
+    input.placeholder === null ? undefined : String(input.placeholder);
+  const helpId = input.help ? `input-help-${input.id}` : undefined;
+  const issueId = issue ? `input-issue-${input.id}` : undefined;
+  const describedBy = [helpId, issueId].filter(Boolean).join(" ") || undefined;
+
+  return (
+    <div>
+      <label htmlFor={`input-${input.id}`}>{input.label}</label>
+      {input.help && <p id={helpId}>{input.help}</p>}
+
+      {input.kind === "text" &&
+        (input.multiline ? (
+          <textarea
+            id={`input-${input.id}`}
+            value={value}
+            placeholder={placeholder}
+            maxLength={input.maxLength}
+            aria-describedby={describedBy}
+            onChange={(event) => onChange(event.target.value)}
+          />
+        ) : (
+          <input
+            id={`input-${input.id}`}
+            value={value}
+            placeholder={placeholder}
+            maxLength={input.maxLength}
+            aria-describedby={describedBy}
+            onChange={(event) => onChange(event.target.value)}
+          />
+        ))}
+
+      {input.kind === "number" && (
+        <input
+          id={`input-${input.id}`}
+          type="number"
+          value={value}
+          placeholder={placeholder}
+          min={input.min}
+          max={input.max}
+          step={input.step}
+          aria-describedby={describedBy}
+          onChange={(event) => onChange(event.target.value)}
+        />
+      )}
+
+      {input.kind === "select" && input.options.length === 2 && (
+        <label>
+          <input
+            type="checkbox"
+            id={`input-${input.id}`}
+            checked={value === input.options[1]?.id}
+            aria-describedby={describedBy}
+            onChange={(event) =>
+              onChange(
+                event.target.checked
+                  ? (input.options[1]?.id ?? "")
+                  : (input.options[0]?.id ?? ""),
+              )
+            }
+          />
+          {value === input.options[1]?.id
+            ? input.options[1]?.label
+            : (input.options[0]?.label ?? "")}
+        </label>
+      )}
+
+      {input.kind === "select" && input.options.length !== 2 && (
+        <select
+          id={`input-${input.id}`}
+          value={value}
+          aria-describedby={describedBy}
+          onChange={(event) => onChange(event.target.value)}
+        >
+          <option value="">Use the Workflow's value</option>
+          {input.options.map((option) => (
+            <option key={option.id} value={option.id}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      )}
+
+      {issue && (
+        <p id={issueId} role="alert">
+          {issue}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function groupBySubmission(
+  generations: GenerationSummary[],
+): SubmissionSummary[] {
+  const bySubmission = new Map<string, GenerationSummary[]>();
+  for (const generation of generations) {
+    const list = bySubmission.get(generation.submissionId) ?? [];
+    list.push(generation);
+    bySubmission.set(generation.submissionId, list);
+  }
+  return [...bySubmission.entries()].map(([submissionId, gens]) => ({
+    submissionId,
+    modeId: gens[0]?.modeId ?? "",
+    modeName: gens[0]?.modeName ?? "",
+    submittedAt: gens[0]?.submittedAt ?? "",
+    generations: gens,
+  }));
 }
 
 const WORKBENCH_STYLE = `

@@ -1,3 +1,9 @@
+import type { InputDefinition, Workflow } from "@ai-content-studio/shared";
+import {
+  isNodeLink,
+  relevantInputs,
+  toInputIssues,
+} from "@ai-content-studio/shared";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { z } from "zod";
@@ -5,6 +11,7 @@ import { type RouteEntry, guardedRoute } from "../auth/access.js";
 import type { AppEnv } from "../auth/app-env.js";
 import type { GenerationsRepository } from "../generations/repository.js";
 import {
+  InvalidInputValues,
   ModeNotFound,
   ModelChanged,
   ModelDisabled,
@@ -22,7 +29,60 @@ import {
 const submitSchema = z.object({
   modeId: z.string(),
   revision: z.number().int().min(1),
+  values: z.record(z.string(), z.unknown()).default({}),
 });
+
+/** The Workflow's own value for an Input's first binding, shown as its placeholder when blank. */
+function placeholderFor(
+  input: InputDefinition,
+  workflow: Workflow,
+): string | number | boolean | null {
+  const binding = input.bindings[0];
+  const value = binding
+    ? workflow[binding.nodeId]?.inputs[binding.field]
+    : undefined;
+  return value === undefined || isNodeLink(value) ? null : value;
+}
+
+/** Trims an Input down to what the Workbench needs to render and validate its field: never the bindings or an option's per-field values. */
+function toWorkbenchInput(input: InputDefinition, workflow: Workflow) {
+  const base = {
+    id: input.id,
+    group: input.group,
+    label: input.label,
+    help: input.help,
+    placeholder: placeholderFor(input, workflow),
+  };
+  if (input.kind === "text") {
+    return {
+      ...base,
+      kind: "text" as const,
+      multiline: input.multiline,
+      maxLength: input.maxLength,
+      default: input.default,
+    };
+  }
+  if (input.kind === "number") {
+    return {
+      ...base,
+      kind: "number" as const,
+      numberMode: input.numberMode,
+      min: input.min,
+      max: input.max,
+      step: input.step,
+      default: input.default,
+    };
+  }
+  return {
+    ...base,
+    kind: "select" as const,
+    options: input.options.map((option) => ({
+      id: option.id,
+      label: option.label,
+    })),
+    default: input.default,
+  };
+}
 
 /** Trims a Model's admin detail down to what a signed-in user's Workbench may see. */
 function toWorkbenchDetail(
@@ -41,6 +101,11 @@ function toWorkbenchDetail(
     modes: detail.modes.map((mode) => ({
       id: mode.id,
       name: mode.name,
+      inputs: relevantInputs(
+        detail.inputs,
+        detail.workflow,
+        mode.outputNodes.map((node) => node.nodeId),
+      ).map((input) => toWorkbenchInput(input, detail.workflow)),
       description: mode.description,
     })),
     terms:
@@ -191,6 +256,7 @@ export function modelsRoute(
             modeId: parsed.data.modeId,
             revision: parsed.data.revision,
             userId: session.user.id,
+            values: parsed.data.values,
           },
           submissionDeps,
         );
@@ -224,6 +290,12 @@ export function modelsRoute(
         }
         if (err instanceof NoBackend) {
           return c.json({ error: "no_backend", message: err.message }, 400);
+        }
+        if (err instanceof InvalidInputValues) {
+          return c.json(
+            { error: "invalid", issues: toInputIssues(err.zodError) },
+            400,
+          );
         }
         throw err;
       }

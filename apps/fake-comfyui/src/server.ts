@@ -7,7 +7,9 @@
 // #54 adds /api/jobs/:id/cancel (the user's own cancel) and a `hang`
 // script option, alongside issue #55's /interrupt (a timeout's own).
 // Issue #50 adds `POST /upload/image` and `/view?type=input` (with HEAD),
-// backed by an in-memory input folder a test can seed and inspect.
+// backed by an in-memory input folder a test can seed and inspect. Issue
+// #79's contract suite settled that real ComfyUI's `/view` answers both
+// HEAD and `Range` for any `type`, so `/view` here does too.
 
 import objectInfoFixture from "./object-info-fixture.json" with {
   type: "json",
@@ -409,12 +411,7 @@ export function startFakeComfyUi(opts: FakeComfyUiOptions) {
           ),
         );
         if (!file) return new Response("not found", { status: 404 });
-        const headers = {
-          "content-length": String(file.bytes.length),
-          "last-modified": file.lastModified.toUTCString(),
-        };
-        if (req.method === "HEAD") return new Response(null, { headers });
-        return new Response(file.bytes, { headers });
+        return serveView(req, file.bytes, file.lastModified);
       }
 
       if (url.pathname === "/view") {
@@ -423,8 +420,8 @@ export function startFakeComfyUi(opts: FakeComfyUiOptions) {
         if (!isAuthorized(req, opts))
           return new Response("unauthorized", { status: 401 });
         const filename = url.searchParams.get("filename") ?? "";
-        return new Response(fakeFileBytes(filename), {
-          headers: { "content-type": contentTypeFor(filename) },
+        return serveView(req, fakeFileBytes(filename), null, {
+          "content-type": contentTypeFor(filename),
         });
       }
 
@@ -519,6 +516,68 @@ export interface InputFile {
 
 function inputKey(subfolder: string, filename: string): string {
   return subfolder ? `${subfolder}/${filename}` : filename;
+}
+
+/**
+ * Real ComfyUI's `/view` (any `type`, `input` or `output`) answers through
+ * aiohttp's `web.FileResponse`, which supports HEAD (aiohttp registers it
+ * alongside every `GET` route) and `Range` (issue #79 settled this by
+ * reading ComfyUI's own `server.py`). This mirrors both, instead of the
+ * input/output branches each doing their own partial thing.
+ */
+function serveView(
+  req: Request,
+  bytes: Uint8Array,
+  lastModified: Date | null,
+  extraHeaders: Record<string, string> = {},
+): Response {
+  const headers: Record<string, string> = {
+    ...extraHeaders,
+    "accept-ranges": "bytes",
+  };
+  if (lastModified) headers["last-modified"] = lastModified.toUTCString();
+
+  const range = parseRangeHeader(req.headers.get("range"), bytes.length);
+  if (range) {
+    const slice = bytes.subarray(range.start, range.end + 1);
+    return new Response(req.method === "HEAD" ? null : slice, {
+      status: 206,
+      headers: {
+        ...headers,
+        "content-length": String(slice.length),
+        "content-range": `bytes ${range.start}-${range.end}/${bytes.length}`,
+      },
+    });
+  }
+
+  headers["content-length"] = String(bytes.length);
+  return new Response(req.method === "HEAD" ? null : bytes, { headers });
+}
+
+/** Parses a `Range: bytes=start-end` header (including an open end or a suffix range), `null` when absent, unsatisfiable or malformed. */
+function parseRangeHeader(
+  header: string | null,
+  size: number,
+): { start: number; end: number } | null {
+  if (!header) return null;
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header);
+  if (!match) return null;
+  const [, startStr, endStr] = match;
+  if (startStr === "" && endStr === "") return null;
+
+  let start: number;
+  let end: number;
+  if (startStr === "") {
+    // A suffix range ("bytes=-500"): the last `endStr` bytes.
+    start = Math.max(0, size - Number(endStr));
+    end = size - 1;
+  } else {
+    start = Number(startStr);
+    end = endStr === "" ? size - 1 : Math.min(Number(endStr), size - 1);
+  }
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  if (start < 0 || start > end || start >= size) return null;
+  return { start, end };
 }
 
 /** Deterministic bytes for a filename, so a test can assert on saved content without a real codec. */

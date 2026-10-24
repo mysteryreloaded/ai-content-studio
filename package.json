@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "concurrently -n server,web -c blue,green \"bun run --filter @ai-content-studio/server dev\" \"bun run --filter @ai-content-studio/web dev\"",
     "build": "bun run --filter @ai-content-studio/web build",
-    "test": "bun test",
+    "test": "bun test --isolate",
     "lint": "biome check .",
     "typecheck": "tsc -b",
     "db:check": "bun run --filter @ai-content-studio/server db:check"

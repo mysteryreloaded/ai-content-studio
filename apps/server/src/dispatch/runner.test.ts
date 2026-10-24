@@ -72,6 +72,7 @@ function fakeDetail(
     ],
     maxRunTimeMinutes: 30,
     uploads: [],
+    isTest: false,
     ...overrides,
   };
 }

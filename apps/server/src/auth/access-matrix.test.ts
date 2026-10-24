@@ -166,6 +166,7 @@ describe("every route's access level is declared and enforced", () => {
       "POST /api/admin/models/:id/revisions/:number/restore": 404,
       "POST /api/admin/models/:id/enable": 404,
       "POST /api/admin/models/:id/disable": 404,
+      "POST /api/admin/models/:id/test": 404,
     };
 
     // No Site terms are set in this test's database, so accepting them

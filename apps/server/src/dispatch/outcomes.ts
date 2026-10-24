@@ -42,6 +42,7 @@ function toSummary(
     submittedAt: detail.submittedAt,
     modelSlug: detail.modelSlug,
     modelName: detail.modelName,
+    isTest: detail.isTest,
     assets,
   };
 }

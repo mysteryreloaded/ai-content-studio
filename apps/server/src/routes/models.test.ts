@@ -408,6 +408,30 @@ describe("/api/models/:slug and :slug/generations", () => {
     }
   });
 
+  test("sends a heartbeat every few seconds so the stream stays open", async () => {
+    const { app, backendsService } = await build();
+    const { headers: userHeaders } = await headersFor("user");
+
+    const streamRes = await app.request("/api/generations/stream", {
+      headers: userHeaders,
+    });
+    const reader = streamRes.body?.getReader();
+    if (!reader) throw new Error("no stream body");
+    const decoder = new TextDecoder();
+
+    const snapshotChunk = await reader.read();
+    expect(decoder.decode(snapshotChunk.value)).toContain("event: snapshot");
+
+    clock.advance(5_000);
+    await flushMicrotasks();
+
+    const heartbeatChunk = await reader.read();
+    expect(decoder.decode(heartbeatChunk.value)).toContain(": heartbeat");
+
+    await reader.cancel();
+    backendsService.stop();
+  });
+
   test("refuses to delete a Model with an unfinished Generation", async () => {
     const fake = startFakeComfyUi({ port: 0 });
     try {

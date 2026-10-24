@@ -186,4 +186,74 @@ describe("WorkbenchPage", () => {
 
     expect(await view.findByText(/This Model changed; reloaded/)).toBeTruthy();
   });
+
+  test("adds a Queued card to Submissions when a change event arrives for this Model", async () => {
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/models/ltx")) {
+        return Response.json({ model: MODEL });
+      }
+      if (call.url.endsWith("/api/models/ltx/generations")) {
+        return Response.json({ submissions: [] });
+      }
+      throw new Error(`unexpected fetch ${call.url}`);
+    });
+
+    const view = renderWorkbench();
+    await view.findByRole("heading", { name: "LTX 2.5" });
+    expect(view.getByText("No Submissions yet.")).toBeTruthy();
+
+    await waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
+    const source = FakeEventSource.instances[0] as FakeEventSource;
+    source.emit("change", {
+      id: "g1",
+      modelId: "m1",
+      modelSlug: "ltx",
+      modelName: "LTX 2.5",
+      modeId: "mode1",
+      modeName: "Default",
+      submissionId: "s1",
+      state: "queued",
+      submittedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    expect(await view.findByText("Queued")).toBeTruthy();
+    expect(view.getByText("Default", { selector: "strong" })).toBeTruthy();
+    expect(view.queryByText("No Submissions yet.")).toBeNull();
+  });
+
+  test('shows "no server available for this Model" on a 400 no_backend', async () => {
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
+        return Response.json({ model: MODEL });
+      }
+      if (
+        call.url.endsWith("/api/models/ltx/generations") &&
+        call.method === "GET"
+      ) {
+        return Response.json({ submissions: [] });
+      }
+      if (
+        call.url.endsWith("/api/models/ltx/generations") &&
+        call.method === "POST"
+      ) {
+        return Response.json(
+          {
+            error: "no_backend",
+            message: "no server available for this Model",
+          },
+          { status: 400 },
+        );
+      }
+      throw new Error(`unexpected fetch ${call.url}`);
+    });
+
+    const view = renderWorkbench();
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await view.findByRole("button", { name: "Generate" });
+    await userEvent.click(view.getByRole("button", { name: "Generate" }));
+
+    expect(
+      await view.findByText("no server available for this Model"),
+    ).toBeTruthy();
+  });
 });

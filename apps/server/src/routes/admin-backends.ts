@@ -15,6 +15,7 @@ import { ValidationFailed } from "../backends/validation.js";
 import type { BackendInput } from "../backends/validation.js";
 import type { Database } from "../db/client.js";
 import { auditEntries } from "../db/schema.js";
+import type { GenerationsRepository } from "../generations/repository.js";
 
 const backendInputSchema = z.object({
   name: z.string(),
@@ -53,6 +54,7 @@ export function adminBackendsRoute(
   clock: Clock,
   repository: BackendRepository,
   service: BackendsService,
+  generationsRepository: GenerationsRepository,
   routes: RouteEntry[],
 ): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
@@ -138,6 +140,10 @@ export function adminBackendsRoute(
     const versionResult = versionSchema.safeParse(c.req.query("version"));
     if (!versionResult.success)
       return c.json({ error: "version is required" }, 400);
+
+    if (await generationsRepository.hasUnfinishedForBackend(id)) {
+      return c.json({ error: "has unfinished Generations" }, 409);
+    }
 
     try {
       await repository.softDelete(id, versionResult.data, adminActorFrom(c));

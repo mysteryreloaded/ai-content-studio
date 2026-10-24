@@ -1,6 +1,7 @@
 export * from "./workflow/types.js";
 export * from "./workflow/mode.js";
 export * from "./workflow/path.js";
+export * from "./workflow/frozen-prompt.js";
 export * from "./workflow/validate.js";
 export * from "./workflow/outside-service.js";
 export * from "./clock/clock.js";

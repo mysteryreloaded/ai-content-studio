@@ -1,0 +1,189 @@
+// See ModelEditorPage.test.tsx's header comment: this file registers its
+// own happy-dom instance (bun test --isolate gives it a clean process).
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
+import { GlobalRegistrator } from "@happy-dom/global-registrator";
+
+await GlobalRegistrator.register();
+
+const { cleanup, render, waitFor } = await import("@testing-library/react");
+const { createMemoryRouter, RouterProvider } = await import("react-router-dom");
+const { WorkbenchPage } = await import("./WorkbenchPage.js");
+
+afterEach(() => {
+  cleanup();
+});
+
+afterAll(async () => {
+  await GlobalRegistrator.unregister();
+});
+
+const SIGNED_IN_USER = {
+  id: "u1",
+  email: "user@example.com",
+  name: "A User",
+  picture: null,
+  role: "user" as const,
+  status: "active" as const,
+  termsAcceptedVersion: null,
+};
+
+const MODEL = {
+  id: "m1",
+  slug: "ltx",
+  name: "LTX 2.5",
+  description: "Video generation",
+  revision: 2,
+  modes: [{ id: "mode1", name: "Default", description: "" }],
+};
+
+class FakeEventSource {
+  static instances: FakeEventSource[] = [];
+  listeners: Record<string, Array<(event: { data: string }) => void>> = {};
+  constructor(public url: string) {
+    FakeEventSource.instances.push(this);
+  }
+  addEventListener(type: string, cb: (event: { data: string }) => void) {
+    const list = this.listeners[type] ?? [];
+    list.push(cb);
+    this.listeners[type] = list;
+  }
+  close() {}
+  emit(type: string, data: unknown) {
+    for (const cb of this.listeners[type] ?? []) {
+      cb({ data: JSON.stringify(data) });
+    }
+  }
+}
+
+interface FetchCall {
+  method: string;
+  url: string;
+  body: Record<string, unknown> | null;
+}
+
+function mockFetch(handler: (call: FetchCall) => Response | Promise<Response>) {
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.endsWith("/api/auth/me")) return Response.json(SIGNED_IN_USER);
+    const call: FetchCall = {
+      method: (init?.method ?? "GET").toUpperCase(),
+      url,
+      body: typeof init?.body === "string" ? JSON.parse(init.body) : null,
+    };
+    return handler(call);
+  }) as typeof fetch;
+}
+
+function renderWorkbench() {
+  (globalThis as unknown as { EventSource: unknown }).EventSource =
+    FakeEventSource;
+  FakeEventSource.instances = [];
+
+  const router = createMemoryRouter(
+    [{ path: "/models/:slug", element: <WorkbenchPage /> }],
+    { initialEntries: ["/models/ltx"] },
+  );
+  return render(<RouterProvider router={router} />);
+}
+
+describe("WorkbenchPage", () => {
+  test("shows the Model's name, description, Mode heading and this Model's Submissions", async () => {
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/models/ltx")) {
+        return Response.json({ model: MODEL });
+      }
+      if (call.url.endsWith("/api/models/ltx/generations")) {
+        return Response.json({
+          submissions: [
+            {
+              submissionId: "s1",
+              modeId: "mode1",
+              modeName: "Default",
+              submittedAt: "2026-01-01T00:00:00.000Z",
+              generations: [],
+            },
+          ],
+        });
+      }
+      throw new Error(`unexpected fetch ${call.url}`);
+    });
+
+    const view = renderWorkbench();
+
+    expect(await view.findByRole("heading", { name: "LTX 2.5" })).toBeTruthy();
+    expect(view.getByText("Video generation")).toBeTruthy();
+    expect(await view.findByRole("heading", { name: "Default" })).toBeTruthy();
+    expect(
+      await view.findByText("Default", { selector: "strong" }),
+    ).toBeTruthy();
+    expect(view.getByRole("button", { name: "Generate" })).toBeTruthy();
+  });
+
+  test("404s when the Model doesn't exist or isn't enabled", async () => {
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/models/ltx")) {
+        return new Response(null, { status: 404 });
+      }
+      throw new Error(`unexpected fetch ${call.url}`);
+    });
+
+    const view = renderWorkbench();
+
+    expect(await view.findByText("Model not found.")).toBeTruthy();
+  });
+
+  test("shows the live under-way count from the SSE snapshot", async () => {
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/models/ltx")) {
+        return Response.json({ model: MODEL });
+      }
+      if (call.url.endsWith("/api/models/ltx/generations")) {
+        return Response.json({ submissions: [] });
+      }
+      throw new Error(`unexpected fetch ${call.url}`);
+    });
+
+    const view = renderWorkbench();
+    await view.findByRole("heading", { name: "LTX 2.5" });
+
+    await waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
+    const source = FakeEventSource.instances[0] as FakeEventSource;
+    source.emit("snapshot", { generations: [{ id: "g1" }, { id: "g2" }] });
+
+    expect(await view.findByText("2 under way")).toBeTruthy();
+  });
+
+  test("reloads the Model and shows a message on 409 model_changed", async () => {
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
+        return Response.json({ model: MODEL });
+      }
+      if (
+        call.url.endsWith("/api/models/ltx/generations") &&
+        call.method === "GET"
+      ) {
+        return Response.json({ submissions: [] });
+      }
+      if (
+        call.url.endsWith("/api/models/ltx/generations") &&
+        call.method === "POST"
+      ) {
+        return Response.json(
+          {
+            error: "model_changed",
+            model: { ...MODEL, revision: 3 },
+          },
+          { status: 409 },
+        );
+      }
+      throw new Error(`unexpected fetch ${call.url}`);
+    });
+
+    const view = renderWorkbench();
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await view.findByRole("button", { name: "Generate" });
+    await userEvent.click(view.getByRole("button", { name: "Generate" }));
+
+    expect(await view.findByText(/This Model changed; reloaded/)).toBeTruthy();
+  });
+});

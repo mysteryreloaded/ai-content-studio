@@ -10,6 +10,7 @@ import { ModelsHome } from "./pages/ModelsHome.js";
 import { PrivacyPage } from "./pages/PrivacyPage.js";
 import { TermsPage } from "./pages/TermsPage.js";
 import { WaitingPage } from "./pages/WaitingPage.js";
+import { WorkbenchPage } from "./pages/WorkbenchPage.js";
 
 const root = document.getElementById("root");
 if (!root) throw new Error("missing #root element");
@@ -26,6 +27,16 @@ const router = createBrowserRouter([
       <RequireTermsAccepted>
         <RequireActive>
           <ModelsHome />
+        </RequireActive>
+      </RequireTermsAccepted>
+    ),
+  },
+  {
+    path: "/models/:slug",
+    element: (
+      <RequireTermsAccepted>
+        <RequireActive>
+          <WorkbenchPage />
         </RequireActive>
       </RequireTermsAccepted>
     ),

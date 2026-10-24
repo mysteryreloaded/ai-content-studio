@@ -197,6 +197,13 @@
       "when": 1792852082527,
       "tag": "0027_salty_mysterio",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1792855351970,
+      "tag": "0028_skinny_madrox",
+      "breakpoints": true
     }
   ]
 }

@@ -1,5 +1,9 @@
-import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import {
+  USER_CAP_OVERRIDE_MAX,
+  USER_CAP_OVERRIDE_MIN,
+} from "@ai-content-studio/shared";
+import { type FormEvent, useEffect, useState } from "react";
+import { Link, Navigate, useParams } from "react-router-dom";
 import { useSession } from "../useSession.js";
 
 interface AdminUser {
@@ -10,16 +14,41 @@ interface AdminUser {
   role: "user" | "admin";
   status: "pending" | "active" | "disabled";
   pinned: boolean;
+  dailyCapOverride: number | null;
+  concurrentCapOverride: number | null;
+  disabledReason: string | null;
+  disabledAt: string | null;
   createdAt: string;
 }
 
-/** `/admin/users/:id`: a user's profile, with a History link and approve/promote/demote (issue #62). */
+const DISABLE_REASON_MAX_LENGTH = 500;
+
+/** Blank, "0" or a whole number in range; anything else is left for the server to refuse. */
+function parseOverride(raw: string): number | null {
+  const trimmed = raw.trim();
+  if (trimmed === "") return null;
+  return Number(trimmed);
+}
+
+/** `/admin/users/:id`: a user's profile, with a History link, approve/promote/demote/disable/enable/delete (issue #62, #64) and Cap overrides (issue #64). */
 export function UserPage() {
   const { id } = useParams<{ id: string }>();
   const { session } = useSession();
   const [user, setUser] = useState<AdminUser | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [deleted, setDeleted] = useState(false);
+
+  const [disableReason, setDisableReason] = useState("");
+  const [showDisableForm, setShowDisableForm] = useState(false);
+  const [deleteReason, setDeleteReason] = useState("");
+  const [showDeleteForm, setShowDeleteForm] = useState(false);
+
+  const [dailyCap, setDailyCap] = useState("");
+  const [concurrentCap, setConcurrentCap] = useState("");
+  const [capsSaving, setCapsSaving] = useState(false);
+  const [capsError, setCapsError] = useState<string | null>(null);
+  const [capsSaved, setCapsSaved] = useState(false);
 
   function load() {
     if (!id) return;
@@ -31,6 +60,14 @@ export function UserPage() {
       .then((body) => {
         setUser(body);
         setLoadError(null);
+        setDailyCap(
+          body.dailyCapOverride === null ? "" : String(body.dailyCapOverride),
+        );
+        setConcurrentCap(
+          body.concurrentCapOverride === null
+            ? ""
+            : String(body.concurrentCapOverride),
+        );
       })
       .catch(() => setLoadError("could not load this user"));
   }
@@ -38,7 +75,7 @@ export function UserPage() {
   // biome-ignore lint/correctness/useExhaustiveDependencies: load is re-created each render, id is the actual dependency
   useEffect(load, [id]);
 
-  async function act(action: "approve" | "promote" | "demote") {
+  async function act(action: "approve" | "promote" | "demote" | "enable") {
     if (!id) return;
     setActionError(null);
     const res = await fetch(`/api/admin/users/${id}/${action}`, {
@@ -51,6 +88,78 @@ export function UserPage() {
     load();
   }
 
+  async function disable() {
+    if (!id) return;
+    setActionError(null);
+    const res = await fetch(`/api/admin/users/${id}/disable`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason: disableReason.trim() || undefined }),
+    });
+    if (!res.ok) {
+      setActionError("could not disable this user");
+      return;
+    }
+    setShowDisableForm(false);
+    setDisableReason("");
+    load();
+  }
+
+  async function remove() {
+    if (!id) return;
+    setActionError(null);
+    const res = await fetch(`/api/admin/users/${id}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason: deleteReason.trim() || undefined }),
+    });
+    if (!res.ok) {
+      setActionError("could not delete this user");
+      return;
+    }
+    setDeleted(true);
+  }
+
+  async function saveCaps(event: FormEvent) {
+    event.preventDefault();
+    if (!id) return;
+    setCapsError(null);
+    setCapsSaved(false);
+
+    const dailyCapOverride = parseOverride(dailyCap);
+    const concurrentCapOverride = parseOverride(concurrentCap);
+    if (
+      (dailyCapOverride !== null &&
+        (!Number.isInteger(dailyCapOverride) ||
+          dailyCapOverride < USER_CAP_OVERRIDE_MIN ||
+          dailyCapOverride > USER_CAP_OVERRIDE_MAX)) ||
+      (concurrentCapOverride !== null &&
+        (!Number.isInteger(concurrentCapOverride) ||
+          concurrentCapOverride < USER_CAP_OVERRIDE_MIN ||
+          concurrentCapOverride > USER_CAP_OVERRIDE_MAX))
+    ) {
+      setCapsError(
+        `Each override must be blank, or a whole number between ${USER_CAP_OVERRIDE_MIN} and ${USER_CAP_OVERRIDE_MAX.toLocaleString()}.`,
+      );
+      return;
+    }
+
+    setCapsSaving(true);
+    const res = await fetch(`/api/admin/users/${id}/caps`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dailyCapOverride, concurrentCapOverride }),
+    });
+    setCapsSaving(false);
+    if (!res.ok) {
+      setCapsError("could not save Cap overrides");
+      return;
+    }
+    setCapsSaved(true);
+    load();
+  }
+
+  if (deleted) return <Navigate to="/admin/users" replace />;
   if (loadError) return <p role="alert">{loadError}</p>;
   if (!user) return <p>Loading…</p>;
 
@@ -75,6 +184,15 @@ export function UserPage() {
         </dd>
         <dt>Status</dt>
         <dd>{user.status}</dd>
+        {user.status === "disabled" && (
+          <>
+            <dt>Disabled</dt>
+            <dd>
+              {user.disabledAt && new Date(user.disabledAt).toLocaleString()}
+              {user.disabledReason ? ` — ${user.disabledReason}` : ""}
+            </dd>
+          </>
+        )}
         <dt>Joined</dt>
         <dd>{new Date(user.createdAt).toLocaleString()}</dd>
       </dl>
@@ -94,6 +212,99 @@ export function UserPage() {
           Demote to user
         </button>
       )}
+      {canAct && user.status !== "disabled" && !showDisableForm && (
+        <button type="button" onClick={() => setShowDisableForm(true)}>
+          Disable
+        </button>
+      )}
+      {canAct && user.status !== "disabled" && showDisableForm && (
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            void disable();
+          }}
+        >
+          <label htmlFor="disable-reason">Reason (optional, Admin-only)</label>
+          <textarea
+            id="disable-reason"
+            maxLength={DISABLE_REASON_MAX_LENGTH}
+            value={disableReason}
+            onChange={(event) => setDisableReason(event.target.value)}
+          />
+          <button type="submit">Confirm disable</button>
+          <button type="button" onClick={() => setShowDisableForm(false)}>
+            Cancel
+          </button>
+        </form>
+      )}
+      {canAct && user.status === "disabled" && (
+        <button type="button" onClick={() => void act("enable")}>
+          Enable
+        </button>
+      )}
+      {canAct && !showDeleteForm && (
+        <button type="button" onClick={() => setShowDeleteForm(true)}>
+          Delete account
+        </button>
+      )}
+      {canAct && showDeleteForm && (
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            void remove();
+          }}
+        >
+          <p>
+            This scrubs {user.name}'s account like a self-delete.
+            {user.status === "disabled" &&
+              " Their Google account will also be blocked from signing up again."}
+          </p>
+          <label htmlFor="delete-reason">
+            Blocked-account reason (optional)
+          </label>
+          <textarea
+            id="delete-reason"
+            maxLength={DISABLE_REASON_MAX_LENGTH}
+            value={deleteReason}
+            onChange={(event) => setDeleteReason(event.target.value)}
+          />
+          <button type="submit">Confirm delete</button>
+          <button type="button" onClick={() => setShowDeleteForm(false)}>
+            Cancel
+          </button>
+        </form>
+      )}
+      <form onSubmit={(event) => void saveCaps(event)}>
+        <h3>Cap overrides</h3>
+        <p>
+          Blank uses the Site default; 0 blocks this user from generating. Whole
+          numbers between {USER_CAP_OVERRIDE_MIN} and{" "}
+          {USER_CAP_OVERRIDE_MAX.toLocaleString()}.
+        </p>
+        <label htmlFor="daily-cap-override">Daily cap override</label>
+        <input
+          id="daily-cap-override"
+          type="number"
+          min={USER_CAP_OVERRIDE_MIN}
+          max={USER_CAP_OVERRIDE_MAX}
+          value={dailyCap}
+          onChange={(event) => setDailyCap(event.target.value)}
+        />
+        <label htmlFor="concurrent-cap-override">Concurrent cap override</label>
+        <input
+          id="concurrent-cap-override"
+          type="number"
+          min={USER_CAP_OVERRIDE_MIN}
+          max={USER_CAP_OVERRIDE_MAX}
+          value={concurrentCap}
+          onChange={(event) => setConcurrentCap(event.target.value)}
+        />
+        <button type="submit" disabled={capsSaving}>
+          Save
+        </button>
+        {capsError && <p role="alert">{capsError}</p>}
+        {capsSaved && <p>Saved.</p>}
+      </form>
     </section>
   );
 }

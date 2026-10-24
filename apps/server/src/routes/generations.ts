@@ -111,6 +111,13 @@ export function generationsRoute(
           function sendGenerationEvent(event: GenerationEvent) {
             if (event.type === "progress") {
               send("progress", event.progress);
+            } else if (event.type === "disconnect") {
+              cleanup();
+              try {
+                controller.close();
+              } catch {
+                // already closing/closed
+              }
             } else {
               send("change", event.generation);
             }

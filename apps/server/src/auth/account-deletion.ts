@@ -48,31 +48,26 @@ export interface AccountDeletionDeps {
   storage: Storage;
 }
 
-function sha256Hex(value: string): string {
+export function sha256Hex(value: string): string {
   return new Bun.CryptoHasher("sha256").update(value).digest("hex");
 }
 
 /**
- * Deletes `userId`'s own account (issue #63's AC). Refused for an Admin,
- * or when `typedEmail` doesn't match this user's current email — the
- * server re-checks it rather than trusting whatever the account page
- * sent.
+ * The scrub shared by a self-delete (issue #63) and an Admin delete
+ * (issue #64): cancels anything still under way, Tombstones everything
+ * ended, deletes every Upload not still in use, drops every session, and
+ * wipes the user row down to its id (name/email/picture/`googleSub`
+ * gone, Caps and terms acceptance cleared) so an Audit entry or another
+ * user's Generation that still names this id keeps resolving. Doesn't
+ * touch `status`, `role` or the Audit entry — callers set those and
+ * record their own action name.
  */
-export async function deleteOwnAccount(
-  deps: AccountDeletionDeps,
-  userId: string,
-  typedEmail: string,
-): Promise<AccountDeletionResult> {
-  const [user] = await deps.db.select().from(users).where(eq(users.id, userId));
-  if (!user) return { ok: false, reason: "forbidden" };
-  // Checked before the Admin refusal below, so a wrong email always
-  // reads the same way regardless of role.
-  if (user.email.toLowerCase() !== typedEmail.trim().toLowerCase()) {
-    return { ok: false, reason: "email_mismatch" };
-  }
-  if (user.role === "admin") return { ok: false, reason: "forbidden" };
-
-  const now = deps.clock.now();
+export async function scrubUserAccount(
+  deps: Omit<AccountDeletionDeps, "db"> & { db: Database },
+  user: typeof users.$inferSelect,
+  now: Date,
+): Promise<void> {
+  const userId = user.id;
 
   const unfinishedIds =
     await deps.generationsRepository.listUnfinishedIdsForUser(userId);
@@ -109,23 +104,57 @@ export async function deleteOwnAccount(
   await deleteStorageFor(deps.storage, { assets: [], uploads: uploadKeys });
 
   await deps.db.delete(sessions).where(eq(sessions.userId, userId));
+}
+
+/** The row update common to a self-delete and an Admin delete; callers apply it in the same transaction as their own Audit entry. */
+export function scrubbedUserFields(
+  user: typeof users.$inferSelect,
+  now: Date,
+): Partial<typeof users.$inferInsert> {
+  return {
+    name: "Deleted user",
+    email: "",
+    picture: null,
+    googleSub: sha256Hex(`${user.googleSub}:${user.id}`),
+    status: "disabled",
+    pinned: false,
+    termsAcceptedVersion: null,
+    termsAcceptedAt: null,
+    dailyCapOverride: null,
+    concurrentCapOverride: null,
+    disabledReason: null,
+    disabledAt: null,
+    updatedAt: now,
+  };
+}
+
+/**
+ * Deletes `userId`'s own account (issue #63's AC). Refused for an Admin,
+ * or when `typedEmail` doesn't match this user's current email — the
+ * server re-checks it rather than trusting whatever the account page
+ * sent.
+ */
+export async function deleteOwnAccount(
+  deps: AccountDeletionDeps,
+  userId: string,
+  typedEmail: string,
+): Promise<AccountDeletionResult> {
+  const [user] = await deps.db.select().from(users).where(eq(users.id, userId));
+  if (!user) return { ok: false, reason: "forbidden" };
+  // Checked before the Admin refusal below, so a wrong email always
+  // reads the same way regardless of role.
+  if (user.email.toLowerCase() !== typedEmail.trim().toLowerCase()) {
+    return { ok: false, reason: "email_mismatch" };
+  }
+  if (user.role === "admin") return { ok: false, reason: "forbidden" };
+
+  const now = deps.clock.now();
+  await scrubUserAccount(deps, user, now);
 
   await deps.db.transaction(async (tx) => {
     await tx
       .update(users)
-      .set({
-        name: "Deleted user",
-        email: "",
-        picture: null,
-        googleSub: sha256Hex(`${user.googleSub}:${user.id}`),
-        status: "disabled",
-        pinned: false,
-        termsAcceptedVersion: null,
-        termsAcceptedAt: null,
-        dailyCapOverride: null,
-        concurrentCapOverride: null,
-        updatedAt: now,
-      })
+      .set(scrubbedUserFields(user, now))
       .where(eq(users.id, userId));
 
     // ADR 0005: a self-delete by a non-Admin records only the acting

@@ -91,6 +91,9 @@ export function requireAccess(access: AccessLevel): Handler<AppEnv> {
       if (session.user.status === "pending") {
         return c.json({ error: "pending" }, 403);
       }
+      if (session.user.status === "disabled") {
+        return c.json({ error: "disabled" }, 403);
+      }
       if (session.user.status !== "active" || session.user.role !== "admin") {
         return c.json({ error: "forbidden" }, 403);
       }
@@ -109,6 +112,13 @@ export function requireAccess(access: AccessLevel): Handler<AppEnv> {
       if (session.user.status === "pending") {
         return c.json({ error: "pending" }, 403);
       }
+      // Issue #64: in practice a disabled user's sessions are deleted
+      // the moment they're disabled, so this never fires for a real
+      // request — it's the matrix row's own guarantee, not just the
+      // pending one's, in case a session outlives the disable somehow.
+      if (session.user.status === "disabled") {
+        return c.json({ error: "disabled" }, 403);
+      }
       if (session.user.status !== "active") {
         return c.json({ error: "forbidden" }, 403);
       }
@@ -119,6 +129,9 @@ export function requireAccess(access: AccessLevel): Handler<AppEnv> {
       if (termsRequired(c)) return c.json({ error: "terms_required" }, 403);
       if (session.user.status === "pending") {
         return c.json({ error: "pending" }, 403);
+      }
+      if (session.user.status === "disabled") {
+        return c.json({ error: "disabled" }, 403);
       }
       if (session.user.status !== "active" || session.user.role !== "admin") {
         // A forbidden response must go out even if this Log entry can't

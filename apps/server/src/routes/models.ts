@@ -81,7 +81,9 @@ export function modelsRoute(
 ): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
 
-  guardedRoute(app, routes, "/api/models", "get", "/", "active", async (c) =>
+  // Public (issue #65): the signed-out landing page shows the enabled
+  // Models too, each one a sign-in link that returns to it.
+  guardedRoute(app, routes, "/api/models", "get", "/", "public", async (c) =>
     c.json({ models: await modelRepository.listEnabledSummaries() }),
   );
 

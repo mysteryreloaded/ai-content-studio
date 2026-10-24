@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, Navigate } from "react-router-dom";
+import { Footer } from "../Footer.js";
 import { useSession } from "../useSession.js";
 
 interface EnabledModel {
@@ -34,35 +35,38 @@ export function ModelsHome() {
   if (session.status === "signed-out") return <Navigate to="/" replace />;
 
   return (
-    <main>
-      <h1>Models</h1>
+    <>
+      <main>
+        <h1>Models</h1>
 
-      {models && models.length > 0 && (
-        <nav aria-label="Models">
-          {models.map((model) => (
-            <Link key={model.id} to={`/models/${model.slug}`}>
-              {model.name}
-            </Link>
-          ))}
-        </nav>
-      )}
+        {models && models.length > 0 && (
+          <nav aria-label="Models">
+            {models.map((model) => (
+              <Link key={model.id} to={`/models/${model.slug}`}>
+                {model.name}
+              </Link>
+            ))}
+          </nav>
+        )}
 
-      {loadError && <p role="alert">{loadError}</p>}
-      {!models && !loadError && <p>Loading…</p>}
-      {models && models.length === 0 && <p>No Models yet.</p>}
+        {loadError && <p role="alert">{loadError}</p>}
+        {!models && !loadError && <p>Loading…</p>}
+        {models && models.length === 0 && <p>No Models yet.</p>}
 
-      {models?.map((model) => (
-        <article key={model.id}>
-          <h2>
-            <Link to={`/models/${model.slug}`}>{model.name}</Link>
-          </h2>
-          {model.description && <p>{model.description}</p>}
-          <p>
-            {model.modeCount} {model.modeCount === 1 ? "Mode" : "Modes"}
-          </p>
-          {model.attribution && <p>{model.attribution}</p>}
-        </article>
-      ))}
-    </main>
+        {models?.map((model) => (
+          <article key={model.id}>
+            <h2>
+              <Link to={`/models/${model.slug}`}>{model.name}</Link>
+            </h2>
+            {model.description && <p>{model.description}</p>}
+            <p>
+              {model.modeCount} {model.modeCount === 1 ? "Mode" : "Modes"}
+            </p>
+            {model.attribution && <p>{model.attribution}</p>}
+          </article>
+        ))}
+      </main>
+      <Footer />
+    </>
   );
 }

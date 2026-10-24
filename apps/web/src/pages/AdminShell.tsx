@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, Navigate, Route, Routes } from "react-router-dom";
+import { Footer } from "../Footer.js";
 import { useSession } from "../useSession.js";
 import { AuditPage } from "./AuditPage.js";
 import { BackendsPage } from "./BackendsPage.js";
@@ -7,6 +8,7 @@ import { LogsPage } from "./LogsPage.js";
 import { ModelEditorPage } from "./ModelEditorPage.js";
 import { ModelsPage } from "./ModelsPage.js";
 import { OverviewPage } from "./OverviewPage.js";
+import { SitePrivacyForm } from "./SitePrivacyForm.js";
 import { SiteSettingsForm } from "./SiteSettingsForm.js";
 import { SiteTermsForm } from "./SiteTermsForm.js";
 import { UserPage } from "./UserPage.js";
@@ -91,38 +93,44 @@ export function AdminShell() {
   if (session.user.role !== "admin") return <Navigate to="/models" replace />;
 
   return (
-    <main>
-      <h1>Admin</h1>
-      <nav>
-        <Link to="/admin">Overview</Link>
-        <Link to="/admin/settings">Settings</Link>
-        <Link to="/admin/models">Models</Link>
-        <Link to="/admin/users">
-          Users{pendingCount ? ` (${pendingCount})` : ""}
-        </Link>
-        <Link to="/admin/logs">Logs{errorCount ? ` (${errorCount})` : ""}</Link>
-        <Link to="/admin/audit">Audit</Link>
-      </nav>
+    <>
+      <main>
+        <h1>Admin</h1>
+        <nav>
+          <Link to="/admin">Overview</Link>
+          <Link to="/admin/settings">Settings</Link>
+          <Link to="/admin/models">Models</Link>
+          <Link to="/admin/users">
+            Users{pendingCount ? ` (${pendingCount})` : ""}
+          </Link>
+          <Link to="/admin/logs">
+            Logs{errorCount ? ` (${errorCount})` : ""}
+          </Link>
+          <Link to="/admin/audit">Audit</Link>
+        </nav>
 
-      <Routes>
-        <Route index element={<OverviewPage />} />
-        <Route
-          path="settings"
-          element={
-            <>
-              <SiteSettingsForm />
-              <SiteTermsForm />
-              <BackendsPage />
-            </>
-          }
-        />
-        <Route path="models" element={<ModelsPage />} />
-        <Route path="models/:id" element={<ModelEditorPage />} />
-        <Route path="users" element={<UsersPage />} />
-        <Route path="users/:id" element={<UserPage />} />
-        <Route path="logs" element={<LogsPage />} />
-        <Route path="audit" element={<AuditPage />} />
-      </Routes>
-    </main>
+        <Routes>
+          <Route index element={<OverviewPage />} />
+          <Route
+            path="settings"
+            element={
+              <>
+                <SiteSettingsForm />
+                <SiteTermsForm />
+                <SitePrivacyForm />
+                <BackendsPage />
+              </>
+            }
+          />
+          <Route path="models" element={<ModelsPage />} />
+          <Route path="models/:id" element={<ModelEditorPage />} />
+          <Route path="users" element={<UsersPage />} />
+          <Route path="users/:id" element={<UserPage />} />
+          <Route path="logs" element={<LogsPage />} />
+          <Route path="audit" element={<AuditPage />} />
+        </Routes>
+      </main>
+      <Footer />
+    </>
   );
 }

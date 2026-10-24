@@ -79,6 +79,16 @@ export function useTabNotifier(): void {
   const anyTabVisibleRef = useRef<boolean>(!document.hidden);
   const isNotifierRef = useRef<boolean>(false);
   const originalTitleRef = useRef<string>(document.title);
+  const visibleTabsRef = useRef<Map<string, number>>(new Map());
+
+  const recomputeAnyVisible = useCallback(() => {
+    const now = Date.now();
+    for (const [id, at] of visibleTabsRef.current) {
+      if (now - at > VISIBILITY_STALE_MS) visibleTabsRef.current.delete(id);
+    }
+    anyTabVisibleRef.current =
+      !hiddenRef.current || visibleTabsRef.current.size > 0;
+  }, []);
 
   const siteTitleRef = useRef<string>(originalTitleRef.current);
   const logoUrlRef = useRef<string | null>(null);
@@ -86,12 +96,6 @@ export function useTabNotifier(): void {
   logoUrlRef.current = siteSettings?.hasLogo ? "/api/site-settings/logo" : null;
 
   const refreshTabCue = useCallback(() => {
-    if (!hiddenRef.current) {
-      document.title = originalTitleRef.current;
-      setFaviconDot(null, logoUrlRef.current);
-      return;
-    }
-
     let underwayCount = 0;
     let lastUnderwayModelName = "";
     for (const submission of trackedRef.current.values()) {
@@ -104,11 +108,20 @@ export function useTabNotifier(): void {
       }
     }
 
+    // Issue #58's AC 1: the underway count/Model cue shows whenever work is
+    // under way, in the visible tab too — only the ✓/✕ summary and favicon
+    // dot below are hidden-only.
     if (underwayCount > 0) {
       document.title = underwayTitle(
         { count: underwayCount, modelName: lastUnderwayModelName },
         siteTitleRef.current,
       );
+      setFaviconDot(null, logoUrlRef.current);
+      return;
+    }
+
+    if (!hiddenRef.current) {
+      document.title = originalTitleRef.current;
       setFaviconDot(null, logoUrlRef.current);
       return;
     }
@@ -148,6 +161,11 @@ export function useTabNotifier(): void {
       const alreadyDecided = decidedRef.current.has(submissionId);
       const ownCancelled = isOwnCancelled(submissionId);
 
+      // A lone notifier tab gets no incoming BroadcastChannel messages, so
+      // prune stale `visibleTabs` entries right here too, not only when a
+      // message arrives — otherwise a vanished tab stays "visible" forever.
+      recomputeAnyVisible();
+
       if (
         !alreadyDecided &&
         hiddenRef.current &&
@@ -158,6 +176,12 @@ export function useTabNotifier(): void {
           failed: endedAccumulatorRef.current.failed + counts.failed,
         };
       }
+
+      // Bookkeeping (decided/tracked/the tab cue) must happen regardless of
+      // whether showNotification throws, so a throw there can't leave this
+      // Submission re-decided or double-counted into the accumulator.
+      decidedRef.current.add(submissionId);
+      trackedRef.current.delete(submissionId);
 
       if (
         isNotifierRef.current &&
@@ -175,19 +199,22 @@ export function useTabNotifier(): void {
           siteTitleRef.current,
         );
         const targetId = notificationClickTarget(submission);
-        showNotification(
-          { ...content, icon: logoUrlRef.current ?? undefined },
-          () => {
-            if (targetId) window.location.assign(`/generations/${targetId}`);
-          },
-        );
+        try {
+          showNotification(
+            { ...content, icon: logoUrlRef.current ?? undefined },
+            () => {
+              if (targetId) window.location.assign(`/generations/${targetId}`);
+            },
+          );
+        } catch {
+          // Some browsers expose `Notification` but still throw on
+          // construction; never let that skip the bookkeeping above.
+        }
       }
 
-      decidedRef.current.add(submissionId);
-      trackedRef.current.delete(submissionId);
       refreshTabCue();
     },
-    [refreshTabCue],
+    [refreshTabCue, recomputeAnyVisible],
   );
 
   // The SSE subscription: snapshot on connect, then "change" events.
@@ -267,15 +294,6 @@ export function useTabNotifier(): void {
       typeof crypto !== "undefined" && "randomUUID" in crypto
         ? crypto.randomUUID()
         : Math.random().toString(36).slice(2);
-    const visibleTabs = new Map<string, number>();
-
-    function recomputeAnyVisible() {
-      const now = Date.now();
-      for (const [id, at] of visibleTabs) {
-        if (now - at > VISIBILITY_STALE_MS) visibleTabs.delete(id);
-      }
-      anyTabVisibleRef.current = !hiddenRef.current || visibleTabs.size > 0;
-    }
 
     function broadcastVisibility() {
       postTabMessage({ type: "visibility", tabId, visible: !document.hidden });
@@ -283,8 +301,9 @@ export function useTabNotifier(): void {
 
     const unsubscribe = subscribeTabChannel((message) => {
       if (message.type !== "visibility") return;
-      if (message.visible) visibleTabs.set(message.tabId, Date.now());
-      else visibleTabs.delete(message.tabId);
+      if (message.visible)
+        visibleTabsRef.current.set(message.tabId, Date.now());
+      else visibleTabsRef.current.delete(message.tabId);
       recomputeAnyVisible();
     });
 
@@ -306,7 +325,7 @@ export function useTabNotifier(): void {
       clearInterval(heartbeat);
       unsubscribe();
     };
-  }, [refreshTabCue]);
+  }, [refreshTabCue, recomputeAnyVisible]);
 
   useEffect(() => {
     const release = electNotifier(() => {

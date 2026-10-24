@@ -2,8 +2,20 @@
 // browser API calls stay thin and untested" — the decisions above this
 // layer are what's covered by tests).
 
+import { isDesktopNotificationAvailable } from "./availability.js";
+
+/** Desktop only (issue #58's AC) — see `isDesktopNotificationAvailable` for why. */
 export function isNotificationSupported(): boolean {
-  return typeof Notification !== "undefined";
+  return isDesktopNotificationAvailable({
+    hasNotification: typeof Notification !== "undefined",
+    pointerFine:
+      typeof matchMedia !== "undefined" &&
+      matchMedia("(pointer: fine)").matches,
+    isMobileUserAgentData: Boolean(
+      (navigator as Navigator & { userAgentData?: { mobile?: boolean } })
+        .userAgentData?.mobile,
+    ),
+  });
 }
 
 export function getNotificationPermission(): NotificationPermission {

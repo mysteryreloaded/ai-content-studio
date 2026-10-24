@@ -52,10 +52,12 @@ export function electNotifier(onElected: () => void): () => void {
     return () => {};
   }
 
+  const controller = new AbortController();
   let release: (() => void) | null = null;
   navigator.locks
     .request(
       NOTIFIER_LOCK_NAME,
+      { signal: controller.signal },
       () =>
         new Promise<void>((resolve) => {
           release = resolve;
@@ -63,9 +65,12 @@ export function electNotifier(onElected: () => void): () => void {
         }),
     )
     .catch(() => {
-      // The lock request itself can only fail if the context is torn
-      // down (e.g. the tab closed) before it's granted.
+      // Aborted via cleanup below, or the context torn down (e.g. the tab
+      // closed) before the lock was granted.
     });
 
-  return () => release?.();
+  return () => {
+    if (release) release();
+    else controller.abort();
+  };
 }

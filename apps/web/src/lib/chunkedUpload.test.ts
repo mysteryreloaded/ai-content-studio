@@ -45,7 +45,13 @@ function fakeServer(chunkSize: number) {
     },
     async complete(id) {
       calls.push("complete");
-      return { id, width: 10, height: 10 };
+      return {
+        id,
+        width: 10,
+        height: 10,
+        durationMs: null,
+        browserPlayable: null,
+      };
     },
   };
   return { api, calls, script, received: () => received };

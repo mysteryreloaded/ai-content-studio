@@ -5,10 +5,16 @@
 // new Upload.
 
 import {
+  AUDIO_UPLOAD_EXTENSIONS,
+  type AudioUploadInputDefinition,
   BYTES_PER_MB,
   IMAGE_UPLOAD_TYPES,
   type ImageUploadInputDefinition,
+  VIDEO_UPLOAD_EXTENSIONS,
+  type VideoUploadInputDefinition,
+  audioUploadLimitIssue,
   imageUploadLimitIssue,
+  videoUploadLimitIssue,
 } from "@ai-content-studio/shared";
 
 /** The part of a `File` the upload reads. */
@@ -23,6 +29,8 @@ export interface CompletedUpload {
   id: string;
   width: number | null;
   height: number | null;
+  durationMs: number | null;
+  browserPlayable: boolean | null;
 }
 
 /**
@@ -200,11 +208,38 @@ export function httpUploadApi(fetchImpl: typeof fetch = fetch): UploadApi {
         method: "POST",
       });
       if (!res.ok) throw await errorFrom(res);
-      const { upload } = (await res.json()) as {
-        upload: { id: string; width: number | null; height: number | null };
+      const { upload } = (await res.json()) as { upload: CompletedUpload };
+      return {
+        id: upload.id,
+        width: upload.width,
+        height: upload.height,
+        durationMs: upload.durationMs,
+        browserPlayable: upload.browserPlayable,
       };
-      return { id: upload.id, width: upload.width, height: upload.height };
     },
+  };
+}
+
+/** Trims `id` to `[startMs, endMs)` on a local player, making a new Upload (issue #51's AC). */
+export async function trimUpload(
+  id: string,
+  startMs: number,
+  endMs: number,
+  fetchImpl: typeof fetch = fetch,
+): Promise<CompletedUpload> {
+  const res = await fetchImpl(`/api/uploads/${id}/trim`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ startMs, endMs }),
+  });
+  if (!res.ok) throw await errorFrom(res);
+  const { upload } = (await res.json()) as { upload: CompletedUpload };
+  return {
+    id: upload.id,
+    width: upload.width,
+    height: upload.height,
+    durationMs: upload.durationMs,
+    browserPlayable: upload.browserPlayable,
   };
 }
 
@@ -238,4 +273,94 @@ export function pickIssue(
     { size: file.size, width: dimensions?.width, height: dimensions?.height },
     limits,
   );
+}
+
+/**
+ * Why a picked video file is refused before any byte is sent (issue
+ * #51): wrong extension, larger than MAX_UPLOAD_MB or the Input's own
+ * limits. Dimensions/duration are checked only when the browser could
+ * read them (the server checks again at complete, from ffprobe facts).
+ */
+export function pickVideoIssue(
+  file: { name: string; size: number },
+  limits: Pick<
+    VideoUploadInputDefinition,
+    "maxSizeMb" | "maxLongSide" | "minDurationMs" | "maxDurationMs"
+  >,
+  maxUploadMb: number | null,
+  facts: {
+    width?: number;
+    height?: number;
+    durationMs?: number;
+  } | null = null,
+): string | null {
+  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+  if (!VIDEO_UPLOAD_EXTENSIONS.includes(extension)) {
+    return "isn't an MP4, MOV, WebM or MKV video";
+  }
+  if (maxUploadMb !== null && file.size > maxUploadMb * BYTES_PER_MB) {
+    return `is larger than ${maxUploadMb} MB`;
+  }
+  return videoUploadLimitIssue(
+    {
+      size: file.size,
+      width: facts?.width,
+      height: facts?.height,
+      durationMs: facts?.durationMs,
+    },
+    limits,
+  );
+}
+
+/** Why a picked audio file is refused before any byte is sent (issue #51), the audio equivalent of {@link pickVideoIssue}. */
+export function pickAudioIssue(
+  file: { name: string; size: number },
+  limits: Pick<
+    AudioUploadInputDefinition,
+    "maxSizeMb" | "minDurationMs" | "maxDurationMs"
+  >,
+  maxUploadMb: number | null,
+  durationMs: number | null = null,
+): string | null {
+  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+  if (!AUDIO_UPLOAD_EXTENSIONS.includes(extension)) {
+    return "isn't a WAV, MP3, FLAC, OGG/Opus or M4A/AAC audio clip";
+  }
+  if (maxUploadMb !== null && file.size > maxUploadMb * BYTES_PER_MB) {
+    return `is larger than ${maxUploadMb} MB`;
+  }
+  return audioUploadLimitIssue(
+    { size: file.size, durationMs: durationMs ?? undefined },
+    limits,
+  );
+}
+
+/** The duration (ms) of a picked video/audio file, when this browser can read its metadata; null otherwise. */
+export function readMediaDuration(
+  file: File,
+  kind: "video" | "audio",
+): Promise<{ durationMs: number; width?: number; height?: number } | null> {
+  return new Promise((resolve) => {
+    const element = document.createElement(kind);
+    const url = URL.createObjectURL(file);
+    const cleanup = () => URL.revokeObjectURL(url);
+    element.preload = "metadata";
+    element.onloadedmetadata = () => {
+      const durationMs = Number.isFinite(element.duration)
+        ? Math.round(element.duration * 1000)
+        : 0;
+      const video = element as HTMLVideoElement;
+      cleanup();
+      resolve({
+        durationMs,
+        width: kind === "video" ? video.videoWidth : undefined,
+        height: kind === "video" ? video.videoHeight : undefined,
+      });
+    };
+    element.onerror = () => {
+      cleanup();
+      resolve(null);
+    };
+    element.src = url;
+  });
 }

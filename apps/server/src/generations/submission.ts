@@ -3,9 +3,12 @@
 // Backend exists for the Mode, then freezes the built prompt.
 
 import {
+  type AudioUploadInputDefinition,
   type ImageUploadInputDefinition,
   type InputDefinition,
   type InputIssue,
+  type VideoUploadInputDefinition,
+  audioUploadLimitIssue,
   buildPrompt,
   computeModePath,
   findBlockedWord,
@@ -17,6 +20,7 @@ import {
   seedBoundFor,
   uploadFileName,
   validateSeedRange,
+  videoUploadLimitIssue,
 } from "@ai-content-studio/shared";
 import type { Clock } from "@ai-content-studio/shared";
 import type { z } from "zod";
@@ -149,6 +153,36 @@ export interface SubmissionDeps {
  * Upload's Backend file name (issue #50), refusing one that isn't the
  * caller's own, complete image, or that breaks the Input's limits.
  */
+type UploadInput =
+  | ImageUploadInputDefinition
+  | VideoUploadInputDefinition
+  | AudioUploadInputDefinition;
+
+const UPLOAD_KIND_LABEL: Record<"image" | "video" | "audio", string> = {
+  image: "an image",
+  video: "a video",
+  audio: "an audio clip",
+};
+
+/** The expected Upload `kind` and its own limit-issue check, by Input kind (issue #51). */
+function expectedKindAndIssue(input: UploadInput): [
+  "image" | "video" | "audio",
+  (upload: {
+    size: number;
+    width: number | null;
+    height: number | null;
+    durationMs: number | null;
+  }) => string | null,
+] {
+  if (input.kind === "image_upload") {
+    return ["image", (upload) => imageUploadLimitIssue(upload, input)];
+  }
+  if (input.kind === "video_upload") {
+    return ["video", (upload) => videoUploadLimitIssue(upload, input)];
+  }
+  return ["audio", (upload) => audioUploadLimitIssue(upload, input)];
+}
+
 async function resolveUploadValues(
   inputs: readonly InputDefinition[],
   values: Record<string, string | number | undefined>,
@@ -159,8 +193,10 @@ async function resolveUploadValues(
   uploadIds: string[];
 }> {
   const uploadInputs = inputs.filter(
-    (input): input is ImageUploadInputDefinition =>
-      input.kind === "image_upload",
+    (input): input is UploadInput =>
+      input.kind === "image_upload" ||
+      input.kind === "video_upload" ||
+      input.kind === "audio_upload",
   );
   if (uploadInputs.length === 0) return { values, uploadIds: [] };
 
@@ -177,14 +213,15 @@ async function resolveUploadValues(
     const upload = byId.get(String(values[input.id]));
     const refuse = (message: string) =>
       issues.push({ path: input.id, code: "upload", message });
+    const [expectedKind, limitIssue] = expectedKindAndIssue(input);
     if (!upload || upload.userId !== userId) {
       refuse("that Upload wasn't found");
     } else if (upload.status !== "complete" || !upload.extension) {
       refuse("that Upload hasn't finished");
-    } else if (upload.kind !== "image") {
-      refuse("that Upload isn't an image");
+    } else if (upload.kind !== expectedKind) {
+      refuse(`that Upload isn't ${UPLOAD_KIND_LABEL[expectedKind]}`);
     } else {
-      const issue = imageUploadLimitIssue(upload, input);
+      const issue = limitIssue(upload);
       if (issue) refuse(`that file ${issue}`);
       else resolved[input.id] = uploadFileName(upload.id, upload.extension);
     }

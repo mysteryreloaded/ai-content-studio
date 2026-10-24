@@ -5,15 +5,41 @@
 // MIN_FREE_DISK_GB before every chunk.
 
 import {
+  AUDIO_UPLOAD_EXTENSIONS,
+  type AudioUploadInputDefinition,
   BYTES_PER_MB,
   type Clock,
   type ImageUploadInputDefinition,
+  VIDEO_UPLOAD_EXTENSIONS,
+  type VideoUploadInputDefinition,
   imageUploadLimitIssue,
 } from "@ai-content-studio/shared";
 import type { MediaRunner } from "../media/media.js";
 import type { Storage } from "../storage/storage.js";
-import { MAX_IMAGE_MEGAPIXELS } from "./probe.js";
-import type { UploadRecord, UploadsRepository } from "./repository.js";
+import { MAX_IMAGE_MEGAPIXELS, type VideoProbeFacts } from "./probe.js";
+import type {
+  UploadProbeFacts,
+  UploadRecord,
+  UploadsRepository,
+} from "./repository.js";
+
+/** The hinted Upload Input's limits, whatever its kind (issue #51). */
+export type UploadInputLimits =
+  | (Pick<ImageUploadInputDefinition, "maxSizeMb" | "maxLongSide"> & {
+      kind: "image_upload";
+    })
+  | (Pick<
+      VideoUploadInputDefinition,
+      | "maxSizeMb"
+      | "maxLongSide"
+      | "minDurationMs"
+      | "maxDurationMs"
+      | "trimmable"
+    > & { kind: "video_upload" })
+  | (Pick<
+      AudioUploadInputDefinition,
+      "maxSizeMb" | "minDurationMs" | "maxDurationMs" | "trimmable"
+    > & { kind: "audio_upload" });
 
 export const CHUNK_BYTES = 16 * BYTES_PER_MB;
 
@@ -87,22 +113,30 @@ export interface UploadsServiceDeps {
   maxUploadMb: number;
   /** False while `DATA_DIR`'s disk is under MIN_FREE_DISK_GB. */
   hasFreeDisk: () => Promise<boolean>;
-  /** The hinted Image Upload Input's limits, when the hint names one. */
+  /** The hinted Upload Input's limits, when the hint names one (issue #51). */
   hintLimits: (
     modelId: string,
     inputId: string,
-  ) => Promise<Pick<
-    ImageUploadInputDefinition,
-    "maxSizeMb" | "maxLongSide"
-  > | null>;
+  ) => Promise<UploadInputLimits | null>;
   /**
-   * ffprobe/ffmpeg for Upload completion (issue #50), bounded by
+   * ffprobe/ffmpeg for Upload completion (issues #50, #51), bounded by
    * `FFMPEG_CONCURRENCY` and a timeout: never the raw `uploads/probe.js`
    * functions directly, so a flaky user's many `/complete` calls, or one
    * huge-dimension still, can't OOM the box Postgres shares or hang this
    * route forever.
    */
-  media: Pick<MediaRunner, "probeImage" | "makeThumbnail">;
+  media: Pick<
+    MediaRunner,
+    | "probeImage"
+    | "makeThumbnail"
+    | "probeVideoUpload"
+    | "probeAudioUpload"
+    | "makeVideoThumbnail"
+    | "trimVideo"
+    | "trimAudio"
+  >;
+  /** ~90s cap on one trim request, including the wait for ffmpeg (issue #51's AC). */
+  trimTimeoutMs?: number;
 }
 
 export class UploadsService {
@@ -185,7 +219,7 @@ export class UploadsService {
     return end;
   }
 
-  /** Probes the received file and, when accepted, records its facts and thumbnail. Idempotent once complete. */
+  /** Probes the received file and, when accepted, records its facts and thumbnail/icon. Idempotent once complete. */
   async complete(userId: string, id: string): Promise<UploadRecord> {
     const upload = await this.ownUpload(userId, id);
     if (upload.status === "complete") return upload;
@@ -205,49 +239,171 @@ export class UploadsService {
     }
 
     const filePath = this.deps.storage.absolutePath(upload.storageKey);
-    const probe = await this.deps.media.probeImage(filePath);
+    const imageProbe = await this.deps.media.probeImage(filePath);
+    const probe = imageProbe.ok
+      ? imageProbe
+      : await this.probeAsVideoOrAudio(
+          filePath,
+          upload.originalName,
+          imageProbe.reason,
+        );
     if (!probe.ok) await this.refuse(upload, probe.reason);
     const accepted = probe as Extract<typeof probe, { ok: true }>;
 
-    if (accepted.facts.width * accepted.facts.height > MAX_IMAGE_MEGAPIXELS) {
-      await this.refuse(upload, "has too many pixels to process");
-    }
-
-    if (upload.modelId && upload.inputId) {
-      const limits = await this.deps.hintLimits(upload.modelId, upload.inputId);
-      const issue = limits
-        ? imageUploadLimitIssue(
-            {
-              size: upload.size,
-              width: accepted.facts.width,
-              height: accepted.facts.height,
-            },
-            limits,
-          )
+    const limits =
+      upload.modelId && upload.inputId
+        ? await this.deps.hintLimits(upload.modelId, upload.inputId)
         : null;
-      if (issue) await this.refuse(upload, issue);
+
+    if (accepted.kind === "image") {
+      if (accepted.facts.width * accepted.facts.height > MAX_IMAGE_MEGAPIXELS) {
+        await this.refuse(upload, "has too many pixels to process");
+      }
+      if (limits?.kind === "image_upload") {
+        const issue = imageUploadLimitIssue(
+          {
+            size: upload.size,
+            width: accepted.facts.width,
+            height: accepted.facts.height,
+          },
+          limits,
+        );
+        if (issue) await this.refuse(upload, issue);
+      }
+
+      const thumbnailKey = `uploads/${id}/thumb.webp`;
+      try {
+        await this.deps.media.makeThumbnail(
+          filePath,
+          this.deps.storage.absolutePath(thumbnailKey),
+        );
+      } catch {
+        await this.refuse(upload, "couldn't be read as an image");
+      }
+
+      return this.deps.repository.markComplete(id, {
+        kind: accepted.kind,
+        extension: accepted.extension,
+        contentType: accepted.contentType,
+        width: accepted.facts.width,
+        height: accepted.facts.height,
+        durationMs: null,
+        fps: null,
+        probe: accepted.facts,
+        thumbnailKey,
+        completedAt: this.deps.clock.now(),
+      });
     }
 
-    const thumbnailKey = `uploads/${id}/thumb.webp`;
-    try {
-      await this.deps.media.makeThumbnail(
-        filePath,
-        this.deps.storage.absolutePath(thumbnailKey),
-      );
-    } catch {
-      await this.refuse(upload, "couldn't be read as an image");
+    if (accepted.kind === "video") {
+      if (limits?.kind === "video_upload") {
+        await this.checkVideoLimits(upload, accepted.facts, limits);
+      }
+
+      const thumbnailKey = `uploads/${id}/thumb.webp`;
+      try {
+        await this.deps.media.makeVideoThumbnail(
+          filePath,
+          this.deps.storage.absolutePath(thumbnailKey),
+        );
+      } catch {
+        await this.refuse(upload, "couldn't be read as a video");
+      }
+
+      return this.deps.repository.markComplete(id, {
+        kind: accepted.kind,
+        extension: accepted.extension,
+        contentType: accepted.contentType,
+        width: accepted.facts.width,
+        height: accepted.facts.height,
+        durationMs: accepted.facts.durationMs,
+        fps: accepted.facts.fps,
+        probe: accepted.facts,
+        thumbnailKey,
+        completedAt: this.deps.clock.now(),
+      });
+    }
+
+    // Audio (issue #51's AC): no thumbnail is made; the browser shows an icon instead.
+    if (limits?.kind === "audio_upload") {
+      // Audio has no "browser can't play it" carve-out (ADR 0007 names video); the
+      // duration check always runs, deferring only to its own `trimmable` flag.
+      const issue = this.audioLimitIssue(accepted.facts, limits);
+      if (issue) await this.refuse(upload, issue);
     }
 
     return this.deps.repository.markComplete(id, {
       kind: accepted.kind,
       extension: accepted.extension,
       contentType: accepted.contentType,
-      width: accepted.facts.width,
-      height: accepted.facts.height,
+      width: null,
+      height: null,
+      durationMs: accepted.facts.durationMs,
+      fps: null,
       probe: accepted.facts,
-      thumbnailKey,
+      thumbnailKey: null,
       completedAt: this.deps.clock.now(),
     });
+  }
+
+  /** Tries the video, then the audio, probe; keeps the still's own refusal reason if neither extension matches (issue #51). */
+  private async probeAsVideoOrAudio(
+    filePath: string,
+    originalName: string,
+    stillRefusalReason: string,
+  ) {
+    const extension = (originalName.split(".").pop() ?? "").toLowerCase();
+    if (VIDEO_UPLOAD_EXTENSIONS.includes(extension)) {
+      return this.deps.media.probeVideoUpload(filePath, extension);
+    }
+    if (AUDIO_UPLOAD_EXTENSIONS.includes(extension)) {
+      return this.deps.media.probeAudioUpload(filePath, extension);
+    }
+    return { ok: false as const, reason: stillRefusalReason };
+  }
+
+  /**
+   * Refuses a video that breaks a fixed limit (size, long side or min
+   * duration: trimming can't fix any of these) immediately; a too-long,
+   * browser-playable, trimmable one is accepted anyway, to be trimmed
+   * before submit (ADR 0007).
+   */
+  private async checkVideoLimits(
+    upload: UploadRecord,
+    facts: VideoProbeFacts,
+    limits: Extract<UploadInputLimits, { kind: "video_upload" }>,
+  ): Promise<void> {
+    const fixedIssue = imageUploadLimitIssue(
+      { size: upload.size, width: facts.width, height: facts.height },
+      limits,
+    );
+    if (fixedIssue) await this.refuse(upload, fixedIssue);
+    if (facts.durationMs < limits.minDurationMs) {
+      await this.refuse(
+        upload,
+        `is shorter than ${(limits.minDurationMs / 1000).toFixed(1)}s`,
+      );
+    }
+    if (facts.durationMs > limits.maxDurationMs) {
+      if (limits.trimmable && facts.browserPlayable) return;
+      await this.refuse(
+        upload,
+        `is longer than ${(limits.maxDurationMs / 1000).toFixed(1)}s`,
+      );
+    }
+  }
+
+  private audioLimitIssue(
+    facts: { durationMs: number },
+    limits: Extract<UploadInputLimits, { kind: "audio_upload" }>,
+  ): string | null {
+    if (facts.durationMs < limits.minDurationMs) {
+      return `is shorter than ${(limits.minDurationMs / 1000).toFixed(1)}s`;
+    }
+    if (facts.durationMs > limits.maxDurationMs && !limits.trimmable) {
+      return `is longer than ${(limits.maxDurationMs / 1000).toFixed(1)}s`;
+    }
+    return null;
   }
 
   /** Marks the Upload failed, drops its bytes, and throws {@link UploadRefused}. */
@@ -255,6 +411,128 @@ export class UploadsService {
     await this.deps.repository.markFailed(upload.id, reason);
     await this.deps.storage.delete(upload.storageKey);
     throw new UploadRefused(reason);
+  }
+
+  /**
+   * Trims a complete video or audio Upload to `[startMs, endMs)` on a
+   * local player (issue #51's AC): a frame-accurate re-encode to
+   * H.264/AAC, keeping the source's own size and fps, saved as a new
+   * Upload "trimmed from" the original. Bounded by `trimTimeoutMs`
+   * (default ~90s), covering ffmpeg's own run.
+   */
+  async trim(
+    userId: string,
+    id: string,
+    startMs: number,
+    endMs: number,
+  ): Promise<UploadRecord> {
+    const original = await this.ownUpload(userId, id);
+    if (original.status !== "complete") {
+      throw new UploadNotUploading(original.status);
+    }
+    if (original.kind !== "video" && original.kind !== "audio") {
+      throw new InvalidUpload("only a video or audio Upload can be trimmed");
+    }
+    const durationMs = original.durationMs ?? 0;
+    if (
+      !Number.isInteger(startMs) ||
+      !Number.isInteger(endMs) ||
+      startMs < 0 ||
+      endMs <= startMs ||
+      endMs > durationMs
+    ) {
+      throw new InvalidUpload(
+        "the trim range must sit within the Upload's own duration",
+      );
+    }
+    if (!(await this.deps.hasFreeDisk())) throw new StorageFull();
+
+    const inputPath = this.deps.storage.absolutePath(original.storageKey);
+    const newId = crypto.randomUUID();
+    const isVideo = original.kind === "video";
+    const extension = isVideo ? "mp4" : "m4a";
+    const storageKey = `uploads/${newId}/original`;
+    const outputPath = this.deps.storage.absolutePath(storageKey);
+    const timeoutMs = this.deps.trimTimeoutMs ?? 90_000;
+
+    // ffmpeg writes straight to `outputPath`; this just makes the new
+    // Upload's own directory exist first (`write` is the only Storage
+    // call that creates directories).
+    await this.deps.storage.write(storageKey, new Uint8Array());
+
+    try {
+      if (isVideo) {
+        const fps = (original.probe as VideoProbeFacts | null)?.fps || 30;
+        await this.deps.media.trimVideo(
+          inputPath,
+          outputPath,
+          startMs,
+          endMs,
+          fps,
+          timeoutMs,
+        );
+      } else {
+        await this.deps.media.trimAudio(
+          inputPath,
+          outputPath,
+          startMs,
+          endMs,
+          timeoutMs,
+        );
+      }
+    } catch {
+      await this.deps.storage.delete(storageKey);
+      throw new UploadRefused(
+        "couldn't be trimmed in time; try a shorter range",
+      );
+    }
+
+    const filePath = outputPath;
+    const probe = isVideo
+      ? await this.deps.media.probeVideoUpload(filePath, extension)
+      : await this.deps.media.probeAudioUpload(filePath, extension);
+    if (!probe.ok) {
+      await this.deps.storage.delete(storageKey);
+      throw new UploadRefused(probe.reason);
+    }
+    const accepted = probe as Extract<
+      typeof probe,
+      { ok: true; kind: "video" | "audio" }
+    >;
+    const stat = await this.deps.storage.stat(storageKey);
+
+    let thumbnailKey: string | null = null;
+    if (isVideo) {
+      thumbnailKey = `uploads/${newId}/thumb.webp`;
+      await this.deps.media.makeVideoThumbnail(
+        filePath,
+        this.deps.storage.absolutePath(thumbnailKey),
+      );
+    }
+
+    return this.deps.repository.createTrimmed({
+      id: newId,
+      userId,
+      originalName: original.originalName,
+      declaredType: accepted.contentType,
+      size: stat?.size ?? 0,
+      modelId: original.modelId,
+      inputId: original.inputId,
+      storageKey,
+      kind: accepted.kind,
+      extension: accepted.extension,
+      contentType: accepted.contentType,
+      width: accepted.kind === "video" ? accepted.facts.width : null,
+      height: accepted.kind === "video" ? accepted.facts.height : null,
+      durationMs: accepted.facts.durationMs,
+      fps: accepted.kind === "video" ? accepted.facts.fps : null,
+      probe: accepted.facts,
+      thumbnailKey,
+      trimmedFromId: original.id,
+      trimStartMs: startMs,
+      trimEndMs: endMs,
+      createdAt: this.deps.clock.now(),
+    });
   }
 }
 
@@ -270,6 +548,12 @@ export function toUploadSummary(upload: UploadRecord) {
     kind: upload.kind,
     width: upload.width,
     height: upload.height,
+    durationMs: upload.durationMs,
+    browserPlayable:
+      upload.kind === "video"
+        ? ((upload.probe as VideoProbeFacts | null)?.browserPlayable ?? null)
+        : null,
+    trimmedFromId: upload.trimmedFromId,
     error: upload.error,
   };
 }

@@ -12,10 +12,19 @@ import { MediaRunner, MediaTimeoutError } from "../media/media.js";
 import { createLocalStorage } from "../storage/storage.js";
 import { createTestDatabase } from "../test/database.js";
 import { UploadsRepository } from "../uploads/repository.js";
-import { UploadsService } from "../uploads/service.js";
+import { type UploadInputLimits, UploadsService } from "../uploads/service.js";
 import { uploadsRoute } from "./uploads.js";
 
-type UploadsServiceMedia = Pick<MediaRunner, "probeImage" | "makeThumbnail">;
+type UploadsServiceMedia = Pick<
+  MediaRunner,
+  | "probeImage"
+  | "makeThumbnail"
+  | "probeVideoUpload"
+  | "probeAudioUpload"
+  | "makeVideoThumbnail"
+  | "trimVideo"
+  | "trimAudio"
+>;
 
 type FakeSession = {
   user: {
@@ -35,11 +44,37 @@ async function makeImage(dir: string, name: string, size: string) {
   return new Uint8Array(await Bun.file(out).arrayBuffer());
 }
 
+/** Video/audio methods a still-only test mock never calls; filling them in just satisfies the type. */
+const NOT_NEEDED_FOR_STILLS: Pick<
+  UploadsServiceMedia,
+  | "probeVideoUpload"
+  | "probeAudioUpload"
+  | "makeVideoThumbnail"
+  | "trimVideo"
+  | "trimAudio"
+> = {
+  probeVideoUpload: () => {
+    throw new Error("not needed for this test");
+  },
+  probeAudioUpload: () => {
+    throw new Error("not needed for this test");
+  },
+  makeVideoThumbnail: () => {
+    throw new Error("not needed for this test");
+  },
+  trimVideo: () => {
+    throw new Error("not needed for this test");
+  },
+  trimAudio: () => {
+    throw new Error("not needed for this test");
+  },
+};
+
 describe("/api/uploads", () => {
   const testDb = createTestDatabase("uploads_route_test");
   const dirPromise = mkdtemp(path.join(tmpdir(), "uploads-test-"));
   let diskFull = false;
-  let hint: { maxSizeMb: number; maxLongSide: number | null } | null = null;
+  let hint: UploadInputLimits | null = null;
 
   afterAll(async () => {
     await (await testDb).close();
@@ -310,7 +345,7 @@ describe("/api/uploads", () => {
     const { insertUser, as, dir } = await setup();
     const app = as(await insertUser("hinted@example.com"));
     const webp = await makeImage(dir, "d.webp", "300x200");
-    hint = { maxSizeMb: 1, maxLongSide: 200 };
+    hint = { kind: "image_upload", maxSizeMb: 1, maxLongSide: 200 };
 
     const created = await createUpload(app, {
       name: "d.webp",
@@ -353,6 +388,7 @@ describe("/api/uploads", () => {
       makeThumbnail: async () => {
         thumbnailCalled = true;
       },
+      ...NOT_NEEDED_FOR_STILLS,
     };
     const { insertUser, as, dir } = await setup(hugeStillMedia);
     const app = as(await insertUser("huge@example.com"));
@@ -409,6 +445,7 @@ describe("/api/uploads", () => {
       makeThumbnail: () => {
         throw new MediaTimeoutError("ffmpeg");
       },
+      ...NOT_NEEDED_FOR_STILLS,
     };
     const { insertUser, as, dir, repository } =
       await setup(timesOutOnThumbnail);
@@ -428,5 +465,312 @@ describe("/api/uploads", () => {
     });
     expect(res.status).toBe(422);
     expect((await repository.get(upload.id))?.status).toBe("failed");
+  });
+
+  const FIXTURES = path.join(import.meta.dir, "..", "uploads", "fixtures");
+  async function fixtureBytes(name: string) {
+    return new Uint8Array(
+      await Bun.file(path.join(FIXTURES, name)).arrayBuffer(),
+    );
+  }
+
+  /** Runs the full create/chunk/complete protocol for one fixture file (issue #51). */
+  async function uploadFixture(
+    app: TestApp,
+    fixtureName: string,
+    uploadName: string,
+    type: string,
+  ) {
+    const bytes = await fixtureBytes(fixtureName);
+    const created = await createUpload(app, {
+      name: uploadName,
+      size: bytes.length,
+      type,
+    });
+    const { upload } = (await created.json()) as { upload: { id: string } };
+    await putChunk(app, upload.id, 0, bytes);
+    return app.request(`/api/uploads/${upload.id}/complete`, {
+      method: "POST",
+    });
+  }
+
+  test("a video Upload completes: probes H.264/AAC MP4, sets duration/fps and a thumbnail (issue #51)", async () => {
+    const { insertUser, as } = await setup();
+    const app = as(await insertUser("video@example.com"));
+
+    const res = await uploadFixture(
+      app,
+      "video-allowed.mp4",
+      "clip.mp4",
+      "video/mp4",
+    );
+    expect(res.status).toBe(200);
+    const { upload } = (await res.json()) as {
+      upload: {
+        id: string;
+        status: string;
+        kind: string;
+        width: number;
+        height: number;
+        durationMs: number;
+        browserPlayable: boolean;
+      };
+    };
+    expect(upload.status).toBe("complete");
+    expect(upload.kind).toBe("video");
+    expect(upload.width).toBe(64);
+    expect(upload.height).toBe(48);
+    expect(upload.durationMs).toBeGreaterThan(0);
+    expect(upload.browserPlayable).toBe(true);
+
+    const thumb = await app.request(`/api/uploads/${upload.id}/thumb`);
+    expect(thumb.status).toBe(200);
+  });
+
+  test("an audio Upload completes: probes WAV, sets duration, no thumbnail (issue #51)", async () => {
+    const { insertUser, as } = await setup();
+    const app = as(await insertUser("audio@example.com"));
+
+    const res = await uploadFixture(
+      app,
+      "audio-allowed.wav",
+      "clip.wav",
+      "audio/wav",
+    );
+    expect(res.status).toBe(200);
+    const { upload } = (await res.json()) as {
+      upload: { status: string; kind: string; durationMs: number; id: string };
+    };
+    expect(upload.status).toBe("complete");
+    expect(upload.kind).toBe("audio");
+    expect(upload.durationMs).toBeGreaterThan(0);
+
+    expect((await app.request(`/api/uploads/${upload.id}/thumb`)).status).toBe(
+      404,
+    );
+  });
+
+  test("complete refuses a wrong video codec, a truncated file and a misnamed container (issue #51's AC)", async () => {
+    const { insertUser, as } = await setup();
+    const app = as(await insertUser("wrongvideo@example.com"));
+
+    for (const [fixture, name] of [
+      ["video-refused.mp4", "a.mp4"],
+      ["video-truncated.mp4", "b.mp4"],
+      ["video-misnamed.mp4", "c.mp4"],
+    ] as const) {
+      const res = await uploadFixture(app, fixture, name, "video/mp4");
+      expect(res.status).toBe(422);
+    }
+  });
+
+  test("a variable frame rate video is accepted but marked not browser-playable (issue #51's AC)", async () => {
+    const { insertUser, as } = await setup();
+    const app = as(await insertUser("vfr@example.com"));
+
+    const res = await uploadFixture(
+      app,
+      "video-vfr.mp4",
+      "vfr.mp4",
+      "video/mp4",
+    );
+    expect(res.status).toBe(200);
+    const { upload } = (await res.json()) as {
+      upload: { browserPlayable: boolean };
+    };
+    expect(upload.browserPlayable).toBe(false);
+  });
+
+  test("a browser-unplayable video that fits its Input's limits passes through untrimmed; one that's too long is refused (ADR 0007)", async () => {
+    const { insertUser, as } = await setup();
+    const app = as(await insertUser("unplayable@example.com"));
+    hint = {
+      kind: "video_upload",
+      maxSizeMb: 1,
+      maxLongSide: null,
+      minDurationMs: 0,
+      maxDurationMs: 5000,
+      trimmable: true,
+    };
+
+    const fitsBytes = await fixtureBytes("video-unplayable-fits.mkv");
+    const fitsCreated = await createUpload(app, {
+      name: "fits.mkv",
+      size: fitsBytes.length,
+      type: "video/x-matroska",
+      modelId: crypto.randomUUID(),
+      inputId: "video-input",
+    });
+    const { upload: fitsUpload } = (await fitsCreated.json()) as {
+      upload: { id: string };
+    };
+    await putChunk(app, fitsUpload.id, 0, fitsBytes);
+    const fitsRes = await app.request(
+      `/api/uploads/${fitsUpload.id}/complete`,
+      { method: "POST" },
+    );
+    expect(fitsRes.status).toBe(200);
+    const { upload: completedFits } = (await fitsRes.json()) as {
+      upload: { status: string; browserPlayable: boolean };
+    };
+    expect(completedFits.status).toBe("complete");
+    expect(completedFits.browserPlayable).toBe(false);
+
+    const tooLongBytes = await fixtureBytes("video-unplayable-too-long.mkv");
+    const tooLongCreated = await createUpload(app, {
+      name: "toolong.mkv",
+      size: tooLongBytes.length,
+      type: "video/x-matroska",
+      modelId: crypto.randomUUID(),
+      inputId: "video-input",
+    });
+    const { upload: tooLongUpload } = (await tooLongCreated.json()) as {
+      upload: { id: string };
+    };
+    await putChunk(app, tooLongUpload.id, 0, tooLongBytes);
+    const tooLongRes = await app.request(
+      `/api/uploads/${tooLongUpload.id}/complete`,
+      { method: "POST" },
+    );
+    expect(tooLongRes.status).toBe(422);
+  });
+
+  test("a playable video too long for its Input, but trimmable, is accepted anyway (to be trimmed before submit)", async () => {
+    const { insertUser, as } = await setup();
+    const app = as(await insertUser("tooLongPlayable@example.com"));
+    hint = {
+      kind: "video_upload",
+      maxSizeMb: 1,
+      maxLongSide: null,
+      minDurationMs: 0,
+      maxDurationMs: 500,
+      trimmable: true,
+    };
+
+    const bytes = await fixtureBytes("video-allowed.mp4");
+    const created = await createUpload(app, {
+      name: "clip.mp4",
+      size: bytes.length,
+      type: "video/mp4",
+      modelId: crypto.randomUUID(),
+      inputId: "video-input",
+    });
+    const { upload } = (await created.json()) as { upload: { id: string } };
+    await putChunk(app, upload.id, 0, bytes);
+    const res = await app.request(`/api/uploads/${upload.id}/complete`, {
+      method: "POST",
+    });
+    expect(res.status).toBe(200);
+  });
+
+  test("a video too long and not trimmable is refused even though it's playable", async () => {
+    const { insertUser, as } = await setup();
+    const app = as(await insertUser("notTrimmable@example.com"));
+    hint = {
+      kind: "video_upload",
+      maxSizeMb: 1,
+      maxLongSide: null,
+      minDurationMs: 0,
+      maxDurationMs: 500,
+      trimmable: false,
+    };
+
+    const bytes = await fixtureBytes("video-allowed.mp4");
+    const created = await createUpload(app, {
+      name: "clip.mp4",
+      size: bytes.length,
+      type: "video/mp4",
+      modelId: crypto.randomUUID(),
+      inputId: "video-input",
+    });
+    const { upload } = (await created.json()) as { upload: { id: string } };
+    await putChunk(app, upload.id, 0, bytes);
+    const res = await app.request(`/api/uploads/${upload.id}/complete`, {
+      method: "POST",
+    });
+    expect(res.status).toBe(422);
+  });
+
+  test("trim makes a new Upload 'trimmed from' the original, re-encoded to H.264/AAC MP4 (issue #51's AC)", async () => {
+    const { insertUser, as, repository } = await setup();
+    const app = as(await insertUser("trim@example.com"));
+
+    const completeRes = await uploadFixture(
+      app,
+      "video-allowed.mp4",
+      "clip.mp4",
+      "video/mp4",
+    );
+    const { upload: original } = (await completeRes.json()) as {
+      upload: { id: string; durationMs: number };
+    };
+
+    const trimRes = await app.request(`/api/uploads/${original.id}/trim`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ startMs: 0, endMs: 500 }),
+    });
+    expect(trimRes.status).toBe(201);
+    const { upload: trimmed } = (await trimRes.json()) as {
+      upload: { id: string; status: string; kind: string; durationMs: number };
+    };
+    expect(trimmed.status).toBe("complete");
+    expect(trimmed.kind).toBe("video");
+    expect(trimmed.durationMs).toBeLessThan(original.durationMs);
+
+    const stored = await repository.get(trimmed.id);
+    expect(stored?.trimmedFromId).toBe(original.id);
+    expect(stored?.trimStartMs).toBe(0);
+    expect(stored?.trimEndMs).toBe(500);
+    expect(stored?.extension).toBe("mp4");
+    expect((stored?.probe as { codecName?: string } | null)?.codecName).toBe(
+      "h264",
+    );
+  });
+
+  test("trim refuses a range outside the original's own duration", async () => {
+    const { insertUser, as } = await setup();
+    const app = as(await insertUser("badrange@example.com"));
+
+    const completeRes = await uploadFixture(
+      app,
+      "video-allowed.mp4",
+      "clip.mp4",
+      "video/mp4",
+    );
+    const { upload } = (await completeRes.json()) as {
+      upload: { id: string; durationMs: number };
+    };
+
+    const res = await app.request(`/api/uploads/${upload.id}/trim`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ startMs: 0, endMs: upload.durationMs + 10_000 }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  test("trim refuses an Upload that isn't a video or audio (e.g. an image)", async () => {
+    const { insertUser, as, dir } = await setup();
+    const app = as(await insertUser("notvideo@example.com"));
+    const png = await makeImage(dir, "still.png", "32x32");
+
+    const created = await createUpload(app, {
+      name: "still.png",
+      size: png.length,
+      type: "image/png",
+    });
+    const { upload } = (await created.json()) as { upload: { id: string } };
+    await putChunk(app, upload.id, 0, png);
+    await app.request(`/api/uploads/${upload.id}/complete`, {
+      method: "POST",
+    });
+
+    const res = await app.request(`/api/uploads/${upload.id}/trim`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ startMs: 0, endMs: 1 }),
+    });
+    expect(res.status).toBe(400);
   });
 });

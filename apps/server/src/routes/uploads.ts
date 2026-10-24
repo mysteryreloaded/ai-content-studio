@@ -23,6 +23,11 @@ import {
   toUploadSummary,
 } from "../uploads/service.js";
 
+const trimSchema = z.object({
+  startMs: z.number().int().min(0),
+  endMs: z.number().int().min(0),
+});
+
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -184,6 +189,43 @@ export function uploadsRoute(
       try {
         const upload = await service.complete(session.user.id, id);
         return c.json({ upload: toUploadSummary(upload) });
+      } catch (err) {
+        return handleError(c, err);
+      }
+    },
+  );
+
+  /** Trims a complete video or audio Upload to a new one, "trimmed from" it (issue #51's AC). */
+  guardedRoute(
+    app,
+    routes,
+    basePath,
+    "post",
+    "/:id/trim",
+    "active",
+    async (c) => {
+      const session = c.get("session");
+      if (!session) return c.json({ error: "unauthorized" }, 401);
+      const id = idParam(c);
+      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+
+      const body = await c.req.json().catch(() => null);
+      const parsed = trimSchema.safeParse(body);
+      if (!parsed.success) {
+        return c.json(
+          { error: "invalid input", issues: parsed.error.issues },
+          400,
+        );
+      }
+
+      try {
+        const upload = await service.trim(
+          session.user.id,
+          id,
+          parsed.data.startMs,
+          parsed.data.endMs,
+        );
+        return c.json({ upload: toUploadSummary(upload) }, 201);
       } catch (err) {
         return handleError(c, err);
       }

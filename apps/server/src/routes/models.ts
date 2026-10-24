@@ -81,6 +81,29 @@ function toWorkbenchInput(input: InputDefinition, workflow: Workflow) {
       maxLongSide: input.maxLongSide,
     };
   }
+  if (input.kind === "video_upload") {
+    return {
+      ...base,
+      placeholder: null,
+      kind: "video_upload" as const,
+      maxSizeMb: input.maxSizeMb,
+      maxLongSide: input.maxLongSide,
+      minDurationMs: input.minDurationMs,
+      maxDurationMs: input.maxDurationMs,
+      trimmable: input.trimmable,
+    };
+  }
+  if (input.kind === "audio_upload") {
+    return {
+      ...base,
+      placeholder: null,
+      kind: "audio_upload" as const,
+      maxSizeMb: input.maxSizeMb,
+      minDurationMs: input.minDurationMs,
+      maxDurationMs: input.maxDurationMs,
+      trimmable: input.trimmable,
+    };
+  }
   if (input.kind === "number") {
     return {
       ...base,

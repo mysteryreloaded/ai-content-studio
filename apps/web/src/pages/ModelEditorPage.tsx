@@ -8,6 +8,7 @@ import {
   renderMarkdown,
 } from "@ai-content-studio/shared";
 import type {
+  AudioUploadInputDefinition,
   BindableField,
   ImageUploadInputDefinition,
   InputDefinition,
@@ -16,6 +17,7 @@ import type {
   SelectInputDefinition,
   SelectOption,
   TextInputDefinition,
+  VideoUploadInputDefinition,
   Workflow,
 } from "@ai-content-studio/shared";
 import { type FormEvent, useEffect, useRef, useState } from "react";
@@ -190,6 +192,37 @@ function newImageUploadInput(): ImageUploadInputDefinition {
   };
 }
 
+function newVideoUploadInput(): VideoUploadInputDefinition {
+  return {
+    id: crypto.randomUUID(),
+    kind: "video_upload",
+    group: "describe",
+    label: "",
+    help: "",
+    maxSizeMb: 50,
+    maxLongSide: null,
+    minDurationMs: 0,
+    maxDurationMs: 10_000,
+    trimmable: true,
+    bindings: [],
+  };
+}
+
+function newAudioUploadInput(): AudioUploadInputDefinition {
+  return {
+    id: crypto.randomUUID(),
+    kind: "audio_upload",
+    group: "describe",
+    label: "",
+    help: "",
+    maxSizeMb: 20,
+    minDurationMs: 0,
+    maxDurationMs: 10_000,
+    trimmable: true,
+    bindings: [],
+  };
+}
+
 /** `fieldKey` of every field bound by an Input other than `excludingId`. */
 function usedFieldKeys(
   inputs: InputDefinition[],
@@ -226,6 +259,11 @@ function candidateFieldsFor(
     // Issue #50: a loader's file name field (e.g. LoadImage.image); the
     // server checks the Backend flags it image_upload when it can.
     if (input.kind === "image_upload") return field.valueType === "string";
+    // Issue #51: a video/audio loader's file name field; the server
+    // checks the flag, or VHS_LoadVideo/VHS_LoadVideoFFmpeg for video.
+    if (input.kind === "video_upload" || input.kind === "audio_upload") {
+      return field.valueType === "string";
+    }
     return true;
   });
 }
@@ -610,7 +648,11 @@ export function ModelEditorPage() {
             ? newSeedInput()
             : newInputKind === "image_upload"
               ? newImageUploadInput()
-              : newSelectInput();
+              : newInputKind === "video_upload"
+                ? newVideoUploadInput()
+                : newInputKind === "audio_upload"
+                  ? newAudioUploadInput()
+                  : newSelectInput();
     setInputsDraft([...inputsDraft, created]);
     setEditingInputIndex(inputsDraft.length);
   }
@@ -1303,6 +1345,106 @@ export function ModelEditorPage() {
               </>
             )}
 
+            {(input.kind === "video_upload" ||
+              input.kind === "audio_upload") && (
+              <>
+                <p>
+                  Shown under "Your media" and always required. Bind it to a
+                  loader's file field
+                  {input.kind === "video_upload"
+                    ? " flagged video_upload, or to VHS_LoadVideo/VHS_LoadVideoFFmpeg."
+                    : " flagged audio_upload."}
+                </p>
+                <label htmlFor={`input-max-size-${index}`}>Max size (MB)</label>
+                <input
+                  id={`input-max-size-${index}`}
+                  type="number"
+                  min={1}
+                  max={maxUploadMb}
+                  step={1}
+                  value={input.maxSizeMb}
+                  onChange={(event) =>
+                    updateInput(index, {
+                      ...input,
+                      maxSizeMb: Number(event.target.value),
+                    })
+                  }
+                />
+
+                {input.kind === "video_upload" && (
+                  <>
+                    <label htmlFor={`input-max-long-side-${index}`}>
+                      Max long side (px, optional)
+                    </label>
+                    <input
+                      id={`input-max-long-side-${index}`}
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={input.maxLongSide ?? ""}
+                      onChange={(event) =>
+                        updateInput(index, {
+                          ...input,
+                          maxLongSide:
+                            event.target.value === ""
+                              ? null
+                              : Number(event.target.value),
+                        })
+                      }
+                    />
+                  </>
+                )}
+
+                <label htmlFor={`input-min-duration-${index}`}>
+                  Min duration (ms)
+                </label>
+                <input
+                  id={`input-min-duration-${index}`}
+                  type="number"
+                  min={0}
+                  step={100}
+                  value={input.minDurationMs}
+                  onChange={(event) =>
+                    updateInput(index, {
+                      ...input,
+                      minDurationMs: Number(event.target.value),
+                    })
+                  }
+                />
+
+                <label htmlFor={`input-max-duration-${index}`}>
+                  Max duration (ms)
+                </label>
+                <input
+                  id={`input-max-duration-${index}`}
+                  type="number"
+                  min={1}
+                  step={100}
+                  value={input.maxDurationMs}
+                  onChange={(event) =>
+                    updateInput(index, {
+                      ...input,
+                      maxDurationMs: Number(event.target.value),
+                    })
+                  }
+                />
+
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={input.trimmable}
+                    onChange={(event) =>
+                      updateInput(index, {
+                        ...input,
+                        trimmable: event.target.checked,
+                      })
+                    }
+                  />
+                  Trimmable on a local player
+                </label>
+              </>
+            )}
+
             {input.kind === "number" && (
               <>
                 <label htmlFor={`input-mode-${index}`}>Number</label>
@@ -1617,6 +1759,8 @@ export function ModelEditorPage() {
             Seed
           </option>
           <option value="image_upload">Image upload</option>
+          <option value="video_upload">Video upload</option>
+          <option value="audio_upload">Audio upload</option>
         </select>
         <button type="button" onClick={addInput}>
           Add Input

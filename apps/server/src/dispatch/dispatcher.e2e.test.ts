@@ -713,6 +713,8 @@ describe("Dispatcher end-to-end against a fake ComfyUI", () => {
           contentType: "image/png",
           width: 1,
           height: 1,
+          durationMs: null,
+          fps: null,
           probe: {
             formatName: "png_pipe",
             codecName: "png",

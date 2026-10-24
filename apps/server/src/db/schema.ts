@@ -570,9 +570,13 @@ export const uploadStatus = pgEnum("upload_status", [
  * chunks. `receivedBytes` is the server's offset a resumed upload
  * continues from. `modelId`/`inputId` are only the hint given at create
  * (which Input's limits to check at complete); submit checks the Input
- * actually used. `kind`, `extension`, `width`/`height` and `probe` (the
- * ffprobe facts kept) are set at complete. `createdAt` is written from
- * the clock (ADR 0006): the cleanup of unused Uploads compares it.
+ * actually used. `kind`, `extension`, `width`/`height`, `durationMs`/
+ * `fps` and `probe` (the ffprobe facts kept) are set at complete.
+ * `trimmedFromId`/`trimStartMs`/`trimEndMs` are set instead, at insert,
+ * for an Upload made by trimming another one on a local player (issue
+ * #51): it's already `complete`, with its own probe facts, and is never
+ * chunked into. `createdAt` is written from the clock (ADR 0006): the
+ * cleanup of unused Uploads compares it.
  */
 export const uploads = pgTable(
   "uploads",
@@ -597,7 +601,13 @@ export const uploads = pgTable(
     contentType: text("content_type"),
     width: integer("width"),
     height: integer("height"),
+    durationMs: integer("duration_ms"),
+    fps: doublePrecision("fps"),
     probe: jsonb("probe"),
+    /** Issue #51: the Upload this one was trimmed from, and the range kept, from the original's own timeline. */
+    trimmedFromId: uuid("trimmed_from_id"),
+    trimStartMs: integer("trim_start_ms"),
+    trimEndMs: integer("trim_end_ms"),
     error: text("error"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
     completedAt: timestamp("completed_at", { withTimezone: true }),

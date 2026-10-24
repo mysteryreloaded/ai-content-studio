@@ -9,8 +9,12 @@
 import { cpus } from "node:os";
 import {
   type ProbeResult,
+  WRONG_AUDIO_KIND,
   WRONG_KIND,
+  WRONG_VIDEO_KIND,
+  parseAudioProbeOutput,
   parseProbeOutput,
+  parseVideoProbeOutput,
 } from "../uploads/probe.js";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -121,10 +125,13 @@ export class MediaRunner {
     this.threads = Math.max(1, Math.floor(cpus().length / bounded));
   }
 
-  private async run(cmd: readonly string[]): Promise<string> {
+  private async run(
+    cmd: readonly string[],
+    timeoutMs = this.timeoutMs,
+  ): Promise<string> {
     const release = await this.semaphore.acquire();
     try {
-      return await spawnBounded(cmd, this.timeoutMs);
+      return await spawnBounded(cmd, timeoutMs);
     } finally {
       release();
     }
@@ -278,6 +285,173 @@ export class MediaRunner {
       "webp",
       outputPath,
     ]);
+  }
+
+  /**
+   * Probes an Upload video (issue #51), never throwing: a wrong codec, a
+   * misnamed container, a timeout, or any other ffprobe failure all come
+   * back as `{ ok: false }`, the same as {@link probeImage}.
+   */
+  async probeVideoUpload(
+    filePath: string,
+    extension: string,
+  ): Promise<ProbeResult> {
+    let stdout: string;
+    try {
+      stdout = await this.run([
+        "ffprobe",
+        "-v",
+        "error",
+        "-print_format",
+        "json",
+        "-show_streams",
+        "-show_format",
+        filePath,
+      ]);
+    } catch {
+      return { ok: false, reason: WRONG_VIDEO_KIND };
+    }
+    try {
+      return parseVideoProbeOutput(stdout, extension);
+    } catch {
+      return { ok: false, reason: WRONG_VIDEO_KIND };
+    }
+  }
+
+  /** Probes an Upload audio clip (issue #51); never throws, like {@link probeVideoUpload}. */
+  async probeAudioUpload(
+    filePath: string,
+    extension: string,
+  ): Promise<ProbeResult> {
+    let stdout: string;
+    try {
+      stdout = await this.run([
+        "ffprobe",
+        "-v",
+        "error",
+        "-print_format",
+        "json",
+        "-show_streams",
+        "-show_format",
+        filePath,
+      ]);
+    } catch {
+      return { ok: false, reason: WRONG_AUDIO_KIND };
+    }
+    try {
+      return parseAudioProbeOutput(stdout, extension);
+    } catch {
+      return { ok: false, reason: WRONG_AUDIO_KIND };
+    }
+  }
+
+  /**
+   * A video icon: the frame at `atMs` (default 0), scaled the same as
+   * {@link makeThumbnail} (issue #51).
+   */
+  async makeVideoThumbnail(
+    inputPath: string,
+    outputPath: string,
+    atMs = 0,
+  ): Promise<void> {
+    await this.run([
+      "ffmpeg",
+      "-v",
+      "error",
+      "-y",
+      "-ss",
+      (atMs / 1000).toString(),
+      "-i",
+      inputPath,
+      "-threads",
+      String(this.threads),
+      "-vf",
+      "scale=160:160:force_original_aspect_ratio=decrease",
+      "-frames:v",
+      "1",
+      "-c:v",
+      "libwebp",
+      "-f",
+      "webp",
+      outputPath,
+    ]);
+  }
+
+  /**
+   * A frame-accurate trim of `[startMs, endMs)`, re-encoded to H.264/AAC
+   * MP4 at the source's own size and fps (issue #51's AC). `-ss` before
+   * `-i` seeks fast but to the nearest keyframe; re-encoding (not `-c
+   * copy`) after it, with `-ss` placed again right after `-i`, makes the
+   * cut land exactly on `startMs`. Bounded by `timeoutMs` (default this
+   * runner's own), covering the Workbench's ~90s cap on one trim request.
+   */
+  async trimVideo(
+    input: string,
+    output: string,
+    startMs: number,
+    endMs: number,
+    fps: number,
+    timeoutMs?: number,
+  ): Promise<void> {
+    await this.run(
+      [
+        "ffmpeg",
+        "-y",
+        "-ss",
+        (startMs / 1000).toString(),
+        "-i",
+        input,
+        "-t",
+        ((endMs - startMs) / 1000).toString(),
+        "-threads",
+        String(this.threads),
+        "-r",
+        String(fps),
+        "-c:v",
+        "libx264",
+        "-c:a",
+        "aac",
+        "-movflags",
+        "+faststart",
+        "-f",
+        "mp4",
+        output,
+      ],
+      timeoutMs,
+    );
+  }
+
+  /**
+   * A frame-accurate trim of `[startMs, endMs)` of an audio clip,
+   * re-encoded to AAC (issue #51's AC: the kept range, re-encoded).
+   */
+  async trimAudio(
+    input: string,
+    output: string,
+    startMs: number,
+    endMs: number,
+    timeoutMs?: number,
+  ): Promise<void> {
+    await this.run(
+      [
+        "ffmpeg",
+        "-y",
+        "-ss",
+        (startMs / 1000).toString(),
+        "-i",
+        input,
+        "-t",
+        ((endMs - startMs) / 1000).toString(),
+        "-threads",
+        String(this.threads),
+        "-c:a",
+        "aac",
+        "-f",
+        "ipod",
+        output,
+      ],
+      timeoutMs,
+    );
   }
 
   /** Runs `c2patool` to sign `assetPath` per `manifestPath`, writing to `outputPath` (issue #75). Shares this runner's semaphore and timeout with ffmpeg/ffprobe. */

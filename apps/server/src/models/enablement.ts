@@ -6,6 +6,7 @@
 
 import type { ComfyFieldSpec } from "@ai-content-studio/shared";
 import {
+  VIDEO_LOADER_CLASS_TYPES,
   computeModePath,
   fieldKey,
   isNodeLink,
@@ -134,10 +135,19 @@ function uploadLoaderReasons(
     const loaderFields = new Set(
       specsByBackend.flatMap(({ specs }) =>
         Object.entries(specs.get(node.class_type) ?? {})
-          .filter(([, spec]) => spec.imageUpload)
+          .filter(
+            ([, spec]) =>
+              spec.imageUpload || spec.videoUpload || spec.audioUpload,
+          )
           .map(([field]) => field),
       ),
     );
+    // Issue #51: VHS_LoadVideo/VHS_LoadVideoFFmpeg's own "video" field is
+    // always an Upload loader, whether or not a Backend's /object_info
+    // reports it flagged (validateBinding doesn't require the flag there).
+    if (VIDEO_LOADER_CLASS_TYPES.has(node.class_type)) {
+      loaderFields.add("video");
+    }
 
     for (const field of loaderFields) {
       if (shownFields.has(fieldKey(nodeId, field))) continue;

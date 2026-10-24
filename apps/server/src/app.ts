@@ -239,7 +239,15 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
     hintLimits: async (modelId, inputId) => {
       const detail = await modelRepository.get(modelId);
       const input = detail?.inputs.find((i) => i.id === inputId);
-      return input?.kind === "image_upload" ? input : null;
+      if (!input) return null;
+      if (
+        input.kind === "image_upload" ||
+        input.kind === "video_upload" ||
+        input.kind === "audio_upload"
+      ) {
+        return input;
+      }
+      return null;
     },
     media,
   });

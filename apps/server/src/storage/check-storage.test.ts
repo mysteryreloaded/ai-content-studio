@@ -102,7 +102,9 @@ describe("checkStorage (issue #77)", () => {
       SECRET_KEY: "4FRG13w9RuN5CeV10Lzfxl78MY+AJRJtGuKrBdYzgCY=",
       BACKENDS_ENABLED: true,
       STATUS_TOKEN: undefined,
-      MIN_FREE_DISK_GB: 10,
+      // This suite isn't exercising the disk-space gate (issue #50); keep
+      // its floor low so a CI runner's real free space never trips it.
+      MIN_FREE_DISK_GB: 1,
       FFMPEG_CONCURRENCY: 2,
       MAX_UPLOAD_MB: 500,
     };

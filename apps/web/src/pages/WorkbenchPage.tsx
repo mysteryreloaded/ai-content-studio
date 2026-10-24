@@ -7,6 +7,11 @@ import type { InputDefinition } from "@ai-content-studio/shared";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, Navigate, useParams } from "react-router-dom";
 import { Footer } from "../Footer.js";
+import {
+  httpUploadApi,
+  pickIssue,
+  uploadResumable,
+} from "../lib/chunkedUpload.js";
 import { useSession } from "../useSession.js";
 
 interface WorkbenchInputOption {
@@ -41,10 +46,23 @@ type WorkbenchInput = {
       default: string | null;
     }
   | {
+      kind: "image_upload";
+      maxSizeMb: number;
+      maxLongSide: number | null;
+    }
+  | {
       kind: "seed";
       max: number | null;
     }
 );
+
+type ImageUploadInput = Extract<WorkbenchInput, { kind: "image_upload" }>;
+
+/** One Image Upload Input's file (issue #50): uploading, uploaded, or refused. */
+type UploadState =
+  | { status: "uploading"; name: string; progress: number }
+  | { status: "complete"; name: string; uploadId: string }
+  | { status: "error"; name: string; message: string };
 
 interface WorkbenchMode {
   id: string;
@@ -68,7 +86,9 @@ function initialValuesFor(mode: WorkbenchMode): Record<string, string> {
       continue;
     }
     values[input.id] =
-      input.default === null || input.default === undefined
+      input.kind === "image_upload" ||
+      input.default === null ||
+      input.default === undefined
         ? ""
         : String(input.default);
   }
@@ -106,6 +126,14 @@ function toInputDefinition(input: WorkbenchInput): InputDefinition {
       multiline: input.multiline,
       maxLength: input.maxLength,
       default: input.default,
+    };
+  }
+  if (input.kind === "image_upload") {
+    return {
+      ...base,
+      kind: "image_upload",
+      maxSizeMb: input.maxSizeMb,
+      maxLongSide: input.maxLongSide,
     };
   }
   if (input.kind === "number") {
@@ -154,6 +182,21 @@ function liveIssuesFor(
   return Object.fromEntries(
     toInputIssues(result.error).map((issue) => [issue.path, issue.message]),
   );
+}
+
+/** A picked image's size, when this browser can decode it; null otherwise (the server checks again at complete). */
+async function readDimensions(
+  file: File,
+): Promise<{ width: number; height: number } | null> {
+  if (typeof createImageBitmap !== "function") return null;
+  try {
+    const bitmap = await createImageBitmap(file);
+    const dimensions = { width: bitmap.width, height: bitmap.height };
+    bitmap.close();
+    return dimensions;
+  } catch {
+    return null;
+  }
 }
 
 interface ModelTerms {
@@ -259,6 +302,8 @@ function upsertGeneration(
 
 type SubmitState =
   | { status: "idle" }
+  /** Issue #50: Generate was pressed while Uploads were still running. */
+  | { status: "waiting" }
   | { status: "submitting" }
   | { status: "error"; message: string };
 
@@ -519,6 +564,16 @@ export function WorkbenchPage() {
   const [selectedSubmission, setSelectedSubmission] =
     useState<SubmissionSummary | null>(null);
 
+  const [uploads, setUploads] = useState<Record<string, UploadState>>({});
+  // Issue #50: each running Upload, by Input id, so Generate can wait for
+  // them and a new pick can cancel the one it replaces.
+  const runningUploadsRef = useRef(
+    new Map<string, { promise: Promise<void>; controller: AbortController }>(),
+  );
+  const waitRef = useRef<{ cancelled: boolean } | null>(null);
+  const maxUploadMb =
+    session.status === "signed-in" ? (session.user.maxUploadMb ?? null) : null;
+
   const selectedMode =
     model?.modes.find((m) => m.id === selectedModeId) ?? null;
   /** The count picker shows whenever the Mode's Path holds a bound Seed Input (issue #47's AC), even one not otherwise rendered. */
@@ -529,14 +584,24 @@ export function WorkbenchPage() {
     setSelectedModeId(mode.id);
     setValues(initialValuesFor(mode));
     setIssuesByInputId({});
+    for (const running of runningUploadsRef.current.values()) {
+      running.controller.abort();
+    }
+    runningUploadsRef.current.clear();
+    setUploads({});
     setCount(1);
   }, []);
 
   // Live validation (issue #46): the same parseInputValues schema the
-  // server uses as the form resolver, so issues show before submit.
+  // server uses as the form resolver, so issues show before submit. A
+  // not-yet-picked Upload isn't flagged until Generate is pressed.
   const liveIssuesByInputId = useMemo(() => {
     if (!model || !selectedMode) return {};
-    return liveIssuesFor(model.revision, selectedMode, values);
+    const issues = liveIssuesFor(model.revision, selectedMode, values);
+    for (const input of selectedMode.inputs) {
+      if (input.kind === "image_upload") delete issues[input.id];
+    }
+    return issues;
   }, [model, selectedMode, values]);
 
   const displayedIssuesByInputId = {
@@ -546,6 +611,91 @@ export function WorkbenchPage() {
 
   const modelRef = useRef(model);
   modelRef.current = model;
+  // Read after waiting for Uploads, so the submit sees their finished ids.
+  const valuesRef = useRef(values);
+  valuesRef.current = values;
+
+  const startUpload = useCallback(
+    async (input: ImageUploadInput, file: File) => {
+      const current = modelRef.current;
+      if (!current) return;
+      runningUploadsRef.current.get(input.id)?.controller.abort();
+      runningUploadsRef.current.delete(input.id);
+      setValues((v) => ({ ...v, [input.id]: "" }));
+
+      const issue = pickIssue(
+        file,
+        input,
+        maxUploadMb,
+        await readDimensions(file),
+      );
+      if (issue) {
+        setUploads((u) => ({
+          ...u,
+          [input.id]: {
+            status: "error",
+            name: file.name,
+            message: `${file.name} ${issue}.`,
+          },
+        }));
+        return;
+      }
+
+      const controller = new AbortController();
+      setUploads((u) => ({
+        ...u,
+        [input.id]: { status: "uploading", name: file.name, progress: 0 },
+      }));
+      const promise = uploadResumable(file, httpUploadApi(), {
+        hint: { modelId: current.id, inputId: input.id },
+        signal: controller.signal,
+        onProgress: (progress) => {
+          if (controller.signal.aborted) return;
+          setUploads((u) => ({
+            ...u,
+            [input.id]: { status: "uploading", name: file.name, progress },
+          }));
+        },
+      })
+        .then((done) => {
+          if (controller.signal.aborted) return;
+          valuesRef.current = { ...valuesRef.current, [input.id]: done.id };
+          setValues((v) => ({ ...v, [input.id]: done.id }));
+          setIssuesByInputId((issues) => {
+            const { [input.id]: _, ...rest } = issues;
+            return rest;
+          });
+          setUploads((u) => ({
+            ...u,
+            [input.id]: {
+              status: "complete",
+              name: file.name,
+              uploadId: done.id,
+            },
+          }));
+        })
+        .catch((err: unknown) => {
+          if (controller.signal.aborted) return;
+          setUploads((u) => ({
+            ...u,
+            [input.id]: {
+              status: "error",
+              name: file.name,
+              message: `${file.name} ${err instanceof Error ? err.message : "couldn't be uploaded"}.`,
+            },
+          }));
+        })
+        .finally(() => {
+          if (
+            runningUploadsRef.current.get(input.id)?.controller === controller
+          ) {
+            runningUploadsRef.current.delete(input.id);
+          }
+        });
+      runningUploadsRef.current.set(input.id, { promise, controller });
+    },
+    [maxUploadMb],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -647,9 +797,22 @@ export function WorkbenchPage() {
   }, [slug]);
 
   const handleGenerate = useCallback(async () => {
+    // Issue #50: pressed early, Generate waits for running Uploads, then
+    // submits, unless "Don't start" is pressed meanwhile.
+    const running = [...runningUploadsRef.current.values()];
+    if (running.length > 0) {
+      const wait = { cancelled: false };
+      waitRef.current = wait;
+      setSubmitState({ status: "waiting" });
+      await Promise.allSettled(running.map((r) => r.promise));
+      if (wait.cancelled) return;
+      waitRef.current = null;
+    }
+
     const current = modelRef.current;
     const mode = current?.modes.find((m) => m.id === selectedModeId);
     if (!current || !mode) return;
+    const values = valuesRef.current;
 
     const issues = liveIssuesFor(current.revision, mode, values);
     if (Object.keys(issues).length > 0) {
@@ -768,7 +931,13 @@ export function WorkbenchPage() {
     } catch {
       setSubmitState({ status: "error", message: "could not submit" });
     }
-  }, [selectedModeId, values, count, selectMode]);
+  }, [selectedModeId, count, selectMode]);
+
+  const cancelWaiting = useCallback(() => {
+    if (waitRef.current) waitRef.current.cancelled = true;
+    waitRef.current = null;
+    setSubmitState({ status: "idle" });
+  }, []);
 
   if (session.status === "loading") return null;
   if (session.status === "signed-out") return <Navigate to="/" replace />;
@@ -875,6 +1044,18 @@ export function WorkbenchPage() {
             )}
 
             {selectedMode && (
+              <YourFiles
+                inputs={selectedMode.inputs.filter(
+                  (input): input is ImageUploadInput =>
+                    input.kind === "image_upload",
+                )}
+                uploads={uploads}
+                issuesByInputId={displayedIssuesByInputId}
+                onPick={(input, file) => void startUpload(input, file)}
+              />
+            )}
+
+            {selectedMode && (
               <InputGroups
                 mode={selectedMode}
                 values={values}
@@ -960,13 +1141,22 @@ export function WorkbenchPage() {
           {activeCount > 0 && (
             <span className="workbench-chip">{activeCount} under way</span>
           )}
-          <button
-            type="button"
-            onClick={handleGenerate}
-            disabled={!selectedModeId || submitState.status === "submitting"}
-          >
-            Generate
-          </button>
+          {submitState.status === "waiting" ? (
+            <>
+              <output>Waiting for your files to finish…</output>
+              <button type="button" onClick={cancelWaiting}>
+                Don't start
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={handleGenerate}
+              disabled={!selectedModeId || submitState.status === "submitting"}
+            >
+              Generate
+            </button>
+          )}
         </footer>
       </main>
       <Footer />
@@ -1002,7 +1192,9 @@ function InputGroups({
   return (
     <>
       {(["describe", "settings"] as const).map((group) => {
-        const inputs = mode.inputs.filter((input) => input.group === group);
+        const inputs = mode.inputs.filter(
+          (input) => input.group === group && input.kind !== "image_upload",
+        );
         if (inputs.length === 0) return null;
         return (
           <fieldset key={group}>
@@ -1020,6 +1212,81 @@ function InputGroups({
         );
       })}
     </>
+  );
+}
+
+/** The Workbench's Image Upload Inputs (issue #50), always required: pick a file, watch it upload, see its thumbnail. */
+function YourFiles({
+  inputs,
+  uploads,
+  issuesByInputId,
+  onPick,
+}: {
+  inputs: ImageUploadInput[];
+  uploads: Record<string, UploadState>;
+  issuesByInputId: Record<string, string>;
+  onPick: (input: ImageUploadInput, file: File) => void;
+}) {
+  if (inputs.length === 0) return null;
+  return (
+    <fieldset>
+      <legend>Your files</legend>
+      {inputs.map((input) => {
+        const upload = uploads[input.id];
+        const issue =
+          upload?.status === "error"
+            ? upload.message
+            : upload?.status === "uploading"
+              ? undefined
+              : issuesByInputId[input.id];
+        const issueId = issue ? `input-issue-${input.id}` : undefined;
+        return (
+          <div key={input.id}>
+            <label htmlFor={`input-${input.id}`}>{input.label}</label>
+            {input.help && <p>{input.help}</p>}
+            <input
+              id={`input-${input.id}`}
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              required
+              aria-describedby={issueId}
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) onPick(input, file);
+              }}
+            />
+            <p>
+              PNG, JPEG or WebP, up to {input.maxSizeMb} MB
+              {input.maxLongSide !== null &&
+                `, at most ${input.maxLongSide} px on its long side`}
+              .
+            </p>
+            {upload?.status === "uploading" && (
+              <progress
+                aria-label={`Uploading ${upload.name}`}
+                max={1}
+                value={upload.progress}
+              />
+            )}
+            {upload?.status === "complete" && (
+              <p>
+                <img
+                  src={`/api/uploads/${upload.uploadId}/thumb`}
+                  alt=""
+                  className="workbench-thumb"
+                />{" "}
+                {upload.name}
+              </p>
+            )}
+            {issue && (
+              <p id={issueId} role="alert">
+                {issue}
+              </p>
+            )}
+          </div>
+        );
+      })}
+    </fieldset>
   );
 }
 
@@ -1164,6 +1431,11 @@ const WORKBENCH_STYLE = `
 }
 .workbench-progress {
   opacity: 0.8;
+}
+.workbench-thumb {
+  max-width: 160px;
+  max-height: 160px;
+  vertical-align: middle;
 }
 .workbench-download {
   margin: 0.25rem 0 0;

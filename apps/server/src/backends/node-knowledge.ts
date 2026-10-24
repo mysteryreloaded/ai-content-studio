@@ -40,8 +40,9 @@ function parseFieldSpecs(
       for (const [field, spec] of Object.entries(group)) {
         if (!Array.isArray(spec) || spec.length === 0) continue;
         const [typeOrOptions, extra] = spec as [unknown, unknown];
+        let parsed: ComfyFieldSpec | null = null;
         if (Array.isArray(typeOrOptions)) {
-          fields[field] = {
+          parsed = {
             type: "COMBO",
             options: typeOrOptions.filter(
               (option): option is string => typeof option === "string",
@@ -49,7 +50,7 @@ function parseFieldSpecs(
           };
         } else if (typeOrOptions === "COMBO") {
           const options = (extra as { options?: unknown } | undefined)?.options;
-          fields[field] = {
+          parsed = {
             type: "COMBO",
             options: Array.isArray(options)
               ? options.filter(
@@ -58,8 +59,15 @@ function parseFieldSpecs(
               : undefined,
           };
         } else if (typeof typeOrOptions === "string") {
-          fields[field] = { type: typeOrOptions };
+          parsed = { type: typeOrOptions };
         }
+        if (!parsed) continue;
+        // Issue #50: ComfyUI marks an image loader's file field
+        // `{"image_upload": true}` (e.g. LoadImage.image).
+        if ((extra as { image_upload?: unknown } | undefined)?.image_upload) {
+          parsed.imageUpload = true;
+        }
+        fields[field] = parsed;
       }
     }
     result.set(classType, fields);

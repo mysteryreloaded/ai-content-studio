@@ -43,6 +43,7 @@ function testEnv(): Env {
     BACKENDS_ENABLED: true,
     STATUS_TOKEN: undefined,
     MIN_FREE_DISK_GB: 10,
+    MAX_UPLOAD_MB: 500,
     FFMPEG_CONCURRENCY: 2,
   };
 }
@@ -50,7 +51,8 @@ function testEnv(): Env {
 const SAME_ORIGIN_HEADERS = { "Sec-Fetch-Site": "same-origin" };
 
 const WORKFLOW = {
-  "1": { class_type: "LoadImage", inputs: { image: "a.png" } },
+  // A file the fake Backend lists: enabling checks a fixed loader file is there (issue #50).
+  "1": { class_type: "LoadImage", inputs: { image: "example.png" } },
   "2": { class_type: "KSampler", inputs: { seed: 0, model: ["1", 0] } },
   "3": { class_type: "SaveImage", inputs: { images: ["2", 0] } },
 };
@@ -1150,7 +1152,7 @@ describe("/api/models/:slug and :slug/generations", () => {
         const body = (await listRes.json()) as {
           submissions: Array<{ prompt: string | null }>;
         };
-        expect(body.submissions[0]?.prompt).toBe("Default prompt: a.png");
+        expect(body.submissions[0]?.prompt).toBe("Default prompt: example.png");
 
         backendsService.stop();
       } finally {

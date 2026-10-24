@@ -131,7 +131,14 @@ function stateLabel(state: GenerationState): string {
   }
 }
 
-/** Elapsed time against the median of its last 10 successes, capped at 99%, or indeterminate without history. */
+function formatElapsed(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+}
+
+/** Elapsed time against the median of its last 10 successes, capped at 99%; without that history, just the elapsed time, indeterminate. */
 function ProgressLabel({
   progress,
 }: { progress: GenerationProgress | undefined }) {
@@ -143,11 +150,12 @@ function ProgressLabel({
       Math.round((progress.elapsedMs / progress.estimateMs) * 100),
     );
     parts.push(`${percent}%`);
+  } else {
+    parts.push(`${formatElapsed(progress.elapsedMs)} elapsed`);
   }
   if (progress.step !== null && progress.totalSteps !== null) {
     parts.push(`step ${progress.step} / ${progress.totalSteps}`);
   }
-  if (parts.length === 0) return null;
   return <span className="workbench-progress">{parts.join(" · ")}</span>;
 }
 

@@ -3,7 +3,7 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { startFakeComfyUi } from "@ai-content-studio/fake-comfyui";
 import { FakeClock } from "@ai-content-studio/shared";
-import { eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { createApp } from "../app.js";
 import { SESSION_COOKIE_NAME, createSession } from "../auth/session.js";
 import {
@@ -203,6 +203,49 @@ describe("DELETE /api/auth/account (issue #63)", () => {
     return first.id;
   }
 
+  /**
+   * Inserts a Generation row directly in a given `state` (round 4's new
+   * tests): the real submission endpoint refuses below `MIN_FREE_DISK_GB`
+   * (issue #50), which a long-running CI box can trip over after many
+   * other tests' own real Storage writes — these tests only need a row
+   * to flag/finalize, not an actual dispatched run.
+   */
+  async function insertGeneration(
+    modelId: string,
+    modeId: string,
+    userId: string,
+    state: typeof generations.$inferInsert.state,
+    uploadIds: string[] = [],
+  ): Promise<string> {
+    const { db } = await testDb;
+    const [revision] = await db
+      .select({ id: modelRevisions.id })
+      .from(modelRevisions)
+      .where(eq(modelRevisions.modelId, modelId))
+      .orderBy(desc(modelRevisions.revisionNumber))
+      .limit(1);
+    if (!revision) throw new Error("no revision for this Model");
+    const [row] = await db
+      .insert(generations)
+      .values({
+        id: crypto.randomUUID(),
+        modelId,
+        revisionId: revision.id,
+        modeId,
+        userId,
+        submissionId: crypto.randomUUID(),
+        state,
+        builtPrompt: {},
+        nodeTypes: [],
+        uploadIds,
+        queuedAt: clock.now(),
+        submittedAt: clock.now(),
+      })
+      .returning({ id: generations.id });
+    if (!row) throw new Error("insert returned no row");
+    return row.id;
+  }
+
   test("refuses a wrong email, with no change to the account", async () => {
     const { app } = await build();
     const user = await insertUser({});
@@ -359,16 +402,12 @@ describe("DELETE /api/auth/account (issue #63)", () => {
       const user = await insertUser({});
       const userHeaders = await headersFor(user.id);
 
-      const runningId = await submit(
-        app,
-        userHeaders,
-        model.slug,
+      const runningId = await insertGeneration(
+        model.modelId,
         model.modeId,
+        user.id,
+        "running",
       );
-      await db
-        .update(generations)
-        .set({ state: "running" })
-        .where(eq(generations.id, runningId));
 
       const res = await app.request("/api/auth/account", {
         method: "DELETE",
@@ -447,11 +486,12 @@ describe("DELETE /api/auth/account (issue #63)", () => {
       const user = await insertUser({});
       const userHeaders = await headersFor(user.id);
 
-      const savingId = await submit(app, userHeaders, model.slug, model.modeId);
-      await db
-        .update(generations)
-        .set({ state: "saving" })
-        .where(eq(generations.id, savingId));
+      const savingId = await insertGeneration(
+        model.modelId,
+        model.modeId,
+        user.id,
+        "saving",
+      );
 
       const res = await app.request("/api/auth/account", {
         method: "DELETE",
@@ -552,16 +592,9 @@ describe("DELETE /api/auth/account (issue #63)", () => {
         },
       ]);
 
-      const runningId = await submit(
-        app,
-        userHeaders,
-        model.slug,
-        model.modeId,
-      );
-      await db
-        .update(generations)
-        .set({ state: "running", uploadIds: [inUseUploadId] })
-        .where(eq(generations.id, runningId));
+      await insertGeneration(model.modelId, model.modeId, user.id, "running", [
+        inUseUploadId,
+      ]);
 
       const res = await app.request("/api/auth/account", {
         method: "DELETE",

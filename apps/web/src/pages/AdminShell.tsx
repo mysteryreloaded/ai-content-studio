@@ -8,6 +8,7 @@ import { ModelEditorPage } from "./ModelEditorPage.js";
 import { ModelsPage } from "./ModelsPage.js";
 import { OverviewPage } from "./OverviewPage.js";
 import { SiteSettingsForm } from "./SiteSettingsForm.js";
+import { SiteTermsForm } from "./SiteTermsForm.js";
 
 const ERROR_BADGE_POLL_MS = 30_000;
 
@@ -74,6 +75,7 @@ export function AdminShell() {
           element={
             <>
               <SiteSettingsForm />
+              <SiteTermsForm />
               <BackendsPage />
             </>
           }

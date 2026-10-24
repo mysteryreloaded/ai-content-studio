@@ -1,11 +1,14 @@
 import { timingSafeEqual } from "node:crypto";
-import type { Handler, Hono } from "hono";
+import type { Context, Handler, Hono, Next } from "hono";
 import type { AppEnv } from "./app-env.js";
 
 /**
- * Every route must declare one of these. `active` additionally requires
- * the Site terms to be accepted once Site settings grow a terms field;
- * today it is equivalent to "signed in and not disabled".
+ * Every route must declare one of these. `active` (and `admin`, which
+ * implies it) additionally requires the current Site terms to be
+ * accepted (issue #60) when any are set; a route that must stay usable
+ * before that — reading/accepting the terms, the current user,
+ * sign-out, account delete, `/privacy`, `/terms` and the public landing
+ * data — is `signed-in` or `public` instead, which skips the check.
  */
 export type AccessLevel =
   | "public"
@@ -84,7 +87,7 @@ export function requireAccess(access: AccessLevel): Handler<AppEnv> {
       if (session.user.status !== "active" || session.user.role !== "admin") {
         return c.json({ error: "forbidden" }, 403);
       }
-      return next();
+      return requireTermsAccepted(c, next);
     }
 
     const session = c.get("session");
@@ -98,7 +101,7 @@ export function requireAccess(access: AccessLevel): Handler<AppEnv> {
       if (session.user.status !== "active") {
         return c.json({ error: "forbidden" }, 403);
       }
-      return next();
+      return requireTermsAccepted(c, next);
     }
 
     if (access === "admin") {
@@ -119,9 +122,27 @@ export function requireAccess(access: AccessLevel): Handler<AppEnv> {
         }
         return c.json({ error: "forbidden" }, 403);
       }
-      return next();
+      return requireTermsAccepted(c, next);
     }
 
     return c.json({ error: "forbidden" }, 403);
   };
+}
+
+/**
+ * The issue #60 terms gate: blocks with 403 `terms_required` when the
+ * Site terms are set and this session's user hasn't accepted the
+ * current version. `termsVersion` is set by `sessionMiddleware`.
+ */
+function requireTermsAccepted(c: Context<AppEnv>, next: Next) {
+  const session = c.get("session");
+  const termsVersion = c.get("termsVersion");
+  if (
+    session &&
+    termsVersion !== null &&
+    session.user.termsAcceptedVersion !== termsVersion
+  ) {
+    return c.json({ error: "terms_required" }, 403);
+  }
+  return next();
 }

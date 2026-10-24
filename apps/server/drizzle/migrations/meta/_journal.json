@@ -43,6 +43,13 @@
       "when": 1792806084580,
       "tag": "0005_safe_blue_blade",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1792808952808,
+      "tag": "0006_nosy_stardust",
+      "breakpoints": true
     }
   ]
 }

@@ -2,9 +2,12 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { RouterProvider, createBrowserRouter } from "react-router-dom";
 import { LandingPage } from "./LandingPage.js";
+import { RequireTermsAccepted } from "./RequireTermsAccepted.js";
 import { AccountPage } from "./pages/AccountPage.js";
 import { AdminShell } from "./pages/AdminShell.js";
 import { ModelsHome } from "./pages/ModelsHome.js";
+import { PrivacyPage } from "./pages/PrivacyPage.js";
+import { TermsPage } from "./pages/TermsPage.js";
 
 const root = document.getElementById("root");
 if (!root) throw new Error("missing #root element");
@@ -15,9 +18,25 @@ if (!root) throw new Error("missing #root element");
 // keeps its own nested <Routes>, which still works under a data router.
 const router = createBrowserRouter([
   { path: "/", element: <LandingPage /> },
-  { path: "/models", element: <ModelsHome /> },
+  {
+    path: "/models",
+    element: (
+      <RequireTermsAccepted>
+        <ModelsHome />
+      </RequireTermsAccepted>
+    ),
+  },
   { path: "/account", element: <AccountPage /> },
-  { path: "/admin/*", element: <AdminShell /> },
+  {
+    path: "/admin/*",
+    element: (
+      <RequireTermsAccepted>
+        <AdminShell />
+      </RequireTermsAccepted>
+    ),
+  },
+  { path: "/terms", element: <TermsPage /> },
+  { path: "/privacy", element: <PrivacyPage /> },
 ]);
 
 createRoot(root).render(

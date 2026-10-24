@@ -7,6 +7,8 @@ export interface SessionUser {
   picture: string | null;
   role: "user" | "admin";
   status: "pending" | "active" | "disabled";
+  /** Issue #60: null until this user accepts the Site terms' current version. */
+  termsAcceptedVersion: number | null;
 }
 
 export type SessionState =

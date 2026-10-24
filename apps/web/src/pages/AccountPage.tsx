@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { type FormEvent, useState } from "react";
 import { Navigate } from "react-router-dom";
 import { Footer } from "../Footer.js";
 import { useSession } from "../useSession.js";
@@ -10,6 +10,55 @@ function initials(name: string): string {
     .slice(0, 2)
     .map((part) => part[0]?.toUpperCase())
     .join("");
+}
+
+function DeleteAccount({ email }: { email: string }) {
+  const { deleteAccount } = useSession();
+  const [typedEmail, setTypedEmail] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  async function handleDelete(event: FormEvent) {
+    event.preventDefault();
+    setError(null);
+    setDeleting(true);
+    const result = await deleteAccount(typedEmail);
+    setDeleting(false);
+    if (result.ok) return;
+    setError(
+      result.error === "email_mismatch"
+        ? "That email doesn't match your account."
+        : "Could not delete this account.",
+    );
+  }
+
+  return (
+    <section>
+      <h2>Delete my account</h2>
+      <p>
+        This deletes your profile, files, prompts and settings. It can't be
+        undone, and signing in again with the same Google account starts fresh.
+      </p>
+      <form onSubmit={handleDelete}>
+        <label htmlFor="delete-account-email">
+          Type your email ({email}) to confirm
+        </label>
+        <input
+          id="delete-account-email"
+          type="email"
+          value={typedEmail}
+          onChange={(event) => setTypedEmail(event.target.value)}
+        />
+        {error && <p role="alert">{error}</p>}
+        <button
+          type="submit"
+          disabled={deleting || typedEmail.trim().length === 0}
+        >
+          Delete my account
+        </button>
+      </form>
+    </section>
+  );
 }
 
 export function AccountPage() {
@@ -42,6 +91,7 @@ export function AccountPage() {
         <button type="button" onClick={() => void signOut()}>
           Sign out
         </button>
+        {user.role !== "admin" && <DeleteAccount email={user.email} />}
       </main>
       <Footer />
     </>

@@ -595,6 +595,48 @@ export class GenerationsRepository {
     return rows.map((row) => row.id);
   }
 
+  /** Every one of this user's own unfinished Generation ids, across every Submission (issue #63's account delete: cancel everything still under way before Tombstoning the rest). */
+  async listUnfinishedIdsForUser(userId: string): Promise<string[]> {
+    const rows = await this.db
+      .select({ id: generations.id })
+      .from(generations)
+      .where(
+        and(
+          eq(generations.userId, userId),
+          notInArray(generations.state, ["succeeded", "failed", "cancelled"]),
+        ),
+      );
+    return rows.map((row) => row.id);
+  }
+
+  /**
+   * Turns every one of this user's own ended, not-yet-deleted Generations
+   * into Tombstones (issue #63's account delete): the same Generation-
+   * delete path as issue #57, applied to the whole account at once, not
+   * gated behind "cancel first" since the caller already cancelled
+   * anything still under way.
+   */
+  async deleteAllEndedForUser(
+    userId: string,
+    now: Date,
+  ): Promise<DeletedStorageKeys> {
+    const rows = await this.db
+      .select({ id: generations.id })
+      .from(generations)
+      .where(
+        and(
+          eq(generations.userId, userId),
+          isNull(generations.deletedAt),
+          inArray(generations.state, ["succeeded", "failed", "cancelled"]),
+        ),
+      );
+    if (rows.length === 0) return { assets: [], uploads: [] };
+    return this.finishDelete(
+      rows.map((row) => row.id),
+      now,
+    );
+  }
+
   /** One Generation, enriched like the SSE/submit events (issue #54: so a cancel's own "change" can be published straight away). */
   async getSummary(generationId: string): Promise<GenerationSummary | null> {
     const [row] = await this.db

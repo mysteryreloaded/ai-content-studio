@@ -177,6 +177,9 @@ describe("every route's access level is declared and enforced", () => {
     // — not a different status per role, so it overrides both columns.
     const BOTH_STATUS_OVERRIDES: Record<string, number> = {
       "POST /api/terms/accept": 400,
+      // Issue #63: a bodyless probe sends no email, so the server's
+      // re-check always reads as a mismatch, for every role alike.
+      "DELETE /api/auth/account": 400,
     };
 
     // Unlike ADMIN_STATUS_OVERRIDES, these routes' handler runs for an
@@ -356,7 +359,16 @@ describe("every route's access level is declared and enforced", () => {
       }
 
       if (route.access === "signed-in") {
-        expect(`${context} -> ${res.status}`).toBe(`${context} -> 200`);
+        // Issue #63: a bodyless probe sends no email, so the server's
+        // re-check always reads as a mismatch, unlike every other
+        // signed-in route.
+        const expectedSignedIn =
+          `${route.method} ${route.path}` === "DELETE /api/auth/account"
+            ? 400
+            : 200;
+        expect(`${context} -> ${res.status}`).toBe(
+          `${context} -> ${expectedSignedIn}`,
+        );
         continue;
       }
 

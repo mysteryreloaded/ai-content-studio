@@ -9,7 +9,9 @@ import { createLocalStorage } from "../storage/storage.js";
 import { createTestDatabase } from "../test/database.js";
 import {
   LOGO_STORAGE_KEY,
+  getBlockedWords,
   getSiteSettings,
+  updateSiteBlockedWords,
   updateSitePrivacy,
   updateSiteSettings,
   updateSiteTerms,
@@ -334,6 +336,40 @@ describe("Site settings and Site terms have independent concurrency locks", () =
     const result = await updateSitePrivacy(db, clock, admin, {
       revision: current.privacyRevision - 1,
       body: "stale write",
+    });
+    expect(result).toEqual({ ok: false, reason: "stale" });
+  });
+
+  test("updateSiteBlockedWords saves the list, bumps its revision and writes an Audit entry", async () => {
+    const { db } = await testDb;
+    const current = await getSiteSettings(db);
+
+    const result = await updateSiteBlockedWords(db, clock, admin, {
+      revision: current.blockedWordsRevision,
+      words: ["forbidden", "bad wolf"],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.settings.blockedWords).toEqual(["forbidden", "bad wolf"]);
+    expect(result.settings.blockedWordsRevision).toBe(
+      current.blockedWordsRevision + 1,
+    );
+    expect(await getBlockedWords(db)).toEqual(["forbidden", "bad wolf"]);
+
+    const [entry] = await db
+      .select()
+      .from(auditEntries)
+      .where(eq(auditEntries.action, "update-blocked-words"));
+    expect(entry?.targetType).toBe("site_settings");
+  });
+
+  test("updateSiteBlockedWords rejects a stale revision", async () => {
+    const { db } = await testDb;
+    const current = await getSiteSettings(db);
+
+    const result = await updateSiteBlockedWords(db, clock, admin, {
+      revision: current.blockedWordsRevision - 1,
+      words: ["stale"],
     });
     expect(result).toEqual({ ok: false, reason: "stale" });
   });

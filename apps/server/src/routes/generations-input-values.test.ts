@@ -331,11 +331,14 @@ describe("parseInputValues and POST /:slug/generations agree on every case", () 
 
         if (testCase.valid) {
           expect(res.status).toBe(201);
-          const body = (await res.json()) as { generation: { id: string } };
+          const body = (await res.json()) as {
+            generations: Array<{ id: string }>;
+          };
+          const generationId = body.generations[0]?.id as string;
           const [row] = await db
             .select()
             .from(generations)
-            .where(eq(generations.id, body.generation.id));
+            .where(eq(generations.id, generationId));
           const prompt = row?.builtPrompt as Record<
             string,
             { inputs: Record<string, unknown> }

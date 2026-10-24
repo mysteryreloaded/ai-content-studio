@@ -4,7 +4,10 @@
 // the current Inputs forward (same freezing rule, the other direction).
 
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import type { TextInputDefinition } from "@ai-content-studio/shared";
+import type {
+  SeedInputDefinition,
+  TextInputDefinition,
+} from "@ai-content-studio/shared";
 import { FakeClock } from "@ai-content-studio/shared";
 import type { AuditActor } from "../audit/audit.js";
 import { modelRevisions, models, workflows } from "../db/schema.js";
@@ -49,6 +52,23 @@ function promptInput(
         classType: "CLIPTextEncode",
         title: "Prompt",
       },
+    ],
+    ...overrides,
+  };
+}
+
+function seedInput(
+  overrides: Partial<SeedInputDefinition> = {},
+): SeedInputDefinition {
+  return {
+    id: "22222222-2222-2222-2222-222222222222",
+    kind: "seed",
+    group: "settings",
+    label: "Seed",
+    help: "",
+    max: 1000,
+    bindings: [
+      { nodeId: "2", field: "steps", classType: "KSampler", title: null },
     ],
     ...overrides,
   };
@@ -147,6 +167,98 @@ describe("ModelRepository Inputs", () => {
         SYSTEM,
       ),
     ).rejects.toThrow(ValidationFailed);
+  });
+
+  test("refuses two Seed Inputs (issue #47)", async () => {
+    const repository = await repo();
+    const { record: model } = await repository.createFromWorkflow(
+      "M1",
+      WORKFLOW,
+      SYSTEM,
+    );
+
+    await expect(
+      repository.updateInputs(
+        model.id,
+        [
+          seedInput(),
+          seedInput({
+            id: "33333333-3333-3333-3333-333333333333",
+            label: "Seed 2",
+            bindings: [
+              {
+                nodeId: "1",
+                field: "text",
+                classType: "CLIPTextEncode",
+                title: "Prompt",
+              },
+            ],
+          }),
+        ],
+        model.version,
+        SYSTEM,
+      ),
+    ).rejects.toThrow(ValidationFailed);
+  });
+
+  test("saves a single Seed Input", async () => {
+    const repository = await repo();
+    const { record: model } = await repository.createFromWorkflow(
+      "M1",
+      WORKFLOW,
+      SYSTEM,
+    );
+
+    const { inputs } = await repository.updateInputs(
+      model.id,
+      [seedInput()],
+      model.version,
+      SYSTEM,
+    );
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0]?.kind).toBe("seed");
+  });
+
+  test("refuses a Seed Input with no max while the Model is enabled (ADR 0007)", async () => {
+    const repository = await repo();
+    const { record: model } = await repository.createFromWorkflow(
+      "M1",
+      WORKFLOW,
+      SYSTEM,
+    );
+
+    const enabled = await repository.setState(
+      model.id,
+      "enabled",
+      model.version,
+      SYSTEM,
+    );
+
+    await expect(
+      repository.updateInputs(
+        model.id,
+        [seedInput({ max: null })],
+        enabled.version,
+        SYSTEM,
+      ),
+    ).rejects.toThrow(ValidationFailed);
+  });
+
+  test("allows a Seed Input with no max while the Model is disabled", async () => {
+    const repository = await repo();
+    const { record: model } = await repository.createFromWorkflow(
+      "M1",
+      WORKFLOW,
+      SYSTEM,
+    );
+
+    const { inputs } = await repository.updateInputs(
+      model.id,
+      [seedInput({ max: null })],
+      model.version,
+      SYSTEM,
+    );
+    expect(inputs[0]?.kind).toBe("seed");
   });
 
   test("refuses binding filename_prefix on an output node", async () => {

@@ -98,6 +98,29 @@ export const sitePrivacyFieldsSchema = z.object({
 
 export type SitePrivacyFields = z.infer<typeof sitePrivacyFieldsSchema>;
 
+/** The Notice (issue #59): a short plain-text banner, shown to everyone. */
+export const NOTICE_MAX_LENGTH = 200;
+
+/** Shown during a Pause whenever the Admin's own Notice is blank. */
+export const STANDARD_PAUSE_NOTICE =
+  "Generating is paused for maintenance. Please check back soon.";
+
+export const siteNoticeFieldsSchema = z.object({
+  text: z.string().trim().max(NOTICE_MAX_LENGTH),
+});
+
+export type SiteNoticeFields = z.infer<typeof siteNoticeFieldsSchema>;
+
+/** The text actually shown for the Notice banner: the Admin's own text, or the standard one whenever `paused` and it's blank; `null` means nothing to show. */
+export function effectiveNoticeText(
+  paused: boolean,
+  notice: string,
+): string | null {
+  if (notice.trim() !== "") return notice;
+  if (paused) return STANDARD_PAUSE_NOTICE;
+  return null;
+}
+
 export function maxBytesFor(key: "logo" | "background"): number {
   return key === "logo" ? LOGO_MAX_BYTES : BACKGROUND_MAX_BYTES;
 }

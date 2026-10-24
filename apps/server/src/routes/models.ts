@@ -1,6 +1,7 @@
 import type { InputDefinition, Workflow } from "@ai-content-studio/shared";
 import {
   applyModeFixedValues,
+  STANDARD_PAUSE_NOTICE,
   isNodeLink,
   modeMenuGroup,
   relevantInputs,
@@ -31,6 +32,7 @@ import {
   ModelNotFound,
   ModelTermsRequired,
   NoBackend,
+  Paused,
   type SubmissionDeps,
   SubmissionStorageFull,
   submitGeneration,
@@ -328,6 +330,12 @@ export function modelsRoute(
         );
         return c.json({ generations, prompt }, 201);
       } catch (err) {
+        if (err instanceof Paused) {
+          return c.json(
+            { error: "paused", message: STANDARD_PAUSE_NOTICE },
+            503,
+          );
+        }
         if (err instanceof ModelNotFound) {
           return c.json({ error: "not found" }, 404);
         }

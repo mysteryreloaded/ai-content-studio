@@ -112,7 +112,12 @@ describe("Dispatcher end-to-end against a fake ComfyUI", () => {
     await db.delete(users);
   });
 
-  async function setup(tmpDir: string) {
+  async function setup(
+    tmpDir: string,
+    logWriterOverride?: (real: ReturnType<typeof createLogEntryWriter>) => {
+      log: ReturnType<typeof createLogEntryWriter>["log"];
+    },
+  ) {
     const { db, sql } = await testDb;
     const modelRepository = new ModelRepository(db, systemClock);
     const modelBackendsRepository = new ModelBackendsRepository(
@@ -124,7 +129,10 @@ describe("Dispatcher end-to-end against a fake ComfyUI", () => {
       systemClock,
       SECRET_KEY,
     );
-    const logWriter = createLogEntryWriter(db, systemClock, silentLogger());
+    const realLogWriter = createLogEntryWriter(db, systemClock, silentLogger());
+    const logWriter = logWriterOverride
+      ? logWriterOverride(realLogWriter)
+      : realLogWriter;
     const backendsService = new BackendsService(
       backendRepository,
       systemClock,
@@ -552,6 +560,90 @@ describe("Dispatcher end-to-end against a fake ComfyUI", () => {
         `attachment; filename="m4-mode-1-${generationId.slice(-8)}.png"`,
       );
     } finally {
+      await Bun.$`rm -rf ${tmpDir}`.quiet();
+    }
+  });
+
+  test("a rejecting warning Log write doesn't crash the run (Dule's fix #1)", async () => {
+    const tmpDir = `/tmp/dispatcher-e2e-${randomUUID()}`;
+    const {
+      db,
+      modelRepository,
+      modelBackendsRepository,
+      backendRepository,
+      backendsService,
+      generationsRepository,
+      assetsRepository,
+      dispatcher,
+    } = await setup(tmpDir, (real) => ({
+      // Asset finishing warns because the fake Backend's output isn't
+      // real, decodable media; simulate that warning's own Log insert
+      // failing (DB down) and confirm it's swallowed, not an unhandled
+      // rejection that would kill the process.
+      log: (entry) =>
+        entry.level === "warning"
+          ? Promise.reject(new Error("db down"))
+          : real.log(entry),
+    }));
+
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const user = await insertUser(db, "user5@example.com");
+      const { model, mode, revisionId } = await createModelWithMode(
+        modelRepository,
+        "M5",
+      );
+
+      const backend = await backendRepository.create(
+        { name: "Fake5", baseUrl: fake.url, auth: "none" },
+        SYSTEM,
+      );
+      await modelBackendsRepository.attach(model.id, backend.id, SYSTEM);
+      backendsService.watch(backend);
+      forceReachable(backendsService, backend.id);
+
+      const generationId = randomUUID();
+      const { prompt, nodeTypes } = buildFrozenPrompt(
+        WORKFLOW,
+        ["2"],
+        generationId,
+      );
+      fake.script(generationId, {
+        steps: 2,
+        stepIntervalMs: 5,
+        outputs: {
+          "2": {
+            images: [
+              {
+                filename: "studio_00001_.png",
+                subfolder: "studio",
+                type: "output",
+              },
+            ],
+          },
+        },
+      });
+
+      await generationsRepository.create({
+        id: generationId,
+        modelId: model.id,
+        revisionId,
+        modeId: mode.id,
+        modeName: mode.name,
+        userId: user.id,
+        submissionId: randomUUID(),
+        builtPrompt: prompt,
+        nodeTypes,
+        submittedAt: systemClock.now(),
+      });
+
+      await dispatcher.runUntilIdle();
+
+      const savedAssets =
+        await assetsRepository.listForGeneration(generationId);
+      expect(savedAssets).toHaveLength(1);
+    } finally {
+      fake.stop();
       await Bun.$`rm -rf ${tmpDir}`.quiet();
     }
   });

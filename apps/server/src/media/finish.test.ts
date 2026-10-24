@@ -9,6 +9,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   rm,
   stat,
   writeFile,
@@ -17,6 +18,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { finishAsset } from "./finish.js";
 import { MediaRunner } from "./media.js";
+
+async function listFinishingTempFiles(dir: string): Promise<string[]> {
+  const entries = await readdir(dir);
+  return entries.filter((name) => name.includes(".finishing-"));
+}
 
 const FIXTURES = path.join(import.meta.dir, "fixtures");
 
@@ -74,6 +80,74 @@ describe("finishAsset", () => {
 
       const finishedSize = (await stat(path.join(root, storageKey))).size;
       expect(facts.size).toBe(finishedSize);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("video: a failed poster extraction after a successful remux still reports the remuxed size", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "finish-test-"));
+    try {
+      const storageKey = "assets/gen-1b/2/tiny.mp4";
+      const absPath = path.join(root, storageKey);
+      await mkdir(path.dirname(absPath), { recursive: true });
+      await writeFile(absPath, await readFile(path.join(FIXTURES, "tiny.mp4")));
+      const originalSize = (await stat(absPath)).size;
+
+      const { deps, warnings } = harness(root);
+      const media = deps.media;
+      media.extractPosterFrame = async () => {
+        throw new Error("boom");
+      };
+
+      const facts = await finishAsset(
+        deps,
+        "video",
+        storageKey,
+        "AI-generated with Test on localhost, Generation gen-1b",
+      );
+
+      expect(warnings.length).toBe(1);
+      expect(facts.posterKey).toBeNull();
+      expect(facts.thumbnailKey).toBeNull();
+
+      const actualSize = (await stat(absPath)).size;
+      expect(facts.size).toBe(actualSize);
+      // The remux (-map_metadata -1, no re-encode) changes the file's
+      // size, so a stale pre-remux size would have been wrong here too.
+      expect(actualSize).not.toBe(originalSize);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("video: a failing ffmpeg remux leaves no .finishing- temp file behind", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "finish-test-"));
+    try {
+      const storageKey = "assets/gen-1c/2/tiny.mp4";
+      const absPath = path.join(root, storageKey);
+      const dir = path.dirname(absPath);
+      await mkdir(dir, { recursive: true });
+      await writeFile(absPath, await readFile(path.join(FIXTURES, "tiny.mp4")));
+
+      const { deps, warnings } = harness(root);
+      const media = deps.media;
+      media.finishVideo = async (_input: string, output: string) => {
+        // Simulate a partially-written temp file before ffmpeg fails/times out.
+        await writeFile(output, new Uint8Array([1, 2, 3]));
+        throw new Error("ffmpeg exploded");
+      };
+
+      const facts = await finishAsset(
+        deps,
+        "video",
+        storageKey,
+        "AI-generated with Test on localhost, Generation gen-1c",
+      );
+
+      expect(warnings.length).toBe(1);
+      expect(facts.posterKey).toBeNull();
+      expect(await listFinishingTempFiles(dir)).toEqual([]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

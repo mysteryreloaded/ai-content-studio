@@ -55,6 +55,45 @@ describe("downloadFileName", () => {
     ).toBe("m-mode-66667777-3.png");
   });
 
+  test("tie-breaks same-sortOrder siblings (a batch's outputs) on comfyuiFilename, regardless of input order", () => {
+    const siblings = [
+      { id: "a", sortOrder: 0, comfyuiFilename: "studio_00002_.png" },
+      { id: "b", sortOrder: 0, comfyuiFilename: "studio_00001_.png" },
+      { id: "c", sortOrder: 0, comfyuiFilename: "studio_00003_.png" },
+    ];
+    const reordered = [siblings[2], siblings[0], siblings[1]] as never;
+
+    for (const order of [siblings, reordered]) {
+      expect(
+        downloadFileName(
+          "m",
+          "mode",
+          GENERATION_ID,
+          siblings[1] as never,
+          order,
+        ),
+      ).toBe("m-mode-66667777.png");
+      expect(
+        downloadFileName(
+          "m",
+          "mode",
+          GENERATION_ID,
+          siblings[0] as never,
+          order,
+        ),
+      ).toBe("m-mode-66667777-2.png");
+      expect(
+        downloadFileName(
+          "m",
+          "mode",
+          GENERATION_ID,
+          siblings[2] as never,
+          order,
+        ),
+      ).toBe("m-mode-66667777-3.png");
+    }
+  });
+
   test("a different extension never collides with another kind's name", () => {
     const image = {
       id: "a",

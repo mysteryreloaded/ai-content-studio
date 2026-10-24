@@ -30,7 +30,11 @@ export function downloadFileName(
 
   const sameExt = [...siblings]
     .filter((sibling) => extensionOf(sibling.comfyuiFilename) === ext)
-    .sort((a, b) => a.sortOrder - b.sortOrder);
+    .sort(
+      (a, b) =>
+        a.sortOrder - b.sortOrder ||
+        a.comfyuiFilename.localeCompare(b.comfyuiFilename),
+    );
   const position = sameExt.findIndex(
     (sibling) =>
       sibling.sortOrder === asset.sortOrder &&

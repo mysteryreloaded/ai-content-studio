@@ -6,7 +6,7 @@
 // skips the extra facts rather than failing the Generation; `onWarning`
 // is how the caller surfaces that to a Log entry.
 
-import { mkdir, rename, stat } from "node:fs/promises";
+import { mkdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import type { AssetKind } from "@ai-content-studio/shared";
 import type { MediaRunner } from "./media.js";
@@ -50,6 +50,12 @@ async function finishVideo(
 ): Promise<FinishedAssetFacts> {
   const absPath = deps.absolutePath(storageKey);
   const originalSize = (await stat(absPath)).size;
+  // Tracks the file's real on-disk size as finishing progresses, so a
+  // failure after the remux has replaced the original bytes (e.g. the
+  // poster/thumbnail step) still reports the remuxed size rather than
+  // the pre-remux one — otherwise a saved Content-Length/Range would
+  // disagree with the actual file.
+  let currentSize = originalSize;
 
   try {
     const probe = await deps.media.probeVideo(absPath);
@@ -57,9 +63,14 @@ async function finishVideo(
     // name must keep the original one (e.g. ".mp4"), not just append a
     // random suffix after it.
     const finishedPath = `${absPath.slice(0, -path.extname(absPath).length)}.finishing-${crypto.randomUUID()}${path.extname(absPath)}`;
-    await deps.media.finishVideo(absPath, finishedPath, comment);
+    try {
+      await deps.media.finishVideo(absPath, finishedPath, comment);
+    } catch (err) {
+      await rm(finishedPath, { force: true });
+      throw err;
+    }
     await rename(finishedPath, absPath);
-    const size = (await stat(absPath)).size;
+    currentSize = (await stat(absPath)).size;
 
     const posterKey = `${storageKey}.poster.jpg`;
     const posterPath = deps.absolutePath(posterKey);
@@ -76,7 +87,7 @@ async function finishVideo(
     }
 
     return {
-      size,
+      size: currentSize,
       posterKey,
       thumbnailKey,
       width: probe.width,
@@ -86,7 +97,7 @@ async function finishVideo(
     };
   } catch (err) {
     deps.onWarning(`video finishing failed: ${describeError(err)}`);
-    return emptyFacts(originalSize);
+    return emptyFacts(currentSize);
   }
 }
 

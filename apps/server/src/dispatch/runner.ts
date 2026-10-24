@@ -170,14 +170,16 @@ async function saveAssets(
           absolutePath: (key) => deps.storage.absolutePath(key),
           write: (key, data) => deps.storage.write(key, data),
           onWarning: (message) => {
-            void deps.logWriter.log({
-              level: "warning",
-              source: "app",
-              message: `Asset finishing: ${message}`,
-              userId: detail.userId,
-              modelId: detail.modelId,
-              generationId: detail.id,
-            });
+            void deps.logWriter
+              .log({
+                level: "warning",
+                source: "app",
+                message: `Asset finishing: ${message}`,
+                userId: detail.userId,
+                modelId: detail.modelId,
+                generationId: detail.id,
+              })
+              .catch(() => {});
           },
         },
         kind,

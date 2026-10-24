@@ -128,6 +128,12 @@ export class AssetsRepository {
       .select()
       .from(assets)
       .where(and(eq(assets.generationId, generationId)));
-    return rows.map(toRecord).sort((a, b) => a.sortOrder - b.sortOrder);
+    return rows
+      .map(toRecord)
+      .sort(
+        (a, b) =>
+          a.sortOrder - b.sortOrder ||
+          a.comfyuiFilename.localeCompare(b.comfyuiFilename),
+      );
   }
 }

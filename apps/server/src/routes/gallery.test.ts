@@ -319,6 +319,78 @@ describe("/api/gallery", () => {
     }
   });
 
+  test("a Submission with mixed-state Generations comes back whole under either state it holds", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const { app, backendsService } = await build();
+      const { db } = await testDb;
+      const { headers: adminHeaders } = await headersFor("admin");
+      const modelA = await buildEnabledModel(
+        app,
+        adminHeaders,
+        fake.url,
+        "Model A",
+      );
+
+      const { headers: userHeaders } = await headersFor("user");
+      const submissionId = await submit(
+        app,
+        userHeaders,
+        modelA.slug,
+        modelA.modeId,
+      );
+      const [first] = await db
+        .select()
+        .from(generations)
+        .where(eq(generations.submissionId, submissionId));
+      if (!first) throw new Error("submit created no Generation row");
+
+      // A second variant of the same Submission, already succeeded,
+      // while the first stays queued (ADR 0007: variants share a
+      // submission_id and submitted_at).
+      await db.insert(generations).values({
+        id: crypto.randomUUID(),
+        modelId: first.modelId,
+        revisionId: first.revisionId,
+        modeId: first.modeId,
+        userId: first.userId,
+        submissionId: first.submissionId,
+        state: "succeeded",
+        builtPrompt: first.builtPrompt,
+        nodeTypes: first.nodeTypes,
+        submittedAt: first.submittedAt,
+      });
+
+      for (const state of ["underway", "finished"]) {
+        const res = await app.request(`/api/gallery?state=${state}`, {
+          headers: userHeaders,
+        });
+        const body = (await res.json()) as {
+          submissions: Array<{
+            submissionId: string;
+            generations: Array<{ state: string }>;
+          }>;
+        };
+        expect(body.submissions.map((s) => s.submissionId)).toEqual([
+          submissionId,
+        ]);
+        expect(
+          body.submissions[0]?.generations.map((g) => g.state).sort(),
+        ).toEqual(["queued", "succeeded"]);
+      }
+
+      const failed = await app.request("/api/gallery?state=failed", {
+        headers: userHeaders,
+      });
+      const failedBody = (await failed.json()) as { submissions: unknown[] };
+      expect(failedBody.submissions).toEqual([]);
+
+      backendsService.stop();
+    } finally {
+      fake.stop();
+    }
+  });
+
   test("filters by state bucket: queued Submissions are under way, not finished or failed", async () => {
     const fake = startFakeComfyUi({ port: 0 });
     try {

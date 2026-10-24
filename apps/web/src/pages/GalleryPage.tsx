@@ -19,19 +19,26 @@ const STATE_BUCKETS: Record<Exclude<StateFilter, "all">, GenerationState[]> = {
   failed: ["failed"],
 };
 
-function matchesStateFilter(
-  state: GenerationState,
-  filter: StateFilter,
-): boolean {
-  return filter === "all" || STATE_BUCKETS[filter].includes(state);
-}
-
 const STATE_LABELS: Record<StateFilter, string> = {
   all: "All",
   underway: "Under way",
   finished: "Finished",
   failed: "Failed or cancelled",
 };
+
+/** An unrecognised `?state=` (a stale link, a typo) reads as "all" rather than throwing later when a bucket lookup misses. */
+function toStateFilter(value: string | null): StateFilter {
+  return value !== null && value in STATE_LABELS
+    ? (value as StateFilter)
+    : "all";
+}
+
+function matchesStateFilter(
+  state: GenerationState,
+  filter: StateFilter,
+): boolean {
+  return filter === "all" || STATE_BUCKETS[filter].includes(state);
+}
 
 interface AssetSummary {
   id: string;
@@ -157,7 +164,7 @@ const MONTHS = [
 ];
 
 /** The day header label, in the browser's own time zone (issue #56): Today, Yesterday, or "Wednesday 21 October", the year appended when it isn't the current one. */
-function dayLabel(date: Date, now: Date): string {
+export function dayLabel(date: Date, now: Date): string {
   const atMidnight = (d: Date) =>
     new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
   const diffDays = Math.round(
@@ -217,6 +224,39 @@ function SubmissionBlock({ submission }: { submission: GallerySubmission }) {
   );
 }
 
+/** Whether `a` sorts no later than `b` in the Gallery's own (submittedAt desc, submissionId desc) order — i.e. `a` is newer, or equally new with a "greater" id. */
+function sortsNoLaterThan(
+  a: { submittedAt: string; submissionId: string },
+  b: { submittedAt: string; submissionId: string },
+): boolean {
+  if (a.submittedAt !== b.submittedAt) return a.submittedAt > b.submittedAt;
+  return a.submissionId >= b.submissionId;
+}
+
+/**
+ * Inserts a newly-seen Submission at its (submittedAt, id) position
+ * rather than always on top (QA round 1): an SSE event can arrive for an
+ * older Submission (one that just failed, or just moved into a state
+ * filter's bucket). When `hasMore` is true and it sorts at or after the
+ * last loaded page's end, its real position is in a page this tab
+ * hasn't fetched yet, so it's dropped instead of risking a wrong
+ * position or a duplicate once "Load more" reaches it.
+ */
+function insertSubmission(
+  current: GallerySubmission[],
+  submission: GallerySubmission,
+  hasMore: boolean,
+): GallerySubmission[] {
+  const last = current[current.length - 1];
+  if (hasMore && last && sortsNoLaterThan(last, submission)) return current;
+
+  const index = current.findIndex(
+    (existing) => !sortsNoLaterThan(existing, submission),
+  );
+  if (index === -1) return [...current, submission];
+  return [...current.slice(0, index), submission, ...current.slice(index)];
+}
+
 function queryFor(
   modelId: string | null,
   state: StateFilter,
@@ -238,8 +278,7 @@ export function GalleryPage() {
   const { session } = useSession();
   const [searchParams, setSearchParams] = useSearchParams();
   const modelFilter = searchParams.get("model");
-  const stateFilter =
-    (searchParams.get("state") as StateFilter | null) ?? "all";
+  const stateFilter = toStateFilter(searchParams.get("state"));
 
   const [models, setModels] = useState<GalleryModelOption[] | null>(null);
   const [submissions, setSubmissions] = useState<GallerySubmission[] | null>(
@@ -285,10 +324,21 @@ export function GalleryPage() {
     };
   }, [modelFilter, stateFilter]);
 
+  // Tracked in a ref (not just the closure's captured values) so an
+  // in-flight request can tell, once it resolves, whether the filters it
+  // was sent for are still the active ones (QA round 1: a filter change
+  // mid-request must drop that page rather than append it under the new
+  // filters).
+  const filtersRef = useRef({ modelFilter, stateFilter });
+  filtersRef.current = { modelFilter, stateFilter };
+  const hasMoreRef = useRef(hasMore);
+  hasMoreRef.current = hasMore;
+
   const handleLoadMore = useCallback(async () => {
     const current = submissions;
     const last = current?.[current.length - 1];
     if (!last) return;
+    const requestFilters = { modelFilter, stateFilter };
     setLoadingMore(true);
     try {
       const res = await fetch(
@@ -302,7 +352,19 @@ export function GalleryPage() {
         submissions: GallerySubmission[];
         hasMore: boolean;
       };
-      setSubmissions((prev) => [...(prev ?? []), ...body.submissions]);
+      if (
+        filtersRef.current.modelFilter !== requestFilters.modelFilter ||
+        filtersRef.current.stateFilter !== requestFilters.stateFilter
+      ) {
+        // The filters changed while this page was in flight; the effect
+        // above already started a fresh load under the new ones.
+        return;
+      }
+      setSubmissions((prev) => {
+        const seen = new Set((prev ?? []).map((s) => s.submissionId));
+        const fresh = body.submissions.filter((s) => !seen.has(s.submissionId));
+        return [...(prev ?? []), ...fresh];
+      });
       setHasMore(body.hasMore);
     } catch {
       setLoadError("Could not load more.");
@@ -310,12 +372,6 @@ export function GalleryPage() {
       setLoadingMore(false);
     }
   }, [submissions, modelFilter, stateFilter]);
-
-  // Live via SSE (issue #56): a new Submission from any tab appears on
-  // top once it matches the current filters; an existing one keeps
-  // showing (and updates) regardless, per the AC.
-  const filtersRef = useRef({ modelFilter, stateFilter });
-  filtersRef.current = { modelFilter, stateFilter };
 
   useEffect(() => {
     const source = new EventSource("/api/generations/stream");
@@ -364,7 +420,7 @@ export function GalleryPage() {
           submittedAt: generation.submittedAt,
           generations: [generation],
         };
-        return [newSubmission, ...current];
+        return insertSubmission(current, newSubmission, hasMoreRef.current);
       });
     });
 
@@ -455,7 +511,10 @@ export function GalleryPage() {
         )}
 
         {groups.map((group) => (
-          <div key={group.label} className="gallery-day">
+          <div
+            key={group.submissions[0]?.submissionId ?? group.label}
+            className="gallery-day"
+          >
             <h2>{group.label}</h2>
             {group.submissions.map((submission) => (
               <SubmissionBlock

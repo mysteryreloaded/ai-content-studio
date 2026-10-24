@@ -403,7 +403,17 @@ describe("Dispatcher end-to-end against a fake ComfyUI", () => {
         );
       const generation = summaries[0]?.generations[0];
       expect(generation?.state).toBe("failed");
-      expect(generation?.error).toContain("boom");
+      expect(generation?.error).toBe(
+        "the GPU server reported an error while running this",
+      );
+
+      // ComfyUI's own raw error goes into the Log entry, not the card
+      // (issue #55's AC).
+      const [logEntry] = await db
+        .select()
+        .from(logEntries)
+        .where(eq(logEntries.generationId, generationId));
+      expect(logEntry?.details).toBe("boom");
     } finally {
       fake.stop();
       await Bun.$`rm -rf ${tmpDir}`.quiet();
@@ -961,7 +971,21 @@ describe("Dispatcher end-to-end against a fake ComfyUI", () => {
 
         const secondGenerationId = randomUUID();
         const second = buildFrozenPrompt(WORKFLOW, ["2"], secondGenerationId);
-        fake.script(secondGenerationId, { steps: 1, stepIntervalMs: 5 });
+        fake.script(secondGenerationId, {
+          steps: 1,
+          stepIntervalMs: 5,
+          outputs: {
+            "2": {
+              images: [
+                {
+                  filename: "studio_00001_.png",
+                  subfolder: "studio",
+                  type: "output",
+                },
+              ],
+            },
+          },
+        });
         await generationsRepository.create({
           id: secondGenerationId,
           modelId: model.id,

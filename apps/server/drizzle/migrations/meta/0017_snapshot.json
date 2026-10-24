@@ -1,5 +1,5 @@
 {
-  "id": "751a7c63-39df-4842-b33f-d5dde55b72c7",
+  "id": "41653902-b6a1-4f59-a07e-c1144fd7d422",
   "prevId": "6108b265-5ea4-49e3-8a85-1d934bfa4d14",
   "version": "7",
   "dialect": "postgresql",
@@ -302,6 +302,13 @@
           "notNull": true,
           "default": true
         },
+        "draining": {
+          "name": "draining",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
         "version": {
           "name": "version",
           "type": "integer",
@@ -421,24 +428,30 @@
           "primaryKey": false,
           "notNull": true
         },
+        "tries": {
+          "name": "tries",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
         "error": {
           "name": "error",
           "type": "text",
           "primaryKey": false,
           "notNull": false
         },
-        "pending_backend_cancel": {
-          "name": "pending_backend_cancel",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
         "started_at": {
           "name": "started_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
+        },
+        "queued_at": {
+          "name": "queued_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
         },
         "submitted_at": {
           "name": "submitted_at",
@@ -526,7 +539,7 @@
             }
           ],
           "isUnique": true,
-          "where": "\"generations\".\"state\" in ('starting', 'running', 'cancelling') and \"generations\".\"backend_id\" is not null",
+          "where": "\"generations\".\"state\" in ('starting', 'running') and \"generations\".\"backend_id\" is not null",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -1560,9 +1573,7 @@
         "running",
         "saving",
         "succeeded",
-        "failed",
-        "cancelling",
-        "cancelled"
+        "failed"
       ]
     },
     "public.log_level": {

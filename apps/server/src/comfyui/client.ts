@@ -1,7 +1,9 @@
 // Talks to a Backend's ComfyUI-compatible HTTP API (issue #44): submits
 // with a studio-chosen prompt id, reads a job's status from `/api/jobs/
-// :id`, and streams a saved file from `/view`. The fake ComfyUI
-// (apps/fake-comfyui) implements the same three endpoints, scripted.
+// :id`, and streams a saved file from `/view`. Issue #55 adds `/interrupt`
+// (a timeout's own best-effort cancel) and issue #54 adds
+// `/api/jobs/:id/cancel` (the user's own, which throws on failure). The
+// fake ComfyUI (apps/fake-comfyui) implements the same endpoints, scripted.
 
 import type { Workflow } from "@ai-content-studio/shared";
 import type { ComfyUiTarget } from "../backends/client.js";
@@ -12,13 +14,44 @@ function join(baseUrl: string, pathAndQuery: string): string {
   return `${baseUrl.replace(/\/+$/, "")}${pathAndQuery}`;
 }
 
+/** A node id's own validation errors, as real ComfyUI and the fake both shape them: at least one entry's `type` names the kind of problem. */
+export type NodeError = { type: string; message: string } | string[];
+
+/** A rejection that isn't a missing node, `execution_error`, 413 or a reachability problem — failed without retry (issue #55's AC). */
 export class PromptRejected extends Error {
   constructor(
     message: string,
-    public readonly nodeErrors: Record<string, unknown> | null,
+    public readonly nodeErrors: Record<string, NodeError> | null,
   ) {
     super(message);
   }
+}
+
+/**
+ * Unreachable while starting (issue #55's AC): the fetch itself failed
+ * (network error, timed out) or the Backend answered with a 5xx — a
+ * lost try, retried on any Backend, as opposed to a `PromptRejected`
+ * (a real rejection of this prompt, never retried).
+ */
+export class BackendUnreachable extends Error {}
+
+/** The Backend rejected the prompt as too large (413) — failed without retry (issue #55's AC). */
+export class PayloadTooLarge extends Error {
+  constructor() {
+    super("the Backend rejected this as too large");
+  }
+}
+
+/** Whether `nodeErrors` names a node type the Backend doesn't know (issue #55's AC: a lost try that also refetches node lists), vs. some other rejection. */
+export function isMissingNodeError(
+  nodeErrors: Record<string, NodeError> | null,
+): boolean {
+  if (!nodeErrors) return false;
+  return Object.values(nodeErrors).some((entry) =>
+    Array.isArray(entry)
+      ? entry.some((message) => message.includes("unknown node type"))
+      : entry.type === "missing_node",
+  );
 }
 
 /** Submits `prompt` under `promptId`, the studio's own id (not ComfyUI-generated), so the run can be tracked without a round trip. */
@@ -27,23 +60,80 @@ export async function submitPrompt(
   promptId: string,
   prompt: Workflow,
 ): Promise<void> {
-  const res = await fetch(join(target.baseUrl, "/prompt"), {
-    method: "POST",
-    headers: { "content-type": "application/json", ...target.headers },
-    body: JSON.stringify({ prompt, prompt_id: promptId, client_id: promptId }),
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-  });
+  let res: Response;
+  try {
+    res = await fetch(join(target.baseUrl, "/prompt"), {
+      method: "POST",
+      headers: { "content-type": "application/json", ...target.headers },
+      body: JSON.stringify({
+        prompt,
+        prompt_id: promptId,
+        client_id: promptId,
+      }),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+  } catch (err) {
+    throw new BackendUnreachable(
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+  if (res.status === 413) throw new PayloadTooLarge();
+  if (res.status >= 500) {
+    throw new BackendUnreachable(`/prompt returned ${res.status}`);
+  }
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new PromptRejected(
       `/prompt returned ${res.status}`,
-      (body as { node_errors?: Record<string, unknown> } | null)?.node_errors ??
-        null,
+      (body as { node_errors?: Record<string, NodeError> } | null)
+        ?.node_errors ?? null,
     );
   }
 }
 
-/** `"cancelled"` only ever appears after this studio's own cancel call (issue #54): ComfyUI itself never produces it on its own. */
+/** Interrupts whatever `promptId` is running on this Backend (issue #55's AC: a max-run-time timeout cancels on ComfyUI before failing). Best-effort: a Backend too unreachable to cancel is about to be failed anyway. */
+export async function interruptJob(
+  target: ComfyUiTarget,
+  promptId: string,
+): Promise<void> {
+  try {
+    await fetch(join(target.baseUrl, "/interrupt"), {
+      method: "POST",
+      headers: { "content-type": "application/json", ...target.headers },
+      body: JSON.stringify({ prompt_id: promptId }),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+  } catch {
+    /* best-effort: the Generation fails either way */
+  }
+}
+
+/**
+ * Cancels a starting/running job on the user's own request (issue #54's
+ * AC): distinct from {@link interruptJob} (a timeout's own best-effort,
+ * fire-and-forget interrupt) in that this one throws on failure, so the
+ * caller can tell an unreachable Backend from a confirmed cancel. A 404
+ * ("the job's gone") counts as cancelled too, not an error: a Backend
+ * that's already dropped the job needs no further interrupt.
+ */
+export async function cancelJob(
+  target: ComfyUiTarget,
+  promptId: string,
+): Promise<void> {
+  const res = await fetch(
+    join(target.baseUrl, `/api/jobs/${promptId}/cancel`),
+    {
+      method: "POST",
+      headers: target.headers,
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    },
+  );
+  if (!res.ok && res.status !== 404) {
+    throw new Error(`/api/jobs/${promptId}/cancel returned ${res.status}`);
+  }
+}
+
+/** `"cancelled"` only ever appears after this studio's own {@link cancelJob} call (issue #54): ComfyUI itself never produces it on its own. */
 export type JobStatus = "running" | "completed" | "failed" | "cancelled";
 
 export interface JobFile {
@@ -80,28 +170,6 @@ export async function readJob(
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`/api/jobs/${promptId} returned ${res.status}`);
   return (await res.json()) as Job;
-}
-
-/**
- * Interrupts a starting/running job (issue #54's AC). A 404 ("the job's
- * gone") counts as cancelled too, not an error: a Backend that's already
- * dropped the job needs no further interrupt.
- */
-export async function cancelJob(
-  target: ComfyUiTarget,
-  promptId: string,
-): Promise<void> {
-  const res = await fetch(
-    join(target.baseUrl, `/api/jobs/${promptId}/cancel`),
-    {
-      method: "POST",
-      headers: target.headers,
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    },
-  );
-  if (!res.ok && res.status !== 404) {
-    throw new Error(`/api/jobs/${promptId}/cancel returned ${res.status}`);
-  }
 }
 
 /** Fetches one output file's bytes from `/view`, as a streamable `Response` (issue #44: saved straight to a temp file). */

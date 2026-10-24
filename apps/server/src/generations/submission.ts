@@ -2,8 +2,14 @@
 // the Model is enabled, the caller's revision is current, and a usable
 // Backend exists for the Mode, then freezes the built prompt.
 
-import { buildFrozenPrompt, computeModePath } from "@ai-content-studio/shared";
+import {
+  buildPrompt,
+  computeModePath,
+  parseInputValues,
+  relevantInputs,
+} from "@ai-content-studio/shared";
 import type { Clock } from "@ai-content-studio/shared";
+import type { z } from "zod";
 import type { BackendsService } from "../backends/service.js";
 import type { ModelBackendsRepository } from "../models/model-backends.js";
 import {
@@ -52,12 +58,21 @@ export class NoBackend extends Error {
   }
 }
 
+/** The submitted Input values failed `parseInputValues` (400 `invalid`, issue #46). */
+export class InvalidInputValues extends Error {
+  constructor(public readonly zodError: z.ZodError) {
+    super("invalid");
+  }
+}
+
 export interface SubmitGenerationParams {
   slug: string;
   modeId: string;
   /** The Model revision the caller's form was built from (issue #43: staleness check). */
   revision: number;
   userId: string;
+  /** Raw submitted Input values, keyed by Input id (issue #46). */
+  values: Record<string, unknown>;
 }
 
 export interface SubmissionDeps {
@@ -123,9 +138,20 @@ export async function submitGeneration(
   const usable = await hasUsableBackend(detail, outputNodeIds, deps);
   if (!usable) throw new NoBackend();
 
-  const generationId = crypto.randomUUID();
-  const { prompt, nodeTypes } = buildFrozenPrompt(
+  const relevant = relevantInputs(
+    detail.inputs,
     detail.workflow,
+    outputNodeIds,
+  );
+  const schema = parseInputValues(detail.revisionId, mode.id, relevant);
+  const parsedValues = schema.safeParse(params.values);
+  if (!parsedValues.success) throw new InvalidInputValues(parsedValues.error);
+
+  const generationId = crypto.randomUUID();
+  const { prompt, nodeTypes } = buildPrompt(
+    detail.workflow,
+    relevant,
+    parsedValues.data as Record<string, string | number | undefined>,
     outputNodeIds,
     generationId,
   );

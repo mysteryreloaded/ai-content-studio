@@ -2,6 +2,10 @@
 // soft-delete and History (issue #40).
 
 import { modelTermsFieldsSchema } from "@ai-content-studio/shared";
+import type {
+  ComfyFieldSpec,
+  InputDefinition,
+} from "@ai-content-studio/shared";
 import { and, desc, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import type { Context } from "hono";
@@ -54,8 +58,61 @@ const modesSchema = z.object({
   ),
 });
 
+const bindingSchema = z.object({
+  nodeId: z.string(),
+  field: z.string(),
+  classType: z.string(),
+  title: z.string().nullable(),
+});
+
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const inputBaseSchema = {
+  id: z.string().regex(UUID_RE, "id must be a UUID"),
+  group: z.enum(["describe", "settings"]),
+  label: z.string(),
+  help: z.string(),
+  bindings: z.array(bindingSchema),
+};
+
+const inputDefinitionSchema = z.discriminatedUnion("kind", [
+  z.object({
+    ...inputBaseSchema,
+    kind: z.literal("text"),
+    multiline: z.boolean(),
+    maxLength: z.number(),
+    default: z.string(),
+  }),
+  z.object({
+    ...inputBaseSchema,
+    kind: z.literal("number"),
+    numberMode: z.enum(["integer", "decimal"]),
+    min: z.number(),
+    max: z.number(),
+    step: z.number(),
+    default: z.number().nullable(),
+  }),
+  z.object({
+    ...inputBaseSchema,
+    kind: z.literal("select"),
+    options: z.array(
+      z.object({
+        id: z.string().regex(UUID_RE, "option id must be a UUID"),
+        label: z.string(),
+        values: z.array(
+          z.union([z.string(), z.number(), z.boolean(), z.null()]),
+        ),
+      }),
+    ),
+    default: z.string().nullable(),
+  }),
+]);
+
+const inputsSchema = z.object({
+  version: z.number().int().min(1),
+  inputs: z.array(inputDefinitionSchema),
+});
 
 function idParam(c: Context<AppEnv>): string {
   const id = c.req.param("id");
@@ -359,6 +416,57 @@ export function adminModelsRoute(
           parsed.data.modes as ModeInput[],
           parsed.data.version,
           adminActorFrom(c),
+        );
+        return c.json(result);
+      } catch (err) {
+        return handleError(c, err);
+      }
+    },
+  );
+
+  guardedRoute(
+    app,
+    routes,
+    basePath,
+    "put",
+    "/:id/inputs",
+    "admin",
+    async (c) => {
+      const id = idParam(c);
+      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+
+      const body = await readJsonBody(c);
+      if (body === null) return c.json({ error: "invalid JSON body" }, 400);
+
+      const parsed = inputsSchema.safeParse(body);
+      if (!parsed.success)
+        return c.json(
+          { error: "invalid input", issues: parsed.error.issues },
+          400,
+        );
+
+      try {
+        const attached = await modelBackends.listForModel(id);
+        const specsByBackend = await Promise.all(
+          attached.map((backend) => backendsService.fieldSpecsFor(backend)),
+        );
+        const fieldSpecs = new Map<string, Record<string, ComfyFieldSpec>>();
+        for (const specs of specsByBackend) {
+          if (!specs) continue;
+          for (const [classType, fields] of specs) {
+            fieldSpecs.set(classType, {
+              ...fieldSpecs.get(classType),
+              ...fields,
+            });
+          }
+        }
+
+        const result = await repository.updateInputs(
+          id,
+          parsed.data.inputs as InputDefinition[],
+          parsed.data.version,
+          adminActorFrom(c),
+          fieldSpecs,
         );
         return c.json(result);
       } catch (err) {

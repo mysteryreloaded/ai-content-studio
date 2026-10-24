@@ -16,6 +16,8 @@ import { getSiteSettings } from "./branding/site-settings-store.js";
 import type { Database } from "./db/client.js";
 import type { Env } from "./env.js";
 import { logUnhandledError } from "./error-logging.js";
+import { GenerationEvents } from "./generations/events.js";
+import { GenerationsRepository } from "./generations/repository.js";
 import type { Logger } from "./logger.js";
 import { ModelBackendsRepository } from "./models/model-backends.js";
 import { ModelRepository } from "./models/repository.js";
@@ -30,6 +32,7 @@ import { adminSiteSettingsRoute } from "./routes/admin-site-settings.js";
 import { adminUsersRoute } from "./routes/admin-users.js";
 import { adminRoute } from "./routes/admin.js";
 import { authRoute } from "./routes/auth.js";
+import { generationsRoute } from "./routes/generations.js";
 import { healthRoute } from "./routes/health.js";
 import { modelsRoute } from "./routes/models.js";
 import { siteSettingsRoute } from "./routes/site-settings.js";
@@ -133,7 +136,33 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
     deps.db,
     deps.clock,
   );
-  app.route("/api/models", modelsRoute(modelRepository, routes));
+  const generationsRepository = new GenerationsRepository(deps.db);
+  const generationEvents = new GenerationEvents();
+  app.route(
+    "/api/models",
+    modelsRoute(
+      modelRepository,
+      generationsRepository,
+      {
+        modelRepository,
+        modelBackendsRepository,
+        backendsService,
+        generationsRepository,
+        generationEvents,
+        clock: deps.clock,
+      },
+      routes,
+    ),
+  );
+  app.route(
+    "/api/generations",
+    generationsRoute(
+      generationsRepository,
+      generationEvents,
+      deps.clock,
+      routes,
+    ),
+  );
   app.route("/api/admin", adminRoute(routes));
   app.route(
     "/api/admin/site-settings",
@@ -146,6 +175,7 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
       deps.clock,
       backendRepository,
       backendsService,
+      generationsRepository,
       routes,
     ),
   );
@@ -158,6 +188,7 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
       modelRepository,
       modelBackendsRepository,
       backendsService,
+      generationsRepository,
       routes,
     ),
   );

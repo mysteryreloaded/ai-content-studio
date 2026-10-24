@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Navigate } from "react-router-dom";
+import { Link, Navigate } from "react-router-dom";
 import { useSession } from "../useSession.js";
 
 interface EnabledModel {
@@ -39,9 +39,9 @@ export function ModelsHome() {
       {models && models.length > 0 && (
         <nav aria-label="Models">
           {models.map((model) => (
-            <a key={model.id} href={`#${model.slug}`}>
+            <Link key={model.id} to={`/models/${model.slug}`}>
               {model.name}
-            </a>
+            </Link>
           ))}
         </nav>
       )}
@@ -51,8 +51,10 @@ export function ModelsHome() {
       {models && models.length === 0 && <p>No Models yet.</p>}
 
       {models?.map((model) => (
-        <article key={model.id} id={model.slug}>
-          <h2>{model.name}</h2>
+        <article key={model.id}>
+          <h2>
+            <Link to={`/models/${model.slug}`}>{model.name}</Link>
+          </h2>
           {model.description && <p>{model.description}</p>}
           <p>
             {model.modeCount} {model.modeCount === 1 ? "Mode" : "Modes"}

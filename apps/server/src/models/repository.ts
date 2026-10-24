@@ -85,6 +85,8 @@ export interface ModeInput {
 
 export interface ModelDetail {
   model: ModelRecord;
+  /** The current revision's own id (issue #43: a Generation freezes this). */
+  revisionId: string;
   workflowHash: string;
   workflow: Workflow;
   nodes: Array<{ id: string; classType: string; title: string | null }>;
@@ -428,7 +430,20 @@ export class ModelRepository {
       .from(models)
       .where(and(eq(models.id, id), isNull(models.deletedAt)));
     if (!row) return null;
+    return this.detailFor(row);
+  }
 
+  /** Looked up by slug (issue #43: the Workbench's URL). */
+  async getBySlug(slug: string): Promise<ModelDetail | null> {
+    const [row] = await this.db
+      .select()
+      .from(models)
+      .where(and(eq(models.slug, slug), isNull(models.deletedAt)));
+    if (!row) return null;
+    return this.detailFor(row);
+  }
+
+  private async detailFor(row: ModelRow): Promise<ModelDetail> {
     const [revision] = await this.db
       .select()
       .from(modelRevisions)
@@ -449,6 +464,7 @@ export class ModelRepository {
     const workflow = workflowRow.json as Workflow;
     return {
       model: toRecord(row),
+      revisionId: revision.id,
       workflowHash: revision.workflowHash,
       workflow,
       nodes: nodesFrom(workflow),

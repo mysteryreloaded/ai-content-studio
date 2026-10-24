@@ -161,6 +161,17 @@ describe("every route's access level is declared and enforced", () => {
       "POST /api/terms/accept": 400,
     };
 
+    // Unlike ADMIN_STATUS_OVERRIDES, these routes' handler runs for an
+    // active user too (not just an Admin), so both columns move off
+    // `expected.*`. Unlike BOTH_STATUS_OVERRIDES, a pending user must
+    // still be blocked by the `active` guard before reaching the
+    // handler, so pending stays untouched (403).
+    const ACTIVE_AND_ADMIN_STATUS_OVERRIDES: Record<string, number> = {
+      "GET /api/models/:slug": 404,
+      "GET /api/models/:slug/generations": 404,
+      "POST /api/models/:slug/generations": 400,
+    };
+
     // A pending user has a session but no approval yet: `signed-in`
     // stays reachable (so they can accept the Site terms), `active`/
     // `admin` stay blocked exactly like a disabled user.
@@ -200,7 +211,9 @@ describe("every route's access level is declared and enforced", () => {
         });
         const routeKey = `${route.method} ${route.path}`;
         const expectedActive =
-          BOTH_STATUS_OVERRIDES[routeKey] ?? expected.active;
+          BOTH_STATUS_OVERRIDES[routeKey] ??
+          ACTIVE_AND_ADMIN_STATUS_OVERRIDES[routeKey] ??
+          expected.active;
         expect(`${context} active -> ${activeRes.status}`).toBe(
           `${context} active -> ${expectedActive}`,
         );
@@ -214,6 +227,7 @@ describe("every route's access level is declared and enforced", () => {
         });
         const expectedAdmin =
           BOTH_STATUS_OVERRIDES[routeKey] ??
+          ACTIVE_AND_ADMIN_STATUS_OVERRIDES[routeKey] ??
           ADMIN_STATUS_OVERRIDES[routeKey] ??
           expected.admin;
         expect(`${context} admin -> ${adminRes.status}`).toBe(

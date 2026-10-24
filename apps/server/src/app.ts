@@ -26,6 +26,7 @@ import { AssetsRepository } from "./generations/assets-repository.js";
 import { GenerationEvents } from "./generations/events.js";
 import { GenerationsRepository } from "./generations/repository.js";
 import type { Logger } from "./logger.js";
+import { loadC2paSignerConfig } from "./media/c2pa.js";
 import { MediaRunner } from "./media/media.js";
 import { ModelBackendsRepository } from "./models/model-backends.js";
 import { ModelRepository } from "./models/repository.js";
@@ -164,6 +165,14 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
   const assetsRepository = new AssetsRepository(deps.db);
   const dispatchQueue = new DispatchQueue(deps.db);
   const media = new MediaRunner(deps.env.FFMPEG_CONCURRENCY);
+  const c2pa =
+    deps.env.C2PA_CERT_PATH && deps.env.C2PA_KEY_PATH
+      ? loadC2paSignerConfig(
+          deps.env.C2PA_CERT_PATH,
+          deps.env.C2PA_KEY_PATH,
+          deps.env.C2PA_TIMESTAMP_URL,
+        )
+      : null;
   const dispatcher = new Dispatcher({
     sql: deps.sql,
     clock: deps.clock,
@@ -178,6 +187,8 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
     generationEvents,
     media,
     siteName: new URL(deps.env.PUBLIC_URL).hostname,
+    c2pa,
+    getSiteTitle: async () => (await getSiteSettings(deps.db)).title,
   });
   wakeDispatcher = dispatcher.wake;
 

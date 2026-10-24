@@ -38,6 +38,15 @@ jobs:
       - name: Install ffmpeg (Asset finishing, issue #45)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
 
+      # Pinned to the same version/checksum as the Dockerfile's `c2patool` stage.
+      - name: Install c2patool (C2PA signing, issue #75)
+        run: |
+          curl -fsSL -o /tmp/c2patool.tar.gz \
+            "https://github.com/contentauth/c2pa-rs/releases/download/c2patool-v0.27.22/c2patool-v0.27.22-x86_64-unknown-linux-gnu.tar.gz"
+          echo "6f138ad53da1a62f1cd6ee71c60727efa27d13b811f4c0ea8c2a8528968b358b  /tmp/c2patool.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/c2patool.tar.gz -C /tmp
+          sudo install -m 0755 /tmp/c2patool/c2patool /usr/local/bin/c2patool
+
       - name: Install dependencies (frozen)
         run: bun install --frozen-lockfile
 

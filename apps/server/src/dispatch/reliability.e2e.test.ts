@@ -118,6 +118,8 @@ describe("Reliable dispatch (issue #55)", () => {
       savingBackoffBaseMs: 20,
       media: new MediaRunner(2),
       siteName: "localhost",
+      c2pa: null,
+      getSiteTitle: async () => "localhost",
       ...overrides,
     });
 
@@ -814,6 +816,8 @@ describe("Reliable dispatch (issue #55)", () => {
         onFreed: () => {},
         media: new MediaRunner(2),
         siteName: "localhost",
+        c2pa: null,
+        getSiteTitle: async () => "localhost",
       });
 
       const savedAssets =
@@ -904,6 +908,8 @@ describe("Reliable dispatch (issue #55)", () => {
         onFreed: () => {},
         media: new MediaRunner(2),
         siteName: "localhost",
+        c2pa: null,
+        getSiteTitle: async () => "localhost",
       });
 
       const summaries =

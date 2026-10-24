@@ -2,10 +2,10 @@
 // This ticket only ever inserts `queued` rows; a later issue's
 // dispatcher moves them on.
 
-import type { Workflow } from "@ai-content-studio/shared";
+import type { InputDefinition, Workflow } from "@ai-content-studio/shared";
 import { and, desc, eq, inArray, notInArray } from "drizzle-orm";
 import type { Database } from "../db/client.js";
-import { assets, generations, models, modes } from "../db/schema.js";
+import { assets, generations, models, modes, users } from "../db/schema.js";
 
 export type GenerationState =
   | "queued"
@@ -49,7 +49,45 @@ export interface SubmissionSummary {
   modeId: string;
   modeName: string;
   submittedAt: Date;
+  /** The Submission's prompt text, or null when the Model has no text Input to show (issue #47). */
+  prompt: string | null;
   generations: GenerationRecord[];
+}
+
+/** Where a Model's "prompt" field lives, and the value it has when a user leaves it blank (issue #47). */
+export interface PromptBinding {
+  nodeId: string;
+  field: string;
+  unsetValue: string;
+}
+
+/** Where a Model's "prompt" field lives (issue #47): its first text Input's first binding, and the value it has when a user leaves it blank. */
+export function promptBindingFor(
+  inputs: readonly InputDefinition[],
+  workflow: Workflow,
+): PromptBinding | null {
+  const promptInput = inputs.find((input) => input.kind === "text");
+  const binding = promptInput?.bindings[0];
+  if (!promptInput || promptInput.kind !== "text" || !binding) return null;
+  const workflowValue = workflow[binding.nodeId]?.inputs[binding.field];
+  const placeholder = typeof workflowValue === "string" ? workflowValue : "";
+  return {
+    nodeId: binding.nodeId,
+    field: binding.field,
+    unsetValue: promptInput.default || placeholder,
+  };
+}
+
+/** A Submission's prompt (issue #47): the frozen value at `binding`, prefixed "Default prompt: " when it matches the Workflow's own unset value. */
+export function promptFor(
+  builtPrompt: Workflow,
+  binding: PromptBinding | null | undefined,
+): string | null {
+  if (!binding) return null;
+  const node = builtPrompt[binding.nodeId];
+  const value = node?.inputs[binding.field];
+  if (typeof value !== "string") return null;
+  return value === binding.unsetValue ? `Default prompt: ${value}` : value;
 }
 
 export interface CreateGenerationInput {
@@ -142,6 +180,47 @@ export class GenerationsRepository {
     return toRecord(row, input.modeName);
   }
 
+  /**
+   * One Submission's 1-4 Generations (issue #47, ADR 0007): locks the
+   * submitting user's row before inserting every Generation, so two
+   * presses of Generate from the same user never interleave their draws.
+   */
+  async createSubmission(
+    userId: string,
+    inputs: readonly CreateGenerationInput[],
+  ): Promise<GenerationRecord[]> {
+    return await this.db.transaction(async (tx) => {
+      await tx
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.id, userId))
+        .for("update");
+
+      const rows = await tx
+        .insert(generations)
+        .values(
+          inputs.map((input) => ({
+            id: input.id,
+            modelId: input.modelId,
+            revisionId: input.revisionId,
+            modeId: input.modeId,
+            userId: input.userId,
+            submissionId: input.submissionId,
+            builtPrompt: input.builtPrompt,
+            nodeTypes: input.nodeTypes,
+            submittedAt: input.submittedAt,
+            queuedAt: input.submittedAt,
+          })),
+        )
+        .returning();
+
+      const modeNameById = new Map(
+        inputs.map((input) => [input.id, input.modeName]),
+      );
+      return rows.map((row) => toRecord(row, modeNameById.get(row.id) ?? ""));
+    });
+  }
+
   /** Every unfinished Generation of this user, across every Model (issue #43: one SSE stream per tab). */
   async listActiveForUser(userId: string): Promise<GenerationSummary[]> {
     const rows = await this.db
@@ -188,6 +267,7 @@ export class GenerationsRepository {
     modelId: string,
     userId: string,
     limit: number,
+    promptBinding?: PromptBinding | null,
   ): Promise<SubmissionSummary[]> {
     const rows = await this.db
       .select({ generation: generations, mode: modes })
@@ -225,6 +305,7 @@ export class GenerationsRepository {
         modeId: first.modeId,
         modeName: modeNameById.get(first.id) ?? "",
         submittedAt: first.submittedAt,
+        prompt: promptFor(first.builtPrompt as Workflow, promptBinding),
         generations: submissionRows.map((row) =>
           toRecord(
             row,

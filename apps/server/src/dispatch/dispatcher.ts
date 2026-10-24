@@ -23,6 +23,7 @@ import type { BackendsService } from "../backends/service.js";
 import type { AssetsRepository } from "../generations/assets-repository.js";
 import type { GenerationEvents } from "../generations/events.js";
 import type { Logger } from "../logger.js";
+import type { C2paSignerConfig } from "../media/c2pa.js";
 import type { MediaRunner } from "../media/media.js";
 import type { ModelBackendsRepository } from "../models/model-backends.js";
 import type { Storage } from "../storage/storage.js";
@@ -60,6 +61,10 @@ export interface DispatcherDeps {
   media: MediaRunner;
   /** Issue #45: named in a finished video's "AI-generated" comment tag. */
   siteName: string;
+  /** Issue #75: set only when the Operator configured a certificate and key. */
+  c2pa: C2paSignerConfig | null;
+  /** Issue #75: reads the Site title live, for the C2PA manifest. */
+  getSiteTitle: () => Promise<string>;
   /** Test-only: shortens the runner's `/api/jobs` poll cadence below its 1s production default. */
   pollIntervalMs?: number;
   /** Test-only: shortens the runner's saving-retry budget below its 15-minute production default. */
@@ -205,6 +210,8 @@ export class Dispatcher {
       savingBackoffBaseMs: this.deps.savingBackoffBaseMs,
       media: this.deps.media,
       siteName: this.deps.siteName,
+      c2pa: this.deps.c2pa,
+      getSiteTitle: this.deps.getSiteTitle,
     };
   }
 

@@ -185,6 +185,8 @@ function baseDeps(
     pollIntervalMs: 10_000,
     media: new MediaRunner(2),
     siteName: "localhost",
+    c2pa: null,
+    getSiteTitle: async () => "localhost",
     ...overrides,
   };
 }

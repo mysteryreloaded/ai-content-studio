@@ -1,5 +1,6 @@
 // Real ffmpeg/ffprobe against tiny committed fixtures (issue #45's AC):
-// a 1.4s 64x48 5fps video, a 32x32 still and a 1s silent clip.
+// a 1.4s 64x48 5fps video, a 32x32 still and a 1s silent clip. Also
+// real c2patool, signing with the c2pa-rs test chain (issue #75's AC).
 
 import { describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -9,7 +10,10 @@ import { MediaCommandError, MediaRunner } from "./media.js";
 
 const FIXTURES = path.join(import.meta.dir, "fixtures");
 const VIDEO = path.join(FIXTURES, "tiny.mp4");
+const IMAGE = path.join(FIXTURES, "tiny.png");
 const AUDIO = path.join(FIXTURES, "tiny.wav");
+const CERT_PATH = path.join(FIXTURES, "c2pa", "es256_certs.pem");
+const KEY_PATH = path.join(FIXTURES, "c2pa", "es256_private.key");
 
 describe("MediaRunner", () => {
   test("probeVideo reads resolution, duration and fps", async () => {
@@ -83,5 +87,51 @@ describe("MediaRunner", () => {
     await expect(
       media.probeVideo(path.join(FIXTURES, "missing.mp4")),
     ).rejects.toBeInstanceOf(MediaCommandError);
+  });
+
+  test("signC2pa signs an image with the c2pa-rs test chain (issue #75's AC)", async () => {
+    const media = new MediaRunner(2);
+    const dir = await mkdtemp(path.join(tmpdir(), "media-test-"));
+    try {
+      const manifestPath = path.join(dir, "manifest.json");
+      await Bun.write(
+        manifestPath,
+        JSON.stringify({
+          title: "My Studio",
+          sign_cert: CERT_PATH,
+          private_key: KEY_PATH,
+          assertions: [
+            {
+              label: "c2pa.actions",
+              data: {
+                actions: [
+                  {
+                    action: "c2pa.created",
+                    digitalSourceType:
+                      "http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia",
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      );
+      const output = path.join(dir, "signed.png");
+      await media.signC2pa(IMAGE, manifestPath, output);
+
+      const reportJson = await Bun.$`c2patool ${output}`.text();
+      const report = JSON.parse(reportJson) as {
+        manifests: Record<string, { title?: string }>;
+        active_manifest?: string;
+        validation_state: string;
+      };
+      expect(report.validation_state).toBe("Valid");
+      const active = report.active_manifest
+        ? report.manifests[report.active_manifest]
+        : undefined;
+      expect(active?.title).toBe("My Studio");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

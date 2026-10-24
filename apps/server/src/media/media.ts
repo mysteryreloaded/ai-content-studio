@@ -3,7 +3,8 @@
 // its first-frame poster, and probing an audio Asset's duration. Every
 // call goes through `Bun.spawn` with argv (never a shell string), a
 // timeout, and a `FFMPEG_CONCURRENCY`-bounded number of threads/processes
-// so a burst of saves can't starve the box.
+// so a burst of saves can't starve the box. Also runs `c2patool` for
+// C2PA signing (issue #75), sharing the same bound.
 
 import { cpus } from "node:os";
 
@@ -213,6 +214,23 @@ export class MediaRunner {
       "-q:v",
       "3",
       output,
+    ]);
+  }
+
+  /** Runs `c2patool` to sign `assetPath` per `manifestPath`, writing to `outputPath` (issue #75). Shares this runner's semaphore and timeout with ffmpeg/ffprobe. */
+  async signC2pa(
+    assetPath: string,
+    manifestPath: string,
+    outputPath: string,
+  ): Promise<void> {
+    await this.run([
+      "c2patool",
+      assetPath,
+      "-m",
+      manifestPath,
+      "-o",
+      outputPath,
+      "-f",
     ]);
   }
 }

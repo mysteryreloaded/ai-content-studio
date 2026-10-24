@@ -36,6 +36,29 @@ const MODEL = {
   modes: [{ id: "mode1", name: "Default", description: "", inputs: [] }],
 };
 
+/** Like `MODEL`, but its Mode holds a bound Seed Input (issue #47's count picker AC). */
+const MODEL_WITH_SEED = {
+  ...MODEL,
+  modes: [
+    {
+      id: "mode1",
+      name: "Default",
+      description: "",
+      inputs: [
+        {
+          id: "seed1",
+          group: "settings",
+          label: "Seed",
+          help: "",
+          placeholder: null,
+          kind: "seed",
+          max: 1000,
+        },
+      ],
+    },
+  ],
+};
+
 class FakeEventSource {
   static instances: FakeEventSource[] = [];
   listeners: Record<string, Array<(event: { data: string }) => void>> = {};
@@ -256,6 +279,86 @@ describe("WorkbenchPage", () => {
     expect(
       await view.findByText("no server available for this Model"),
     ).toBeTruthy();
+  });
+
+  test("shows the count picker only when the Mode has a bound Seed Input (issue #47)", async () => {
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/models/ltx")) {
+        return Response.json({ model: MODEL });
+      }
+      if (call.url.endsWith("/api/models/ltx/generations")) {
+        return Response.json({ submissions: [] });
+      }
+      throw new Error(`unexpected fetch ${call.url}`);
+    });
+
+    const view = renderWorkbench();
+    await view.findByRole("heading", { name: "LTX 2.5" });
+
+    expect(view.queryByLabelText("How many (1-4)")).toBeNull();
+  });
+
+  test("sends the picked count in the POST when the Mode has a bound Seed Input (issue #47)", async () => {
+    const posts: Array<Record<string, unknown> | null> = [];
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
+        return Response.json({ model: MODEL_WITH_SEED });
+      }
+      if (
+        call.url.endsWith("/api/models/ltx/generations") &&
+        call.method === "GET"
+      ) {
+        return Response.json({ submissions: [] });
+      }
+      if (
+        call.url.endsWith("/api/models/ltx/generations") &&
+        call.method === "POST"
+      ) {
+        posts.push(call.body);
+        return Response.json(
+          { generations: [], prompt: null },
+          { status: 201 },
+        );
+      }
+      throw new Error(`unexpected fetch ${call.url}`);
+    });
+
+    const view = renderWorkbench();
+    const { default: userEvent } = await import("@testing-library/user-event");
+
+    await view.findByLabelText("How many (1-4)");
+    await userEvent.selectOptions(view.getByLabelText("How many (1-4)"), "3");
+    await userEvent.click(view.getByRole("button", { name: "Generate" }));
+
+    await waitFor(() => expect(posts.length).toBe(1));
+    expect(posts[0]?.count).toBe(3);
+  });
+
+  test("shows a Submission's prompt, prefixed when it's the Workflow's own unset value", async () => {
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/models/ltx")) {
+        return Response.json({ model: MODEL });
+      }
+      if (call.url.endsWith("/api/models/ltx/generations")) {
+        return Response.json({
+          submissions: [
+            {
+              submissionId: "s1",
+              modeId: "mode1",
+              modeName: "Default",
+              submittedAt: "2026-01-01T00:00:00.000Z",
+              prompt: "Default prompt: a cat",
+              generations: [],
+            },
+          ],
+        });
+      }
+      throw new Error(`unexpected fetch ${call.url}`);
+    });
+
+    const view = renderWorkbench();
+
+    expect(await view.findByText("Default prompt: a cat")).toBeTruthy();
   });
 
   describe("Model terms and Attribution (issue #61)", () => {

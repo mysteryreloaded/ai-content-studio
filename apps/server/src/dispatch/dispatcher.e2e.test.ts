@@ -27,6 +27,7 @@ import {
 import { AssetsRepository } from "../generations/assets-repository.js";
 import { GenerationEvents } from "../generations/events.js";
 import { GenerationsRepository } from "../generations/repository.js";
+import { MediaRunner } from "../media/media.js";
 import { ModelBackendsRepository } from "../models/model-backends.js";
 import { ModelRepository } from "../models/repository.js";
 import { assetsRoute } from "../routes/assets.js";
@@ -148,6 +149,8 @@ describe("Dispatcher end-to-end against a fake ComfyUI", () => {
       assetsRepository,
       storage,
       generationEvents,
+      media: new MediaRunner(2),
+      siteName: "localhost",
       pollIntervalMs: 15,
     });
 
@@ -439,6 +442,115 @@ describe("Dispatcher end-to-end against a fake ComfyUI", () => {
       );
       const forbiddenRes = await strangerApp.request(`/api/assets/${asset.id}`);
       expect(forbiddenRes.status).toBe(404);
+    } finally {
+      await Bun.$`rm -rf ${tmpDir}`.quiet();
+    }
+  });
+
+  test("serves a video Asset's poster/thumb, 404s when there's none, and names its download (issue #45)", async () => {
+    const tmpDir = `/tmp/dispatcher-e2e-${randomUUID()}`;
+    const { db, modelRepository, assetsRepository, storage } =
+      await setup(tmpDir);
+    try {
+      const owner = await insertUser(db, "owner2@example.com");
+      const { model, mode, revisionId } = await createModelWithMode(
+        modelRepository,
+        "M4",
+      );
+
+      const generationId = randomUUID();
+      const { prompt, nodeTypes } = buildFrozenPrompt(
+        WORKFLOW,
+        ["2"],
+        generationId,
+      );
+      const generationsRepository = new GenerationsRepository(db);
+      await generationsRepository.create({
+        id: generationId,
+        modelId: model.id,
+        revisionId,
+        modeId: mode.id,
+        modeName: mode.name,
+        userId: owner.id,
+        submissionId: randomUUID(),
+        builtPrompt: prompt,
+        nodeTypes,
+        submittedAt: systemClock.now(),
+      });
+
+      const videoKey = `assets/${generationId}/2/studio_00001_.mp4`;
+      const posterKey = `${videoKey}.poster.jpg`;
+      await storage.write(
+        videoKey,
+        new TextEncoder().encode("fake video bytes"),
+      );
+      await storage.write(
+        posterKey,
+        new TextEncoder().encode("fake poster bytes"),
+      );
+      const video = await assetsRepository.createIfAbsent({
+        generationId,
+        nodeId: "2",
+        sortOrder: 0,
+        kind: "video",
+        comfyuiFilename: "studio_00001_.mp4",
+        contentType: "video/mp4",
+        size: 17,
+        storageKey: videoKey,
+        posterKey,
+        width: 64,
+        height: 48,
+        durationMs: 1400,
+        fps: 5,
+      });
+      if (!video) throw new Error("video asset not created");
+
+      const imageKey = `assets/${generationId}/3/studio_00001_.png`;
+      await storage.write(
+        imageKey,
+        new TextEncoder().encode("fake image bytes"),
+      );
+      const image = await assetsRepository.createIfAbsent({
+        generationId,
+        nodeId: "3",
+        sortOrder: 1,
+        kind: "image",
+        comfyuiFilename: "studio_00001_.png",
+        contentType: "image/png",
+        size: 17,
+        storageKey: imageKey,
+      });
+      if (!image) throw new Error("image asset not created");
+
+      const ownerApp = appAs(assetsRepository, storage, fakeSession(owner.id));
+
+      const posterRes = await ownerApp.request(
+        `/api/assets/${video.id}/poster`,
+      );
+      expect(posterRes.status).toBe(200);
+      expect(await posterRes.text()).toBe("fake poster bytes");
+      expect(posterRes.headers.get("content-type")).toBe("image/jpeg");
+
+      // The image Asset has no poster (only video gets one).
+      const noPosterRes = await ownerApp.request(
+        `/api/assets/${image.id}/poster`,
+      );
+      expect(noPosterRes.status).toBe(404);
+
+      const downloadRes = await ownerApp.request(
+        `/api/assets/${video.id}?download=1`,
+      );
+      expect(downloadRes.status).toBe(200);
+      expect(downloadRes.headers.get("content-disposition")).toBe(
+        `attachment; filename="m4-mode-1-${generationId.slice(-8)}.mp4"`,
+      );
+
+      const imageDownloadRes = await ownerApp.request(
+        `/api/assets/${image.id}?download=1`,
+      );
+      expect(imageDownloadRes.headers.get("content-disposition")).toBe(
+        `attachment; filename="m4-mode-1-${generationId.slice(-8)}.png"`,
+      );
     } finally {
       await Bun.$`rm -rf ${tmpDir}`.quiet();
     }

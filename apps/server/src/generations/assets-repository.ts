@@ -4,7 +4,7 @@
 
 import { and, eq } from "drizzle-orm";
 import type { Database } from "../db/client.js";
-import { assets, generations } from "../db/schema.js";
+import { assets, generations, models, modes } from "../db/schema.js";
 
 export interface AssetRecord {
   id: string;
@@ -16,6 +16,13 @@ export interface AssetRecord {
   contentType: string;
   size: number;
   storageKey: string;
+  /** Issue #45: null when finishing never ran for this kind (audio) or couldn't read the file. */
+  posterKey: string | null;
+  thumbnailKey: string | null;
+  width: number | null;
+  height: number | null;
+  durationMs: number | null;
+  fps: number | null;
 }
 
 type Row = typeof assets.$inferSelect;
@@ -31,6 +38,12 @@ function toRecord(row: Row): AssetRecord {
     contentType: row.contentType,
     size: row.size,
     storageKey: row.storageKey,
+    posterKey: row.posterKey,
+    thumbnailKey: row.thumbnailKey,
+    width: row.width,
+    height: row.height,
+    durationMs: row.durationMs,
+    fps: row.fps,
   };
 }
 
@@ -54,11 +67,23 @@ export interface CreateAssetInput {
   contentType: string;
   size: number;
   storageKey: string;
+  posterKey?: string | null;
+  thumbnailKey?: string | null;
+  width?: number | null;
+  height?: number | null;
+  durationMs?: number | null;
+  fps?: number | null;
 }
 
-/** The Asset's own id plus the Generation's owner, for `/api/assets/:id`'s ownership check. */
+/**
+ * The Asset's own id plus the Generation's owner (for `/api/assets/:id`'s
+ * ownership check, shared by `/poster` and `/thumb`) and the Model slug
+ * and Mode name (issue #45: for `?download=1`'s file name).
+ */
 export interface AssetWithOwner extends AssetRecord {
   ownerId: string;
+  modelSlug: string;
+  modeName: string;
 }
 
 export class AssetsRepository {
@@ -78,12 +103,24 @@ export class AssetsRepository {
 
   async getWithOwner(id: string): Promise<AssetWithOwner | null> {
     const [row] = await this.db
-      .select({ asset: assets, ownerId: generations.userId })
+      .select({
+        asset: assets,
+        ownerId: generations.userId,
+        modelSlug: models.slug,
+        modeName: modes.name,
+      })
       .from(assets)
       .innerJoin(generations, eq(generations.id, assets.generationId))
+      .innerJoin(models, eq(models.id, generations.modelId))
+      .innerJoin(modes, eq(modes.id, generations.modeId))
       .where(eq(assets.id, id));
     if (!row) return null;
-    return { ...toRecord(row.asset), ownerId: row.ownerId };
+    return {
+      ...toRecord(row.asset),
+      ownerId: row.ownerId,
+      modelSlug: row.modelSlug,
+      modeName: row.modeName,
+    };
   }
 
   async listForGeneration(generationId: string): Promise<AssetRecord[]> {

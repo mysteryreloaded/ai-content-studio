@@ -15,6 +15,7 @@ import type { BackendsService } from "../backends/service.js";
 import type { AssetsRepository } from "../generations/assets-repository.js";
 import type { GenerationEvents } from "../generations/events.js";
 import type { Logger } from "../logger.js";
+import type { MediaRunner } from "../media/media.js";
 import type { ModelBackendsRepository } from "../models/model-backends.js";
 import type { Storage } from "../storage/storage.js";
 import { ProgressTracker } from "./progress.js";
@@ -38,6 +39,10 @@ export interface DispatcherDeps {
   assetsRepository: AssetsRepository;
   storage: Storage;
   generationEvents: GenerationEvents;
+  /** Issue #45: runs ffmpeg/ffprobe for Asset finishing. */
+  media: MediaRunner;
+  /** Issue #45: named in a finished video's "AI-generated" comment tag. */
+  siteName: string;
   /** Test-only: shortens the runner's `/api/jobs` poll cadence below its 1s production default. */
   pollIntervalMs?: number;
 }
@@ -131,6 +136,8 @@ export class Dispatcher {
         progress: this.progress,
         onFreed: this.wake,
         pollIntervalMs: this.deps.pollIntervalMs,
+        media: this.deps.media,
+        siteName: this.deps.siteName,
       });
     } catch (err) {
       await this.logFailure("Generation run crashed", err, {

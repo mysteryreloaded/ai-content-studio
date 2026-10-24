@@ -151,6 +151,61 @@ describe("checkModel", () => {
     ).toBe(true);
   });
 
+  test("errors when a Mode's output node's saved classType no longer matches the Workflow", () => {
+    const issues = checkModel(
+      model({
+        modes: [
+          mode("mode-1", ["3"], {
+            outputNodeClassTypes: { "3": "VHS_VideoCombine" },
+          }),
+        ],
+      }),
+      [backend("b1")],
+    );
+    expect(
+      issues.some(
+        (issue) =>
+          issue.severity === "error" &&
+          issue.modeId === "mode-1" &&
+          issue.message.includes("VHS_VideoCombine") &&
+          issue.message.includes("rebind"),
+      ),
+    ).toBe(true);
+  });
+
+  test("no error when a Mode's output node's saved classType still matches", () => {
+    const issues = checkModel(
+      model({
+        modes: [
+          mode("mode-1", ["3"], {
+            outputNodeClassTypes: { "3": "SaveImage" },
+          }),
+        ],
+      }),
+      [backend("b1")],
+    );
+    expect(issues.some((issue) => issue.message.includes("rebind"))).toBe(
+      false,
+    );
+  });
+
+  test("errors when an Input binding's saved classType no longer matches the Workflow", () => {
+    const stale = stepsInput({
+      bindings: [
+        { nodeId: "2", field: "steps", classType: "SaveImage", title: null },
+      ],
+    });
+    const issues = checkModel(model({ inputs: [stale] }), [backend("b1")]);
+    expect(
+      issues.some(
+        (issue) =>
+          issue.severity === "error" &&
+          issue.inputId === stale.id &&
+          issue.message.includes("rebind it"),
+      ),
+    ).toBe(true);
+  });
+
   test("errors when two Inputs bind the same field", () => {
     const a = stepsInput({
       id: "00000000-0000-0000-0000-000000000001",

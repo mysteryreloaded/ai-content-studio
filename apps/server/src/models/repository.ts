@@ -17,12 +17,13 @@ import {
   parseApiFormatWorkflow,
   resolveModeOutputNodes,
   reviseModeInputSettings,
+  validateBinding,
   validateInputDefinition,
   validateModeInputSettings,
   validateModeName,
 } from "@ai-content-studio/shared";
 import type { Clock } from "@ai-content-studio/shared";
-import { and, asc, eq, isNull, max, min } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, max, min } from "drizzle-orm";
 import type { AuditActor } from "../audit/audit.js";
 import { recordAuditEntry } from "../audit/audit.js";
 import type { Database, Transaction } from "../db/client.js";
@@ -216,6 +217,153 @@ function nodesFrom(
 export interface WorkflowUploadResult {
   record: ModelRecord;
   outsideServiceNotes: OutsideServiceNote[];
+}
+
+/**
+ * Repoints every Mode output node and Input binding at `nodeId` onto
+ * `newNodeId` instead (issue #71's rebind picker, CEO review): a single
+ * node-id remap, applied uniformly wherever that old node id is
+ * referenced, matching how `uploadWorkflow` already carries bindings
+ * forward "by node id" in the first place.
+ */
+export interface RebindEntry {
+  nodeId: string;
+  newNodeId: string;
+}
+
+export interface RebindOutcome {
+  modes: ModeRecord[];
+  inputs: InputDefinition[];
+  errors: ValidationError[];
+}
+
+/**
+ * Applies `rebind` (issue #71's rebind picker; CEO review rounds 2-3):
+ * repoints only the output nodes and Input bindings it actually names,
+ * one at a time, leaving everything else — including a sibling output
+ * node or binding left on "Leave broken" in the very same Mode or Input
+ * — verbatim for `checkModel` to flag. A remapped output node is
+ * re-resolved alone (`resolveModeOutputNodes` on just that one node id,
+ * fresh classType/kind/title), never against its Mode's other, possibly
+ * still-broken nodes; a remapped binding is checked alone with
+ * `validateBinding`, never through the whole-Input `validateInputDefinition`
+ * (that's `updateInputs`'s job, and it needs `allInputs` this partial
+ * pass has no reason to assemble). Shared by `uploadWorkflow`'s real
+ * save and the `/workflow` route's enabled-Model precheck, so both
+ * agree on exactly what a rebind touches — the precheck disagreeing
+ * with the save is what let a Mode's untouched, now-differently-classed
+ * output node slip through as "fixed" in round 2.
+ */
+export function applyRebind(
+  workflow: Workflow,
+  modeRecords: readonly ModeRecord[],
+  inputs: readonly InputDefinition[],
+  rebind: readonly RebindEntry[],
+  fieldSpecs?: ReadonlyMap<string, Record<string, ComfyFieldSpec>>,
+  maxUploadMb?: number,
+): RebindOutcome {
+  const remap = new Map(rebind.map((entry) => [entry.nodeId, entry.newNodeId]));
+  const errors: ValidationError[] = [];
+
+  const modes = modeRecords.map((mode, modeIndex) => {
+    const outputNodes = mode.outputNodes.map((node, nodeIndex) => {
+      const newNodeId = remap.get(node.nodeId);
+      if (!newNodeId) return node;
+      const outcome = resolveModeOutputNodes(workflow, [newNodeId]);
+      if (!outcome.ok) {
+        for (const message of outcome.errors) {
+          errors.push({
+            field: `modes[${modeIndex}].outputNodes[${nodeIndex}]`,
+            message,
+          });
+        }
+        return node;
+      }
+      return outcome.outputNodes[0] ?? node;
+    });
+
+    const seen = new Set<string>();
+    for (const node of outputNodes) {
+      if (seen.has(node.nodeId)) {
+        errors.push({
+          field: `modes[${modeIndex}].outputNodes`,
+          message: `output node "${node.nodeId}" is named more than once`,
+        });
+      }
+      seen.add(node.nodeId);
+    }
+
+    return { ...mode, outputNodes };
+  });
+
+  const outputNodeIds = new Set(
+    modes.flatMap((mode) => mode.outputNodes.map((node) => node.nodeId)),
+  );
+
+  const usedFields = new Set<string>();
+  for (const input of inputs) {
+    for (const binding of input.bindings) {
+      if (!remap.has(binding.nodeId)) {
+        usedFields.add(fieldKey(binding.nodeId, binding.field));
+      }
+    }
+  }
+
+  const reboundInputs = inputs.map((input, inputIndex) => ({
+    ...input,
+    bindings: input.bindings.map((binding, bindingIndex) => {
+      const newNodeId = remap.get(binding.nodeId);
+      if (!newNodeId) return binding;
+
+      const node = workflow[newNodeId];
+      const rebound = {
+        ...binding,
+        nodeId: newNodeId,
+        classType: node?.class_type ?? binding.classType,
+        title: node?._meta?.title ?? null,
+      };
+      const ctx: BindingValidationContext = {
+        workflow,
+        outputNodeIds,
+        usedFields,
+        fieldSpecs,
+        maxUploadMb,
+      };
+      const error = validateBinding(
+        input.kind,
+        rebound.nodeId,
+        rebound.field,
+        ctx,
+        rebound.classType,
+      );
+      if (error) {
+        errors.push({
+          field: `inputs[${inputIndex}].bindings[${bindingIndex}]`,
+          message: error,
+        });
+        return binding;
+      }
+      usedFields.add(fieldKey(rebound.nodeId, rebound.field));
+      return rebound;
+    }),
+  }));
+
+  return { modes, inputs: reboundInputs, errors };
+}
+
+/** One numbered Model revision, listed in the editor's Revisions section (issue #71). */
+export interface RevisionSummary {
+  revisionNumber: number;
+  createdAt: Date;
+  workflowHash: string;
+  modeCount: number;
+  inputCount: number;
+}
+
+export interface RevisionDetail {
+  workflow: Workflow;
+  inputs: InputDefinition[];
+  modes: ModeRecord[];
 }
 
 export class ModelRepository {
@@ -620,6 +768,333 @@ export class ModelRepository {
       modes: await listModesForRevision(this.db, revision.id),
       inputs: revision.inputs as InputDefinition[],
     };
+  }
+
+  /**
+   * Every numbered revision of this Model, newest first (issue #71's
+   * Revisions section) — a Test run's own negative-numbered revision
+   * (issue #74's `createTestRevision`) isn't one of these (CEO review).
+   */
+  async listRevisions(id: string): Promise<RevisionSummary[]> {
+    const rows = await this.db
+      .select()
+      .from(modelRevisions)
+      .where(
+        and(eq(modelRevisions.modelId, id), eq(modelRevisions.isTest, false)),
+      )
+      .orderBy(desc(modelRevisions.revisionNumber));
+
+    const summaries: RevisionSummary[] = [];
+    for (const row of rows) {
+      const modeRows = await listModesForRevision(this.db, row.id);
+      summaries.push({
+        revisionNumber: row.revisionNumber,
+        createdAt: row.createdAt,
+        workflowHash: row.workflowHash,
+        modeCount: modeRows.length,
+        inputCount: (row.inputs as InputDefinition[]).length,
+      });
+    }
+    return summaries;
+  }
+
+  /**
+   * One numbered revision's own Workflow, Inputs and Modes (issue
+   * #71), for the restore route's pre-check — never a Test run's own
+   * revision (CEO review).
+   */
+  async getRevisionDetail(
+    id: string,
+    revisionNumber: number,
+  ): Promise<RevisionDetail | null> {
+    const [revision] = await this.db
+      .select()
+      .from(modelRevisions)
+      .where(
+        and(
+          eq(modelRevisions.modelId, id),
+          eq(modelRevisions.revisionNumber, revisionNumber),
+          eq(modelRevisions.isTest, false),
+        ),
+      );
+    if (!revision) return null;
+
+    const [workflowRow] = await this.db
+      .select()
+      .from(workflows)
+      .where(eq(workflows.hash, revision.workflowHash));
+    if (!workflowRow) return null;
+
+    return {
+      workflow: workflowRow.json as Workflow,
+      inputs: revision.inputs as InputDefinition[],
+      modes: await listModesForRevision(this.db, revision.id),
+    };
+  }
+
+  /**
+   * Inserts a copy of revision `revisionNumber` as a new, current
+   * revision (issue #71's Restore): same Workflow, Inputs and Modes,
+   * through the same optimistic-concurrency check every other save
+   * uses. The caller runs the same `checkModel` gate the Modes/Inputs
+   * routes do first, offering "Restore and disable" when the restored
+   * state has errors on an enabled Model.
+   */
+  async restoreRevision(
+    id: string,
+    revisionNumber: number,
+    expectedVersion: number,
+    actor: AuditActor,
+  ): Promise<{
+    record: ModelRecord;
+    modes: ModeRecord[];
+    inputs: InputDefinition[];
+  }> {
+    return await this.db.transaction(async (tx) => {
+      const [before] = await tx
+        .select()
+        .from(models)
+        .where(and(eq(models.id, id), isNull(models.deletedAt)));
+      if (!before) throw new NotFound();
+
+      const [target] = await tx
+        .select()
+        .from(modelRevisions)
+        .where(
+          and(
+            eq(modelRevisions.modelId, id),
+            eq(modelRevisions.revisionNumber, revisionNumber),
+            eq(modelRevisions.isTest, false),
+          ),
+        );
+      if (!target) throw new NotFound();
+
+      const targetModes = await listModesForRevision(tx, target.id);
+
+      const newRevisionNumber = before.currentRevision + 1;
+      const [row] = await tx
+        .update(models)
+        .set({
+          currentRevision: newRevisionNumber,
+          version: before.version + 1,
+          updatedAt: this.clock.now(),
+        })
+        .where(and(eq(models.id, id), eq(models.version, expectedVersion)))
+        .returning();
+      if (!row) throw new StaleVersion();
+
+      const [newRevision] = await tx
+        .insert(modelRevisions)
+        .values({
+          modelId: id,
+          revisionNumber: newRevisionNumber,
+          workflowHash: target.workflowHash,
+          inputs: target.inputs,
+        })
+        .returning();
+      if (!newRevision) throw new Error("insert returned no row");
+
+      if (targetModes.length > 0) {
+        await tx.insert(modes).values(
+          targetModes.map((mode) => ({
+            revisionId: newRevision.id,
+            sortOrder: mode.sortOrder,
+            name: mode.name,
+            description: mode.description,
+            outputNodes: mode.outputNodes,
+            inputSettings: mode.inputSettings,
+          })),
+        );
+      }
+
+      const newModes = await listModesForRevision(tx, newRevision.id);
+
+      await recordAuditEntry(tx, this.clock, {
+        actor,
+        targetType: "model",
+        targetId: id,
+        action: "restore_revision",
+        before: { currentRevision: before.currentRevision },
+        after: {
+          currentRevision: newRevisionNumber,
+          restoredFromRevision: revisionNumber,
+        },
+      });
+
+      return {
+        record: toRecord(row),
+        modes: newModes,
+        inputs: target.inputs as InputDefinition[],
+      };
+    });
+  }
+
+  /**
+   * Replaces this Model's Workflow (issue #71): keeps its Modes' output
+   * nodes and Inputs' bindings exactly as they were, matched only by
+   * node id — a node whose class and value-holding field still exist
+   * there keeps working; one that doesn't is now broken, which
+   * `checkModel` reports as an error against the new Workflow the next
+   * time it runs, same as any other missing binding (ADR-0010). `rebind`
+   * (CEO review) repoints any number of broken node ids onto a node of
+   * the new Workflow before anything is carried forward: each Mode's
+   * output nodes are re-resolved fresh (new classType/kind/title) and
+   * every Input is re-validated the same way `updateInputs` validates
+   * one, so a rebind that actually fixes everything needn't disable an
+   * enabled Model. Always makes a new revision, same reasoning as
+   * {@link updateModes}.
+   */
+  async uploadWorkflow(
+    id: string,
+    rawWorkflow: unknown,
+    expectedVersion: number,
+    actor: AuditActor,
+    rebind?: RebindEntry[],
+    fieldSpecs?: ReadonlyMap<string, Record<string, ComfyFieldSpec>>,
+    maxUploadMb?: number,
+  ): Promise<{
+    record: ModelRecord;
+    modes: ModeRecord[];
+    inputs: InputDefinition[];
+    outsideServiceNotes: OutsideServiceNote[];
+  }> {
+    const errors: ValidationError[] = [];
+
+    const size = Buffer.byteLength(JSON.stringify(rawWorkflow));
+    if (size > MAX_WORKFLOW_BYTES) {
+      errors.push({ field: "workflow", message: "must be 10 MB or smaller" });
+    }
+
+    const parsed = parseApiFormatWorkflow(rawWorkflow);
+    if (!parsed.ok) {
+      errors.push({ field: "workflow", message: parsed.error });
+      throw new ValidationFailed(errors);
+    }
+
+    const missing = findMissingLinkTargets(parsed.workflow);
+    if (missing.length > 0) {
+      errors.push({
+        field: "workflow",
+        message: `links to missing nodes: ${missing.join(", ")}`,
+      });
+    }
+
+    const notes = findOutsideServiceNotes(parsed.workflow);
+    for (const note of notes) {
+      if (note.keySet) {
+        errors.push({
+          field: "workflow",
+          message: `${note.classType} (node ${note.nodeId}) still has a key set; clear it before uploading`,
+        });
+      }
+    }
+
+    if (errors.length > 0) throw new ValidationFailed(errors);
+
+    return await this.db.transaction(async (tx) => {
+      const [before] = await tx
+        .select()
+        .from(models)
+        .where(and(eq(models.id, id), isNull(models.deletedAt)));
+      if (!before) throw new NotFound();
+
+      const [currentRevision] = await tx
+        .select()
+        .from(modelRevisions)
+        .where(
+          and(
+            eq(modelRevisions.modelId, id),
+            eq(modelRevisions.revisionNumber, before.currentRevision),
+          ),
+        );
+      if (!currentRevision) throw new Error("current revision missing");
+
+      const currentModes = await listModesForRevision(tx, currentRevision.id);
+      const currentInputs = currentRevision.inputs as InputDefinition[];
+
+      let newModeInputs: ModeRecord[] = currentModes;
+      let newInputs: InputDefinition[] = currentInputs;
+
+      if (rebind && rebind.length > 0) {
+        const outcome = applyRebind(
+          parsed.workflow,
+          currentModes,
+          currentInputs,
+          rebind,
+          fieldSpecs,
+          maxUploadMb,
+        );
+        if (outcome.errors.length > 0)
+          throw new ValidationFailed(outcome.errors);
+        newModeInputs = outcome.modes;
+        newInputs = outcome.inputs;
+      }
+
+      const hash = hashWorkflow(parsed.workflow);
+      await tx
+        .insert(workflows)
+        .values({
+          hash,
+          json: parsed.workflow,
+          nodeCount: Object.keys(parsed.workflow).length,
+          size,
+        })
+        .onConflictDoNothing();
+
+      const newRevisionNumber = before.currentRevision + 1;
+      const [row] = await tx
+        .update(models)
+        .set({
+          currentRevision: newRevisionNumber,
+          version: before.version + 1,
+          updatedAt: this.clock.now(),
+        })
+        .where(and(eq(models.id, id), eq(models.version, expectedVersion)))
+        .returning();
+      if (!row) throw new StaleVersion();
+
+      const [newRevision] = await tx
+        .insert(modelRevisions)
+        .values({
+          modelId: id,
+          revisionNumber: newRevisionNumber,
+          workflowHash: hash,
+          inputs: newInputs,
+        })
+        .returning();
+      if (!newRevision) throw new Error("insert returned no row");
+
+      if (newModeInputs.length > 0) {
+        await tx.insert(modes).values(
+          newModeInputs.map((mode) => ({
+            revisionId: newRevision.id,
+            sortOrder: mode.sortOrder,
+            name: mode.name,
+            description: mode.description,
+            outputNodes: mode.outputNodes,
+            inputSettings: mode.inputSettings,
+          })),
+        );
+      }
+
+      const newModes = await listModesForRevision(tx, newRevision.id);
+
+      await recordAuditEntry(tx, this.clock, {
+        actor,
+        targetType: "model",
+        targetId: id,
+        action: "upload_workflow",
+        before: { workflowHash: currentRevision.workflowHash },
+        after: { workflowHash: hash },
+      });
+
+      return {
+        record: toRecord(row),
+        modes: newModes,
+        inputs: newInputs,
+        outsideServiceNotes: notes,
+      };
+    });
   }
 
   /**

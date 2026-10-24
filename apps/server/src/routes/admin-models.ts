@@ -6,6 +6,7 @@ import {
   checkModel,
   hasBlockingErrors,
   modelTermsFieldsSchema,
+  parseApiFormatWorkflow,
   reviseModeInputSettings,
   toInputIssues,
 } from "@ai-content-studio/shared";
@@ -51,10 +52,29 @@ import {
   NotFound,
   SlugTaken,
   StaleVersion,
+  applyRebind,
 } from "../models/repository.js";
-import type { ModeInput, ModelRepository } from "../models/repository.js";
+import type {
+  ModeInput,
+  ModeRecord,
+  ModelRepository,
+} from "../models/repository.js";
 import { ValidationFailed } from "../models/validation.js";
 import type { UploadsRepository } from "../uploads/repository.js";
+
+/**
+ * `outputNodeIds` plus each output node's saved classType, keyed by node
+ * id (issue #71's rebind check): `checkModel` flags an output node whose
+ * class changed since it was last resolved and saved.
+ */
+function checkModelOutputNodes(mode: ModeRecord) {
+  return {
+    outputNodeIds: mode.outputNodes.map((node) => node.nodeId),
+    outputNodeClassTypes: Object.fromEntries(
+      mode.outputNodes.map((node) => [node.nodeId, node.classType]),
+    ),
+  };
+}
 
 const createSchema = z.object({
   name: z.string(),
@@ -187,6 +207,12 @@ const inputsSchema = z.object({
   inputs: z.array(inputDefinitionSchema),
   /** Issue #49: an enabled Model with errors can only be saved by disabling it. */
   disable: z.boolean().optional(),
+});
+
+/** One node-id repoint, in the same PUT as a Workflow replace (issue #71's rebind picker). */
+const rebindEntrySchema = z.object({
+  nodeId: z.string(),
+  newNodeId: z.string(),
 });
 
 /** Issue #74: a Test runs the editor's own unsaved draft Mode and Inputs, so the body carries them whole rather than a saved revision's id. */
@@ -640,7 +666,7 @@ export function adminModelsRoute(
               modes: detail.modes.map((mode) => ({
                 id: mode.id,
                 name: mode.name,
-                outputNodeIds: mode.outputNodes.map((node) => node.nodeId),
+                ...checkModelOutputNodes(mode),
                 inputSettings: reviseModeInputSettings(
                   mode.inputSettings,
                   parsed.data.inputs as InputDefinition[],
@@ -726,7 +752,7 @@ export function adminModelsRoute(
           modes: detail.modes.map((mode) => ({
             id: mode.id,
             name: mode.name,
-            outputNodeIds: mode.outputNodes.map((node) => node.nodeId),
+            ...checkModelOutputNodes(mode),
             inputSettings: mode.inputSettings,
           })) satisfies CheckModelMode[],
         },
@@ -780,6 +806,263 @@ export function adminModelsRoute(
           adminActorFrom(c),
         );
         return c.json(record);
+      } catch (err) {
+        return handleError(c, err);
+      }
+    },
+  );
+
+  guardedRoute(
+    app,
+    routes,
+    basePath,
+    "put",
+    "/:id/workflow",
+    "admin",
+    async (c) => {
+      const id = idParam(c);
+      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+
+      const body = await readJsonBody(c);
+      if (body === null) return c.json({ error: "invalid JSON body" }, 400);
+
+      const versionResult = versionSchema.safeParse(body.version);
+      if (!versionResult.success)
+        return c.json({ error: "version is required" }, 400);
+
+      const rebindResult = z
+        .array(rebindEntrySchema)
+        .optional()
+        .safeParse(body.rebind);
+      if (!rebindResult.success) return c.json({ error: "invalid input" }, 400);
+      const rebind = rebindResult.data;
+
+      const disable = body.disable === true;
+
+      const detail = await repository.get(id);
+      if (!detail) return c.json({ error: "not found" }, 404);
+
+      const attached = await modelBackends.listForModel(id);
+      const specsByBackend = await Promise.all(
+        attached.map((backend) => backendsService.fieldSpecsFor(backend)),
+      );
+      const fieldSpecs = new Map<string, Record<string, ComfyFieldSpec>>();
+      for (const specs of specsByBackend) {
+        if (!specs) continue;
+        for (const [classType, fields] of specs) {
+          fieldSpecs.set(classType, {
+            ...fieldSpecs.get(classType),
+            ...fields,
+          });
+        }
+      }
+
+      // Issue #71: re-uploading the Workflow keeps every Mode's output
+      // nodes and every Input's bindings exactly as they were, by node
+      // id; this is the same "errors block saving an enabled Model"
+      // gate the Modes/Inputs routes run, checked against the proposed
+      // new Workflow before it's persisted. A `rebind` (CEO review) is
+      // previewed here with the exact same `applyRebind` the repository
+      // uses for the real save, so a rebind that fixes everything
+      // doesn't need "disable" too, and the two can't disagree on what
+      // a rebind actually touched (round-3 CEO review).
+      if (detail.model.state === "enabled" && !disable) {
+        const parsed = parseApiFormatWorkflow(body.workflow);
+        if (parsed.ok) {
+          const objectInfo = toCheckModelBackends(
+            await buildObjectInfo(attached, backendsService),
+          );
+          const rebound =
+            rebind && rebind.length > 0
+              ? applyRebind(
+                  parsed.workflow,
+                  detail.modes,
+                  detail.inputs,
+                  rebind,
+                  fieldSpecs,
+                  maxUploadMb,
+                )
+              : { modes: detail.modes, inputs: detail.inputs, errors: [] };
+          if (rebound.errors.length > 0) {
+            return c.json(
+              {
+                error: "has errors; disable this Model to save it anyway",
+                reasons: rebound.errors.map((e) => e.message),
+              },
+              400,
+            );
+          }
+          const issues = checkModel(
+            {
+              workflow: parsed.workflow,
+              inputs: rebound.inputs,
+              modes: rebound.modes.map((mode) => ({
+                id: mode.id,
+                name: mode.name,
+                ...checkModelOutputNodes(mode),
+                inputSettings: mode.inputSettings,
+              })) satisfies CheckModelMode[],
+            },
+            objectInfo,
+          );
+          if (hasBlockingErrors(issues)) {
+            return c.json(
+              {
+                error: "has errors; disable this Model to save it anyway",
+                reasons: issues
+                  .filter((issue) => issue.severity === "error")
+                  .map((issue) => issue.message),
+              },
+              400,
+            );
+          }
+        }
+        // An invalid Workflow falls through to `uploadWorkflow` below,
+        // which reports the real parse/validation error.
+      }
+
+      try {
+        const result = await repository.uploadWorkflow(
+          id,
+          body.workflow,
+          versionResult.data,
+          adminActorFrom(c),
+          rebind,
+          fieldSpecs,
+          maxUploadMb,
+        );
+        if (disable) {
+          const record = await repository.setState(
+            id,
+            "disabled",
+            result.record.version,
+            adminActorFrom(c),
+          );
+          return c.json({ ...result, record });
+        }
+        return c.json(result);
+      } catch (err) {
+        return handleError(c, err);
+      }
+    },
+  );
+
+  guardedRoute(
+    app,
+    routes,
+    basePath,
+    "get",
+    "/:id/revisions",
+    "admin",
+    async (c) => {
+      const id = idParam(c);
+      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+
+      const revisions = await repository.listRevisions(id);
+      return c.json({ revisions });
+    },
+  );
+
+  guardedRoute(
+    app,
+    routes,
+    basePath,
+    "post",
+    "/:id/revisions/:number/restore",
+    "admin",
+    async (c) => {
+      const id = idParam(c);
+      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+
+      const numberResult = z.coerce
+        .number()
+        .int()
+        .min(1)
+        .safeParse(c.req.param("number"));
+      if (!numberResult.success) return c.json({ error: "not found" }, 404);
+
+      const body = await readJsonBody(c);
+      if (body === null) return c.json({ error: "invalid JSON body" }, 400);
+
+      const versionResult = versionSchema.safeParse(body.version);
+      if (!versionResult.success)
+        return c.json({ error: "version is required" }, 400);
+
+      const disable = body.disable === true;
+
+      const detail = await repository.get(id);
+      if (!detail) return c.json({ error: "not found" }, 404);
+
+      const target = await repository.getRevisionDetail(id, numberResult.data);
+      if (!target) return c.json({ error: "not found" }, 404);
+
+      // Issue #71: "Restore inserts a copy through the same checks" —
+      // the restored state is run through the same enabled-Model gate a
+      // normal Modes/Inputs save is, offering "Restore and disable"
+      // when it still has errors (e.g. a Backend attached since that
+      // old revision was current no longer covers it). A restored Seed
+      // Input with no max is refused the same way `updateInputs` refuses
+      // one (ADR 0007): checkModel itself doesn't carry that rule.
+      if (detail.model.state === "enabled" && !disable) {
+        const seedReasons = target.inputs
+          .filter((def) => def.kind === "seed" && def.max === null)
+          .map(
+            (def) =>
+              `Seed Input "${def.label}" needs a max while the Model is enabled`,
+          );
+
+        const attached = await modelBackends.listForModel(id);
+        const objectInfo = toCheckModelBackends(
+          await buildObjectInfo(attached, backendsService),
+        );
+        const issues = checkModel(
+          {
+            workflow: target.workflow,
+            inputs: target.inputs,
+            modes: target.modes.map((mode) => ({
+              id: mode.id,
+              name: mode.name,
+              ...checkModelOutputNodes(mode),
+              inputSettings: mode.inputSettings,
+            })) satisfies CheckModelMode[],
+          },
+          objectInfo,
+        );
+        const reasons = [
+          ...seedReasons,
+          ...issues
+            .filter((issue) => issue.severity === "error")
+            .map((issue) => issue.message),
+        ];
+        if (reasons.length > 0) {
+          return c.json(
+            {
+              error:
+                "has errors; restore and disable this Model to save it anyway",
+              reasons,
+            },
+            400,
+          );
+        }
+      }
+
+      try {
+        const result = await repository.restoreRevision(
+          id,
+          numberResult.data,
+          versionResult.data,
+          adminActorFrom(c),
+        );
+        if (disable) {
+          const record = await repository.setState(
+            id,
+            "disabled",
+            result.record.version,
+            adminActorFrom(c),
+          );
+          return c.json({ ...result, record });
+        }
+        return c.json(result);
       } catch (err) {
         return handleError(c, err);
       }

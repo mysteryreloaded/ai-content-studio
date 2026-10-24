@@ -377,9 +377,21 @@ export function validateBinding(
   nodeId: string,
   field: string,
   ctx: BindingValidationContext,
+  /**
+   * The classType this binding was saved against, when known (ADR-0010,
+   * CEO review on issue #71): a re-uploaded Workflow can keep a node id
+   * in place while giving it a different class (e.g. a SaveImage swapped
+   * for a VHS_VideoCombine) — the node/field still exist, so nothing else
+   * here would catch it, yet the binding is now pointed at the wrong
+   * kind of node entirely.
+   */
+  savedClassType?: string,
 ): string | null {
   const node = ctx.workflow[nodeId];
   if (!node) return `node "${nodeId}" is not in the Workflow`;
+  if (savedClassType !== undefined && node.class_type !== savedClassType) {
+    return `node "${nodeId}" is now a ${node.class_type}, not the ${savedClassType} this binding was made for; rebind it`;
+  }
 
   const value = node.inputs[field];
   if (value === undefined) {
@@ -483,6 +495,7 @@ export function validateInputDefinition(
       binding.nodeId,
       binding.field,
       ctx,
+      binding.classType,
     );
     if (error) errors.push(error);
   }

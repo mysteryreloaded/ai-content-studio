@@ -397,7 +397,14 @@ describe("ModelEditorPage", () => {
     );
     expect(saved?.body).toEqual({
       version: 1,
-      modes: [{ name: "Default", description: "", outputNodeIds: ["1"] }],
+      modes: [
+        {
+          name: "Default",
+          description: "",
+          outputNodeIds: ["1"],
+          inputSettings: [],
+        },
+      ],
     });
   });
 
@@ -540,6 +547,151 @@ describe("ModelEditorPage", () => {
     expect(rowFor("2").style.opacity).toBe("0.35");
     expect(rowFor("3").style.opacity).toBe("");
     expect(rowFor("4").style.opacity).toBe("");
+  });
+
+  test("the Mode × Input grid keeps both of a visible switch's branches on the Path (issue #48)", async () => {
+    const STRENGTH_ID = "44444444-4444-4444-4444-444444444444";
+    const FLAG_ID = "55555555-5555-5555-5555-555555555555";
+    const DETAIL_SWITCH = {
+      model: DETAIL.model,
+      workflowHash: "hash1",
+      workflow: {
+        prim: { class_type: "PrimitiveBoolean", inputs: { value: true } },
+        switch: {
+          class_type: "ComfySwitchNode",
+          inputs: {
+            switch: ["prim", 0],
+            on_true: ["a", 0],
+            on_false: ["b", 0],
+          },
+        },
+        a: { class_type: "LoadImage", inputs: {} },
+        b: { class_type: "LoadImage", inputs: { strength: 1 } },
+        out: { class_type: "SaveImage", inputs: { image: ["switch", 0] } },
+      },
+      nodes: [
+        { id: "prim", classType: "PrimitiveBoolean", title: null },
+        { id: "switch", classType: "ComfySwitchNode", title: null },
+        { id: "a", classType: "LoadImage", title: null },
+        { id: "b", classType: "LoadImage", title: null },
+        { id: "out", classType: "SaveImage", title: null },
+      ],
+      outsideServiceNotes: [],
+      modes: [
+        {
+          id: "mode-1",
+          sortOrder: 0,
+          name: "Mode 1",
+          description: "",
+          outputNodes: [
+            {
+              nodeId: "out",
+              classType: "SaveImage",
+              title: null,
+              kind: "image",
+            },
+          ],
+          inputSettings: [],
+        },
+      ],
+      inputs: [
+        {
+          id: FLAG_ID,
+          kind: "select",
+          group: "settings",
+          label: "Flag",
+          help: "",
+          default: null,
+          options: [
+            { id: "off", label: "Off", values: [false] },
+            { id: "on", label: "On", values: [true] },
+          ],
+          bindings: [
+            {
+              nodeId: "prim",
+              field: "value",
+              classType: "PrimitiveBoolean",
+              title: null,
+            },
+          ],
+        },
+        {
+          id: STRENGTH_ID,
+          kind: "number",
+          group: "settings",
+          label: "Strength",
+          help: "",
+          default: null,
+          numberMode: "integer",
+          min: 0,
+          max: 10,
+          step: 1,
+          bindings: [
+            {
+              nodeId: "b",
+              field: "strength",
+              classType: "LoadImage",
+              title: null,
+            },
+          ],
+        },
+      ],
+    };
+
+    mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1"))
+        return Response.json(DETAIL_SWITCH);
+      if (call.method === "GET") return Response.json(NO_BACKENDS);
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+
+    const row = (await view.findByText("Strength", { selector: "th" })).closest(
+      "tr",
+    ) as HTMLElement;
+    const cell = row.querySelector("td") as HTMLElement;
+    // "strength" sits on the "on_false" branch, only reachable because
+    // the switch is steered by a field no visible Input hides: both
+    // branches stay on the Path, so this cell isn't dimmed.
+    expect(cell.style.opacity).toBe("");
+  });
+
+  test("Duplicate Mode adds a copy right after the original, named '… copy'", async () => {
+    const DETAIL_ONE_MODE = {
+      ...DETAIL,
+      modes: [
+        {
+          id: "mode-1",
+          sortOrder: 0,
+          name: "Mode 1",
+          description: "",
+          outputNodes: [
+            { nodeId: "1", classType: "LoadImage", title: null, kind: null },
+          ],
+          inputSettings: [],
+        },
+      ],
+    };
+
+    mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1"))
+        return Response.json(DETAIL_ONE_MODE);
+      if (call.method === "GET") return Response.json(NO_BACKENDS);
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+
+    await view.findByDisplayValue("Mode 1");
+    await userEvent.click(view.getByText("Duplicate Mode"));
+
+    expect(view.getAllByDisplayValue("Mode 1 copy")).toHaveLength(1);
+    const names = view
+      .getAllByLabelText("Mode name")
+      .map((el) => (el as HTMLInputElement).value);
+    expect(names).toEqual(["Mode 1", "Mode 1 copy"]);
   });
 
   test("adds an Image upload Input bound to a loader's file field and saves it (issue #50)", async () => {

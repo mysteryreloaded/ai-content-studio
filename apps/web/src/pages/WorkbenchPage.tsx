@@ -27,6 +27,7 @@ type WorkbenchInput = {
   group: "describe" | "settings";
   label: string;
   help: string;
+  required: boolean;
   placeholder: string | number | boolean | null;
 } & (
   | {
@@ -59,6 +60,8 @@ type WorkbenchInput = {
     }
 );
 
+type ModeMenuGroup = "prompt" | "images" | "audio" | "video";
+
 type ImageUploadInput = Extract<WorkbenchInput, { kind: "image_upload" }>;
 
 /** One Image Upload Input's file (issue #50): uploading, uploaded, or refused. */
@@ -72,6 +75,33 @@ interface WorkbenchMode {
   name: string;
   description: string;
   inputs: WorkbenchInput[];
+  menuGroup: ModeMenuGroup;
+  /** Issue #48 CEO review: true whenever the Mode's Path holds a bound Seed Input, even one this Mode hides. */
+  hasSeed: boolean;
+}
+
+/** The Workbench Mode menu's group headings (issue #48), by what a Mode's Uploads ask the user to start from. */
+const MODE_MENU_GROUP_LABELS: Record<ModeMenuGroup, string> = {
+  prompt: "From a prompt",
+  images: "From images",
+  audio: "With your audio",
+  video: "From a video",
+};
+const MODE_MENU_GROUP_ORDER: ModeMenuGroup[] = [
+  "prompt",
+  "images",
+  "audio",
+  "video",
+];
+
+/** Groups `modes` under their Mode menu heading, in a fixed order, dropping empty groups. */
+function groupModesForMenu(
+  modes: WorkbenchMode[],
+): Array<{ group: ModeMenuGroup; modes: WorkbenchMode[] }> {
+  return MODE_MENU_GROUP_ORDER.map((group) => ({
+    group,
+    modes: modes.filter((mode) => mode.menuGroup === group),
+  })).filter((entry) => entry.modes.length > 0);
 }
 
 interface InputIssue {
@@ -96,6 +126,57 @@ function initialValuesFor(mode: WorkbenchMode): Record<string, string> {
         : String(input.default);
   }
   return values;
+}
+
+/** Whether `raw` parses for `input`'s own kind and constraints (mirrors `buildInputValuesSchema`'s per-field checks), blank always passing. */
+function valueParsesForInput(input: WorkbenchInput, raw: string): boolean {
+  if (raw === "") return true;
+  if (input.kind === "text") return raw.length <= input.maxLength;
+  if (input.kind === "number") {
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return false;
+    if (n < input.min || n > input.max) return false;
+    if (input.numberMode === "integer" && !Number.isInteger(n)) return false;
+    const steps = (n - input.min) / input.step;
+    return Math.abs(steps - Math.round(steps)) < 1e-9;
+  }
+  if (input.kind === "seed") {
+    const n = Number(raw);
+    return (
+      Number.isInteger(n) &&
+      n >= 0 &&
+      n <= (input.max ?? Number.POSITIVE_INFINITY)
+    );
+  }
+  if (input.kind === "image_upload") {
+    // An Upload id's own completeness/ownership can only be checked
+    // server-side; carrying it across a reload is best-effort here.
+    return true;
+  }
+  return input.options.some((option) => option.id === raw);
+}
+
+/**
+ * Carries `basis`'s values onto `mode`'s own Inputs (issue #48 AC6):
+ * an Input `mode` also shows keeps its value, the rest default. With
+ * `validate` (the 409 `model_changed` reload, where the Model's Inputs
+ * may have changed underneath the form), a carried value that no
+ * longer parses for that Input is dropped rather than kept to fail on
+ * the next submit.
+ */
+function carryValuesFor(
+  mode: WorkbenchMode,
+  basis: Record<string, string>,
+  validate = false,
+): Record<string, string> {
+  const next = initialValuesFor(mode);
+  for (const input of mode.inputs) {
+    const raw = basis[input.id];
+    if (raw === undefined) continue;
+    if (validate && !valueParsesForInput(input, raw)) continue;
+    next[input.id] = raw;
+  }
+  return next;
 }
 
 /** The submitted payload for `mode`'s Inputs: blank values are left out, a number is parsed. */
@@ -169,6 +250,13 @@ function toInputDefinition(input: WorkbenchInput): InputDefinition {
   };
 }
 
+/** `mode.inputs` ids marked `required` on the server (issue #48), for the client's own `parseInputValues` schema. */
+function requiredIdsFor(mode: WorkbenchMode): Set<string> {
+  return new Set(
+    mode.inputs.filter((input) => input.required).map((input) => input.id),
+  );
+}
+
 /** Live, client-side validation (issue #46): the same `parseInputValues` schema the server uses, so field issues show before submit. */
 function liveIssuesFor(
   revision: number,
@@ -179,6 +267,7 @@ function liveIssuesFor(
     String(revision),
     mode.id,
     mode.inputs.map(toInputDefinition),
+    requiredIdsFor(mode),
   );
   const result = schema.safeParse(valuesPayload(mode, values));
   if (result.success) return {};
@@ -617,13 +706,12 @@ export function WorkbenchPage() {
 
   const selectedMode =
     model?.modes.find((m) => m.id === selectedModeId) ?? null;
-  /** The count picker shows whenever the Mode's Path holds a bound Seed Input (issue #47's AC), even one not otherwise rendered. */
-  const hasSeedInput =
-    selectedMode?.inputs.some((input) => input.kind === "seed") ?? false;
+  /** The count picker shows whenever the Mode's Path holds a bound Seed Input (issue #47's AC), even one this Mode hides (issue #48 CEO review), so it's read off `hasSeed` rather than `inputs`, which excludes hidden ones. */
+  const hasSeedInput = selectedMode?.hasSeed ?? false;
 
   const selectMode = useCallback((mode: WorkbenchMode) => {
     setSelectedModeId(mode.id);
-    setValues(initialValuesFor(mode));
+    setValues((current) => carryValuesFor(mode, current));
     setIssuesByInputId({});
     for (const running of runningUploadsRef.current.values()) {
       running.controller.abort();
@@ -917,7 +1005,10 @@ export function WorkbenchPage() {
           const stillSelected = body.model.modes.find(
             (m) => m.id === selectedModeId,
           );
-          selectMode(stillSelected ?? body.model.modes[0] ?? mode);
+          const nextMode = stillSelected ?? body.model.modes[0] ?? mode;
+          setSelectedModeId(nextMode.id);
+          setValues((current) => carryValuesFor(nextMode, current, true));
+          setIssuesByInputId({});
           setSubmitState({
             status: "error",
             message:
@@ -998,7 +1089,7 @@ export function WorkbenchPage() {
     } catch {
       setSubmitState({ status: "error", message: "could not submit" });
     }
-  }, [selectedModeId, count, selectMode, refreshCaps]);
+  }, [selectedModeId, count, refreshCaps]);
 
   const cancelWaiting = useCallback(() => {
     if (waitRef.current) waitRef.current.cancelled = true;
@@ -1118,17 +1209,22 @@ export function WorkbenchPage() {
             ) : (
               <fieldset>
                 <legend>Mode</legend>
-                {model.modes.map((mode) => (
-                  <label key={mode.id} style={{ display: "block" }}>
-                    <input
-                      type="radio"
-                      name="mode"
-                      value={mode.id}
-                      checked={selectedModeId === mode.id}
-                      onChange={() => selectMode(mode)}
-                    />
-                    {mode.name}
-                  </label>
+                {groupModesForMenu(model.modes).map(({ group, modes }) => (
+                  <fieldset key={group}>
+                    <legend>{MODE_MENU_GROUP_LABELS[group]}</legend>
+                    {modes.map((mode) => (
+                      <label key={mode.id} style={{ display: "block" }}>
+                        <input
+                          type="radio"
+                          name="mode"
+                          value={mode.id}
+                          checked={selectedModeId === mode.id}
+                          onChange={() => selectMode(mode)}
+                        />
+                        {mode.name}
+                      </label>
+                    ))}
+                  </fieldset>
                 ))}
               </fieldset>
             )}
@@ -1434,7 +1530,10 @@ function InputField({ input, value, onChange, issue }: InputFieldProps) {
 
   return (
     <div>
-      <label htmlFor={`input-${input.id}`}>{input.label}</label>
+      <label htmlFor={`input-${input.id}`}>
+        {input.label}
+        {input.required && " (required)"}
+      </label>
       {input.help && <p id={helpId}>{input.help}</p>}
 
       {input.kind === "text" &&

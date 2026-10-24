@@ -155,6 +155,13 @@
       "when": 1792832314499,
       "tag": "0021_clever_tattoo",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1792832400000,
+      "tag": "0022_blue_apocalypse",
+      "breakpoints": true
     }
   ]
 }

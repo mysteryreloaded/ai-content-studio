@@ -19,9 +19,10 @@ export function Footer() {
         {settings?.contact && (
           <a href={contactHref(settings.contact)}>Contact · Report abuse</a>
         )}
-        {settings?.footerLinks.map((link) => (
+        {settings?.footerLinks?.map((link, index) => (
           <a
-            key={link.url}
+            // biome-ignore lint/suspicious/noArrayIndexKey: a fixed-length, admin-set list refetched whole each time; the URL isn't unique enough to key by (issue #65 QA round 3)
+            key={index}
             href={link.url}
             target="_blank"
             rel="noopener noreferrer"

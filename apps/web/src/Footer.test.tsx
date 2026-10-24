@@ -118,4 +118,22 @@ describe("Footer", () => {
     expect(imprint.getAttribute("rel")).toBe("noopener noreferrer");
     expect(view.getByRole("link", { name: "Status" })).toBeTruthy();
   });
+
+  test("still renders Privacy and the theme switch when /api/site-settings 500s (issue #65 QA round 3)", async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/api/site-settings")) {
+        return Response.json({ error: "internal error" }, { status: 500 });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as typeof fetch;
+    const view = renderFooter();
+
+    const privacy = await view.findByRole("link", { name: "Privacy" });
+    expect(privacy.getAttribute("href")).toBe("/privacy");
+    expect(view.getByRole("group", { name: "Theme" })).toBeTruthy();
+    expect(
+      view.queryByRole("link", { name: "Contact · Report abuse" }),
+    ).toBeNull();
+  });
 });

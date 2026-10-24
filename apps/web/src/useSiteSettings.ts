@@ -21,12 +21,16 @@ export function useSiteSettings(): PublicSiteSettings | null {
   useEffect(() => {
     let cancelled = false;
     fetch("/api/site-settings")
-      .then((res) => res.json() as Promise<PublicSiteSettings>)
+      .then((res) => {
+        if (!res.ok) throw new Error(`unexpected status ${res.status}`);
+        return res.json() as Promise<PublicSiteSettings>;
+      })
       .then((data) => {
         if (!cancelled) setSettings(data);
       })
       .catch(() => {
-        /* leave it null rather than show a wrong default */
+        /* leave it null rather than show a wrong default, or the
+           {"error": ...} body from a 500 (issue #65 QA round 3) */
       });
     return () => {
       cancelled = true;

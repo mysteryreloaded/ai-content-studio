@@ -14,10 +14,19 @@ afterAll(async () => {
   await GlobalRegistrator.unregister();
 });
 
-function mockFetch(response: Response | (() => Response)) {
+function mockFetch(
+  response: Response | (() => Response),
+  options: { siteSettingsStatus?: number } = {},
+) {
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = typeof input === "string" ? input : input.toString();
     if (url.endsWith("/api/site-settings")) {
+      if (options.siteSettingsStatus && options.siteSettingsStatus !== 200) {
+        return Response.json(
+          { error: "internal error" },
+          { status: options.siteSettingsStatus },
+        );
+      }
       return Response.json({
         title: "AI Content Studio",
         landingText: "",
@@ -75,5 +84,21 @@ describe("PrivacyPage", () => {
         "Could not load the Privacy policy. Please try again.",
       ),
     ).toBeTruthy();
+  });
+
+  test("still renders the page and the footer's theme switch when /api/site-settings 500s (issue #65 QA round 3)", async () => {
+    mockFetch(
+      Response.json({
+        operatorBody: "We keep it simple.",
+        operatorUpdatedAt: "2026-01-01T00:00:00.000Z",
+        generatedBody: "## What this studio stores",
+      }),
+      { siteSettingsStatus: 500 },
+    );
+    const view = render(<PrivacyPage />);
+
+    expect(await view.findByText("We keep it simple.")).toBeTruthy();
+    expect(view.getByRole("link", { name: "Privacy" })).toBeTruthy();
+    expect(view.getByRole("group", { name: "Theme" })).toBeTruthy();
   });
 });

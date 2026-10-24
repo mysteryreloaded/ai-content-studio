@@ -811,9 +811,10 @@ export class ModelRepository {
   }
 
   /**
-   * Issue #65: whether any enabled Model's first Mode makes something
-   * other than video, which switches the landing page's default text
-   * from "AI video models" to "AI models". A Mode with no output kind
+   * Issue #65: whether any Mode of any enabled Model makes something
+   * other than video (checked by each Mode's main Asset, its first
+   * output node), which switches the landing page's default text from
+   * "AI video models" to "AI models". A Mode with no output kind
    * (unresolved, or an unrecognised save node) doesn't count as a
    * reason to switch, since LTX/Wan's all-in-one Workflows are
    * video-first.

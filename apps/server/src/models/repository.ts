@@ -770,12 +770,18 @@ export class ModelRepository {
     };
   }
 
-  /** Every numbered revision of this Model, newest first (issue #71's Revisions section). */
+  /**
+   * Every numbered revision of this Model, newest first (issue #71's
+   * Revisions section) — a Test run's own negative-numbered revision
+   * (issue #74's `createTestRevision`) isn't one of these (CEO review).
+   */
   async listRevisions(id: string): Promise<RevisionSummary[]> {
     const rows = await this.db
       .select()
       .from(modelRevisions)
-      .where(eq(modelRevisions.modelId, id))
+      .where(
+        and(eq(modelRevisions.modelId, id), eq(modelRevisions.isTest, false)),
+      )
       .orderBy(desc(modelRevisions.revisionNumber));
 
     const summaries: RevisionSummary[] = [];
@@ -792,7 +798,11 @@ export class ModelRepository {
     return summaries;
   }
 
-  /** One numbered revision's own Workflow, Inputs and Modes (issue #71), for the restore route's pre-check. */
+  /**
+   * One numbered revision's own Workflow, Inputs and Modes (issue
+   * #71), for the restore route's pre-check — never a Test run's own
+   * revision (CEO review).
+   */
   async getRevisionDetail(
     id: string,
     revisionNumber: number,
@@ -804,6 +814,7 @@ export class ModelRepository {
         and(
           eq(modelRevisions.modelId, id),
           eq(modelRevisions.revisionNumber, revisionNumber),
+          eq(modelRevisions.isTest, false),
         ),
       );
     if (!revision) return null;
@@ -853,6 +864,7 @@ export class ModelRepository {
           and(
             eq(modelRevisions.modelId, id),
             eq(modelRevisions.revisionNumber, revisionNumber),
+            eq(modelRevisions.isTest, false),
           ),
         );
       if (!target) throw new NotFound();

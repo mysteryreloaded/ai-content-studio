@@ -18,6 +18,7 @@ import {
 } from "../db/schema.js";
 import type { Env } from "../env.js";
 import type { Logger } from "../logger.js";
+import { ModelRepository } from "../models/repository.js";
 import { createTestDatabase } from "../test/database.js";
 
 const silentLogger: Logger = {
@@ -550,6 +551,52 @@ describe("Workflow re-upload and revisions/restore (issue #71)", () => {
     });
     const detail = (await detailRes.json()) as { workflow: unknown };
     expect(detail.workflow).toEqual(WORKFLOW_V1);
+  });
+
+  test("GET /:id/revisions never lists a Test run's own negative-numbered revision (issue #74 CEO review)", async () => {
+    const { app } = await build();
+    const { db } = await testDb;
+    const headers = await adminHeaders();
+
+    const createRes = await app.request("/api/admin/models", {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({ name: "LTX", workflow: WORKFLOW_V1 }),
+    });
+    const { model } = (await createRes.json()) as {
+      model: { id: string; version: number };
+    };
+
+    const repository = new ModelRepository(db, clock);
+    await repository.createTestRevision(model.id, [], {
+      name: "Test",
+      description: "",
+      outputNodes: [
+        { nodeId: "2", classType: "SaveImage", title: null, kind: "image" },
+      ],
+      inputSettings: [],
+    });
+
+    const listRes = await app.request(
+      `/api/admin/models/${model.id}/revisions`,
+      { headers },
+    );
+    expect(listRes.status).toBe(200);
+    const { revisions } = (await listRes.json()) as {
+      revisions: { revisionNumber: number }[];
+    };
+    expect(revisions.map((r) => r.revisionNumber)).toEqual([1]);
+    expect(revisions.every((r) => r.revisionNumber > 0)).toBe(true);
+
+    const restoreRes = await app.request(
+      `/api/admin/models/${model.id}/revisions/-1/restore`,
+      {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ version: model.version }),
+      },
+    );
+    expect(restoreRes.status).toBe(404);
   });
 
   test("POST restore 404s an unknown revision number", async () => {

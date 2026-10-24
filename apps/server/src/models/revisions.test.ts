@@ -154,4 +154,38 @@ describe("ModelRepository revisions and restore", () => {
       repository.restoreRevision(created.id, 1, created.version + 1, SYSTEM),
     ).rejects.toBeInstanceOf(StaleVersion);
   });
+
+  test("a Test run's own revision is never numbered among listRevisions/getRevisionDetail, and can't be restored (issue #74 CEO review)", async () => {
+    const repository = await repo();
+    const { record: created } = await repository.createFromWorkflow(
+      "M1",
+      WORKFLOW_V1,
+      SYSTEM,
+    );
+
+    const { revisionId: testRevisionId } = await repository.createTestRevision(
+      created.id,
+      [],
+      {
+        name: "Test",
+        description: "",
+        outputNodes: [
+          { nodeId: "2", classType: "SaveImage", title: null, kind: "image" },
+        ],
+        inputSettings: [],
+      },
+    );
+    expect(testRevisionId).toBeTruthy();
+
+    const revisions = await repository.listRevisions(created.id);
+    expect(revisions.map((r) => r.revisionNumber)).toEqual([1]);
+    expect(revisions.every((r) => r.revisionNumber > 0)).toBe(true);
+
+    const detail = await repository.getRevisionDetail(created.id, -1);
+    expect(detail).toBeNull();
+
+    await expect(
+      repository.restoreRevision(created.id, -1, created.version, SYSTEM),
+    ).rejects.toBeInstanceOf(NotFound);
+  });
 });

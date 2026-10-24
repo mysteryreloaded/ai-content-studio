@@ -1,5 +1,5 @@
 {
-  "id": "3e65ea27-57b3-4605-8986-f2dc79c0a0a1",
+  "id": "3aa98d79-a67e-4633-baf9-3b66f79bf7fa",
   "prevId": "b634ba47-9072-4ee3-9105-52991e77d435",
   "version": "7",
   "dialect": "postgresql",
@@ -448,6 +448,13 @@
           "primaryKey": false,
           "notNull": false
         },
+        "pending_backend_cancel": {
+          "name": "pending_backend_cancel",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
         "started_at": {
           "name": "started_at",
           "type": "timestamp with time zone",
@@ -546,7 +553,7 @@
             }
           ],
           "isUnique": true,
-          "where": "\"generations\".\"state\" in ('starting', 'running') and \"generations\".\"backend_id\" is not null",
+          "where": "\"generations\".\"state\" in ('starting', 'running', 'cancelling') and \"generations\".\"backend_id\" is not null",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -1119,13 +1126,6 @@
           "type": "jsonb",
           "primaryKey": false,
           "notNull": true
-        },
-        "input_settings": {
-          "name": "input_settings",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
         },
         "created_at": {
           "name": "created_at",
@@ -1815,7 +1815,9 @@
         "running",
         "saving",
         "succeeded",
-        "failed"
+        "failed",
+        "cancelling",
+        "cancelled"
       ]
     },
     "public.log_level": {

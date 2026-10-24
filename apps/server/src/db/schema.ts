@@ -454,9 +454,12 @@ export const modelTermsAcceptances = pgTable(
 );
 
 /**
- * A Generation's state (issue #43, #44). `queued` -> `starting` ->
+ * A Generation's state (issue #43, #44, #54). `queued` -> `starting` ->
  * `running` -> `saving` -> `succeeded`, or `failed` from any of the
- * dispatched states. Cancellation isn't wired yet (a later issue). Every
+ * dispatched states. Cancelling a `queued` Generation jumps straight to
+ * `cancelled` (issue #54's AC: "cancel at once"); cancelling a `starting`
+ * or `running` one moves it to `cancelling` first, until the Backend's
+ * interrupt is confirmed (or the job's gone), then `cancelled`. Every
  * state here counts as "unfinished" for the delete guards on Models and
  * Backends.
  */
@@ -467,6 +470,8 @@ export const generationState = pgEnum("generation_state", [
   "saving",
   "succeeded",
   "failed",
+  "cancelling",
+  "cancelled",
 ]);
 
 /**
@@ -483,7 +488,11 @@ export const generationState = pgEnum("generation_state", [
  * set once the dispatcher (issue #44) claims this Generation, and kept
  * afterwards for history even once the Backend frees. `error` is set
  * only on `failed`. Progress (step counter, elapsed/estimate) is kept in
- * memory only (issue #44's AC), not persisted here.
+ * memory only (issue #44's AC), not persisted here. `pendingBackendCancel`
+ * (issue #54) is set when a cancel's own interrupt couldn't reach an
+ * unreachable Backend: the Generation is cancelled right away regardless,
+ * but the dispatcher must re-send that Backend's interrupt before giving
+ * it any new work.
  *
  * Issue #55 (reliable dispatch): `tries` counts tries made so far (at
  * most 2) and also doubles as this row's own concurrency token — every
@@ -525,6 +534,9 @@ export const generations = pgTable(
     uploadIds: uuid("upload_ids").array().notNull().default(sql`'{}'::uuid[]`),
     tries: integer("tries").notNull().default(0),
     error: text("error"),
+    pendingBackendCancel: boolean("pending_backend_cancel")
+      .notNull()
+      .default(false),
     startedAt: timestamp("started_at", { withTimezone: true }),
     queuedAt: timestamp("queued_at", { withTimezone: true }).notNull(),
     submittedAt: timestamp("submitted_at", { withTimezone: true }).notNull(),
@@ -538,16 +550,17 @@ export const generations = pgTable(
     index("generations_submission_id_idx").on(table.submissionId),
     index("generations_state_idx").on(table.state),
     /**
-     * One unfinished (starting/running) try per Backend at a time: the
-     * dispatcher's claim UPDATE relies on this to fail with a unique
-     * violation instead of double-booking a Backend on a race. `saving`
-     * is deliberately excluded so the Backend frees as soon as the run
-     * ends, letting the next start overlap this Generation's save.
+     * One unfinished (starting/running/cancelling) try per Backend at a
+     * time: the dispatcher's claim UPDATE relies on this to fail with a
+     * unique violation instead of double-booking a Backend on a race.
+     * `saving` is deliberately excluded so the Backend frees as soon as
+     * the run ends, letting the next start overlap this Generation's
+     * save.
      */
     uniqueIndex("generations_backend_unfinished_unique")
       .on(table.backendId)
       .where(
-        sql`${table.state} in ('starting', 'running') and ${table.backendId} is not null`,
+        sql`${table.state} in ('starting', 'running', 'cancelling') and ${table.backendId} is not null`,
       ),
   ],
 );

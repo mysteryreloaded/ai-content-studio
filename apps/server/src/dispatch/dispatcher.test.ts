@@ -63,6 +63,7 @@ function buildPlan(setup: Setup) {
       listQueued: async () => setup.queued,
       activeCountsByUser: async () => setup.activeCounts ?? new Map(),
       busyBackendIds: async () => setup.busyBackendIds ?? new Set(),
+      pendingCancelBackendIds: async () => new Set<string>(),
     } as unknown as DispatcherDeps["queue"],
     backendRepository: {
       list: async () => setup.backends,
@@ -264,6 +265,8 @@ describe("Dispatcher resilience to a DB outage", () => {
         },
         activeCountsByUser: async () => new Map(),
         busyBackendIds: async () => new Set(),
+        pendingBackendCancels: async () => [],
+        pendingCancelBackendIds: async () => new Set<string>(),
       } as unknown as DispatcherDeps["queue"],
       backendRepository: {
         list: async () => [],
@@ -308,11 +311,12 @@ describe("Dispatcher resilience to a DB outage", () => {
     // instead of being stuck forever behind the first failure's `ticking`
     // flag never resetting.
     dispatcher.wake();
-    expect(listQueuedCalls).toBe(2);
 
-    // Let the second tick's own (also failing) claim and Log write settle,
-    // so neither leaves an unhandled rejection behind.
+    // Let the second tick's own (also failing) claim and Log write settle
+    // — now one more microtask away than before, behind retryPendingCancels'
+    // own query — so neither leaves an unhandled rejection behind.
     await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(listQueuedCalls).toBe(2);
     expect(logCalls).toBe(2);
     expect(loggerErrorCalls).toBe(2);
   });
@@ -428,5 +432,60 @@ describe("Dispatcher Pause gating (issue #59)", () => {
     clock.advance(2_000);
     await sweep(); // 11s unpaused elapsed: past the 10s threshold
     expect(markFailedCalls).toBe(1);
+  });
+});
+
+describe("Dispatcher.retryPendingCancels (issue #54)", () => {
+  function setup(reachability: "reachable" | "unreachable" | "unknown"): {
+    dispatcher: Dispatcher;
+    backendGetCalls: number;
+    clearCalls: string[];
+  } {
+    let backendGetCalls = 0;
+    const clearCalls: string[] = [];
+    const deps: Partial<DispatcherDeps> = {
+      queue: {
+        pendingBackendCancels: async () => [
+          { generationId: "gen-1", backendId: "backend-1" },
+        ],
+        clearPendingBackendCancel: async (generationId: string) => {
+          clearCalls.push(generationId);
+        },
+      } as unknown as DispatcherDeps["queue"],
+      backendRepository: {
+        get: async () => {
+          backendGetCalls += 1;
+          return fakeBackend();
+        },
+      } as unknown as DispatcherDeps["backendRepository"],
+      backendsService: {
+        healthFor: () => ({
+          reachability,
+          comfyuiVersion: null,
+          vramTotal: null,
+          vramFree: null,
+          credentialsError: false,
+        }),
+      } as unknown as DispatcherDeps["backendsService"],
+    };
+    return {
+      dispatcher: new Dispatcher(deps as DispatcherDeps),
+      backendGetCalls,
+      clearCalls,
+    };
+  }
+
+  test("skips a Backend still 'unknown' right after boot, instead of waiting out cancelJob's own timeout for it", async () => {
+    const { dispatcher, clearCalls } = setup("unknown");
+    // biome-ignore lint/suspicious/noExplicitAny: reaching into the private method under test
+    await (dispatcher as any).retryPendingCancels();
+    expect(clearCalls).toEqual([]);
+  });
+
+  test("skips an unreachable Backend the same way", async () => {
+    const { dispatcher, clearCalls } = setup("unreachable");
+    // biome-ignore lint/suspicious/noExplicitAny: reaching into the private method under test
+    await (dispatcher as any).retryPendingCancels();
+    expect(clearCalls).toEqual([]);
   });
 });

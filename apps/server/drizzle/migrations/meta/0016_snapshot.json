@@ -1,5 +1,5 @@
 {
-  "id": "3ebf526d-5c39-4b7d-8302-6b9abbca5c20",
+  "id": "6108b265-5ea4-49e3-8a85-1d934bfa4d14",
   "prevId": "075d7318-7b40-4469-9a78-b649ee9c7d73",
   "version": "7",
   "dialect": "postgresql",
@@ -302,13 +302,6 @@
           "notNull": true,
           "default": true
         },
-        "draining": {
-          "name": "draining",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
         "version": {
           "name": "version",
           "type": "integer",
@@ -428,13 +421,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "tries": {
-          "name": "tries",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
         "error": {
           "name": "error",
           "type": "text",
@@ -446,12 +432,6 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
-        },
-        "queued_at": {
-          "name": "queued_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
         },
         "submitted_at": {
           "name": "submitted_at",
@@ -1376,6 +1356,20 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'[]'::jsonb"
+        },
+        "blocked_words": {
+          "name": "blocked_words",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "blocked_words_revision": {
+          "name": "blocked_words_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
         },
         "created_at": {
           "name": "created_at",

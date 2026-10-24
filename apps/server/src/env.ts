@@ -15,6 +15,7 @@ const DOCS_BY_KEY: Record<string, string> = {
   BACKENDS_ENABLED: "docs/server-env.md#backends_enabled",
   STATUS_TOKEN: "docs/server-env.md#status_token",
   MIN_FREE_DISK_GB: "docs/server-env.md#min_free_disk_gb",
+  FFMPEG_CONCURRENCY: "docs/server-env.md#ffmpeg_concurrency",
 };
 
 function isLocalhost(url: string): boolean {
@@ -60,6 +61,7 @@ const envSchema = z
       .transform((value) => value === "true"),
     STATUS_TOKEN: z.string().min(1).optional(),
     MIN_FREE_DISK_GB: z.coerce.number().positive().default(10),
+    FFMPEG_CONCURRENCY: z.coerce.number().int().positive().default(2),
   })
   .superRefine((value, ctx) => {
     if (value.OIDC_ISSUER && !isLocalhost(value.PUBLIC_URL)) {
@@ -86,6 +88,7 @@ export const ENV_KEYS: readonly string[] = [
   "BACKENDS_ENABLED",
   "STATUS_TOKEN",
   "MIN_FREE_DISK_GB",
+  "FFMPEG_CONCURRENCY",
 ];
 
 export type Env = z.infer<typeof envSchema>;

@@ -133,6 +133,7 @@ describe("every route's access level is declared and enforced", () => {
     const ADMIN_STATUS_OVERRIDES: Record<string, number> = {
       "PUT /api/admin/site-settings": 400,
       "PUT /api/admin/site-settings/terms": 400,
+      "PUT /api/admin/site-settings/privacy": 400,
       "POST /api/admin/backends": 400,
       "GET /api/admin/backends/:id": 404,
       "PUT /api/admin/backends/:id": 404,

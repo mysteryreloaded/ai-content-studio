@@ -167,7 +167,7 @@ describe("/api/terms", () => {
     const session = await createSession(db, clock, user.id);
     const cookie = `${SESSION_COOKIE_NAME}=${session.cookieValue}`;
 
-    const blockedRes = await app.request("/api/models", {
+    const blockedRes = await app.request("/api/models/nonexistent", {
       headers: { ...SAME_ORIGIN_HEADERS, Cookie: cookie },
     });
     expect(blockedRes.status).toBe(403);
@@ -180,10 +180,10 @@ describe("/api/terms", () => {
     expect(acceptRes.status).toBe(200);
     expect(await acceptRes.json()).toEqual({ ok: true, version: 5 });
 
-    const afterRes = await app.request("/api/models", {
+    const afterRes = await app.request("/api/models/nonexistent", {
       headers: { ...SAME_ORIGIN_HEADERS, Cookie: cookie },
     });
-    expect(afterRes.status).toBe(200);
+    expect(afterRes.status).toBe(404);
 
     const [updatedUser] = await db
       .select({ termsAcceptedVersion: users.termsAcceptedVersion })
@@ -226,10 +226,10 @@ describe("/api/terms", () => {
     });
     expect(acceptRes.status).toBe(200);
 
-    const okRes = await app.request("/api/models", {
+    const okRes = await app.request("/api/models/nonexistent", {
       headers: { ...SAME_ORIGIN_HEADERS, Cookie: cookie },
     });
-    expect(okRes.status).toBe(200);
+    expect(okRes.status).toBe(404);
 
     const cleared = await updateSiteTerms(db, clock, admin, {
       revision: firstSave.settings.termsRevision,
@@ -248,7 +248,7 @@ describe("/api/terms", () => {
     if (!resumed.ok) throw new Error("expected ok");
     expect(resumed.settings.termsVersion).not.toBe(firstVersion);
 
-    const blockedAgainRes = await app.request("/api/models", {
+    const blockedAgainRes = await app.request("/api/models/nonexistent", {
       headers: { ...SAME_ORIGIN_HEADERS, Cookie: cookie },
     });
     expect(blockedAgainRes.status).toBe(403);

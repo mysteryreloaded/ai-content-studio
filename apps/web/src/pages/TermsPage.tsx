@@ -1,6 +1,7 @@
 import { renderMarkdown } from "@ai-content-studio/shared";
 import { useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { Footer } from "../Footer.js";
 import { useSession } from "../useSession.js";
 import { useSiteTerms } from "../useSiteTerms.js";
 
@@ -24,10 +25,13 @@ export function TermsPage() {
 
   if (terms.terms.version === null) {
     return (
-      <main>
-        <h1>Terms</h1>
-        <p>No Site terms have been set.</p>
-      </main>
+      <>
+        <main>
+          <h1>Terms</h1>
+          <p>No Site terms have been set.</p>
+        </main>
+        <Footer />
+      </>
     );
   }
 
@@ -51,30 +55,35 @@ export function TermsPage() {
   }
 
   return (
-    <main>
-      <h1>Terms</h1>
-      {terms.terms.versionDate && (
-        <p>
-          Version {terms.terms.version}, effective{" "}
-          {new Date(terms.terms.versionDate).toLocaleDateString()}
-        </p>
-      )}
-      <div
-        // biome-ignore lint/security/noDangerouslySetInnerHtml: renderMarkdown (shared) strips raw HTML and images
-        dangerouslySetInnerHTML={{ __html: renderMarkdown(terms.terms.body) }}
-      />
+    <>
+      <main>
+        <h1>Terms</h1>
+        {terms.terms.versionDate && (
+          <p>
+            Version {terms.terms.version}, effective{" "}
+            {new Date(terms.terms.versionDate).toLocaleDateString()}
+          </p>
+        )}
+        <div
+          // biome-ignore lint/security/noDangerouslySetInnerHtml: renderMarkdown (shared) strips raw HTML and images
+          dangerouslySetInnerHTML={{
+            __html: renderMarkdown(terms.terms.body),
+          }}
+        />
 
-      {session.status === "signed-in" && !alreadyAccepted && (
-        <>
-          <button type="button" disabled={accepting} onClick={handleAccept}>
-            Accept
-          </button>
-          {error && <p role="alert">{error}</p>}
-        </>
-      )}
-      {session.status === "signed-in" && alreadyAccepted && (
-        <p>You've accepted the current version.</p>
-      )}
-    </main>
+        {session.status === "signed-in" && !alreadyAccepted && (
+          <>
+            <button type="button" disabled={accepting} onClick={handleAccept}>
+              Accept
+            </button>
+            {error && <p role="alert">{error}</p>}
+          </>
+        )}
+        {session.status === "signed-in" && alreadyAccepted && (
+          <p>You've accepted the current version.</p>
+        )}
+      </main>
+      <Footer />
+    </>
   );
 }

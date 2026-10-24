@@ -175,6 +175,28 @@ describe("/api/models/:slug and :slug/generations", () => {
     };
   }
 
+  test("GET /api/models lists enabled Models without a session (issue #65)", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const { app, backendsService } = await build();
+      const { headers: adminHeaders } = await headersFor("admin");
+      await buildEnabledModel(app, adminHeaders, fake.url);
+
+      const res = await app.request("/api/models", {
+        headers: SAME_ORIGIN_HEADERS,
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        models: Array<{ name: string }>;
+      };
+      expect(body.models.map((model) => model.name)).toEqual(["LTX"]);
+
+      backendsService.stop();
+    } finally {
+      fake.stop();
+    }
+  });
+
   test("404s a Model that doesn't exist or isn't enabled", async () => {
     const { app, backendsService } = await build();
     const { headers } = await headersFor("user");

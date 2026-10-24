@@ -1,6 +1,7 @@
 import {
   isAllowedImageContentType,
   maxBytesFor,
+  sitePrivacyFieldsSchema,
   siteSettingsFieldsSchema,
   siteTermsFieldsSchema,
 } from "@ai-content-studio/shared";
@@ -13,6 +14,7 @@ import type { AppEnv } from "../auth/app-env.js";
 import {
   type SiteSettingsUpdateImage,
   getSiteSettings,
+  updateSitePrivacy,
   updateSiteSettings,
   updateSiteTerms,
 } from "../branding/site-settings-store.js";
@@ -20,6 +22,16 @@ import type { Database } from "../db/client.js";
 import type { Storage } from "../storage/storage.js";
 
 const versionSchema = z.coerce.number().int().min(1);
+
+/** `footerLinks` travels as a JSON string inside the branding form's `multipart/form-data` body. */
+function parseFooterLinks(value: unknown): unknown {
+  if (typeof value !== "string" || value === "") return [];
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
 
 async function readImageField(
   value: unknown,
@@ -75,6 +87,7 @@ export function adminSiteSettingsRoute(
       accent: body.accent,
       signUpMode: body.signUpMode,
       contact: body.contact,
+      footerLinks: parseFooterLinks(body.footerLinks),
     });
     if (!fieldsResult.success) {
       return c.json(
@@ -107,6 +120,7 @@ export function adminSiteSettingsRoute(
         accent: fieldsResult.data.accent,
         signUpMode: fieldsResult.data.signUpMode,
         contact: fieldsResult.data.contact,
+        footerLinks: fieldsResult.data.footerLinks,
         logo,
         background,
       },
@@ -149,6 +163,46 @@ export function adminSiteSettingsRoute(
       revision: revisionResult.data,
       body: fieldsResult.data.body,
       askAgain: fieldsResult.data.askAgain,
+    });
+
+    if (!result.ok) {
+      return c.json({ error: "changed by someone else, reload" }, 409);
+    }
+
+    return c.json(result.settings);
+  });
+
+  guardedRoute(app, routes, basePath, "put", "/privacy", "admin", async (c) => {
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "invalid JSON body" }, 400);
+    }
+
+    const revisionResult = versionSchema.safeParse(
+      (body as Record<string, unknown> | null)?.revision,
+    );
+    if (!revisionResult.success) {
+      return c.json({ error: "revision is required" }, 400);
+    }
+
+    const fieldsResult = sitePrivacyFieldsSchema.safeParse({
+      body: (body as Record<string, unknown> | null)?.body,
+    });
+    if (!fieldsResult.success) {
+      return c.json(
+        {
+          error: "invalid privacy policy",
+          issues: fieldsResult.error.issues,
+        },
+        400,
+      );
+    }
+
+    const result = await updateSitePrivacy(db, clock, adminActorFrom(c), {
+      revision: revisionResult.data,
+      body: fieldsResult.data.body,
     });
 
     if (!result.ok) {

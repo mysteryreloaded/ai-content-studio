@@ -238,6 +238,28 @@ export const models = pgTable(
     sortOrder: integer("sort_order").notNull(),
     currentRevision: integer("current_revision").notNull().default(1),
     version: integer("version").notNull().default(1),
+    /**
+     * Issue #61: `termsBody` is the Markdown shown in the blocking dialog,
+     * but `termsVersion` only moves when it's first set or a save ticks
+     * "Ask everyone to accept again" — a quiet text edit keeps everyone's
+     * acceptance (mirrors `siteSettings.termsVersion`). A blank
+     * `termsBody` means "no terms are set" for this Model; `termsVersion`
+     * itself is kept (not nulled) across a clear, so a later save keeps
+     * counting up instead of reusing a number an old acceptance already
+     * points at. `termsRevision` is terms' own optimistic-concurrency
+     * token, independent of `version`, so saving Details/Modes never
+     * races a Terms save into a spurious 409. `licenseUrl` is an http(s)
+     * URL or blank; `attribution` is shown atop the Workbench, the Models
+     * home and a Generation's detail.
+     */
+    termsBody: text("terms_body").notNull().default(""),
+    licenseUrl: text("license_url").notNull().default(""),
+    attribution: text("attribution").notNull().default(""),
+    termsVersion: integer("terms_version"),
+    termsVersionCreatedAt: timestamp("terms_version_created_at", {
+      withTimezone: true,
+    }),
+    termsRevision: integer("terms_revision").notNull().default(1),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -335,6 +357,28 @@ export const modes = pgTable(
       sql`lower(${table.name})`,
     ),
   ],
+);
+
+/**
+ * One user's acceptance of a Model's terms (issue #61): at most one row
+ * per Model and user, holding the latest `version` they accepted
+ * (mirrors `users.termsAcceptedVersion` for Site terms, but per Model).
+ * Re-accepting after "Ask everyone to accept again" overwrites the row
+ * rather than keeping history, since only the latest acceptance matters.
+ */
+export const modelTermsAcceptances = pgTable(
+  "model_terms_acceptances",
+  {
+    modelId: uuid("model_id")
+      .notNull()
+      .references(() => models.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    version: integer("version").notNull(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.modelId, table.userId] })],
 );
 
 /**

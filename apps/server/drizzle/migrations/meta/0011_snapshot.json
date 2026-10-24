@@ -1,122 +1,9 @@
 {
-  "id": "0e16d733-92c5-4c3f-ae2a-65067ffd13cc",
+  "id": "6cb388f6-5b31-48d8-9aaa-3787259c3d39",
   "prevId": "b9aa21e0-2180-4a68-bb0c-f10128d36ab3",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
-    "public.assets": {
-      "name": "assets",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "generation_id": {
-          "name": "generation_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "node_id": {
-          "name": "node_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "sort_order": {
-          "name": "sort_order",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "comfyui_filename": {
-          "name": "comfyui_filename",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "content_type": {
-          "name": "content_type",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "size": {
-          "name": "size",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "storage_key": {
-          "name": "storage_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "assets_generation_node_filename_unique": {
-          "name": "assets_generation_node_filename_unique",
-          "columns": [
-            {
-              "expression": "generation_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "node_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "comfyui_filename",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "assets_generation_id_generations_id_fk": {
-          "name": "assets_generation_id_generations_id_fk",
-          "tableFrom": "assets",
-          "tableTo": "generations",
-          "columnsFrom": ["generation_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.audit_entries": {
       "name": "audit_entries",
       "schema": "",
@@ -259,13 +146,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "enabled": {
-          "name": "enabled",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
-        },
         "version": {
           "name": "version",
           "type": "integer",
@@ -385,18 +265,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "error": {
-          "name": "error",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "started_at": {
-          "name": "started_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
         "submitted_at": {
           "name": "submitted_at",
           "type": "timestamp with time zone",
@@ -453,37 +321,6 @@
             }
           ],
           "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "generations_state_idx": {
-          "name": "generations_state_idx",
-          "columns": [
-            {
-              "expression": "state",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "generations_backend_unfinished_unique": {
-          "name": "generations_backend_unfinished_unique",
-          "columns": [
-            {
-              "expression": "backend_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"generations\".\"state\" in ('starting', 'running') and \"generations\".\"backend_id\" is not null",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -780,6 +617,67 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.model_terms_acceptances": {
+      "name": "model_terms_acceptances",
+      "schema": "",
+      "columns": {
+        "model_id": {
+          "name": "model_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "accepted_at": {
+          "name": "accepted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "model_terms_acceptances_model_id_models_id_fk": {
+          "name": "model_terms_acceptances_model_id_models_id_fk",
+          "tableFrom": "model_terms_acceptances",
+          "tableTo": "models",
+          "columnsFrom": ["model_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "model_terms_acceptances_user_id_users_id_fk": {
+          "name": "model_terms_acceptances_user_id_users_id_fk",
+          "tableFrom": "model_terms_acceptances",
+          "tableTo": "users",
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "model_terms_acceptances_model_id_user_id_pk": {
+          "name": "model_terms_acceptances_model_id_user_id_pk",
+          "columns": ["model_id", "user_id"]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.models": {
       "name": "models",
       "schema": "",
@@ -840,6 +738,46 @@
         },
         "version": {
           "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "terms_body": {
+          "name": "terms_body",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "''"
+        },
+        "license_url": {
+          "name": "license_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "''"
+        },
+        "attribution": {
+          "name": "attribution",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "''"
+        },
+        "terms_version": {
+          "name": "terms_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "terms_version_created_at": {
+          "name": "terms_version_created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "terms_revision": {
+          "name": "terms_revision",
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
@@ -1362,14 +1300,7 @@
     "public.generation_state": {
       "name": "generation_state",
       "schema": "public",
-      "values": [
-        "queued",
-        "starting",
-        "running",
-        "saving",
-        "succeeded",
-        "failed"
-      ]
+      "values": ["queued"]
     },
     "public.log_level": {
       "name": "log_level",

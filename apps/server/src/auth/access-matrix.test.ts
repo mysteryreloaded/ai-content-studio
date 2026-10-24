@@ -151,6 +151,7 @@ describe("every route's access level is declared and enforced", () => {
       "POST /api/admin/models/:id/backends": 404,
       "DELETE /api/admin/models/:id/backends/:backendId": 404,
       "PUT /api/admin/models/:id/modes": 404,
+      "PUT /api/admin/models/:id/terms": 404,
       "POST /api/admin/models/:id/enable": 404,
       "POST /api/admin/models/:id/disable": 404,
     };
@@ -173,6 +174,7 @@ describe("every route's access level is declared and enforced", () => {
       "POST /api/models/:slug/generations": 400,
       // No Asset with this fake id exists in this test's database.
       "GET /api/assets/:id": 404,
+      "POST /api/models/:slug/terms/accept": 404,
     };
 
     // A pending user has a session but no approval yet: `signed-in`

@@ -1,5 +1,6 @@
 import type { InputDefinition, Workflow } from "@ai-content-studio/shared";
 import {
+  STANDARD_PAUSE_NOTICE,
   isNodeLink,
   relevantInputs,
   toInputIssues,
@@ -292,7 +293,10 @@ export function modelsRoute(
         return c.json({ generations, prompt }, 201);
       } catch (err) {
         if (err instanceof Paused) {
-          return c.json({ error: "paused", message: err.message }, 503);
+          return c.json(
+            { error: "paused", message: STANDARD_PAUSE_NOTICE },
+            503,
+          );
         }
         if (err instanceof ModelNotFound) {
           return c.json({ error: "not found" }, 404);

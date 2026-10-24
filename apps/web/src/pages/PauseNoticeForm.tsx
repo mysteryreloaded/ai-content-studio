@@ -25,7 +25,10 @@ export function PauseNoticeForm() {
 
   function load() {
     fetch("/api/admin/site-settings")
-      .then((res) => res.json() as Promise<AdminPauseNotice>)
+      .then((res) => {
+        if (!res.ok) throw new Error("load failed");
+        return res.json() as Promise<AdminPauseNotice>;
+      })
       .then((data) => {
         setSettings(data);
         setText(data.notice);

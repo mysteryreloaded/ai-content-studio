@@ -12,6 +12,7 @@ await GlobalRegistrator.register();
 
 const { cleanup, render, waitFor } = await import("@testing-library/react");
 const { NoticeBanner } = await import("./NoticeBanner.js");
+const { usePauseNotice } = await import("./usePauseNotice.js");
 
 afterEach(() => {
   cleanup();
@@ -107,5 +108,27 @@ describe("NoticeBanner", () => {
 
     source.emit("notice", { paused: false, notice: "New text now." });
     await view.findByText("New text now.");
+  });
+
+  test("shares one EventSource across every usePauseNotice caller in the tab (issue #59)", async () => {
+    function OtherCaller() {
+      usePauseNotice();
+      return null;
+    }
+    function App() {
+      return (
+        <>
+          <NoticeBanner />
+          <OtherCaller />
+          <OtherCaller />
+        </>
+      );
+    }
+
+    render(<App />);
+    await waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(FakeEventSource.instances.length).toBe(1);
   });
 });

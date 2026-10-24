@@ -1162,7 +1162,7 @@ export function WorkbenchPage() {
             </>
           ) : (
             <>
-              {pauseNoticeText && (
+              {paused && pauseNoticeText && (
                 // biome-ignore lint/a11y/useSemanticElements: <output> is for a form's calculated result, not this status message
                 <p role="status">{pauseNoticeText}</p>
               )}

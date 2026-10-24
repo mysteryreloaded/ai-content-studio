@@ -1,4 +1,5 @@
 import { type FormEvent, Fragment, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 
 type AuthKind = "none" | "basic" | "header";
 type Reachability = "unknown" | "reachable" | "unreachable";
@@ -260,9 +261,11 @@ export function BackendsPage() {
                     >
                       Delete
                     </button>
-                    <a href={`/api/admin/backends/${backend.id}/history`}>
+                    <Link
+                      to={`/admin/audit?targetType=backend&targetId=${backend.id}`}
+                    >
                       History
-                    </a>
+                    </Link>
                     <button
                       type="button"
                       onClick={() => toggleRecentLogs(backend.id)}

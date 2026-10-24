@@ -19,6 +19,7 @@ import { logUnhandledError } from "./error-logging.js";
 import type { Logger } from "./logger.js";
 import { ProblemsMonitor } from "./problems/monitor.js";
 import { ProblemsRegistry } from "./problems/problems.js";
+import { adminAuditRoute } from "./routes/admin-audit.js";
 import { adminBackendsRoute } from "./routes/admin-backends.js";
 import { adminLogsRoute } from "./routes/admin-logs.js";
 import { adminOverviewRoute } from "./routes/admin-overview.js";
@@ -141,6 +142,7 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
   );
   app.route("/api/admin/logs", adminLogsRoute(deps.db, deps.clock, routes));
   app.route("/api/terms", termsRoute(deps.db, deps.clock, routes));
+  app.route("/api/admin/audit", adminAuditRoute(deps.db, routes));
   app.route(
     "/api/admin/overview",
     adminOverviewRoute(

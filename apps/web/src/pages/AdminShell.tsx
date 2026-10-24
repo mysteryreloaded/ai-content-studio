@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, Navigate, Route, Routes } from "react-router-dom";
 import { useSession } from "../useSession.js";
+import { AuditPage } from "./AuditPage.js";
 import { BackendsPage } from "./BackendsPage.js";
 import { LogsPage } from "./LogsPage.js";
 import { OverviewPage } from "./OverviewPage.js";
@@ -61,6 +62,7 @@ export function AdminShell() {
         <Link to="/admin">Overview</Link>
         <Link to="/admin/settings">Settings</Link>
         <Link to="/admin/logs">Logs{errorCount ? ` (${errorCount})` : ""}</Link>
+        <Link to="/admin/audit">Audit</Link>
       </nav>
 
       <Routes>
@@ -76,6 +78,7 @@ export function AdminShell() {
           }
         />
         <Route path="logs" element={<LogsPage />} />
+        <Route path="audit" element={<AuditPage />} />
       </Routes>
     </main>
   );

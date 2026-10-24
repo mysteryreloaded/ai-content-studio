@@ -73,6 +73,7 @@ export function WorkbenchPage() {
   modelRef.current = model;
 
   useEffect(() => {
+    let cancelled = false;
     setModel(null);
     setNotFound(false);
     setSelectedModeId(null);
@@ -80,29 +81,43 @@ export function WorkbenchPage() {
     fetch(`/api/models/${slug}`)
       .then((res) => {
         if (res.status === 404) {
-          setNotFound(true);
+          if (!cancelled) setNotFound(true);
           return null;
         }
         if (!res.ok) throw new Error(`unexpected status ${res.status}`);
         return res.json() as Promise<{ model: WorkbenchModel }>;
       })
       .then((body) => {
-        if (!body) return;
+        if (cancelled || !body) return;
         setModel(body.model);
         setSelectedModeId(body.model.modes[0]?.id ?? null);
       })
-      .catch(() => setNotFound(true));
+      .catch(() => {
+        if (!cancelled) setNotFound(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [slug]);
 
   useEffect(() => {
     if (!model) return;
+    let cancelled = false;
+
     fetch(`/api/models/${slug}/generations`)
       .then((res) => {
         if (!res.ok) throw new Error(`unexpected status ${res.status}`);
         return res.json() as Promise<{ submissions: SubmissionSummary[] }>;
       })
-      .then((body) => setSubmissions(body.submissions))
+      .then((body) => {
+        if (!cancelled) setSubmissions(body.submissions);
+      })
       .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
   }, [model, slug]);
 
   useEffect(() => {

@@ -12,12 +12,42 @@ export const ALLOWED_IMAGE_CONTENT_TYPES = [
   "image/webp",
 ] as const;
 
+/** Issue #62: whether signing in needs an Admin's approval. Switching this approves nobody already pending. */
+export const SIGN_UP_MODES = ["open", "approval"] as const;
+export type SignUpMode = (typeof SIGN_UP_MODES)[number];
+export const DEFAULT_SIGN_UP_MODE: SignUpMode = "approval";
+
+/** The contact shown on the waiting page, for reports and account questions: an email or an http(s) URL. */
+export const CONTACT_MAX_LENGTH = 200;
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+export function isValidContact(value: string): boolean {
+  if (value === "") return true;
+  if (EMAIL_RE.test(value)) return true;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 export const siteSettingsFieldsSchema = z.object({
   title: z.string().trim().min(1).max(TITLE_MAX_LENGTH),
   landingText: z.string().trim().max(LANDING_TEXT_MAX_LENGTH).default(""),
   accent: z
     .enum(ACCENT_KEYS as [string, ...string[]])
     .default(DEFAULT_ACCENT_KEY),
+  signUpMode: z.enum(SIGN_UP_MODES).default(DEFAULT_SIGN_UP_MODE),
+  contact: z
+    .string()
+    .trim()
+    .max(CONTACT_MAX_LENGTH)
+    .default("")
+    .refine(isValidContact, {
+      message: "must be an email address or an http(s) URL",
+    }),
 });
 
 export type SiteSettingsFields = z.infer<typeof siteSettingsFieldsSchema>;

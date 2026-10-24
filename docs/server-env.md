@@ -53,7 +53,10 @@ The OAuth client secret matching `GOOGLE_CLIENT_ID`. Required.
 Comma-separated, case-insensitive list of Google account emails that are
 promoted to Admin, approved and re-enabled at every sign-in. Admins named
 here are pinned: the admin panel can never demote, disable or delete
-them. Required; refused if empty.
+them. Pinned status is read live against this list on every request, not
+stored, so removing an email unpins that Admin immediately without
+demoting them — they stay an Admin until a (now-possible) demote.
+Required; refused if empty.
 
 ## `oidc_issuer`
 

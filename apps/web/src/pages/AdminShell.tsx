@@ -9,6 +9,8 @@ import { ModelsPage } from "./ModelsPage.js";
 import { OverviewPage } from "./OverviewPage.js";
 import { SiteSettingsForm } from "./SiteSettingsForm.js";
 import { SiteTermsForm } from "./SiteTermsForm.js";
+import { UserPage } from "./UserPage.js";
+import { UsersPage } from "./UsersPage.js";
 
 const ERROR_BADGE_POLL_MS = 30_000;
 
@@ -47,11 +49,42 @@ function useErrorBadge(enabled: boolean): number | null {
   return count;
 }
 
+/** The pending-users badge next to the Users nav link (issue #62). Same gating as `useErrorBadge`. */
+function usePendingBadge(enabled: boolean): number | null {
+  const [count, setCount] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!enabled) return;
+    let cancelled = false;
+
+    function poll() {
+      fetch("/api/admin/users/pending-count")
+        .then((res) => (res.ok ? res.json() : null))
+        .then((body: { count: number } | null) => {
+          if (!cancelled && body) setCount(body.count);
+        })
+        .catch(() => {
+          /* leave the previous count showing */
+        });
+    }
+
+    poll();
+    const timer = setInterval(poll, ERROR_BADGE_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [enabled]);
+
+  return count;
+}
+
 export function AdminShell() {
   const { session } = useSession();
   const isAdmin =
     session.status === "signed-in" && session.user.role === "admin";
   const errorCount = useErrorBadge(isAdmin);
+  const pendingCount = usePendingBadge(isAdmin);
 
   if (session.status === "loading") return null;
   if (session.status === "signed-out") return <Navigate to="/" replace />;
@@ -64,6 +97,9 @@ export function AdminShell() {
         <Link to="/admin">Overview</Link>
         <Link to="/admin/settings">Settings</Link>
         <Link to="/admin/models">Models</Link>
+        <Link to="/admin/users">
+          Users{pendingCount ? ` (${pendingCount})` : ""}
+        </Link>
         <Link to="/admin/logs">Logs{errorCount ? ` (${errorCount})` : ""}</Link>
         <Link to="/admin/audit">Audit</Link>
       </nav>
@@ -82,6 +118,8 @@ export function AdminShell() {
         />
         <Route path="models" element={<ModelsPage />} />
         <Route path="models/:id" element={<ModelEditorPage />} />
+        <Route path="users" element={<UsersPage />} />
+        <Route path="users/:id" element={<UserPage />} />
         <Route path="logs" element={<LogsPage />} />
         <Route path="audit" element={<AuditPage />} />
       </Routes>

@@ -15,4 +15,11 @@ describe("site_settings", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.title).toBe("AI Content Studio");
   });
+
+  test("sign-up mode defaults to approval, with no contact set", async () => {
+    const { db } = await testDb;
+    const rows = await db.select().from(siteSettings);
+    expect(rows[0]?.signUpMode).toBe("approval");
+    expect(rows[0]?.contact).toBe("");
+  });
 });

@@ -1,4 +1,4 @@
-// Caps (issue #53, ADR 0007 "Caps are checked in the locking
+// Caps (issue #53, ADR 0009 "Caps are checked in the locking
 // transaction"): the daily Cap counts the rolling 24h, excluding
 // failed Generations (cancelled-before-running isn't modeled yet —
 // #55's concern); the concurrent Cap counts queued through saving. A

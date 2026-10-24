@@ -410,6 +410,8 @@ interface GenerationSummary {
   error: string | null;
   submittedAt: string;
   assets: AssetSummary[];
+  /** Issue #68: an Admin removed this Generation — shown as a dismissable card, same as the Gallery's. */
+  removedAt: string | null;
 }
 
 interface GenerationProgress {
@@ -455,10 +457,27 @@ function upsertGeneration(
   const generations =
     genIndex === -1
       ? [...submission.generations, generation]
-      : submission.generations.map((g, i) => (i === genIndex ? generation : g));
+      : submission.generations.map((g, i) =>
+          i === genIndex
+            ? mergeGeneration(
+                submission.generations[i] as GenerationSummary,
+                generation,
+              )
+            : g,
+        );
   const updated = [...current];
   updated[index] = { ...submission, generations };
   return updated;
+}
+
+/** Keeps `removedAt` once set when an SSE "change" event replaces a Generation (issue #68's AC; mirrors GalleryPage.tsx's own fix): the runner's own events always carry `removedAt: null`. */
+function mergeGeneration(
+  previous: GenerationSummary,
+  incoming: GenerationSummary,
+): GenerationSummary {
+  return previous.removedAt
+    ? { ...incoming, removedAt: previous.removedAt }
+    : incoming;
 }
 
 type SubmitState =
@@ -573,6 +592,13 @@ function GenerationCard({
   paused: boolean;
 }) {
   const mainAsset = generation.assets?.[0];
+  if (generation.removedAt) {
+    return (
+      <li>
+        <span role="alert">Removed by an administrator</span>
+      </li>
+    );
+  }
   return (
     <li>
       <span>{stateLabel(generation.state, generation.tries, paused)}</span>{" "}
@@ -996,11 +1022,18 @@ export function WorkbenchPage() {
           modelId: string;
           modelDeleted: boolean;
           modeId: string;
+          removedAt: string | null;
           settings: GenerationInputSetting[];
         }>;
       })
       .then((detail) => {
         if (cancelled) return;
+        if (detail.removedAt) {
+          setReuseNotice(
+            "That Generation was removed by an administrator; its settings can't be reused.",
+          );
+          return;
+        }
         if (detail.modelDeleted || detail.modelId !== model.id) {
           setReuseNotice("That Generation's Model can't be reused.");
           return;

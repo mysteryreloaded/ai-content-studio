@@ -420,4 +420,66 @@ describe("/api/admin/generations (issue #68)", () => {
       fake.stop();
     }
   });
+
+  // CEO review round 1, point 1: a save landing after the Admin's own
+  // Removal (or any other window before its Assets are actually gone)
+  // must never be downloadable by the owner.
+  test("an Asset of a removed Generation 404s for its owner but still serves an Admin", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const { app, backendsService } = await build();
+      const { db } = await testDb;
+      const { headers: adminHeaders } = await headersFor("admin");
+      const model = await buildEnabledModel(app, adminHeaders, fake.url, "M");
+      const { headers: userHeaders } = await headersFor("user");
+
+      const { generationId } = await submit(
+        app,
+        userHeaders,
+        model.slug,
+        model.modeId,
+      );
+      await db
+        .update(generations)
+        .set({ state: "succeeded", endedAt: clock.now() })
+        .where(eq(generations.id, generationId));
+      const [asset] = await db
+        .insert(assets)
+        .values({
+          generationId,
+          nodeId: "3",
+          sortOrder: 0,
+          kind: "image",
+          comfyuiFilename: "out.png",
+          contentType: "image/png",
+          size: 10,
+          storageKey: "generations/test/out.png",
+        })
+        .returning();
+      if (!asset) throw new Error("insert returned no asset");
+
+      // Simulates the window between an Admin's own Removal landing and
+      // its Assets actually being deleted (e.g. a save that raced it).
+      await db
+        .update(generations)
+        .set({ removedAt: clock.now(), removedReason: "Reported content" })
+        .where(eq(generations.id, generationId));
+
+      expect(
+        (await app.request(`/api/assets/${asset.id}`, { headers: userHeaders }))
+          .status,
+      ).toBe(404);
+      expect(
+        (
+          await app.request(`/api/assets/${asset.id}`, {
+            headers: adminHeaders,
+          })
+        ).status,
+      ).toBe(200);
+
+      backendsService.stop();
+    } finally {
+      fake.stop();
+    }
+  });
 });

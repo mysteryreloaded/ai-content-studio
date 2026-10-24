@@ -52,6 +52,23 @@ function matchesStateFilter(
   return filter === "all" || STATE_BUCKETS[filter].includes(state);
 }
 
+/**
+ * Applies an SSE "change" event onto a Generation already in state
+ * (issue #68's AC): `generations/dispatch/outcomes.ts`'s own events
+ * always carry `removedAt: null` (the runner has no reason to know
+ * about a Removal), so a run's own cancel confirmation landing after an
+ * Admin's Removal would otherwise wipe the card back to plain
+ * "Cancelled" — kept once it was set instead.
+ */
+function mergeGeneration(
+  previous: GenerationSummary,
+  incoming: GenerationSummary,
+): GenerationSummary {
+  return previous.removedAt
+    ? { ...incoming, removedAt: previous.removedAt }
+    : incoming;
+}
+
 interface AssetSummary {
   id: string;
   nodeId: string;
@@ -454,7 +471,7 @@ export function GalleryPage() {
             genIndex === -1
               ? [...submission.generations, generation]
               : submission.generations.map((g, i) =>
-                  i === genIndex ? generation : g,
+                  i === genIndex ? mergeGeneration(g, generation) : g,
                 );
           const next = [...current];
           next[index] = { ...submission, generations };

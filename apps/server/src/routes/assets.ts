@@ -35,7 +35,11 @@ async function loadOwnedAsset(
   if (
     !session ||
     !asset ||
-    (asset.ownerId !== session.user.id && session.user.role !== "admin")
+    (asset.ownerId !== session.user.id && session.user.role !== "admin") ||
+    // Issue #68's AC: a removed Generation's Assets 404 for anyone but
+    // an Admin, even in the window before the runner's own cleanup
+    // (or the removal itself, for an already-ended Generation) lands.
+    (asset.generationRemovedAt !== null && session.user.role !== "admin")
   ) {
     return null;
   }

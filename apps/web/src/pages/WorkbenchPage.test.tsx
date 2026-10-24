@@ -55,6 +55,9 @@ const MODEL_WITH_SEED = {
           max: 1000,
         },
       ],
+      // issue #48 CEO review: read off this flag, not `inputs`, since a
+      // hidden Seed still sets it but isn't in `inputs`.
+      hasSeed: true,
     },
   ],
 };

@@ -3,6 +3,7 @@ import {
   STANDARD_PAUSE_NOTICE,
   applyModeFixedValues,
   isNodeLink,
+  isSeedInput,
   modeMenuGroup,
   relevantInputs,
   resolveModeInputs,
@@ -172,6 +173,10 @@ function toWorkbenchDetail(
         description: mode.description,
         // issue #48: the Mode menu's "From a prompt / images / audio / video" group.
         menuGroup: modeMenuGroup(relevant, mode.inputSettings),
+        // issue #48 CEO review: a Seed on the Path turns on the 1-4
+        // count even when this Mode hides the Seed Input itself, so
+        // this can't be read off `inputs` (formInputs excludes hidden).
+        hasSeed: relevant.some(isSeedInput),
       };
     }),
     terms:

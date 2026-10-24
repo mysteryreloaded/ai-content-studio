@@ -4,12 +4,17 @@
 // #50 adds: every Upload loader on a Mode's Path is fed by a shown Input
 // or holds a fixed file, and a fixed file is on every enabled Backend.
 
-import type { ComfyFieldSpec, Workflow } from "@ai-content-studio/shared";
+import type {
+  ComfyFieldSpec,
+  ModeInputSetting,
+  Workflow,
+} from "@ai-content-studio/shared";
 import {
   applyModeFixedValues,
   computeModePath,
   fieldKey,
   isNodeLink,
+  modeInputSetting,
   relevantInputs,
   visibleModeBoundFields,
 } from "@ai-content-studio/shared";
@@ -114,8 +119,10 @@ export async function checkEnableReadiness(
       ...uploadLoaderReasons(
         workflowForMode,
         detail.inputs,
+        mode.inputSettings,
         mode.name,
         outputNodeIds,
+        unresolvable,
         path.nodeIds,
         specsByBackend,
       ),
@@ -135,8 +142,10 @@ export async function checkEnableReadiness(
 function uploadLoaderReasons(
   workflow: Workflow,
   inputs: ModelDetail["inputs"],
+  inputSettings: readonly ModeInputSetting[],
   modeName: string,
   outputNodeIds: readonly string[],
+  unresolvable: ReadonlySet<string>,
   pathNodeIds: ReadonlySet<string>,
   specsByBackend: ReadonlyArray<{
     backend: BackendRecord;
@@ -144,10 +153,18 @@ function uploadLoaderReasons(
   }>,
 ): string[] {
   const reasons: string[] = [];
+  // A hidden Input's binding doesn't count as "shown" even though it's
+  // still relevant to the Path (issue #48 CEO review); the switch's own
+  // unresolvable fields must be passed too, or a visible Input steering
+  // one gets pruned to the wrong side here same as everywhere else.
   const shownFields = new Set(
-    relevantInputs(inputs, workflow, outputNodeIds).flatMap((input) =>
-      input.bindings.map((b) => fieldKey(b.nodeId, b.field)),
-    ),
+    relevantInputs(inputs, workflow, outputNodeIds, unresolvable)
+      .filter(
+        (input) => modeInputSetting(inputSettings, input.id).state !== "hidden",
+      )
+      .flatMap((input) =>
+        input.bindings.map((b) => fieldKey(b.nodeId, b.field)),
+      ),
   );
 
   for (const nodeId of pathNodeIds) {

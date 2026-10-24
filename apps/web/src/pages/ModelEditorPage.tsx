@@ -2098,10 +2098,14 @@ function ModeInputGrid({
                       >
                         {MODE_INPUT_STATES
                           // ADR 0007: a Seed can't be fixed, or every
-                          // Submission would draw the same one.
+                          // Submission would draw the same one. An Image
+                          // Upload always takes a real Upload id (issue
+                          // #48 CEO review), so it can't be fixed either.
                           .filter(
                             (state) =>
-                              state !== "fixed" || input.kind !== "seed",
+                              state !== "fixed" ||
+                              (input.kind !== "seed" &&
+                                input.kind !== "image_upload"),
                           )
                           .map((state) => (
                             <option key={state} value={state}>

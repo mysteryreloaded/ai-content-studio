@@ -76,6 +76,8 @@ interface WorkbenchMode {
   description: string;
   inputs: WorkbenchInput[];
   menuGroup: ModeMenuGroup;
+  /** Issue #48 CEO review: true whenever the Mode's Path holds a bound Seed Input, even one this Mode hides. */
+  hasSeed: boolean;
 }
 
 /** The Workbench Mode menu's group headings (issue #48), by what a Mode's Uploads ask the user to start from. */
@@ -686,9 +688,8 @@ export function WorkbenchPage() {
 
   const selectedMode =
     model?.modes.find((m) => m.id === selectedModeId) ?? null;
-  /** The count picker shows whenever the Mode's Path holds a bound Seed Input (issue #47's AC), even one not otherwise rendered. */
-  const hasSeedInput =
-    selectedMode?.inputs.some((input) => input.kind === "seed") ?? false;
+  /** The count picker shows whenever the Mode's Path holds a bound Seed Input (issue #47's AC), even one this Mode hides (issue #48 CEO review), so it's read off `hasSeed` rather than `inputs`, which excludes hidden ones. */
+  const hasSeedInput = selectedMode?.hasSeed ?? false;
 
   const selectMode = useCallback((mode: WorkbenchMode) => {
     setSelectedModeId(mode.id);

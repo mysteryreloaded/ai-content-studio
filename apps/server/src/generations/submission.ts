@@ -324,14 +324,21 @@ export async function submitGeneration(
   // A hidden Input isn't submitted and has no fixed value either: it
   // must leave its bound fields as the Workflow has them, not fall
   // back to the Input's own default (applyInputValues does that for
-  // any Input it's handed with no value), so it's left out here. A
-  // hidden Seed must not enable the count picker either, or every
-  // Generation in the batch would draw the same seed.
+  // any Input it's handed with no value), so it's left out here.
   const nonHiddenRelevant = relevant.filter(
     (input) =>
       modeInputSetting(mode.inputSettings, input.id).state !== "hidden",
   );
-  const seedInput = nonHiddenRelevant.find(isSeedInput);
+  // issue #48 CEO review (reverses round 5's ask): a Seed on the Path
+  // still turns on the count and still draws+writes a seed per
+  // Generation even when this Mode hides the Seed Input itself — only
+  // its own form field is hidden, not the drawing. `promptInputs` adds
+  // it back for buildPrompt when `nonHiddenRelevant` left it out.
+  const seedInput = relevant.find(isSeedInput);
+  const promptInputs =
+    seedInput && !nonHiddenRelevant.includes(seedInput)
+      ? [...nonHiddenRelevant, seedInput]
+      : nonHiddenRelevant;
 
   // The count picker only exists when the Path holds a bound Seed Input
   // (issue #47's AC); otherwise every Submission makes exactly 1.
@@ -378,8 +385,11 @@ export async function submitGeneration(
     }
   }
 
+  // A hidden Upload Input (fixed is refused for this kind) isn't
+  // submitted, so it must stay out of resolution too, or it 400s every
+  // Submit looking for an Upload id that was never asked for.
   const { values: resolvedValues, uploadIds } = await resolveUploadValues(
-    relevant,
+    formInputs,
     parsedValues.data as Record<string, string | number | undefined>,
     params.userId,
     deps,
@@ -414,7 +424,7 @@ export async function submitGeneration(
     }
     const { prompt, nodeTypes } = buildPrompt(
       detail.workflow,
-      nonHiddenRelevant,
+      promptInputs,
       values,
       outputNodeIds,
       generationId,

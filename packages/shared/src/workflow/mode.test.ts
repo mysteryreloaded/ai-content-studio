@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type {
+  ImageUploadInputDefinition,
   NumberInputDefinition,
   SelectInputDefinition,
   TextInputDefinition,
@@ -178,6 +179,16 @@ describe("Mode × Input settings (issue #48)", () => {
     bindings: [{ nodeId: "3", field: "aspect", classType: "X", title: null }],
   };
   const inputs = [textInput, numberInput, selectInput];
+  const imageUploadInput: ImageUploadInputDefinition = {
+    id: "image",
+    kind: "image_upload",
+    group: "describe",
+    label: "Image",
+    help: "",
+    maxSizeMb: 10,
+    maxLongSide: null,
+    bindings: [{ nodeId: "4", field: "image", classType: "X", title: null }],
+  };
 
   describe("modeInputSetting", () => {
     test("defaults to optional with no label override", () => {
@@ -271,6 +282,20 @@ describe("Mode × Input settings (issue #48)", () => {
       expect(validateModeInputSettings(offStep, steppedInputs)[0]).toContain(
         "step",
       );
+    });
+
+    test("refuses fixing an Image Upload (issue #48 CEO review: always takes a real Upload id)", () => {
+      const settings: ModeInputSetting[] = [
+        {
+          inputId: "image",
+          state: "fixed",
+          fixedValue: "some-file",
+          label: "",
+        },
+      ];
+      expect(
+        validateModeInputSettings(settings, [...inputs, imageUploadInput])[0],
+      ).toContain("Image Upload");
     });
 
     test("refuses a Mode label over 60 characters", () => {
@@ -454,6 +479,32 @@ describe("Mode × Input settings (issue #48)", () => {
       expect(relevant).toContain("ltx-prompt");
       expect(relevant).not.toContain("custom-prompt");
     });
+
+    test("round-9 CEO review: leaves a hidden select's own default unwritten, only a fixed value is applied", () => {
+      // A hidden Input isn't fixed, so its default must not steer the
+      // switch — buildPrompt later writes the Workflow's own value for
+      // it, and Path/relevant/enablement/editor must agree with that,
+      // not with the default this bug used to apply here.
+      const hiddenEngine: SelectInputDefinition = {
+        ...engineInput,
+        id: "hidden-engine",
+        default: "ltx",
+      };
+      const hiddenSetting: ModeInputSetting[] = [
+        {
+          inputId: "hidden-engine",
+          state: "hidden",
+          fixedValue: null,
+          label: "",
+        },
+      ];
+      const applied = applyModeFixedValues(
+        switchWorkflow,
+        [hiddenEngine, ltxOnlyInput, customOnlyInput],
+        hiddenSetting,
+      );
+      expect(applied.prim?.inputs.value).toBe(false);
+    });
   });
 
   describe("modeMenuGroup", () => {
@@ -473,7 +524,7 @@ describe("Mode × Input settings (issue #48)", () => {
       expect(modeMenuGroup([...inputs, uploadInput], settings)).toBe("prompt");
     });
 
-    test("ignores an optional (not required) Upload-kind Input's group", () => {
+    test("groups by an optional (shown, not hidden) Upload-kind Input too (issue #48 CEO review: Uploads are always required)", () => {
       const uploadInput = {
         ...textInput,
         id: "image",
@@ -482,7 +533,7 @@ describe("Mode × Input settings (issue #48)", () => {
       const settings: ModeInputSetting[] = [
         { inputId: "image", state: "optional", fixedValue: null, label: "" },
       ];
-      expect(modeMenuGroup([...inputs, uploadInput], settings)).toBe("prompt");
+      expect(modeMenuGroup([...inputs, uploadInput], settings)).toBe("images");
     });
 
     test("groups by a required Upload-kind Input", () => {

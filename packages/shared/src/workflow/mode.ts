@@ -126,9 +126,14 @@ export function applyModeFixedValues(
   settings: readonly ModeInputSetting[],
 ): Workflow {
   const { fixedValues } = resolveModeInputs(inputs, settings);
+  // Only the fixed Inputs themselves go to applyInputValues: handed every
+  // Input, it also writes each blank one's own default (hidden ones too),
+  // which isn't a fixed value and must leave the Workflow's own literal
+  // alone.
+  const fixedInputs = inputs.filter((input) => input.id in fixedValues);
   return applyInputValues(
     workflow,
-    inputs,
+    fixedInputs,
     fixedValues as Record<string, string | number | undefined>,
   );
 }
@@ -265,6 +270,11 @@ export function validateModeInputSettings(
       // ADR 0007: blank always means "draw one"; fixing a Seed would
       // make every Submission draw the same one, defeating the point.
       errors.push(`"${input.label}" is a Seed and can't be fixed`);
+    } else if (input.kind === "image_upload") {
+      // issue #50/#48 CEO review: an Upload always takes a real Upload
+      // id (there's no Workflow-default fallback for a missing file),
+      // so a fixed bare file name isn't this Input's concern.
+      errors.push(`"${input.label}" is an Image Upload and can't be fixed`);
     }
   }
 
@@ -352,16 +362,23 @@ const UPLOAD_KIND_GROUPS: Record<string, ModeMenuGroup> = {
   video_upload: "video",
 };
 
-/** The Mode menu group this Mode's required Inputs put it in; "prompt" when none require an Upload. */
+/**
+ * The Mode menu group any shown Upload puts this Mode in; "prompt" when
+ * none is shown. An Upload always takes a real Upload id regardless of
+ * its grid state (issue #48 CEO review: there's no Workflow-default
+ * fallback for a missing file), so "optional" is shown-and-required the
+ * same as "required" — only "hidden" keeps a Mode out of its group.
+ */
 export function modeMenuGroup(
   inputs: readonly InputDefinition[],
   settings: readonly ModeInputSetting[],
 ): ModeMenuGroup {
   for (const input of inputs) {
-    const setting = modeInputSetting(settings, input.id);
-    if (setting.state !== "required") continue;
     const group = UPLOAD_KIND_GROUPS[input.kind as string];
-    if (group) return group;
+    if (!group) continue;
+    const setting = modeInputSetting(settings, input.id);
+    if (setting.state === "hidden") continue;
+    return group;
   }
   return "prompt";
 }

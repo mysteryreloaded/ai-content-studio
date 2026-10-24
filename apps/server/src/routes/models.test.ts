@@ -438,6 +438,7 @@ describe("/api/models/:slug and :slug/generations", () => {
             description: string;
             inputs: unknown[];
             menuGroup: string;
+            hasSeed: boolean;
           }>;
         };
       };
@@ -449,6 +450,7 @@ describe("/api/models/:slug and :slug/generations", () => {
           description: "",
           inputs: [],
           menuGroup: "prompt",
+          hasSeed: false,
         },
       ]);
 
@@ -981,7 +983,7 @@ describe("/api/models/:slug and :slug/generations", () => {
       }
     });
 
-    test("a hidden Seed Input doesn't enable the count picker, and ignores a submitted count (issue #48)", async () => {
+    test("a hidden Seed Input still enables the count picker, and draws+writes a seed per Generation (issue #48 CEO review, reverses round 5)", async () => {
       const fake = startFakeComfyUi({ port: 0 });
       try {
         const { app, backendsService } = await build();
@@ -1003,6 +1005,19 @@ describe("/api/models/:slug and :slug/generations", () => {
         );
 
         const { headers: userHeaders } = await headersFor("user");
+
+        // The Workbench isn't shown the hidden Seed Input itself, but is
+        // still flagged that this Mode's Path holds one, so it shows the
+        // count picker.
+        const workbenchRes = await app.request(`/api/models/${slug}`, {
+          headers: userHeaders,
+        });
+        const workbenchBody = (await workbenchRes.json()) as {
+          model: { modes: Array<{ inputs: unknown[]; hasSeed: boolean }> };
+        };
+        expect(workbenchBody.model.modes[0]?.inputs).toEqual([]);
+        expect(workbenchBody.model.modes[0]?.hasSeed).toBe(true);
+
         const res = await app.request(`/api/models/${slug}/generations`, {
           method: "POST",
           headers: { ...userHeaders, "content-type": "application/json" },
@@ -1012,21 +1027,40 @@ describe("/api/models/:slug and :slug/generations", () => {
         const body = (await res.json()) as {
           generations: Array<{ id: string }>;
         };
-        // A hidden Seed must not enable the count picker (it's not on the
-        // Workbench to submit alongside a count): exactly 1 Generation,
-        // not 3.
-        expect(body.generations.length).toBe(1);
+        // A hidden Seed still draws, so a submitted count of 3 still
+        // makes 3 Generations.
+        expect(body.generations.length).toBe(3);
 
-        const [row] = await db
+        const rows = await db
           .select()
           .from(generations)
-          .where(eq(generations.id, body.generations[0]?.id as string));
-        const prompt = row?.builtPrompt as Record<
-          string,
-          { inputs: Record<string, unknown> }
-        >;
-        // Hidden: leaves the Workflow's own seed value untouched.
-        expect(prompt["2"]?.inputs.seed).toBe(WORKFLOW["2"]?.inputs.seed);
+          .where(
+            eq(
+              generations.submissionId,
+              (
+                await db
+                  .select()
+                  .from(generations)
+                  .where(eq(generations.id, body.generations[0]?.id as string))
+              )[0]?.submissionId as string,
+            ),
+          );
+        const seeds = rows
+          .map(
+            (row) =>
+              (
+                row.builtPrompt as Record<
+                  string,
+                  { inputs: Record<string, unknown> }
+                >
+              )["2"]?.inputs.seed as number,
+          )
+          .sort((a, b) => a - b);
+        // Each drawn, and consecutive (hidden doesn't mean "don't draw":
+        // every Generation in the batch still gets its own seed).
+        expect(new Set(seeds).size).toBe(3);
+        expect(seeds[1]).toBe((seeds[0] as number) + 1);
+        expect(seeds[2]).toBe((seeds[0] as number) + 2);
 
         backendsService.stop();
       } finally {

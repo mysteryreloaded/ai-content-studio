@@ -10,14 +10,18 @@ type GenerationState =
   | "running"
   | "saving"
   | "succeeded"
-  | "failed";
+  | "failed"
+  | "cancelling"
+  | "cancelled";
 
 type StateFilter = "all" | "underway" | "finished" | "failed";
 
 const STATE_BUCKETS: Record<Exclude<StateFilter, "all">, GenerationState[]> = {
-  underway: ["queued", "starting", "running", "saving"],
+  underway: ["queued", "starting", "running", "saving", "cancelling"],
   finished: ["succeeded"],
-  failed: ["failed"],
+  // "Failed or cancelled" (issue #54): a cancelled Generation never
+  // produced anything to show either, so it buckets with "failed".
+  failed: ["failed", "cancelled"],
 };
 
 const STATE_LABELS: Record<StateFilter, string> = {
@@ -96,6 +100,10 @@ function stateLabel(state: GenerationState, paused: boolean): string {
       return "Done";
     case "failed":
       return "Failed";
+    case "cancelling":
+      return "Cancelling…";
+    case "cancelled":
+      return "Cancelled";
     default:
       return state;
   }

@@ -4,6 +4,8 @@ export interface PrivacyGeneratedConfig {
   signUpMode: SignUpMode;
   contact: string;
   appVersion: string;
+  /** Issue #69's retention sweep: blank (`null`) keeps every Asset forever. */
+  assetRetentionDays: number | null;
 }
 
 /**
@@ -34,7 +36,11 @@ export function buildGeneratedPrivacySection(
     "",
     "### What you create",
     "",
-    "Your Uploads, Assets, prompts and settings are stored on this studio's own server. They are sent to the Operator's GPU machines to run your Generations, and the copies made there are removed soon after. They are kept until you delete them.",
+    `Your Uploads, Assets, prompts and settings are stored on this studio's own server. They are sent to the Operator's GPU machines to run your Generations, and the copies made there are removed soon after. An Upload no Generation uses is removed 24 hours after it was last used. ${
+      config.assetRetentionDays !== null
+        ? `Assets are removed after ${config.assetRetentionDays} days.`
+        : "Assets are kept until you delete them."
+    }`,
     "",
     "### Who sees it",
     "",

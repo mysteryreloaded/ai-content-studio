@@ -97,6 +97,7 @@ describe("POST /:slug/generations with an Image Upload Input", () => {
       MIN_FREE_DISK_GB: minFreeDiskGb,
       MAX_UPLOAD_MB: 500,
       FFMPEG_CONCURRENCY: 2,
+      LOG_RETENTION_DAYS: 30,
     };
     return createApp({
       db,

@@ -1,5 +1,5 @@
 {
-  "id": "0fcc9544-4b75-4e92-b64f-70a2497890e7",
+  "id": "04b25f95-00b8-4d45-b479-902bed635d33",
   "prevId": "3aa98d79-a67e-4633-baf9-3b66f79bf7fa",
   "version": "7",
   "dialect": "postgresql",
@@ -1127,6 +1127,13 @@
           "primaryKey": false,
           "notNull": true
         },
+        "input_settings": {
+          "name": "input_settings",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -1606,36 +1613,6 @@
         "completed_at": {
           "name": "completed_at",
           "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "duration_ms": {
-          "name": "duration_ms",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "fps": {
-          "name": "fps",
-          "type": "double precision",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "trimmed_from_id": {
-          "name": "trimmed_from_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "trim_start_ms": {
-          "name": "trim_start_ms",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "trim_end_ms": {
-          "name": "trim_end_ms",
-          "type": "integer",
           "primaryKey": false,
           "notNull": false
         }

@@ -597,8 +597,9 @@ export function relevantInputs(
   inputs: readonly InputDefinition[],
   workflow: Workflow,
   outputNodeIds: readonly string[],
+  unresolvableFields?: ReadonlySet<string>,
 ): InputDefinition[] {
-  const path = computePath(workflow, outputNodeIds);
+  const path = computePath(workflow, outputNodeIds, unresolvableFields);
   return inputs.filter((input) =>
     input.bindings.some((binding) => path.nodeIds.has(binding.nodeId)),
   );
@@ -611,27 +612,33 @@ function isOnStep(value: number, min: number, step: number): boolean {
 
 /**
  * The zod object a Mode's relevant Inputs resolve to: strict (an unknown
- * key is a validation error), every Input optional (a blank one leaves its
- * fields as the Workflow has them) except an Image Upload, which takes a
- * required Upload id (issue #50), a number must sit on `min + k*step`,
- * and one-line text turns any line break into a space.
+ * key is a validation error), a number must sit on `min + k*step`, and
+ * one-line text turns any line break into a space. An Input is optional
+ * (a blank one leaves its fields as the Workflow has them) unless its id
+ * is in `requiredIds` (issue #48: this Mode's grid marks it required), or
+ * it's an Image Upload, which always takes a required Upload id (issue
+ * #50: there's no Workflow-default fallback for a missing file).
  */
 export function buildInputValuesSchema(
   inputs: readonly InputDefinition[],
+  requiredIds: ReadonlySet<string> = new Set(),
 ): z.ZodObject<Record<string, z.ZodTypeAny>> {
   const shape: Record<string, z.ZodTypeAny> = {};
 
   for (const input of inputs) {
+    const required = requiredIds.has(input.id);
     if (input.kind === "text") {
-      let schema: z.ZodTypeAny = z.string().max(input.maxLength);
+      let schema: z.ZodTypeAny = required
+        ? z.string().min(1).max(input.maxLength)
+        : z.string().max(input.maxLength);
       if (!input.multiline) {
         schema = (schema as z.ZodString).transform((value) =>
           value.replace(/\r\n|\r|\n/g, " "),
         );
       }
-      shape[input.id] = schema.optional();
+      shape[input.id] = required ? schema : schema.optional();
     } else if (input.kind === "number") {
-      shape[input.id] = z
+      const schema = z
         .number()
         .min(input.min)
         .max(input.max)
@@ -641,8 +648,8 @@ export function buildInputValuesSchema(
         .refine(
           (value) => input.numberMode !== "integer" || Number.isInteger(value),
           { message: "must be a whole number" },
-        )
-        .optional();
+        );
+      shape[input.id] = required ? schema : schema.optional();
     } else if (
       input.kind === "image_upload" ||
       input.kind === "video_upload" ||
@@ -653,7 +660,9 @@ export function buildInputValuesSchema(
         .regex(UUID_RE, { message: "must be an Upload id" });
     } else if (input.kind === "seed") {
       // Count-awareness (seed + count - 1 <= bound) is checked separately
-      // by `validateSeedRange` once a Submission's count is known.
+      // by `validateSeedRange` once a Submission's count is known. A Seed
+      // is never required (issue #48's grid doesn't offer it a state):
+      // blank always means "draw one" (ADR 0007).
       shape[input.id] = z
         .number()
         .int()
@@ -666,7 +675,8 @@ export function buildInputValuesSchema(
         shape[input.id] = z.never().optional();
         continue;
       }
-      shape[input.id] = z.enum(ids as [string, ...string[]]).optional();
+      const schema = z.enum(ids as [string, ...string[]]);
+      shape[input.id] = required ? schema : schema.optional();
     }
   }
 
@@ -689,12 +699,13 @@ export function parseInputValues(
   revisionId: string,
   modeId: string,
   inputs: readonly InputDefinition[],
+  requiredIds: ReadonlySet<string> = new Set(),
 ): z.ZodObject<Record<string, z.ZodTypeAny>> {
   const key = `${revisionId}:${modeId}`;
   const cached = schemaCache.get(key);
   if (cached) return cached;
 
-  const schema = buildInputValuesSchema(inputs);
+  const schema = buildInputValuesSchema(inputs, requiredIds);
   schemaCache.set(key, schema);
   return schema;
 }

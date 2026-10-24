@@ -8,21 +8,25 @@ import {
   type InputDefinition,
   type InputIssue,
   type VideoUploadInputDefinition,
+  applyModeFixedValues,
   audioUploadLimitIssue,
   buildPrompt,
   computeModePath,
   findBlockedWord,
   imageUploadLimitIssue,
   isSeedInput,
+  modeInputSetting,
   parseInputValues,
   randomSeedBase,
   relevantInputs,
+  resolveModeInputs,
   seedBoundFor,
   uploadFileName,
   validateSeedRange,
   videoUploadLimitIssue,
+  visibleModeBoundFields,
 } from "@ai-content-studio/shared";
-import type { Clock } from "@ai-content-studio/shared";
+import type { Clock, Workflow } from "@ai-content-studio/shared";
 import type { z } from "zod";
 import type { LogEntryWriter } from "../backends/log-entries.js";
 import type { BackendsService } from "../backends/service.js";
@@ -270,12 +274,18 @@ export async function resolveUploadValues(
 /** Whether at least one attached, reachable Backend has every node type a Mode's Path needs. */
 async function hasUsableBackend(
   detail: ModelDetail,
+  workflowForMode: Workflow,
   modeOutputNodeIds: readonly string[],
+  unresolvableFields: ReadonlySet<string>,
   deps: SubmissionDeps,
 ): Promise<boolean> {
-  const path = computeModePath(detail.workflow, modeOutputNodeIds);
+  const path = computeModePath(
+    workflowForMode,
+    modeOutputNodeIds,
+    unresolvableFields,
+  );
   const pathClassTypes = [...path.nodeIds]
-    .map((nodeId) => detail.workflow[nodeId]?.class_type)
+    .map((nodeId) => workflowForMode[nodeId]?.class_type)
     .filter((classType): classType is string => Boolean(classType));
 
   const attached = await deps.modelBackendsRepository.listForModel(
@@ -328,15 +338,66 @@ export async function submitGeneration(
   if (!(await deps.hasFreeDisk())) throw new SubmissionStorageFull();
 
   const outputNodeIds = mode.outputNodes.map((node) => node.nodeId);
-  const usable = await hasUsableBackend(detail, outputNodeIds, deps);
+  // issue #48: a switch steered by a field one of this Mode's visible
+  // Inputs binds keeps both branches on the Path everywhere the Path
+  // is computed, since the Admin can't know ahead of time which way a
+  // user will set it.
+  const unresolvable = visibleModeBoundFields(
+    mode.inputSettings,
+    detail.inputs,
+  );
+  // issue #48 CEO review: a fixed Input's value is known before sending
+  // (ADR 0001), so it must pick its switch's side here too, the same
+  // way buildPrompt's own applyInputValues does for the real prompt.
+  const workflowForMode = applyModeFixedValues(
+    detail.workflow,
+    detail.inputs,
+    mode.inputSettings,
+  );
+  const usable = await hasUsableBackend(
+    detail,
+    workflowForMode,
+    outputNodeIds,
+    unresolvable,
+    deps,
+  );
   if (!usable) throw new NoBackend();
 
   const relevant = relevantInputs(
     detail.inputs,
-    detail.workflow,
+    workflowForMode,
     outputNodeIds,
+    unresolvable,
   );
+  const { formInputs, requiredIds, fixedValues } = resolveModeInputs(
+    relevant,
+    mode.inputSettings,
+  );
+  const schema = parseInputValues(
+    detail.revisionId,
+    mode.id,
+    formInputs,
+    requiredIds,
+  );
+
+  // A hidden Input isn't submitted and has no fixed value either: it
+  // must leave its bound fields as the Workflow has them, not fall
+  // back to the Input's own default (applyInputValues does that for
+  // any Input it's handed with no value), so it's left out here.
+  const nonHiddenRelevant = relevant.filter(
+    (input) =>
+      modeInputSetting(mode.inputSettings, input.id).state !== "hidden",
+  );
+  // issue #48 CEO review (reverses round 5's ask): a Seed on the Path
+  // still turns on the count and still draws+writes a seed per
+  // Generation even when this Mode hides the Seed Input itself — only
+  // its own form field is hidden, not the drawing. `promptInputs` adds
+  // it back for buildPrompt when `nonHiddenRelevant` left it out.
   const seedInput = relevant.find(isSeedInput);
+  const promptInputs =
+    seedInput && !nonHiddenRelevant.includes(seedInput)
+      ? [...nonHiddenRelevant, seedInput]
+      : nonHiddenRelevant;
 
   // The count picker only exists when the Path holds a bound Seed Input
   // (issue #47's AC); otherwise every Submission makes exactly 1.
@@ -360,7 +421,6 @@ export async function submitGeneration(
     delete valuesForSchema[seedInput.id];
   }
 
-  const schema = parseInputValues(detail.revisionId, mode.id, relevant);
   const parsedValues = schema.safeParse(valuesForSchema);
   if (!parsedValues.success) throw new InvalidInputValues(parsedValues.error);
 
@@ -384,8 +444,11 @@ export async function submitGeneration(
     }
   }
 
+  // A hidden Upload Input (fixed is refused for this kind) isn't
+  // submitted, so it must stay out of resolution too, or it 400s every
+  // Submit looking for an Upload id that was never asked for.
   const { values: resolvedValues, uploadIds } = await resolveUploadValues(
-    relevant,
+    formInputs,
     parsedValues.data as Record<string, string | number | undefined>,
     params.userId,
     deps,
@@ -411,13 +474,16 @@ export async function submitGeneration(
   const creations: CreateGenerationInput[] = [];
   for (let i = 0; i < count; i++) {
     const generationId = crypto.randomUUID();
-    const values = { ...resolvedValues };
+    const values = {
+      ...resolvedValues,
+      ...(fixedValues as Record<string, string | number | undefined>),
+    };
     if (seedInput && baseSeed !== null) {
       values[seedInput.id] = baseSeed + i;
     }
     const { prompt, nodeTypes } = buildPrompt(
       detail.workflow,
-      relevant,
+      promptInputs,
       values,
       outputNodeIds,
       generationId,

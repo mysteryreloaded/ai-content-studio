@@ -7,6 +7,7 @@ import {
   type BindingValidationContext,
   type ComfyFieldSpec,
   type InputDefinition,
+  type ModeInputSetting,
   type OutsideServiceNote,
   type ResolvedOutputNode,
   type Workflow,
@@ -15,7 +16,9 @@ import {
   findOutsideServiceNotes,
   parseApiFormatWorkflow,
   resolveModeOutputNodes,
+  reviseModeInputSettings,
   validateInputDefinition,
+  validateModeInputSettings,
   validateModeName,
 } from "@ai-content-studio/shared";
 import type { Clock } from "@ai-content-studio/shared";
@@ -100,12 +103,16 @@ export interface ModeRecord {
   name: string;
   description: string;
   outputNodes: ResolvedOutputNode[];
+  /** Per-Input hidden/optional/required/fixed settings for this Mode (issue #48). */
+  inputSettings: ModeInputSetting[];
 }
 
 export interface ModeInput {
   name: string;
   description: string;
   outputNodeIds: string[];
+  /** Per-Input hidden/optional/required/fixed settings for this Mode (issue #48); defaults to none (every Input optional). */
+  inputSettings?: ModeInputSetting[];
 }
 
 export interface ModelDetail {
@@ -130,6 +137,7 @@ function toModeRecord(row: ModeRow): ModeRecord {
     name: row.name,
     description: row.description,
     outputNodes: row.outputNodes as ResolvedOutputNode[],
+    inputSettings: row.inputSettings as ModeInputSetting[],
   };
 }
 
@@ -658,7 +666,9 @@ export class ModelRepository {
         name: string;
         description: string;
         outputNodes: ResolvedOutputNode[];
+        inputSettings: ModeInputSetting[];
       }> = [];
+      const currentInputs = currentRevision.inputs as InputDefinition[];
 
       input.forEach((modeInput, index) => {
         const nameError = validateModeName(modeInput.name, namesSoFar);
@@ -666,6 +676,15 @@ export class ModelRepository {
           errors.push({ field: `modes[${index}].name`, message: nameError });
         }
         namesSoFar.push(modeInput.name);
+
+        const inputSettings = modeInput.inputSettings ?? [];
+        const settingsErrors = validateModeInputSettings(
+          inputSettings,
+          currentInputs,
+        );
+        for (const message of settingsErrors) {
+          errors.push({ field: `modes[${index}].inputSettings`, message });
+        }
 
         const outcome = resolveModeOutputNodes(
           workflow,
@@ -681,6 +700,7 @@ export class ModelRepository {
           name: modeInput.name,
           description: modeInput.description,
           outputNodes: outcome.outputNodes,
+          inputSettings,
         });
       });
 
@@ -725,6 +745,7 @@ export class ModelRepository {
             name: mode.name,
             description: mode.description,
             outputNodes: mode.outputNodes,
+            inputSettings: mode.inputSettings,
           })),
         );
       }
@@ -877,6 +898,7 @@ export class ModelRepository {
             name: mode.name,
             description: mode.description,
             outputNodes: mode.outputNodes,
+            inputSettings: reviseModeInputSettings(mode.inputSettings, input),
           })),
         );
       }

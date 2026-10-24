@@ -1,0 +1,1 @@
+ALTER TABLE "modes" ADD COLUMN "input_settings" jsonb DEFAULT '[]'::jsonb NOT NULL;

@@ -1,9 +1,14 @@
 import type { InputDefinition, Workflow } from "@ai-content-studio/shared";
 import {
   STANDARD_PAUSE_NOTICE,
+  applyModeFixedValues,
   isNodeLink,
+  isSeedInput,
+  modeMenuGroup,
   relevantInputs,
+  resolveModeInputs,
   toInputIssues,
+  visibleModeBoundFields,
 } from "@ai-content-studio/shared";
 import { Hono } from "hono";
 import type { Context } from "hono";
@@ -59,12 +64,17 @@ function placeholderFor(
 }
 
 /** Trims an Input down to what the Workbench needs to render and validate its field: never the bindings or an option's per-field values. */
-function toWorkbenchInput(input: InputDefinition, workflow: Workflow) {
+function toWorkbenchInput(
+  input: InputDefinition,
+  workflow: Workflow,
+  required: boolean,
+) {
   const base = {
     id: input.id,
     group: input.group,
     label: input.label,
     help: input.help,
+    required,
     placeholder: placeholderFor(input, workflow),
   };
   if (input.kind === "text") {
@@ -151,16 +161,47 @@ function toWorkbenchDetail(
     description: detail.model.description,
     revision: detail.model.currentRevision,
     attribution: detail.model.attribution,
-    modes: detail.modes.map((mode) => ({
-      id: mode.id,
-      name: mode.name,
-      inputs: relevantInputs(
+    modes: detail.modes.map((mode) => {
+      // issue #48: a switch steered by a field one of this Mode's
+      // visible Inputs binds keeps both branches on the Path, since
+      // the Admin can't know ahead of time which way a user will set
+      // it — their Input must reach the Workbench either way.
+      const unresolvable = visibleModeBoundFields(
+        mode.inputSettings,
         detail.inputs,
+      );
+      // issue #48 CEO review: a fixed Input's value is known before
+      // sending (ADR 0001), so it must pick its switch's side here too.
+      const workflowForMode = applyModeFixedValues(
         detail.workflow,
+        detail.inputs,
+        mode.inputSettings,
+      );
+      const relevant = relevantInputs(
+        detail.inputs,
+        workflowForMode,
         mode.outputNodes.map((node) => node.nodeId),
-      ).map((input) => toWorkbenchInput(input, detail.workflow)),
-      description: mode.description,
-    })),
+        unresolvable,
+      );
+      const { formInputs, requiredIds } = resolveModeInputs(
+        relevant,
+        mode.inputSettings,
+      );
+      return {
+        id: mode.id,
+        name: mode.name,
+        inputs: formInputs.map((input) =>
+          toWorkbenchInput(input, detail.workflow, requiredIds.has(input.id)),
+        ),
+        description: mode.description,
+        // issue #48: the Mode menu's "From a prompt / images / audio / video" group.
+        menuGroup: modeMenuGroup(relevant, mode.inputSettings),
+        // issue #48 CEO review: a Seed on the Path turns on the 1-4
+        // count even when this Mode hides the Seed Input itself, so
+        // this can't be read off `inputs` (formInputs excludes hidden).
+        hasSeed: relevant.some(isSeedInput),
+      };
+    }),
     terms:
       termsVersion === null
         ? null

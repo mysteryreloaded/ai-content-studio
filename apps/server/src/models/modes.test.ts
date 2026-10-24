@@ -1,4 +1,5 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import type { TextInputDefinition } from "@ai-content-studio/shared";
 import { FakeClock } from "@ai-content-studio/shared";
 import { eq } from "drizzle-orm";
 import type { AuditActor } from "../audit/audit.js";
@@ -15,7 +16,7 @@ import { ValidationFailed } from "./validation.js";
 const SYSTEM: AuditActor = { type: "system" };
 
 const WORKFLOW_WITH_SAVE = {
-  "1": { class_type: "LoadImage", inputs: {} },
+  "1": { class_type: "LoadImage", inputs: { image_name: "placeholder.png" } },
   "2": {
     class_type: "SaveImage",
     inputs: { image: ["1", 0] },
@@ -23,6 +24,32 @@ const WORKFLOW_WITH_SAVE = {
   },
   "3": { class_type: "PreviewImage", inputs: { image: ["1", 0] } },
 };
+
+const PROMPT_INPUT_ID = "11111111-1111-1111-1111-111111111111";
+
+function promptInput(
+  overrides: Partial<TextInputDefinition> = {},
+): TextInputDefinition {
+  return {
+    id: PROMPT_INPUT_ID,
+    kind: "text",
+    group: "describe",
+    label: "Prompt",
+    help: "",
+    default: "",
+    multiline: true,
+    maxLength: 2000,
+    bindings: [
+      {
+        nodeId: "1",
+        field: "image_name",
+        classType: "LoadImage",
+        title: null,
+      },
+    ],
+    ...overrides,
+  };
+}
 
 describe("ModelRepository Modes", () => {
   const testDb = createTestDatabase("modes_repository_test");
@@ -212,6 +239,164 @@ describe("ModelRepository Modes", () => {
         SYSTEM,
       ),
     ).rejects.toBeInstanceOf(NotFound);
+  });
+
+  describe("inputSettings (issue #48)", () => {
+    async function modelWithPromptInput() {
+      const repository = await repo();
+      const { record: created } = await repository.createFromWorkflow(
+        "M1",
+        WORKFLOW_WITH_SAVE,
+        SYSTEM,
+      );
+      const { record: model } = await repository.updateInputs(
+        created.id,
+        [promptInput()],
+        created.version,
+        SYSTEM,
+      );
+      return { repository, model };
+    }
+
+    test("saves and round-trips a Mode's per-Input settings", async () => {
+      const { repository, model } = await modelWithPromptInput();
+
+      const { modes } = await repository.updateModes(
+        model.id,
+        [
+          {
+            name: "Default",
+            description: "",
+            outputNodeIds: ["2"],
+            inputSettings: [
+              {
+                inputId: PROMPT_INPUT_ID,
+                state: "required",
+                fixedValue: null,
+                label: "Describe the scene",
+              },
+            ],
+          },
+        ],
+        model.version,
+        SYSTEM,
+      );
+
+      expect(modes[0]?.inputSettings).toEqual([
+        {
+          inputId: PROMPT_INPUT_ID,
+          state: "required",
+          fixedValue: null,
+          label: "Describe the scene",
+        },
+      ]);
+
+      const detail = await repository.get(model.id);
+      expect(detail?.modes[0]?.inputSettings).toEqual([
+        {
+          inputId: PROMPT_INPUT_ID,
+          state: "required",
+          fixedValue: null,
+          label: "Describe the scene",
+        },
+      ]);
+    });
+
+    test("refuses a setting for an Input not on the Model", async () => {
+      const { repository, model } = await modelWithPromptInput();
+
+      await expect(
+        repository.updateModes(
+          model.id,
+          [
+            {
+              name: "Default",
+              description: "",
+              outputNodeIds: ["2"],
+              inputSettings: [
+                {
+                  inputId: "22222222-2222-2222-2222-222222222222",
+                  state: "hidden",
+                  fixedValue: null,
+                  label: "",
+                },
+              ],
+            },
+          ],
+          model.version,
+          SYSTEM,
+        ),
+      ).rejects.toThrow(ValidationFailed);
+    });
+
+    test("refuses a fixed value longer than the Input's max length", async () => {
+      const { repository, model } = await modelWithPromptInput();
+
+      await expect(
+        repository.updateModes(
+          model.id,
+          [
+            {
+              name: "Default",
+              description: "",
+              outputNodeIds: ["2"],
+              inputSettings: [
+                {
+                  inputId: PROMPT_INPUT_ID,
+                  state: "fixed",
+                  fixedValue: "x".repeat(2001),
+                  label: "",
+                },
+              ],
+            },
+          ],
+          model.version,
+          SYSTEM,
+        ),
+      ).rejects.toThrow(ValidationFailed);
+    });
+
+    test("updateInputs carries a Mode's inputSettings forward unchanged", async () => {
+      const { repository, model } = await modelWithPromptInput();
+
+      const { record: afterModes } = await repository.updateModes(
+        model.id,
+        [
+          {
+            name: "Default",
+            description: "",
+            outputNodeIds: ["2"],
+            inputSettings: [
+              {
+                inputId: PROMPT_INPUT_ID,
+                state: "required",
+                fixedValue: null,
+                label: "",
+              },
+            ],
+          },
+        ],
+        model.version,
+        SYSTEM,
+      );
+
+      await repository.updateInputs(
+        model.id,
+        [promptInput({ help: "updated" })],
+        afterModes.version,
+        SYSTEM,
+      );
+
+      const detail = await repository.get(model.id);
+      expect(detail?.modes[0]?.inputSettings).toEqual([
+        {
+          inputId: PROMPT_INPUT_ID,
+          state: "required",
+          fixedValue: null,
+          label: "",
+        },
+      ]);
+    });
   });
 });
 

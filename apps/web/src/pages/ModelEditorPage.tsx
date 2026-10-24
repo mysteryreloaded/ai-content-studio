@@ -1,5 +1,17 @@
-import { computeModePath } from "@ai-content-studio/shared";
-import type { Workflow } from "@ai-content-studio/shared";
+import {
+  computeModePath,
+  fieldKey,
+  listBindableFields,
+} from "@ai-content-studio/shared";
+import type {
+  BindableField,
+  InputDefinition,
+  NumberInputDefinition,
+  SelectInputDefinition,
+  SelectOption,
+  TextInputDefinition,
+  Workflow,
+} from "@ai-content-studio/shared";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { useBlocker, useNavigate, useParams } from "react-router-dom";
 
@@ -54,6 +66,7 @@ interface ModelDetail {
   nodes: ModelNode[];
   outsideServiceNotes: OutsideServiceNote[];
   modes: ModeRecord[];
+  inputs: InputDefinition[];
 }
 
 function draftsFrom(detail: ModelDetail): DraftMode[] {
@@ -75,6 +88,138 @@ function sameModes(a: DraftMode[], b: DraftMode[]): boolean {
   return (
     JSON.stringify(a.map(withoutKey)) === JSON.stringify(b.map(withoutKey))
   );
+}
+
+function sameInputs(a: InputDefinition[], b: InputDefinition[]): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function newTextInput(): TextInputDefinition {
+  return {
+    id: crypto.randomUUID(),
+    kind: "text",
+    group: "describe",
+    label: "",
+    help: "",
+    default: "",
+    multiline: false,
+    maxLength: 2000,
+    bindings: [],
+  };
+}
+
+function newNumberInput(): NumberInputDefinition {
+  return {
+    id: crypto.randomUUID(),
+    kind: "number",
+    group: "settings",
+    label: "",
+    help: "",
+    default: null,
+    numberMode: "integer",
+    min: 0,
+    max: 100,
+    step: 1,
+    bindings: [],
+  };
+}
+
+function newSelectInput(): SelectInputDefinition {
+  return {
+    id: crypto.randomUUID(),
+    kind: "select",
+    group: "settings",
+    label: "",
+    help: "",
+    default: null,
+    options: [
+      { id: crypto.randomUUID(), label: "", values: [] },
+      { id: crypto.randomUUID(), label: "", values: [] },
+    ],
+    bindings: [],
+  };
+}
+
+/** `fieldKey` of every field bound by an Input other than `excludingId`. */
+function usedFieldKeys(
+  inputs: InputDefinition[],
+  excludingId: string,
+): Set<string> {
+  const used = new Set<string>();
+  for (const input of inputs) {
+    if (input.id === excludingId) continue;
+    for (const binding of input.bindings) {
+      used.add(fieldKey(binding.nodeId, binding.field));
+    }
+  }
+  return used;
+}
+
+/** A field this Input can bind (issue #46): value-holding, type-compatible with its kind, not `filename_prefix`, and not already bound elsewhere. */
+function candidateFieldsFor(
+  workflow: Workflow,
+  input: InputDefinition,
+  otherInputs: InputDefinition[],
+): BindableField[] {
+  const used = usedFieldKeys(otherInputs, input.id);
+  const alreadyBound = new Set(
+    input.bindings.map((binding) => fieldKey(binding.nodeId, binding.field)),
+  );
+  return listBindableFields(workflow).filter((field) => {
+    if (field.field === "filename_prefix") return false;
+    const key = fieldKey(field.nodeId, field.field);
+    if (used.has(key) && !alreadyBound.has(key)) return false;
+    if (input.kind === "text") return field.valueType === "string";
+    if (input.kind === "number") return field.valueType === "number";
+    return true;
+  });
+}
+
+/** Adds or removes a binding, keeping a select Input's option values arrays the same length as its bindings. */
+function toggleBinding(
+  input: InputDefinition,
+  field: BindableField,
+): InputDefinition {
+  const index = input.bindings.findIndex(
+    (binding) =>
+      binding.nodeId === field.nodeId && binding.field === field.field,
+  );
+
+  if (index === -1) {
+    const bindings = [
+      ...input.bindings,
+      {
+        nodeId: field.nodeId,
+        field: field.field,
+        classType: field.classType,
+        title: field.title,
+      },
+    ];
+    if (input.kind === "select") {
+      return {
+        ...input,
+        bindings,
+        options: input.options.map((option) => ({
+          ...option,
+          values: [...option.values, field.value],
+        })),
+      };
+    }
+    return { ...input, bindings };
+  }
+
+  const bindings = input.bindings.filter((_, i) => i !== index);
+  if (input.kind === "select") {
+    return {
+      ...input,
+      bindings,
+      options: input.options.map((option) => ({
+        ...option,
+        values: option.values.filter((_, i) => i !== index),
+      })),
+    };
+  }
+  return { ...input, bindings };
 }
 
 interface AdminBackendSummary {
@@ -156,6 +301,16 @@ export function ModelEditorPage() {
   const [editingModeIndex, setEditingModeIndex] = useState<number | null>(null);
   const [modesSaveError, setModesSaveError] = useState<string | null>(null);
   const [savingModes, setSavingModes] = useState(false);
+  const [inputsDraft, setInputsDraft] = useState<InputDefinition[] | null>(
+    null,
+  );
+  const [editingInputIndex, setEditingInputIndex] = useState<number | null>(
+    null,
+  );
+  const [newInputKind, setNewInputKind] =
+    useState<InputDefinition["kind"]>("text");
+  const [inputsSaveError, setInputsSaveError] = useState<string | null>(null);
+  const [savingInputs, setSavingInputs] = useState(false);
   const [stateError, setStateError] = useState<string[] | null>(null);
   const [togglingState, setTogglingState] = useState(false);
   // Set right before navigating away after a successful delete: `dirty`
@@ -178,6 +333,9 @@ export function ModelEditorPage() {
         setModesDraft(draftsFrom(body));
         setEditingModeIndex(null);
         setModesSaveError(null);
+        setInputsDraft(body.inputs);
+        setEditingInputIndex(null);
+        setInputsSaveError(null);
         setStateError(null);
         setLoadError(null);
       })
@@ -350,6 +508,63 @@ export function ModelEditorPage() {
     }
   }
 
+  function addInput() {
+    if (!inputsDraft) return;
+    const created =
+      newInputKind === "text"
+        ? newTextInput()
+        : newInputKind === "number"
+          ? newNumberInput()
+          : newSelectInput();
+    setInputsDraft([...inputsDraft, created]);
+    setEditingInputIndex(inputsDraft.length);
+  }
+
+  function removeInput(index: number) {
+    if (!inputsDraft) return;
+    setInputsDraft(inputsDraft.filter((_, i) => i !== index));
+    if (editingInputIndex === index) setEditingInputIndex(null);
+  }
+
+  function updateInput(index: number, next: InputDefinition) {
+    if (!inputsDraft) return;
+    setInputsDraft(inputsDraft.map((input, i) => (i === index ? next : input)));
+  }
+
+  /** Toggles `field` in and out of the currently *picking* Input's bindings. */
+  function toggleFieldInEditingInput(field: BindableField) {
+    if (editingInputIndex === null || !inputsDraft) return;
+    const input = inputsDraft[editingInputIndex];
+    if (!input) return;
+    updateInput(editingInputIndex, toggleBinding(input, field));
+  }
+
+  async function handleSaveInputs() {
+    if (!detail || !inputsDraft) return;
+    setSavingInputs(true);
+    setInputsSaveError(null);
+
+    try {
+      const res = await fetch(`/api/admin/models/${detail.model.id}/inputs`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          version: detail.model.version,
+          inputs: inputsDraft,
+        }),
+      });
+
+      if (!res.ok) {
+        setInputsSaveError(await messageFrom(res, "save failed"));
+        return;
+      }
+
+      load();
+    } finally {
+      setSavingInputs(false);
+    }
+  }
+
   async function handleToggleState() {
     if (!detail) return;
     setTogglingState(true);
@@ -390,6 +605,10 @@ export function ModelEditorPage() {
     detail && modesDraft && !sameModes(draftsFrom(detail), modesDraft),
   );
 
+  const inputsDirty = Boolean(
+    detail && inputsDraft && !sameInputs(detail.inputs, inputsDraft),
+  );
+
   const editingMode =
     editingModeIndex !== null ? (modesDraft?.[editingModeIndex] ?? null) : null;
   const editingPath =
@@ -397,14 +616,23 @@ export function ModelEditorPage() {
       ? computeModePath(detail.workflow, editingMode.outputNodeIds)
       : null;
 
+  const editingInput =
+    editingInputIndex !== null
+      ? (inputsDraft?.[editingInputIndex] ?? null)
+      : null;
+  const editingInputCandidates =
+    detail && editingInput && inputsDraft
+      ? candidateFieldsFor(detail.workflow, editingInput, inputsDraft)
+      : null;
+
   useEffect(() => {
-    if (!dirty && !modesDirty) return;
+    if (!dirty && !modesDirty && !inputsDirty) return;
     const handler = (event: BeforeUnloadEvent) => {
       event.preventDefault();
     };
     window.addEventListener("beforeunload", handler);
     return () => window.removeEventListener("beforeunload", handler);
-  }, [dirty, modesDirty]);
+  }, [dirty, modesDirty, inputsDirty]);
 
   // Catches every in-app navigation away from the editor while dirty: the
   // "Back to Models" button, AdminShell's nav links, and the browser's
@@ -413,7 +641,7 @@ export function ModelEditorPage() {
   useBlocker(({ currentLocation, nextLocation }) => {
     if (
       bypassBlockerRef.current ||
-      (!dirty && !modesDirty) ||
+      (!dirty && !modesDirty && !inputsDirty) ||
       currentLocation.pathname === nextLocation.pathname
     ) {
       return false;
@@ -728,6 +956,362 @@ export function ModelEditorPage() {
       </section>
 
       <section>
+        <h3>Inputs</h3>
+        {inputsDraft?.map((input, index) => (
+          <fieldset key={input.id}>
+            <p>Kind: {input.kind}</p>
+
+            <label htmlFor={`input-group-${index}`}>Group</label>
+            <select
+              id={`input-group-${index}`}
+              value={input.group}
+              onChange={(event) =>
+                updateInput(index, {
+                  ...input,
+                  group: event.target.value as InputDefinition["group"],
+                })
+              }
+            >
+              <option value="describe">Describe it</option>
+              <option value="settings">Settings</option>
+            </select>
+
+            <label htmlFor={`input-label-${index}`}>Label</label>
+            <input
+              id={`input-label-${index}`}
+              value={input.label}
+              maxLength={60}
+              onChange={(event) =>
+                updateInput(index, { ...input, label: event.target.value })
+              }
+            />
+
+            <label htmlFor={`input-help-${index}`}>Help (optional)</label>
+            <input
+              id={`input-help-${index}`}
+              value={input.help}
+              onChange={(event) =>
+                updateInput(index, { ...input, help: event.target.value })
+              }
+            />
+
+            {input.kind === "text" && (
+              <>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={input.multiline}
+                    onChange={(event) =>
+                      updateInput(index, {
+                        ...input,
+                        multiline: event.target.checked,
+                      })
+                    }
+                  />
+                  Multi-line
+                </label>
+
+                <label htmlFor={`input-maxlength-${index}`}>Max length</label>
+                <input
+                  id={`input-maxlength-${index}`}
+                  type="number"
+                  min={1}
+                  max={10_000}
+                  value={input.maxLength}
+                  onChange={(event) =>
+                    updateInput(index, {
+                      ...input,
+                      maxLength: Number(event.target.value),
+                    })
+                  }
+                />
+
+                <label htmlFor={`input-default-${index}`}>
+                  Default (optional)
+                </label>
+                <input
+                  id={`input-default-${index}`}
+                  value={input.default}
+                  maxLength={input.maxLength}
+                  onChange={(event) =>
+                    updateInput(index, {
+                      ...input,
+                      default: event.target.value,
+                    })
+                  }
+                />
+              </>
+            )}
+
+            {input.kind === "number" && (
+              <>
+                <label htmlFor={`input-mode-${index}`}>Number</label>
+                <select
+                  id={`input-mode-${index}`}
+                  value={input.numberMode}
+                  onChange={(event) =>
+                    updateInput(index, {
+                      ...input,
+                      numberMode: event.target
+                        .value as NumberInputDefinition["numberMode"],
+                    })
+                  }
+                >
+                  <option value="integer">Whole</option>
+                  <option value="decimal">Decimal</option>
+                </select>
+
+                <label htmlFor={`input-min-${index}`}>Min</label>
+                <input
+                  id={`input-min-${index}`}
+                  type="number"
+                  value={input.min}
+                  onChange={(event) =>
+                    updateInput(index, {
+                      ...input,
+                      min: Number(event.target.value),
+                    })
+                  }
+                />
+
+                <label htmlFor={`input-max-${index}`}>Max</label>
+                <input
+                  id={`input-max-${index}`}
+                  type="number"
+                  value={input.max}
+                  onChange={(event) =>
+                    updateInput(index, {
+                      ...input,
+                      max: Number(event.target.value),
+                    })
+                  }
+                />
+
+                <label htmlFor={`input-step-${index}`}>Step</label>
+                <input
+                  id={`input-step-${index}`}
+                  type="number"
+                  min={0}
+                  value={input.step}
+                  onChange={(event) =>
+                    updateInput(index, {
+                      ...input,
+                      step: Number(event.target.value),
+                    })
+                  }
+                />
+
+                <label htmlFor={`input-default-${index}`}>
+                  Default (optional)
+                </label>
+                <input
+                  id={`input-default-${index}`}
+                  type="number"
+                  value={input.default ?? ""}
+                  onChange={(event) =>
+                    updateInput(index, {
+                      ...input,
+                      default:
+                        event.target.value === ""
+                          ? null
+                          : Number(event.target.value),
+                    })
+                  }
+                />
+              </>
+            )}
+
+            {input.kind === "select" && (
+              <>
+                <p>
+                  Options
+                  {input.options.length === 2 && " (shown as a toggle)"}:
+                </p>
+                {input.options.map((option, optionIndex) => (
+                  <fieldset key={option.id}>
+                    <label
+                      htmlFor={`input-option-label-${index}-${optionIndex}`}
+                    >
+                      Option label
+                    </label>
+                    <input
+                      id={`input-option-label-${index}-${optionIndex}`}
+                      value={option.label}
+                      onChange={(event) =>
+                        updateInput(index, {
+                          ...input,
+                          options: input.options.map((o, i) =>
+                            i === optionIndex
+                              ? { ...o, label: event.target.value }
+                              : o,
+                          ),
+                        })
+                      }
+                    />
+                    {input.bindings.map((binding, bindingIndex) => (
+                      <span key={fieldKey(binding.nodeId, binding.field)}>
+                        <label
+                          htmlFor={`input-option-value-${index}-${optionIndex}-${bindingIndex}`}
+                        >
+                          {binding.nodeId}.{binding.field}
+                        </label>
+                        <input
+                          id={`input-option-value-${index}-${optionIndex}-${bindingIndex}`}
+                          value={String(option.values[bindingIndex] ?? "")}
+                          onChange={(event) =>
+                            updateInput(index, {
+                              ...input,
+                              options: input.options.map((o, i) =>
+                                i === optionIndex
+                                  ? {
+                                      ...o,
+                                      values: o.values.map((v, vi) =>
+                                        vi === bindingIndex
+                                          ? event.target.value
+                                          : v,
+                                      ),
+                                    }
+                                  : o,
+                              ),
+                            })
+                          }
+                        />
+                      </span>
+                    ))}
+                    {input.options.length > 2 && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateInput(index, {
+                            ...input,
+                            options: input.options.filter(
+                              (_, i) => i !== optionIndex,
+                            ),
+                          })
+                        }
+                      >
+                        Remove option
+                      </button>
+                    )}
+                  </fieldset>
+                ))}
+                {input.options.length < 50 && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      updateInput(index, {
+                        ...input,
+                        options: [
+                          ...input.options,
+                          {
+                            id: crypto.randomUUID(),
+                            label: "",
+                            values: input.bindings.map(() => ""),
+                          },
+                        ],
+                      })
+                    }
+                  >
+                    Add option
+                  </button>
+                )}
+
+                <label htmlFor={`input-default-${index}`}>
+                  Default (optional)
+                </label>
+                <select
+                  id={`input-default-${index}`}
+                  value={input.default ?? ""}
+                  onChange={(event) =>
+                    updateInput(index, {
+                      ...input,
+                      default: event.target.value || null,
+                    })
+                  }
+                >
+                  <option value="">None</option>
+                  {input.options.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label || option.id}
+                    </option>
+                  ))}
+                </select>
+              </>
+            )}
+
+            <p>
+              Bound fields: {input.bindings.length === 0 ? "none chosen" : null}
+            </p>
+            <ul>
+              {input.bindings.map((binding) => (
+                <li key={fieldKey(binding.nodeId, binding.field)}>
+                  {binding.nodeId}.{binding.field} ({binding.classType})
+                  <button
+                    type="button"
+                    onClick={() =>
+                      updateInput(
+                        index,
+                        toggleBinding(input, {
+                          nodeId: binding.nodeId,
+                          field: binding.field,
+                          classType: binding.classType,
+                          title: binding.title,
+                          valueType:
+                            input.kind === "number" ? "number" : "string",
+                          value: "",
+                        }),
+                      )
+                    }
+                  >
+                    Remove
+                  </button>
+                </li>
+              ))}
+            </ul>
+
+            <button
+              type="button"
+              aria-pressed={editingInputIndex === index}
+              onClick={() =>
+                setEditingInputIndex(editingInputIndex === index ? null : index)
+              }
+            >
+              {editingInputIndex === index
+                ? "Done picking fields"
+                : "Pick fields in the Workflow below"}
+            </button>
+            <button type="button" onClick={() => removeInput(index)}>
+              Remove Input
+            </button>
+          </fieldset>
+        ))}
+
+        <label htmlFor="new-input-kind">New Input kind</label>
+        <select
+          id="new-input-kind"
+          value={newInputKind}
+          onChange={(event) =>
+            setNewInputKind(event.target.value as InputDefinition["kind"])
+          }
+        >
+          <option value="text">Text</option>
+          <option value="number">Number</option>
+          <option value="select">Select</option>
+        </select>
+        <button type="button" onClick={addInput}>
+          Add Input
+        </button>
+        <button
+          type="button"
+          disabled={savingInputs || !inputsDirty}
+          onClick={() => void handleSaveInputs()}
+        >
+          Save Inputs
+        </button>
+        {inputsSaveError && <p role="alert">{inputsSaveError}</p>}
+      </section>
+
+      <section>
         <h3>Workflow</h3>
         {editingMode && (
           <p>
@@ -780,6 +1364,52 @@ export function ModelEditorPage() {
             })}
           </tbody>
         </table>
+
+        {editingInput && editingInputCandidates && (
+          <>
+            <p>
+              Picking fields for "{editingInput.label || "this Input"}": click a
+              row below to add or remove it. Only value-holding, type-compatible
+              fields not already bound elsewhere are shown.
+            </p>
+            <table>
+              <thead>
+                <tr>
+                  <th>Node</th>
+                  <th>Field</th>
+                  <th>Class</th>
+                  <th>Current value</th>
+                  <th>Bound</th>
+                </tr>
+              </thead>
+              <tbody>
+                {editingInputCandidates.map((field) => {
+                  const chosen = editingInput.bindings.some(
+                    (binding) =>
+                      binding.nodeId === field.nodeId &&
+                      binding.field === field.field,
+                  );
+                  return (
+                    <tr key={fieldKey(field.nodeId, field.field)}>
+                      <td>{field.nodeId}</td>
+                      <td>{field.field}</td>
+                      <td>{field.classType}</td>
+                      <td>{String(field.value)}</td>
+                      <td>
+                        <button
+                          type="button"
+                          onClick={() => toggleFieldInEditingInput(field)}
+                        >
+                          {chosen ? "Remove" : "Add"}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </>
+        )}
       </section>
 
       <button type="button" onClick={() => void handleDelete()}>

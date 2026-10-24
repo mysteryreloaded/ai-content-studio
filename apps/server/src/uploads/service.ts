@@ -418,7 +418,9 @@ export class UploadsService {
    * local player (issue #51's AC): a frame-accurate re-encode to
    * H.264/AAC, keeping the source's own size and fps, saved as a new
    * Upload "trimmed from" the original. Bounded by `trimTimeoutMs`
-   * (default ~90s), covering ffmpeg's own run.
+   * (default ~90s), covering the whole call: waiting for a free ffmpeg
+   * slot, the re-encode, the probe of its own output, and (for video)
+   * the thumbnail, all against one shared deadline, not 90s each.
    */
   async trim(
     userId: string,
@@ -454,6 +456,16 @@ export class UploadsService {
     const storageKey = `uploads/${newId}/original`;
     const outputPath = this.deps.storage.absolutePath(storageKey);
     const timeoutMs = this.deps.trimTimeoutMs ?? 90_000;
+    const deadlineAt = Date.now() + timeoutMs;
+    const remaining = () => Math.max(0, deadlineAt - Date.now());
+    const refuseTimedOut = async (
+      ...keys: readonly string[]
+    ): Promise<never> => {
+      for (const key of keys) await this.deps.storage.delete(key);
+      throw new UploadRefused(
+        "couldn't be trimmed in time; try a shorter range",
+      );
+    };
 
     // ffmpeg writes straight to `outputPath`; this just makes the new
     // Upload's own directory exist first (`write` is the only Storage
@@ -469,7 +481,7 @@ export class UploadsService {
           startMs,
           endMs,
           fps,
-          timeoutMs,
+          remaining(),
         );
       } else {
         await this.deps.media.trimAudio(
@@ -477,20 +489,21 @@ export class UploadsService {
           outputPath,
           startMs,
           endMs,
-          timeoutMs,
+          remaining(),
         );
       }
     } catch {
-      await this.deps.storage.delete(storageKey);
-      throw new UploadRefused(
-        "couldn't be trimmed in time; try a shorter range",
-      );
+      return refuseTimedOut(storageKey);
     }
 
     const filePath = outputPath;
     const probe = isVideo
-      ? await this.deps.media.probeVideoUpload(filePath, extension)
-      : await this.deps.media.probeAudioUpload(filePath, extension);
+      ? await this.deps.media.probeVideoUpload(filePath, extension, remaining())
+      : await this.deps.media.probeAudioUpload(
+          filePath,
+          extension,
+          remaining(),
+        );
     if (!probe.ok) {
       await this.deps.storage.delete(storageKey);
       throw new UploadRefused(probe.reason);
@@ -504,10 +517,16 @@ export class UploadsService {
     let thumbnailKey: string | null = null;
     if (isVideo) {
       thumbnailKey = `uploads/${newId}/thumb.webp`;
-      await this.deps.media.makeVideoThumbnail(
-        filePath,
-        this.deps.storage.absolutePath(thumbnailKey),
-      );
+      try {
+        await this.deps.media.makeVideoThumbnail(
+          filePath,
+          this.deps.storage.absolutePath(thumbnailKey),
+          0,
+          remaining(),
+        );
+      } catch {
+        return refuseTimedOut(storageKey, thumbnailKey);
+      }
     }
 
     return this.deps.repository.createTrimmed({

@@ -179,6 +179,25 @@ const UPLOAD_KIND_LABEL: Record<"image" | "video" | "audio", string> = {
   audio: "an audio clip",
 };
 
+/**
+ * The duration to check a video/audio Upload's limits against (issue
+ * #51): for a trimmed Upload, the range the user actually asked for
+ * (`trimEndMs - trimStartMs`), not the re-encode's own probed
+ * `durationMs`, which can overshoot it by a few milliseconds (a 29.97fps
+ * encode of a 10s `-t` lands a hair over 10000ms; AAC pads further) and
+ * would otherwise refuse a trim to exactly the Input's own max.
+ */
+export function effectiveUploadDurationMs(upload: {
+  durationMs: number | null;
+  trimStartMs: number | null;
+  trimEndMs: number | null;
+}): number | null {
+  if (upload.trimStartMs !== null && upload.trimEndMs !== null) {
+    return upload.trimEndMs - upload.trimStartMs;
+  }
+  return upload.durationMs;
+}
+
 /** The expected Upload `kind` and its own limit-issue check, by Input kind (issue #51). */
 function expectedKindAndIssue(input: UploadInput): [
   "image" | "video" | "audio",
@@ -198,7 +217,7 @@ function expectedKindAndIssue(input: UploadInput): [
   return ["audio", (upload) => audioUploadLimitIssue(upload, input)];
 }
 
-async function resolveUploadValues(
+export async function resolveUploadValues(
   inputs: readonly InputDefinition[],
   values: Record<string, string | number | undefined>,
   userId: string,
@@ -236,7 +255,10 @@ async function resolveUploadValues(
     } else if (upload.kind !== expectedKind) {
       refuse(`that Upload isn't ${UPLOAD_KIND_LABEL[expectedKind]}`);
     } else {
-      const issue = limitIssue(upload);
+      const issue = limitIssue({
+        ...upload,
+        durationMs: effectiveUploadDurationMs(upload),
+      });
       if (issue) refuse(`that file ${issue}`);
       else resolved[input.id] = uploadFileName(upload.id, upload.extension);
     }

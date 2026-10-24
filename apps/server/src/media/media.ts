@@ -31,30 +31,49 @@ export class MediaCommandError extends Error {
   }
 }
 
-/** Bounds how many ffmpeg/ffprobe processes run at once; callers past the bound wait their turn. */
+/**
+ * Bounds how many ffmpeg/ffprobe processes run at once; callers past the
+ * bound wait their turn. `acquire(timeoutMs)` bounds that wait too, so a
+ * caller with its own deadline (e.g. a trim's ~90s cap) doesn't sit in
+ * the queue forever: a request still waiting when its timer fires is
+ * pulled out of the queue and its `acquire()` rejects, never granted a
+ * slot later.
+ */
 class Semaphore {
   private active = 0;
-  private readonly queue: Array<() => void> = [];
+  private readonly queue: Array<(release: () => void) => void> = [];
 
   constructor(private readonly max: number) {}
 
-  async acquire(): Promise<() => void> {
+  async acquire(timeoutMs?: number): Promise<() => void> {
     if (this.active < this.max) {
       this.active++;
       return () => this.release();
     }
-    return new Promise((resolve) => {
-      this.queue.push(() => {
-        this.active++;
-        resolve(() => this.release());
-      });
+    return new Promise((resolve, reject) => {
+      const entry = (release: () => void) => {
+        if (timer !== undefined) clearTimeout(timer);
+        resolve(release);
+      };
+      this.queue.push(entry);
+      const timer =
+        timeoutMs === undefined
+          ? undefined
+          : setTimeout(() => {
+              const idx = this.queue.indexOf(entry);
+              if (idx !== -1) this.queue.splice(idx, 1);
+              reject(new Error("semaphore wait timed out"));
+            }, timeoutMs);
     });
   }
 
   private release(): void {
     this.active--;
     const next = this.queue.shift();
-    if (next) next();
+    if (next) {
+      this.active++;
+      next(() => this.release());
+    }
   }
 }
 
@@ -125,13 +144,27 @@ export class MediaRunner {
     this.threads = Math.max(1, Math.floor(cpus().length / bounded));
   }
 
+  /**
+   * `timeoutMs` bounds the whole call, the semaphore wait included (not
+   * just the spawned process): a caller racing its own deadline, like a
+   * trim's ~90s cap, can pass down what's left of it so queueing for a
+   * busy runner counts against that cap instead of getting a fresh
+   * budget once a slot frees up.
+   */
   private async run(
     cmd: readonly string[],
     timeoutMs = this.timeoutMs,
   ): Promise<string> {
-    const release = await this.semaphore.acquire();
+    const waitStarted = Date.now();
+    let release: () => void;
     try {
-      return await spawnBounded(cmd, timeoutMs);
+      release = await this.semaphore.acquire(timeoutMs);
+    } catch {
+      throw new MediaTimeoutError(cmd[0] ?? "ffmpeg");
+    }
+    try {
+      const remaining = Math.max(0, timeoutMs - (Date.now() - waitStarted));
+      return await spawnBounded(cmd, remaining);
     } finally {
       release();
     }
@@ -295,19 +328,23 @@ export class MediaRunner {
   async probeVideoUpload(
     filePath: string,
     extension: string,
+    timeoutMs?: number,
   ): Promise<ProbeResult> {
     let stdout: string;
     try {
-      stdout = await this.run([
-        "ffprobe",
-        "-v",
-        "error",
-        "-print_format",
-        "json",
-        "-show_streams",
-        "-show_format",
-        filePath,
-      ]);
+      stdout = await this.run(
+        [
+          "ffprobe",
+          "-v",
+          "error",
+          "-print_format",
+          "json",
+          "-show_streams",
+          "-show_format",
+          filePath,
+        ],
+        timeoutMs,
+      );
     } catch {
       return { ok: false, reason: WRONG_VIDEO_KIND };
     }
@@ -322,19 +359,23 @@ export class MediaRunner {
   async probeAudioUpload(
     filePath: string,
     extension: string,
+    timeoutMs?: number,
   ): Promise<ProbeResult> {
     let stdout: string;
     try {
-      stdout = await this.run([
-        "ffprobe",
-        "-v",
-        "error",
-        "-print_format",
-        "json",
-        "-show_streams",
-        "-show_format",
-        filePath,
-      ]);
+      stdout = await this.run(
+        [
+          "ffprobe",
+          "-v",
+          "error",
+          "-print_format",
+          "json",
+          "-show_streams",
+          "-show_format",
+          filePath,
+        ],
+        timeoutMs,
+      );
     } catch {
       return { ok: false, reason: WRONG_AUDIO_KIND };
     }
@@ -353,28 +394,32 @@ export class MediaRunner {
     inputPath: string,
     outputPath: string,
     atMs = 0,
+    timeoutMs?: number,
   ): Promise<void> {
-    await this.run([
-      "ffmpeg",
-      "-v",
-      "error",
-      "-y",
-      "-ss",
-      (atMs / 1000).toString(),
-      "-i",
-      inputPath,
-      "-threads",
-      String(this.threads),
-      "-vf",
-      "scale=160:160:force_original_aspect_ratio=decrease",
-      "-frames:v",
-      "1",
-      "-c:v",
-      "libwebp",
-      "-f",
-      "webp",
-      outputPath,
-    ]);
+    await this.run(
+      [
+        "ffmpeg",
+        "-v",
+        "error",
+        "-y",
+        "-ss",
+        (atMs / 1000).toString(),
+        "-i",
+        inputPath,
+        "-threads",
+        String(this.threads),
+        "-vf",
+        "scale=160:160:force_original_aspect_ratio=decrease",
+        "-frames:v",
+        "1",
+        "-c:v",
+        "libwebp",
+        "-f",
+        "webp",
+        outputPath,
+      ],
+      timeoutMs,
+    );
   }
 
   /**
@@ -401,6 +446,10 @@ export class MediaRunner {
         (startMs / 1000).toString(),
         "-i",
         input,
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a:0?",
         "-t",
         ((endMs - startMs) / 1000).toString(),
         "-threads",
@@ -440,6 +489,7 @@ export class MediaRunner {
         (startMs / 1000).toString(),
         "-i",
         input,
+        "-vn",
         "-t",
         ((endMs - startMs) / 1000).toString(),
         "-threads",

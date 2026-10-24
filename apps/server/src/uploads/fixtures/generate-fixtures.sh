@@ -44,4 +44,13 @@ $FF -f lavfi -i "sine=frequency=440:sample_rate=8000" -t 1 -c:a pcm_alaw audio-r
 # --- audio: misnamed (a real WAV file, renamed .mp3: container mismatch) ---
 cp audio-allowed.wav audio-misnamed.mp3
 
+# --- audio: cover art (ID3 embedded picture, reported by ffprobe as a
+# video stream with disposition.attached_pic; must still be accepted) ---
+$FF -f lavfi -i "color=size=16x16:color=red" -frames:v 1 /tmp/cover.png
+$FF -f lavfi -i "sine=frequency=440:sample_rate=8000" -i /tmp/cover.png -t 1 \
+  -map 0:a -map 1:v -c:a libmp3lame -c:v mjpeg -id3v2_version 3 \
+  -metadata:s:v comment="Cover (front)" -disposition:v attached_pic \
+  audio-cover-art.mp3
+rm -f /tmp/cover.png
+
 ls -la *.mp4 *.mkv *.wav *.mp3 2>/dev/null

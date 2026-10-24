@@ -102,6 +102,15 @@ describe("MediaRunner.probeVideoUpload / probeAudioUpload", () => {
     expect(probe.ok).toBe(false);
   });
 
+  test("accepts an MP3 with embedded cover art (ffprobe's attached_pic video stream doesn't count against it)", async () => {
+    const media = new MediaRunner(2);
+    const probe = await media.probeAudioUpload(f("audio-cover-art.mp3"), "mp3");
+    expect(probe.ok).toBe(true);
+    if (!probe.ok || probe.kind !== "audio") throw new Error("expected audio");
+    expect(probe.facts.codecName).toBe("mp3");
+    expect(probe.facts.durationMs).toBeGreaterThan(0);
+  });
+
   test("trimVideo re-encodes a frame-accurate range to H.264/AAC MP4, keeping size and fps", async () => {
     const media = new MediaRunner(2);
     const dir = await mkdtemp(path.join(tmpdir(), "trim-test-"));
@@ -133,6 +142,21 @@ describe("MediaRunner.probeVideoUpload / probeAudioUpload", () => {
         throw new Error("expected audio");
       expect(probe.facts.codecName).toBe("aac");
       expect(probe.facts.durationMs).toBeLessThan(1000);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("trimAudio drops an embedded cover art stream (-vn), so the trimmed Upload stays audio-only", async () => {
+    const media = new MediaRunner(2);
+    const dir = await mkdtemp(path.join(tmpdir(), "trim-test-"));
+    try {
+      const output = path.join(dir, "trimmed.m4a");
+      await media.trimAudio(f("audio-cover-art.mp3"), output, 0, 500);
+      const probe = await media.probeAudioUpload(output, "m4a");
+      expect(probe.ok).toBe(true);
+      if (!probe.ok || probe.kind !== "audio")
+        throw new Error("expected audio");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

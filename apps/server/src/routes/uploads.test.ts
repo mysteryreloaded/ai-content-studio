@@ -2,7 +2,7 @@
 // real ffprobe/ffmpeg (issue #50).
 
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { FakeClock } from "@ai-content-studio/shared";
@@ -88,7 +88,10 @@ describe("/api/uploads", () => {
     hint = null;
   });
 
-  async function setup(media: UploadsServiceMedia = new MediaRunner(2)) {
+  async function setup(
+    media: UploadsServiceMedia = new MediaRunner(2),
+    trimTimeoutMs?: number,
+  ) {
     const { db } = await testDb;
     const dir = await dirPromise;
     const storage = createLocalStorage(path.join(dir, "data"));
@@ -101,6 +104,7 @@ describe("/api/uploads", () => {
       hasFreeDisk: async () => !diskFull,
       hintLimits: async () => hint,
       media,
+      trimTimeoutMs,
     });
     const insertUser = async (email: string) => {
       const [row] = await db
@@ -550,6 +554,25 @@ describe("/api/uploads", () => {
     );
   });
 
+  test("an MP3 with embedded cover art completes (its attached_pic stream isn't treated as video)", async () => {
+    const { insertUser, as } = await setup();
+    const app = as(await insertUser("coverart@example.com"));
+
+    const res = await uploadFixture(
+      app,
+      "audio-cover-art.mp3",
+      "clip.mp3",
+      "audio/mpeg",
+    );
+    expect(res.status).toBe(200);
+    const { upload } = (await res.json()) as {
+      upload: { status: string; kind: string; durationMs: number };
+    };
+    expect(upload.status).toBe("complete");
+    expect(upload.kind).toBe("audio");
+    expect(upload.durationMs).toBeGreaterThan(0);
+  });
+
   test("complete refuses a wrong video codec, a truncated file and a misnamed container (issue #51's AC)", async () => {
     const { insertUser, as } = await setup();
     const app = as(await insertUser("wrongvideo@example.com"));
@@ -726,6 +749,115 @@ describe("/api/uploads", () => {
     expect((stored?.probe as { codecName?: string } | null)?.codecName).toBe(
       "h264",
     );
+  });
+
+  test("trim: a post-trim thumbnail failure is caught, cleans up, and refuses (not a 500 or an orphan file)", async () => {
+    const real = new MediaRunner(2);
+    // The original Upload's own `complete` also makes a video thumbnail
+    // (issue #51); only the trim's own thumbnail, the second call, fails.
+    let thumbnailCalls = 0;
+    const media: UploadsServiceMedia = {
+      probeImage: (filePath) => real.probeImage(filePath),
+      makeThumbnail: () => {
+        throw new Error("not needed for this test");
+      },
+      probeVideoUpload: (filePath, extension, timeoutMs) =>
+        real.probeVideoUpload(filePath, extension, timeoutMs),
+      probeAudioUpload: () => {
+        throw new Error("not needed for this test");
+      },
+      trimVideo: (input, output, startMs, endMs, fps, timeoutMs) =>
+        real.trimVideo(input, output, startMs, endMs, fps, timeoutMs),
+      trimAudio: () => {
+        throw new Error("not needed for this test");
+      },
+      makeVideoThumbnail: (inputPath, outputPath, atMs, timeoutMs) => {
+        thumbnailCalls += 1;
+        if (thumbnailCalls > 1) throw new MediaTimeoutError("ffmpeg");
+        return real.makeVideoThumbnail(inputPath, outputPath, atMs, timeoutMs);
+      },
+    };
+    const { insertUser, as, dir } = await setup(media);
+    const app = as(await insertUser("thumbfail@example.com"));
+
+    const completeRes = await uploadFixture(
+      app,
+      "video-allowed.mp4",
+      "clip.mp4",
+      "video/mp4",
+    );
+    const { upload: original } = (await completeRes.json()) as {
+      upload: { id: string };
+    };
+
+    const uploadsDir = path.join(dir, "data", "uploads");
+    const files = async () =>
+      (await readdir(uploadsDir, { recursive: true, withFileTypes: true }))
+        .filter((entry) => entry.isFile())
+        .map((entry) => path.join(entry.parentPath, entry.name))
+        .sort();
+    const before = await files();
+
+    const trimRes = await app.request(`/api/uploads/${original.id}/trim`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ startMs: 0, endMs: 500 }),
+    });
+    expect(trimRes.status).toBe(422);
+
+    // No orphan file (the new Upload's own "original"/thumbnail) lingers
+    // after the refusal; an empty leftover directory doesn't count.
+    expect(await files()).toEqual(before);
+  });
+
+  test("trim: time already spent (e.g. waiting for a busy ffmpeg) counts against the whole call's deadline, not a fresh one per stage", async () => {
+    const real = new MediaRunner(2);
+    const trimTimeoutMs = 5000;
+    let probeTimeoutMs: number | undefined;
+    const media: UploadsServiceMedia = {
+      probeImage: (filePath) => real.probeImage(filePath),
+      makeThumbnail: () => {
+        throw new Error("not needed for this test");
+      },
+      probeVideoUpload: async (filePath, extension, timeoutMs) => {
+        probeTimeoutMs = timeoutMs;
+        return real.probeVideoUpload(filePath, extension, timeoutMs);
+      },
+      probeAudioUpload: () => {
+        throw new Error("not needed for this test");
+      },
+      // Stands in for time spent waiting for a free ffmpeg slot: by the
+      // time the re-encode is even done, a chunk of the deadline is gone.
+      trimVideo: async (input, output, startMs, endMs, fps, timeoutMs) => {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        await real.trimVideo(input, output, startMs, endMs, fps, timeoutMs);
+      },
+      trimAudio: () => {
+        throw new Error("not needed for this test");
+      },
+      makeVideoThumbnail: (inputPath, outputPath, atMs, timeoutMs) =>
+        real.makeVideoThumbnail(inputPath, outputPath, atMs, timeoutMs),
+    };
+    const { insertUser, as } = await setup(media, trimTimeoutMs);
+    const app = as(await insertUser("deadline@example.com"));
+
+    const completeRes = await uploadFixture(
+      app,
+      "video-allowed.mp4",
+      "clip.mp4",
+      "video/mp4",
+    );
+    const { upload: original } = (await completeRes.json()) as {
+      upload: { id: string };
+    };
+
+    const trimRes = await app.request(`/api/uploads/${original.id}/trim`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ startMs: 0, endMs: 500 }),
+    });
+    expect(trimRes.status).toBe(201);
+    expect(probeTimeoutMs).toBeLessThan(trimTimeoutMs - 150);
   });
 
   test("trim refuses a range outside the original's own duration", async () => {

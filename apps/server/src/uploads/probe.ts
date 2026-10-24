@@ -91,6 +91,7 @@ interface FfprobeOutput {
     pix_fmt?: string;
     r_frame_rate?: string;
     avg_frame_rate?: string;
+    disposition?: { attached_pic?: number };
   }>;
   format?: { format_name?: string; duration?: string };
 }
@@ -283,7 +284,10 @@ export function parseVideoProbeOutput(
 /**
  * Parses ffprobe's JSON for an audio Upload (issue #51): exactly one
  * audio stream and no video stream, its codec and container matching
- * `extension`'s own expected pair (so a misnamed file is refused).
+ * `extension`'s own expected pair (so a misnamed file is refused). A
+ * video stream that's just embedded cover art (ffprobe's
+ * `disposition.attached_pic`, e.g. an MP3/M4A/FLAC's ID3 picture) isn't
+ * a real video stream and doesn't count against "no video stream".
  */
 export function parseAudioProbeOutput(
   stdout: string,
@@ -305,7 +309,9 @@ export function parseAudioProbeOutput(
 
   const streams = parsed.streams ?? [];
   const audioStreams = streams.filter((s) => s.codec_type === "audio");
-  const videoStreams = streams.filter((s) => s.codec_type === "video");
+  const videoStreams = streams.filter(
+    (s) => s.codec_type === "video" && !s.disposition?.attached_pic,
+  );
   const stream = audioStreams[0];
   const formatName = parsed.format?.format_name ?? "";
   const containerMatches = formatTokens(formatName).includes(expectedToken);

@@ -14,7 +14,7 @@ import {
   type VideoUploadInputDefinition,
   imageUploadLimitIssue,
 } from "@ai-content-studio/shared";
-import type { MediaRunner } from "../media/media.js";
+import { type MediaRunner, MediaTimeoutError } from "../media/media.js";
 import type { Storage } from "../storage/storage.js";
 import { MAX_IMAGE_MEGAPIXELS, type VideoProbeFacts } from "./probe.js";
 import type {
@@ -346,18 +346,30 @@ export class UploadsService {
     });
   }
 
-  /** Tries the video, then the audio, probe; keeps the still's own refusal reason if neither extension matches (issue #51). */
+  /**
+   * Tries the video, then the audio, probe; keeps the still's own
+   * refusal reason if neither extension matches (issue #51). A probe
+   * that times out (`MediaTimeoutError`) is reported as that, not
+   * folded into "isn't an MP4/MOV/..." like a genuine codec mismatch.
+   */
   private async probeAsVideoOrAudio(
     filePath: string,
     originalName: string,
     stillRefusalReason: string,
   ) {
     const extension = (originalName.split(".").pop() ?? "").toLowerCase();
-    if (VIDEO_UPLOAD_EXTENSIONS.includes(extension)) {
-      return this.deps.media.probeVideoUpload(filePath, extension);
-    }
-    if (AUDIO_UPLOAD_EXTENSIONS.includes(extension)) {
-      return this.deps.media.probeAudioUpload(filePath, extension);
+    try {
+      if (VIDEO_UPLOAD_EXTENSIONS.includes(extension)) {
+        return await this.deps.media.probeVideoUpload(filePath, extension);
+      }
+      if (AUDIO_UPLOAD_EXTENSIONS.includes(extension)) {
+        return await this.deps.media.probeAudioUpload(filePath, extension);
+      }
+    } catch (err) {
+      if (err instanceof MediaTimeoutError) {
+        return { ok: false as const, reason: "couldn't be probed in time" };
+      }
+      throw err;
     }
     return { ok: false as const, reason: stillRefusalReason };
   }
@@ -458,14 +470,24 @@ export class UploadsService {
     const timeoutMs = this.deps.trimTimeoutMs ?? 90_000;
     const deadlineAt = Date.now() + timeoutMs;
     const remaining = () => Math.max(0, deadlineAt - Date.now());
-    const refuseTimedOut = async (
+    const refuseAfterCleanup = async (
+      reason: string,
       ...keys: readonly string[]
     ): Promise<never> => {
       for (const key of keys) await this.deps.storage.delete(key);
-      throw new UploadRefused(
-        "couldn't be trimmed in time; try a shorter range",
-      );
+      throw new UploadRefused(reason);
     };
+    // Only a `MediaTimeoutError` (the shared deadline ran out) gets the
+    // "in time" wording; any other ffmpeg/ffprobe failure (a corrupt
+    // re-encode, a codec problem) is a distinct, genuine failure, not a
+    // timeout, and shouldn't be misreported as one.
+    const refuseFromError = (err: unknown, ...keys: readonly string[]) =>
+      refuseAfterCleanup(
+        err instanceof MediaTimeoutError
+          ? "couldn't be trimmed in time; try a shorter range"
+          : "couldn't be trimmed",
+        ...keys,
+      );
 
     // ffmpeg writes straight to `outputPath`; this just makes the new
     // Upload's own directory exist first (`write` is the only Storage
@@ -492,18 +514,27 @@ export class UploadsService {
           remaining(),
         );
       }
-    } catch {
-      return refuseTimedOut(storageKey);
+    } catch (err) {
+      return refuseFromError(err, storageKey);
     }
 
     const filePath = outputPath;
-    const probe = isVideo
-      ? await this.deps.media.probeVideoUpload(filePath, extension, remaining())
-      : await this.deps.media.probeAudioUpload(
-          filePath,
-          extension,
-          remaining(),
-        );
+    let probe: Awaited<ReturnType<typeof this.deps.media.probeVideoUpload>>;
+    try {
+      probe = isVideo
+        ? await this.deps.media.probeVideoUpload(
+            filePath,
+            extension,
+            remaining(),
+          )
+        : await this.deps.media.probeAudioUpload(
+            filePath,
+            extension,
+            remaining(),
+          );
+    } catch (err) {
+      return refuseFromError(err, storageKey);
+    }
     if (!probe.ok) {
       await this.deps.storage.delete(storageKey);
       throw new UploadRefused(probe.reason);
@@ -524,8 +555,8 @@ export class UploadsService {
           0,
           remaining(),
         );
-      } catch {
-        return refuseTimedOut(storageKey, thumbnailKey);
+      } catch (err) {
+        return refuseFromError(err, storageKey, thumbnailKey);
       }
     }
 

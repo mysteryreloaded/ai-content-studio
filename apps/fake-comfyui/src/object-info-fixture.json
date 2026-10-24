@@ -16,7 +16,12 @@
   "CLIPTextEncode": {
     "input": {
       "required": {
-        "text": ["STRING", { "multiline": true }],
+        "text": [
+          "STRING",
+          {
+            "multiline": true
+          }
+        ],
         "clip": ["CLIP"]
       }
     },
@@ -31,9 +36,30 @@
   "EmptyLatentImage": {
     "input": {
       "required": {
-        "width": ["INT", { "default": 512, "min": 16, "max": 16384 }],
-        "height": ["INT", { "default": 512, "min": 16, "max": 16384 }],
-        "batch_size": ["INT", { "default": 1, "min": 1, "max": 4096 }]
+        "width": [
+          "INT",
+          {
+            "default": 512,
+            "min": 16,
+            "max": 16384
+          }
+        ],
+        "height": [
+          "INT",
+          {
+            "default": 512,
+            "min": 16,
+            "max": 16384
+          }
+        ],
+        "batch_size": [
+          "INT",
+          {
+            "default": 1,
+            "min": 1,
+            "max": 4096
+          }
+        ]
       }
     },
     "output": ["LATENT"],
@@ -50,16 +76,41 @@
         "model": ["MODEL"],
         "seed": [
           "INT",
-          { "default": 0, "min": 0, "max": 18446744073709552000 }
+          {
+            "default": 0,
+            "min": 0,
+            "max": 18446744073709552000
+          }
         ],
-        "steps": ["INT", { "default": 20, "min": 1, "max": 10000 }],
-        "cfg": ["FLOAT", { "default": 8.0, "min": 0.0, "max": 100.0 }],
+        "steps": [
+          "INT",
+          {
+            "default": 20,
+            "min": 1,
+            "max": 10000
+          }
+        ],
+        "cfg": [
+          "FLOAT",
+          {
+            "default": 8.0,
+            "min": 0.0,
+            "max": 100.0
+          }
+        ],
         "sampler_name": [["euler", "euler_ancestral", "dpmpp_2m"]],
         "scheduler": [["normal", "karras", "exponential"]],
         "positive": ["CONDITIONING"],
         "negative": ["CONDITIONING"],
         "latent_image": ["LATENT"],
-        "denoise": ["FLOAT", { "default": 1.0, "min": 0.0, "max": 1.0 }]
+        "denoise": [
+          "FLOAT",
+          {
+            "default": 1.0,
+            "min": 0.0,
+            "max": 1.0
+          }
+        ]
       }
     },
     "output": ["LATENT"],
@@ -104,7 +155,12 @@
     "input": {
       "required": {
         "images": ["IMAGE"],
-        "filename_prefix": ["STRING", { "default": "ComfyUI" }]
+        "filename_prefix": [
+          "STRING",
+          {
+            "default": "ComfyUI"
+          }
+        ]
       }
     },
     "output": [],
@@ -118,7 +174,12 @@
   "LoadImage": {
     "input": {
       "required": {
-        "image": [["example.png"], { "image_upload": true }]
+        "image": [
+          ["example.png"],
+          {
+            "image_upload": true
+          }
+        ]
       }
     },
     "output": ["IMAGE", "MASK"],
@@ -151,11 +212,19 @@
         "lora_name": [[]],
         "strength_model": [
           "FLOAT",
-          { "default": 1.0, "min": -100.0, "max": 100.0 }
+          {
+            "default": 1.0,
+            "min": -100.0,
+            "max": 100.0
+          }
         ],
         "strength_clip": [
           "FLOAT",
-          { "default": 1.0, "min": -100.0, "max": 100.0 }
+          {
+            "default": 1.0,
+            "min": -100.0,
+            "max": 100.0
+          }
         ]
       }
     },
@@ -186,7 +255,10 @@
       "required": {
         "frame_rate_option": [
           "COMBO",
-          { "options": ["24", "25", "30"], "default": "24" }
+          {
+            "options": ["24", "25", "30"],
+            "default": "24"
+          }
         ]
       }
     },
@@ -196,6 +268,44 @@
     "display_name": "LTXV Conditioning",
     "description": "",
     "category": "conditioning",
+    "output_node": false
+  },
+  "LoadVideoCustom": {
+    "input": {
+      "required": {
+        "video": [
+          ["example.mp4"],
+          {
+            "video_upload": true
+          }
+        ]
+      }
+    },
+    "output": ["IMAGE", "VHS_VIDEOINFO"],
+    "output_name": ["IMAGE", "video_info"],
+    "name": "LoadVideoCustom",
+    "display_name": "Load Video (Custom)",
+    "description": "",
+    "category": "image/video",
+    "output_node": false
+  },
+  "LoadAudioCustom": {
+    "input": {
+      "required": {
+        "audio": [
+          ["example.wav"],
+          {
+            "audio_upload": true
+          }
+        ]
+      }
+    },
+    "output": ["AUDIO"],
+    "output_name": ["AUDIO"],
+    "name": "LoadAudioCustom",
+    "display_name": "Load Audio (Custom)",
+    "description": "",
+    "category": "audio",
     "output_node": false
   }
 }

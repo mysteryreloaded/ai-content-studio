@@ -321,9 +321,13 @@ export class MediaRunner {
   }
 
   /**
-   * Probes an Upload video (issue #51), never throwing: a wrong codec, a
-   * misnamed container, a timeout, or any other ffprobe failure all come
-   * back as `{ ok: false }`, the same as {@link probeImage}.
+   * Probes an Upload video (issue #51): a wrong codec, a misnamed
+   * container, or any other ffprobe failure comes back as
+   * `{ ok: false }`, the same as {@link probeImage}. A timeout rethrows
+   * `MediaTimeoutError` instead, so a caller (like a trim's own
+   * deadline) can tell "ffprobe took too long" apart from "this isn't a
+   * video ffprobe could make sense of" rather than the former being
+   * misreported as the latter.
    */
   async probeVideoUpload(
     filePath: string,
@@ -345,7 +349,8 @@ export class MediaRunner {
         ],
         timeoutMs,
       );
-    } catch {
+    } catch (err) {
+      if (err instanceof MediaTimeoutError) throw err;
       return { ok: false, reason: WRONG_VIDEO_KIND };
     }
     try {
@@ -355,7 +360,7 @@ export class MediaRunner {
     }
   }
 
-  /** Probes an Upload audio clip (issue #51); never throws, like {@link probeVideoUpload}. */
+  /** Probes an Upload audio clip (issue #51); same `MediaTimeoutError` rethrow as {@link probeVideoUpload}. */
   async probeAudioUpload(
     filePath: string,
     extension: string,
@@ -376,7 +381,8 @@ export class MediaRunner {
         ],
         timeoutMs,
       );
-    } catch {
+    } catch (err) {
+      if (err instanceof MediaTimeoutError) throw err;
       return { ok: false, reason: WRONG_AUDIO_KIND };
     }
     try {

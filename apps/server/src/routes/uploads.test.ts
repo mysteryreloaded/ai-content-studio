@@ -8,7 +8,11 @@ import path from "node:path";
 import { FakeClock } from "@ai-content-studio/shared";
 import { Hono } from "hono";
 import { users } from "../db/schema.js";
-import { MediaRunner, MediaTimeoutError } from "../media/media.js";
+import {
+  MediaCommandError,
+  MediaRunner,
+  MediaTimeoutError,
+} from "../media/media.js";
 import { createLocalStorage } from "../storage/storage.js";
 import { createTestDatabase } from "../test/database.js";
 import { UploadsRepository } from "../uploads/repository.js";
@@ -858,6 +862,51 @@ describe("/api/uploads", () => {
     });
     expect(trimRes.status).toBe(201);
     expect(probeTimeoutMs).toBeLessThan(trimTimeoutMs - 150);
+  });
+
+  test("trim: a genuine ffmpeg failure (not a timeout) is reported distinctly from a timeout", async () => {
+    const real = new MediaRunner(2);
+    const media: UploadsServiceMedia = {
+      probeImage: (filePath) => real.probeImage(filePath),
+      makeThumbnail: () => {
+        throw new Error("not needed for this test");
+      },
+      probeVideoUpload: (filePath, extension, timeoutMs) =>
+        real.probeVideoUpload(filePath, extension, timeoutMs),
+      probeAudioUpload: () => {
+        throw new Error("not needed for this test");
+      },
+      trimVideo: () => {
+        throw new MediaCommandError("ffmpeg", 1, "bad codec");
+      },
+      trimAudio: () => {
+        throw new Error("not needed for this test");
+      },
+      makeVideoThumbnail: (inputPath, outputPath, atMs, timeoutMs) =>
+        real.makeVideoThumbnail(inputPath, outputPath, atMs, timeoutMs),
+    };
+    const { insertUser, as } = await setup(media);
+    const app = as(await insertUser("genuinefail@example.com"));
+
+    const completeRes = await uploadFixture(
+      app,
+      "video-allowed.mp4",
+      "clip.mp4",
+      "video/mp4",
+    );
+    const { upload: original } = (await completeRes.json()) as {
+      upload: { id: string };
+    };
+
+    const trimRes = await app.request(`/api/uploads/${original.id}/trim`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ startMs: 0, endMs: 500 }),
+    });
+    expect(trimRes.status).toBe(422);
+    const body = (await trimRes.json()) as { message: string };
+    expect(body.message).toBe("couldn't be trimmed");
+    expect(body.message).not.toContain("in time");
   });
 
   test("trim refuses a range outside the original's own duration", async () => {

@@ -12,9 +12,7 @@ import {
   type ImageUploadInputDefinition,
   VIDEO_UPLOAD_EXTENSIONS,
   type VideoUploadInputDefinition,
-  audioUploadLimitIssue,
   imageUploadLimitIssue,
-  videoUploadLimitIssue,
 } from "@ai-content-studio/shared";
 
 /** The part of a `File` the upload reads. */
@@ -280,12 +278,21 @@ export function pickIssue(
  * #51): wrong extension, larger than MAX_UPLOAD_MB or the Input's own
  * limits. Dimensions/duration are checked only when the browser could
  * read them (the server checks again at complete, from ffprobe facts).
+ * A trimmable Input's own max duration isn't refused here, the same
+ * carve-out the server's `checkVideoLimits` gives a browser-playable
+ * video past its max (ADR 0007): the browser having read this file's
+ * own metadata is itself a sign it can play it, and the Workbench
+ * trims it down to size before Generate (issue #51's AC).
  */
 export function pickVideoIssue(
   file: { name: string; size: number },
   limits: Pick<
     VideoUploadInputDefinition,
-    "maxSizeMb" | "maxLongSide" | "minDurationMs" | "maxDurationMs"
+    | "maxSizeMb"
+    | "maxLongSide"
+    | "minDurationMs"
+    | "maxDurationMs"
+    | "trimmable"
   >,
   maxUploadMb: number | null,
   facts: {
@@ -301,23 +308,34 @@ export function pickVideoIssue(
   if (maxUploadMb !== null && file.size > maxUploadMb * BYTES_PER_MB) {
     return `is larger than ${maxUploadMb} MB`;
   }
-  return videoUploadLimitIssue(
-    {
-      size: file.size,
-      width: facts?.width,
-      height: facts?.height,
-      durationMs: facts?.durationMs,
-    },
+  const sizeOrDimensionIssue = imageUploadLimitIssue(
+    { size: file.size, width: facts?.width, height: facts?.height },
     limits,
   );
+  if (sizeOrDimensionIssue) return sizeOrDimensionIssue;
+  if (typeof facts?.durationMs === "number") {
+    if (facts.durationMs < limits.minDurationMs) {
+      return `is shorter than ${(limits.minDurationMs / 1000).toFixed(1)}s`;
+    }
+    if (facts.durationMs > limits.maxDurationMs && !limits.trimmable) {
+      return `is longer than ${(limits.maxDurationMs / 1000).toFixed(1)}s`;
+    }
+  }
+  return null;
 }
 
-/** Why a picked audio file is refused before any byte is sent (issue #51), the audio equivalent of {@link pickVideoIssue}. */
+/**
+ * Why a picked audio file is refused before any byte is sent (issue
+ * #51), the audio equivalent of {@link pickVideoIssue}: a trimmable
+ * Input's own max duration isn't refused here either (the server's
+ * audio limit check gives the same carve-out, with no "unplayable"
+ * concept to also require, unlike video).
+ */
 export function pickAudioIssue(
   file: { name: string; size: number },
   limits: Pick<
     AudioUploadInputDefinition,
-    "maxSizeMb" | "minDurationMs" | "maxDurationMs"
+    "maxSizeMb" | "minDurationMs" | "maxDurationMs" | "trimmable"
   >,
   maxUploadMb: number | null,
   durationMs: number | null = null,
@@ -329,10 +347,18 @@ export function pickAudioIssue(
   if (maxUploadMb !== null && file.size > maxUploadMb * BYTES_PER_MB) {
     return `is larger than ${maxUploadMb} MB`;
   }
-  return audioUploadLimitIssue(
-    { size: file.size, durationMs: durationMs ?? undefined },
-    limits,
-  );
+  if (file.size > limits.maxSizeMb * BYTES_PER_MB) {
+    return `is larger than ${limits.maxSizeMb} MB`;
+  }
+  if (typeof durationMs === "number") {
+    if (durationMs < limits.minDurationMs) {
+      return `is shorter than ${(limits.minDurationMs / 1000).toFixed(1)}s`;
+    }
+    if (durationMs > limits.maxDurationMs && !limits.trimmable) {
+      return `is longer than ${(limits.maxDurationMs / 1000).toFixed(1)}s`;
+    }
+  }
+  return null;
 }
 
 /** The duration (ms) of a picked video/audio file, when this browser can read its metadata; null otherwise. */

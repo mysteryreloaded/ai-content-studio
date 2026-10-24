@@ -89,20 +89,6 @@ async function waitForJob(
   }
 }
 
-/** EmptyImage -> SaveImage: no Upload, no checkpoint, no custom node pack. */
-function imageWorkflow(outputPrefix: string): Workflow {
-  return {
-    "1": {
-      class_type: "EmptyImage",
-      inputs: { width: 8, height: 8, batch_size: 1, color: 0 },
-    },
-    "2": {
-      class_type: "SaveImage",
-      inputs: { images: ["1", 0], filename_prefix: outputPrefix },
-    },
-  };
-}
-
 /** EmptyImage -> TestSleep -> SaveImage: a controllable delay for /ws progress and cancel, from ComfyUI's own test-only node (see the CI job). */
 function sleepingImageWorkflow(
   seconds: number,
@@ -226,11 +212,15 @@ describe(`ComfyUI contract (${REAL_URL ? `real: ${REAL_URL}` : "fake"})`, () => 
     await withComfyUi(async ({ target, script }) => {
       const promptId = randomUUID();
       const prefix = `contract-${promptId.slice(0, 8)}`;
+      // A TestSleep step (issue #79's AC fix): the plain EmptyImage ->
+      // SaveImage Workflow finishes a real, CPU-only ComfyUI too fast to
+      // ever emit a `progress` WS event, so this gives it something to
+      // report progress on before completing.
       script(promptId, {
         steps: 3,
         stepIntervalMs: 5,
         outputs: {
-          "2": {
+          "3": {
             images: [
               {
                 filename: `${prefix}_00001_.png`,
@@ -247,7 +237,7 @@ describe(`ComfyUI contract (${REAL_URL ? `real: ${REAL_URL}` : "fake"})`, () => 
       socket.onMessage((event) => events.push(event));
 
       try {
-        await submitPrompt(target, promptId, imageWorkflow(prefix));
+        await submitPrompt(target, promptId, sleepingImageWorkflow(1, prefix));
         const job = await waitForJob(target, promptId, ["completed", "failed"]);
         expect(job.status).toBe("completed");
         expect(events.some((e) => e.type === "progress")).toBe(true);
@@ -265,7 +255,7 @@ describe(`ComfyUI contract (${REAL_URL ? `real: ${REAL_URL}` : "fake"})`, () => 
         socket.close();
       }
     });
-  });
+  }, 15_000);
 
   test("submits a branching Workflow through ComfySwitchNode", async () => {
     await withComfyUi(async ({ target, script }) => {
@@ -371,6 +361,10 @@ describe(`ComfyUI contract (${REAL_URL ? `real: ${REAL_URL}` : "fake"})`, () => 
         promptId,
         sleepingImageWorkflow(30, "contract-cancel"),
       );
+      // waitForJob's own 20s internal timeout is longer than bun's 5s
+      // default test timeout, so this test needs its own longer one too
+      // (issue #79's AC fix: real ComfyUI can take longer than the fake
+      // to report "running").
       await waitForJob(target, promptId, ["running"]);
 
       await cancelJob(target, promptId);
@@ -378,7 +372,7 @@ describe(`ComfyUI contract (${REAL_URL ? `real: ${REAL_URL}` : "fake"})`, () => 
       const job = await waitForJob(target, promptId, ["cancelled"]);
       expect(job.status).toBe("cancelled");
     });
-  });
+  }, 60_000);
 
   test("uploads an input file, then HEAD and a Range GET on /view (type=input) both see it (issue #79's AC)", async () => {
     await withComfyUi(async ({ target }) => {

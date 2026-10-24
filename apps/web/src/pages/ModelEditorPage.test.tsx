@@ -55,8 +55,12 @@ const DETAIL = {
     version: 1,
   },
   workflowHash: "hash1",
+  workflow: {
+    "1": { class_type: "LoadImage", inputs: {} },
+  },
   nodes: [{ id: "1", classType: "LoadImage", title: null }],
   outsideServiceNotes: [],
+  modes: [],
 };
 
 const NO_BACKENDS = { backends: [] };
@@ -358,5 +362,177 @@ describe("ModelEditorPage", () => {
 
     expect(await view.findByText("No Backends attached.")).toBeTruthy();
     expect(calls.some((c) => c.method === "DELETE")).toBe(true);
+  });
+
+  test("adds a Mode, picks an output node in the Workflow table, and saves it", async () => {
+    const calls = mockFetch((call) => {
+      if (call.method === "GET") return respondGet(call.url);
+      if (call.method === "PUT" && call.url.endsWith("/modes")) {
+        return Response.json({
+          record: { ...DETAIL.model, currentRevision: 2, version: 2 },
+          modes: [],
+        });
+      }
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+
+    await view.findByText("LTX 2.5");
+    await userEvent.click(view.getByText("Add Mode"));
+    await userEvent.type(view.getByLabelText("Mode name"), "Default");
+    await userEvent.click(view.getByRole("button", { name: "Add" }));
+
+    await userEvent.click(view.getByText("Save Modes"));
+
+    const saved = calls.find(
+      (c) => c.method === "PUT" && c.url.endsWith("/modes"),
+    );
+    expect(saved?.body).toEqual({
+      version: 1,
+      modes: [{ name: "Default", description: "", outputNodeIds: ["1"] }],
+    });
+  });
+
+  test("Enable shows the server's reasons when the Model isn't ready", async () => {
+    mockFetch((call) => {
+      if (call.method === "GET") return respondGet(call.url);
+      if (call.method === "POST" && call.url.endsWith("/enable")) {
+        return Response.json(
+          { error: "not ready", reasons: ["needs at least one Mode"] },
+          { status: 400 },
+        );
+      }
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+
+    await userEvent.click(await view.findByText("Enable"));
+
+    expect(await view.findByText("needs at least one Mode")).toBeTruthy();
+  });
+
+  test("Remove on one Mode's output node doesn't affect another Mode being picked", async () => {
+    const DETAIL_TWO_MODES = {
+      model: DETAIL.model,
+      workflowHash: "hash1",
+      workflow: {
+        "1": { class_type: "LoadImage", inputs: {} },
+        "2": { class_type: "SaveImage", inputs: { image: ["1", 0] } },
+        "3": { class_type: "SaveImage", inputs: { image: ["4", 0] } },
+        "4": { class_type: "LoadImage", inputs: {} },
+      },
+      nodes: [
+        { id: "1", classType: "LoadImage", title: null },
+        { id: "2", classType: "SaveImage", title: null },
+        { id: "3", classType: "SaveImage", title: null },
+        { id: "4", classType: "LoadImage", title: null },
+      ],
+      outsideServiceNotes: [],
+      modes: [
+        {
+          id: "mode-a",
+          sortOrder: 0,
+          name: "Mode A",
+          description: "",
+          outputNodes: [
+            { nodeId: "2", classType: "SaveImage", title: null, kind: "image" },
+          ],
+        },
+        {
+          id: "mode-b",
+          sortOrder: 1,
+          name: "Mode B",
+          description: "",
+          outputNodes: [
+            { nodeId: "3", classType: "SaveImage", title: null, kind: "image" },
+          ],
+        },
+      ],
+    };
+
+    mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1"))
+        return Response.json(DETAIL_TWO_MODES);
+      if (call.method === "GET") return Response.json(NO_BACKENDS);
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+    const { within } = await import("@testing-library/react");
+
+    const modeAInput = await view.findByDisplayValue("Mode A");
+    const modeAFieldset = modeAInput.closest("fieldset") as HTMLElement;
+    const modeBInput = view.getByDisplayValue("Mode B");
+    const modeBFieldset = modeBInput.closest("fieldset") as HTMLElement;
+
+    // Start picking output nodes for Mode B, then remove Mode A's own node.
+    await userEvent.click(
+      within(modeBFieldset).getByText(
+        "Pick output nodes in the Workflow below",
+      ),
+    );
+    await userEvent.click(within(modeAFieldset).getByText("Remove"));
+
+    expect(modeAFieldset.querySelector("ol")?.textContent).not.toContain("2");
+    expect(modeBFieldset.querySelector("ol")?.textContent).toContain("3");
+  });
+
+  test("dims Workflow rows off the currently-picked Mode's Path", async () => {
+    const DETAIL_TWO_MODES = {
+      model: DETAIL.model,
+      workflowHash: "hash1",
+      workflow: {
+        "1": { class_type: "LoadImage", inputs: {} },
+        "2": { class_type: "SaveImage", inputs: { image: ["1", 0] } },
+        "3": { class_type: "SaveImage", inputs: { image: ["4", 0] } },
+        "4": { class_type: "LoadImage", inputs: {} },
+      },
+      nodes: [
+        { id: "1", classType: "LoadImage", title: null },
+        { id: "2", classType: "SaveImage", title: null },
+        { id: "3", classType: "SaveImage", title: null },
+        { id: "4", classType: "LoadImage", title: null },
+      ],
+      outsideServiceNotes: [],
+      modes: [
+        {
+          id: "mode-b",
+          sortOrder: 0,
+          name: "Mode B",
+          description: "",
+          outputNodes: [
+            { nodeId: "3", classType: "SaveImage", title: null, kind: "image" },
+          ],
+        },
+      ],
+    };
+
+    mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1"))
+        return Response.json(DETAIL_TWO_MODES);
+      if (call.method === "GET") return Response.json(NO_BACKENDS);
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+
+    await userEvent.click(
+      await view.findByText("Pick output nodes in the Workflow below"),
+    );
+
+    const rowFor = (nodeId: string) =>
+      view.getByText(nodeId, { selector: "td" }).closest("tr") as HTMLElement;
+
+    // Off Mode B's Path (1, 2): dimmed. On its Path (3, 4): not dimmed.
+    expect(rowFor("1").style.opacity).toBe("0.35");
+    expect(rowFor("2").style.opacity).toBe("0.35");
+    expect(rowFor("3").style.opacity).toBe("");
+    expect(rowFor("4").style.opacity).toBe("");
   });
 });

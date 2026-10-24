@@ -128,7 +128,12 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
     "/api/auth",
     authRoute({ db: deps.db, clock: deps.clock, env: deps.env }, routes),
   );
-  app.route("/api/models", modelsRoute(routes));
+  const modelRepository = new ModelRepository(deps.db, deps.clock);
+  const modelBackendsRepository = new ModelBackendsRepository(
+    deps.db,
+    deps.clock,
+  );
+  app.route("/api/models", modelsRoute(modelRepository, routes));
   app.route("/api/admin", adminRoute(routes));
   app.route(
     "/api/admin/site-settings",
@@ -146,11 +151,6 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
   );
   app.route("/api/admin/logs", adminLogsRoute(deps.db, deps.clock, routes));
   app.route("/api/terms", termsRoute(deps.db, deps.clock, routes));
-  const modelRepository = new ModelRepository(deps.db, deps.clock);
-  const modelBackendsRepository = new ModelBackendsRepository(
-    deps.db,
-    deps.clock,
-  );
   app.route(
     "/api/admin/models",
     adminModelsRoute(

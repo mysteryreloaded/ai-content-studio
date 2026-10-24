@@ -14,12 +14,14 @@
 
 import type { Clock, Timer } from "@ai-content-studio/shared";
 import type postgres from "postgres";
+import { comfyUiTarget } from "../backends/client.js";
 import type { LogEntryWriter } from "../backends/log-entries.js";
 import type {
   BackendRecord,
   BackendRepository,
 } from "../backends/repository.js";
 import type { BackendsService } from "../backends/service.js";
+import { cancelJob } from "../comfyui/client.js";
 import type { AssetsRepository } from "../generations/assets-repository.js";
 import type { GenerationEvents } from "../generations/events.js";
 import type { Logger } from "../logger.js";
@@ -178,6 +180,7 @@ export class Dispatcher {
     try {
       while (true) {
         this.wakeScheduled = false;
+        await this.retryPendingCancels();
         const claimed = await this.claimBatch();
         await Promise.all(
           claimed.map(({ generation, backend, tries }) =>
@@ -238,6 +241,7 @@ export class Dispatcher {
     }
     this.ticking = true;
     try {
+      await this.retryPendingCancels();
       const claimed = await this.claimBatch();
       for (const { generation, backend, tries } of claimed) {
         void this.run(generation, backend, tries);
@@ -373,15 +377,65 @@ export class Dispatcher {
     return claimed;
   }
 
+  /**
+   * Re-sends a cancel's interrupt to a Backend that couldn't be reached
+   * last time (issue #54's AC): the Generation it belonged to is already
+   * `cancelled`, this just makes sure the Backend itself heard about it
+   * before `buildPlan` can match it to new work. Skips any Backend the
+   * health monitor hasn't confirmed reachable (`unreachable` or still
+   * `unknown`, e.g. right after boot) instead of waiting out `cancelJob`'s
+   * own 15s timeout for it on every tick — `buildPlan` excludes it from
+   * new work regardless, by the same `pendingBackendCancel` row this
+   * leaves untouched.
+   */
+  private async retryPendingCancels(): Promise<void> {
+    const pending = await this.deps.queue.pendingBackendCancels();
+    for (const { generationId, backendId } of pending) {
+      const backend = await this.deps.backendRepository.get(backendId);
+      if (!backend) {
+        // The Backend itself is gone; nothing left to tell.
+        await this.deps.queue.clearPendingBackendCancel(generationId);
+        continue;
+      }
+      if (
+        this.deps.backendsService.healthFor(backendId).reachability !==
+        "reachable"
+      ) {
+        // Also skips `unknown` (e.g. right after boot, before the health
+        // monitor's first poll lands): no point waiting out `cancelJob`'s
+        // own 15s timeout for a Backend that hasn't even been confirmed
+        // reachable yet.
+        continue;
+      }
+      try {
+        const target = await comfyUiTarget(
+          backend,
+          this.deps.backendRepository,
+        );
+        await cancelJob(target, generationId);
+        await this.deps.queue.clearPendingBackendCancel(generationId);
+      } catch {
+        // Still unreachable: leave it pending, and buildPlan below keeps
+        // excluding this Backend from new work until it clears.
+      }
+    }
+  }
+
   /** The greedy match: fewest-starting-or-running user first, then oldest, matched to the first eligible free Backend. */
   private async buildPlan(): Promise<ClaimPlan[]> {
-    const [queued, activeCounts, busyBackendIds, allBackends] =
-      await Promise.all([
-        this.deps.queue.listQueued(),
-        this.deps.queue.activeCountsByUser(),
-        this.deps.queue.busyBackendIds(),
-        this.deps.backendRepository.list(),
-      ]);
+    const [
+      queued,
+      activeCounts,
+      busyBackendIds,
+      pendingCancelBackendIds,
+      allBackends,
+    ] = await Promise.all([
+      this.deps.queue.listQueued(),
+      this.deps.queue.activeCountsByUser(),
+      this.deps.queue.busyBackendIds(),
+      this.deps.queue.pendingCancelBackendIds(),
+      this.deps.backendRepository.list(),
+    ]);
     if (queued.length === 0) return [];
 
     const free = allBackends.filter(
@@ -389,6 +443,7 @@ export class Dispatcher {
         backend.enabled &&
         !backend.draining &&
         !busyBackendIds.has(backend.id) &&
+        !pendingCancelBackendIds.has(backend.id) &&
         this.deps.backendsService.healthFor(backend.id).reachability ===
           "reachable",
     );

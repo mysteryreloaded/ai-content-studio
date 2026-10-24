@@ -55,10 +55,10 @@ export interface RunUpload {
   storageKey: string;
 }
 
-/** A Generation stuck in `starting`/`running` (or `saving`) across a restart, found by boot recovery (issue #55's AC). */
+/** A Generation stuck in `starting`/`running`/`cancelling` (or `saving`) across a restart, found by boot recovery (issue #55's AC; `cancelling` added by issue #54). */
 export interface UnfinishedGeneration {
   id: string;
-  state: "starting" | "running" | "saving";
+  state: "starting" | "running" | "cancelling" | "saving";
   backendId: string;
   tries: number;
 }
@@ -124,14 +124,14 @@ export class DispatchQueue {
     return new Map(rows.map((row) => [row.userId, Number(row.count)]));
   }
 
-  /** Backend ids currently mid-run (issue #44's ADR: `saving` doesn't count — the Backend already freed). */
+  /** Backend ids currently mid-run (issue #44's ADR: `saving` doesn't count — the Backend already freed). `cancelling` still counts: the Backend's interrupt hasn't been confirmed yet (issue #54). */
   async busyBackendIds(): Promise<Set<string>> {
     const rows = await this.db
       .select({ backendId: generations.backendId })
       .from(generations)
       .where(
         and(
-          inArray(generations.state, ["starting", "running"]),
+          inArray(generations.state, ["starting", "running", "cancelling"]),
           isNotNull(generations.backendId),
         ),
       );
@@ -395,7 +395,7 @@ export class DispatchQueue {
     }));
   }
 
-  /** Every Generation left `starting`, `running` or `saving` with a Backend assigned — boot recovery's starting point (issue #55's AC). */
+  /** Every Generation left `starting`, `running`, `cancelling` or `saving` with a Backend assigned — boot recovery's starting point (issue #55's AC; `cancelling` added by issue #54, so a crash mid-cancel still gets confirmed). */
   async listUnfinished(): Promise<UnfinishedGeneration[]> {
     const rows = await this.db
       .select({
@@ -407,16 +407,131 @@ export class DispatchQueue {
       .from(generations)
       .where(
         and(
-          inArray(generations.state, ["starting", "running", "saving"]),
+          inArray(generations.state, [
+            "starting",
+            "running",
+            "cancelling",
+            "saving",
+          ]),
           isNotNull(generations.backendId),
         ),
       );
     return rows.map((row) => ({
       id: row.id,
-      // Narrowed by the `inArray` above to one of the three unfinished states.
+      // Narrowed by the `inArray` above to one of the four unfinished states.
       state: row.state as UnfinishedGeneration["state"],
       backendId: row.backendId as string,
       tries: row.tries,
     }));
+  }
+
+  /** Cancels a `queued` Generation at once (issue #54's AC): nothing was ever sent to a Backend. Returns whether it actually was still queued. */
+  async cancelQueued(generationId: string): Promise<boolean> {
+    const rows = await this.db
+      .update(generations)
+      .set({ state: "cancelled" })
+      .where(
+        and(eq(generations.id, generationId), eq(generations.state, "queued")),
+      )
+      .returning({ id: generations.id });
+    return rows.length > 0;
+  }
+
+  /**
+   * Moves a `starting`/`running` Generation to `cancelling` (issue #54):
+   * the runner's own poll loop notices this and sends the Backend's
+   * interrupt. Not conditioned on `tries`: whichever try currently owns
+   * `starting`/`running` is by definition the one still live, and a
+   * `loseTry`/`markFailed` write can no longer land once this lands
+   * either (neither's own state precondition matches `cancelling`).
+   * Returns whether it actually made that move.
+   */
+  async markCancelling(generationId: string): Promise<boolean> {
+    const rows = await this.db
+      .update(generations)
+      .set({ state: "cancelling" })
+      .where(
+        and(
+          eq(generations.id, generationId),
+          inArray(generations.state, ["starting", "running"]),
+        ),
+      )
+      .returning({ id: generations.id });
+    return rows.length > 0;
+  }
+
+  /**
+   * Finalizes a cancelled Generation (issue #54): confirmed by the
+   * Backend (the interrupt was reported, or the job's gone), or marked
+   * anyway with `pendingBackendCancel` when the Backend couldn't be
+   * reached at all. Conditioned on `tries` and `cancelling`, the same
+   * concurrency-token pattern as every other terminal write.
+   */
+  async markCancelled(
+    generationId: string,
+    tries: number,
+    opts: { pendingBackendCancel: boolean },
+  ): Promise<boolean> {
+    const rows = await this.db
+      .update(generations)
+      .set({
+        state: "cancelled",
+        pendingBackendCancel: opts.pendingBackendCancel,
+      })
+      .where(
+        and(
+          eq(generations.id, generationId),
+          eq(generations.tries, tries),
+          eq(generations.state, "cancelling"),
+        ),
+      )
+      .returning({ id: generations.id });
+    return rows.length > 0;
+  }
+
+  /** Read live mid-run, so the runner's poll loop notices a cancel requested by another request (issue #54). */
+  async currentState(
+    generationId: string,
+  ): Promise<(typeof generations.$inferSelect)["state"] | null> {
+    const [row] = await this.db
+      .select({ state: generations.state })
+      .from(generations)
+      .where(eq(generations.id, generationId));
+    return row?.state ?? null;
+  }
+
+  /** Every Generation still waiting for its Backend to be re-told about a cancel it missed (issue #54), grouped with the Backend it needs resending to. */
+  async pendingBackendCancels(): Promise<
+    { generationId: string; backendId: string }[]
+  > {
+    const rows = await this.db
+      .select({
+        generationId: generations.id,
+        backendId: generations.backendId,
+      })
+      .from(generations)
+      .where(
+        and(
+          eq(generations.pendingBackendCancel, true),
+          isNotNull(generations.backendId),
+        ),
+      );
+    return rows.map((row) => ({
+      generationId: row.generationId,
+      backendId: row.backendId as string,
+    }));
+  }
+
+  /** Backend ids that still owe a re-sent cancel interrupt (issue #54): never matched to new work until this clears. */
+  async pendingCancelBackendIds(): Promise<Set<string>> {
+    const pending = await this.pendingBackendCancels();
+    return new Set(pending.map((row) => row.backendId));
+  }
+
+  async clearPendingBackendCancel(generationId: string): Promise<void> {
+    await this.db
+      .update(generations)
+      .set({ pendingBackendCancel: false })
+      .where(eq(generations.id, generationId));
   }
 }

@@ -1,7 +1,9 @@
 // Talks to a Backend's ComfyUI-compatible HTTP API (issue #44): submits
 // with a studio-chosen prompt id, reads a job's status from `/api/jobs/
-// :id`, and streams a saved file from `/view`. The fake ComfyUI
-// (apps/fake-comfyui) implements the same three endpoints, scripted.
+// :id`, and streams a saved file from `/view`. Issue #55 adds `/interrupt`
+// (a timeout's own best-effort cancel) and issue #54 adds
+// `/api/jobs/:id/cancel` (the user's own, which throws on failure). The
+// fake ComfyUI (apps/fake-comfyui) implements the same endpoints, scripted.
 
 import type { Workflow } from "@ai-content-studio/shared";
 import type { ComfyUiTarget } from "../backends/client.js";
@@ -90,7 +92,7 @@ export async function submitPrompt(
 }
 
 /** Interrupts whatever `promptId` is running on this Backend (issue #55's AC: a max-run-time timeout cancels on ComfyUI before failing). Best-effort: a Backend too unreachable to cancel is about to be failed anyway. */
-export async function cancelJob(
+export async function interruptJob(
   target: ComfyUiTarget,
   promptId: string,
 ): Promise<void> {
@@ -106,7 +108,33 @@ export async function cancelJob(
   }
 }
 
-export type JobStatus = "running" | "completed" | "failed";
+/**
+ * Cancels a starting/running job on the user's own request (issue #54's
+ * AC): distinct from {@link interruptJob} (a timeout's own best-effort,
+ * fire-and-forget interrupt) in that this one throws on failure, so the
+ * caller can tell an unreachable Backend from a confirmed cancel. A 404
+ * ("the job's gone") counts as cancelled too, not an error: a Backend
+ * that's already dropped the job needs no further interrupt.
+ */
+export async function cancelJob(
+  target: ComfyUiTarget,
+  promptId: string,
+): Promise<void> {
+  const res = await fetch(
+    join(target.baseUrl, `/api/jobs/${promptId}/cancel`),
+    {
+      method: "POST",
+      headers: target.headers,
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    },
+  );
+  if (!res.ok && res.status !== 404) {
+    throw new Error(`/api/jobs/${promptId}/cancel returned ${res.status}`);
+  }
+}
+
+/** `"cancelled"` only ever appears after this studio's own {@link cancelJob} call (issue #54): ComfyUI itself never produces it on its own. */
+export type JobStatus = "running" | "completed" | "failed" | "cancelled";
 
 export interface JobFile {
   filename: string;

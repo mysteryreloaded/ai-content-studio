@@ -11,6 +11,7 @@ import type { AppEnv } from "../auth/app-env.js";
 import type { BackendsService } from "../backends/service.js";
 import type { Database } from "../db/client.js";
 import { auditEntries } from "../db/schema.js";
+import { checkEnableReadiness } from "../models/enablement.js";
 import { NotFound as BackendNotFound } from "../models/model-backends.js";
 import type { ModelBackendsRepository } from "../models/model-backends.js";
 import {
@@ -19,7 +20,7 @@ import {
   SlugTaken,
   StaleVersion,
 } from "../models/repository.js";
-import type { ModelRepository } from "../models/repository.js";
+import type { ModeInput, ModelRepository } from "../models/repository.js";
 import { ValidationFailed } from "../models/validation.js";
 
 const createSchema = z.object({
@@ -39,6 +40,17 @@ const detailsSchema = z.object({
 });
 
 const versionSchema = z.coerce.number().int().min(1);
+
+const modesSchema = z.object({
+  version: z.number().int().min(1),
+  modes: z.array(
+    z.object({
+      name: z.string(),
+      description: z.string(),
+      outputNodeIds: z.array(z.string()),
+    }),
+  ),
+});
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -271,6 +283,116 @@ export function adminModelsRoute(
         return handleError(c, err);
       }
       return c.body(null, 204);
+    },
+  );
+
+  guardedRoute(
+    app,
+    routes,
+    basePath,
+    "put",
+    "/:id/modes",
+    "admin",
+    async (c) => {
+      const id = idParam(c);
+      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+
+      const body = await readJsonBody(c);
+      if (body === null) return c.json({ error: "invalid JSON body" }, 400);
+
+      const parsed = modesSchema.safeParse(body);
+      if (!parsed.success)
+        return c.json(
+          { error: "invalid input", issues: parsed.error.issues },
+          400,
+        );
+
+      try {
+        const result = await repository.updateModes(
+          id,
+          parsed.data.modes as ModeInput[],
+          parsed.data.version,
+          adminActorFrom(c),
+        );
+        return c.json(result);
+      } catch (err) {
+        return handleError(c, err);
+      }
+    },
+  );
+
+  guardedRoute(
+    app,
+    routes,
+    basePath,
+    "post",
+    "/:id/enable",
+    "admin",
+    async (c) => {
+      const id = idParam(c);
+      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+
+      const body = await readJsonBody(c);
+      if (body === null) return c.json({ error: "invalid JSON body" }, 400);
+      const versionResult = versionSchema.safeParse(body.version);
+      if (!versionResult.success)
+        return c.json({ error: "version is required" }, 400);
+
+      const detail = await repository.get(id);
+      if (!detail) return c.json({ error: "not found" }, 404);
+
+      const attached = await modelBackends.listForModel(id);
+      const readiness = await checkEnableReadiness(
+        detail,
+        attached,
+        backendsService,
+      );
+      if (!readiness.ok) {
+        return c.json({ error: "not ready", reasons: readiness.reasons }, 400);
+      }
+
+      try {
+        const record = await repository.setState(
+          id,
+          "enabled",
+          versionResult.data,
+          adminActorFrom(c),
+        );
+        return c.json(record);
+      } catch (err) {
+        return handleError(c, err);
+      }
+    },
+  );
+
+  guardedRoute(
+    app,
+    routes,
+    basePath,
+    "post",
+    "/:id/disable",
+    "admin",
+    async (c) => {
+      const id = idParam(c);
+      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+
+      const body = await readJsonBody(c);
+      if (body === null) return c.json({ error: "invalid JSON body" }, 400);
+      const versionResult = versionSchema.safeParse(body.version);
+      if (!versionResult.success)
+        return c.json({ error: "version is required" }, 400);
+
+      try {
+        const record = await repository.setState(
+          id,
+          "disabled",
+          versionResult.data,
+          adminActorFrom(c),
+        );
+        return c.json(record);
+      } catch (err) {
+        return handleError(c, err);
+      }
     },
   );
 

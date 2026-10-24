@@ -115,7 +115,7 @@ describe("sign-in flow against the mock OIDC issuer", () => {
     await (await server).stop();
   });
 
-  test("a new user ends up active, with a session that /api/auth/me reflects", async () => {
+  test("a new user is pending under the default approval sign-up, with a session that /api/auth/me reflects", async () => {
     await server;
     const { callback } = await signIn("new-user@example.com");
 
@@ -131,7 +131,7 @@ describe("sign-in flow against the mock OIDC issuer", () => {
     const body = (await me.json()) as MeResponse;
     expect(body.email).toBe("new-user@example.com");
     expect(body.role).toBe("user");
-    expect(body.status).toBe("active");
+    expect(body.status).toBe("pending");
 
     const { testDb } = await server;
     const [row] = await testDb.db

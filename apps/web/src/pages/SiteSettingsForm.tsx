@@ -1,10 +1,13 @@
 import {
   ACCENT_PALETTES,
   BACKGROUND_MAX_BYTES,
+  CONTACT_MAX_LENGTH,
   LANDING_TEXT_MAX_LENGTH,
   LOGO_MAX_BYTES,
+  type SignUpMode,
   TITLE_MAX_LENGTH,
   isAllowedImageContentType,
+  isValidContact,
 } from "@ai-content-studio/shared";
 import { type FormEvent, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
@@ -14,6 +17,8 @@ interface AdminSiteSettings {
   title: string;
   landingText: string;
   accent: string;
+  signUpMode: SignUpMode;
+  contact: string;
   logo: { contentType: string; hash: string; size: number } | null;
   background: { contentType: string; hash: string; size: number } | null;
 }
@@ -45,6 +50,8 @@ export function SiteSettingsForm() {
   const [title, setTitle] = useState("");
   const [landingText, setLandingText] = useState("");
   const [accent, setAccent] = useState("teal");
+  const [signUpMode, setSignUpMode] = useState<SignUpMode>("approval");
+  const [contact, setContact] = useState("");
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [backgroundFile, setBackgroundFile] = useState<File | null>(null);
   const [saveState, setSaveState] = useState<SaveState>({ status: "idle" });
@@ -57,6 +64,8 @@ export function SiteSettingsForm() {
         setTitle(data.title);
         setLandingText(data.landingText);
         setAccent(data.accent);
+        setSignUpMode(data.signUpMode);
+        setContact(data.contact);
       })
       .catch(() => {});
   }, []);
@@ -73,8 +82,15 @@ export function SiteSettingsForm() {
       : null;
   const logoError = validateImage(logoFile, "logo");
   const backgroundError = validateImage(backgroundFile, "background");
+  const contactError = !isValidContact(contact.trim())
+    ? "Contact must be an email address or an http(s) URL"
+    : null;
   const canSave =
-    !titleError && !landingTextError && !logoError && !backgroundError;
+    !titleError &&
+    !landingTextError &&
+    !logoError &&
+    !backgroundError &&
+    !contactError;
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -86,6 +102,8 @@ export function SiteSettingsForm() {
     body.set("title", title);
     body.set("landingText", landingText);
     body.set("accent", accent);
+    body.set("signUpMode", signUpMode);
+    body.set("contact", contact);
     if (logoFile) body.set("logo", logoFile);
     if (backgroundFile) body.set("background", backgroundFile);
 
@@ -153,6 +171,42 @@ export function SiteSettingsForm() {
           </label>
         ))}
       </fieldset>
+
+      <fieldset>
+        <legend>Sign-up</legend>
+        <label>
+          <input
+            type="radio"
+            name="sign-up-mode"
+            value="approval"
+            checked={signUpMode === "approval"}
+            onChange={() => setSignUpMode("approval")}
+          />
+          Approval: new users wait for an Admin
+        </label>
+        <label>
+          <input
+            type="radio"
+            name="sign-up-mode"
+            value="open"
+            checked={signUpMode === "open"}
+            onChange={() => setSignUpMode("open")}
+          />
+          Open: new users are active right away
+        </label>
+      </fieldset>
+
+      <label htmlFor="contact">
+        Contact (for reports and account questions)
+      </label>
+      <input
+        id="contact"
+        placeholder="support@example.com or https://example.com/contact"
+        value={contact}
+        maxLength={CONTACT_MAX_LENGTH}
+        onChange={(event) => setContact(event.target.value)}
+      />
+      {contactError && <p role="alert">{contactError}</p>}
 
       <label htmlFor="logo">
         Logo (also the favicon; PNG, JPEG or WebP, ≤ 1 MB)

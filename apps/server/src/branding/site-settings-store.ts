@@ -20,6 +20,8 @@ export interface SiteSettingsSnapshot {
   title: string;
   landingText: string;
   accent: string;
+  signUpMode: "open" | "approval";
+  contact: string;
   logo: ImageSnapshot | null;
   background: ImageSnapshot | null;
   termsBody: string;
@@ -51,6 +53,8 @@ export interface SiteSettingsUpdateInput {
   title: string;
   landingText: string;
   accent: string;
+  signUpMode: "open" | "approval";
+  contact: string;
   logo?: SiteSettingsUpdateImage;
   background?: SiteSettingsUpdateImage;
 }
@@ -71,6 +75,8 @@ function rowToSnapshot(
     title: row.title,
     landingText: row.landingText,
     accent: row.accent,
+    signUpMode: row.signUpMode,
+    contact: row.contact,
     logo:
       row.logoHash && row.logoContentType && row.logoSize != null
         ? {
@@ -103,6 +109,8 @@ function brandingAuditSnapshot(settings: SiteSettingsSnapshot) {
     title: settings.title,
     landingText: settings.landingText,
     accent: settings.accent,
+    signUpMode: settings.signUpMode,
+    contact: settings.contact,
     logo: settings.logo,
     background: settings.background,
   };
@@ -177,6 +185,8 @@ export async function updateSiteSettings(
         title: input.title,
         landingText: input.landingText,
         accent: input.accent,
+        signUpMode: input.signUpMode,
+        contact: input.contact,
         updatedAt: now,
         ...logoColumns,
         ...backgroundColumns,

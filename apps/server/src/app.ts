@@ -8,6 +8,7 @@ import type { AppEnv } from "./auth/app-env.js";
 import { createMockOidcIssuer } from "./auth/mock-issuer.js";
 import { sameOriginGuard } from "./auth/same-origin-guard.js";
 import { sessionMiddleware } from "./auth/session-middleware.js";
+import { syncAdminEmailPins } from "./auth/users.js";
 import { createLogEntryWriter } from "./backends/log-entries.js";
 import { BackendRepository } from "./backends/repository.js";
 import { BackendsService } from "./backends/service.js";
@@ -26,6 +27,7 @@ import { adminLogsRoute } from "./routes/admin-logs.js";
 import { adminModelsRoute } from "./routes/admin-models.js";
 import { adminOverviewRoute } from "./routes/admin-overview.js";
 import { adminSiteSettingsRoute } from "./routes/admin-site-settings.js";
+import { adminUsersRoute } from "./routes/admin-users.js";
 import { adminRoute } from "./routes/admin.js";
 import { authRoute } from "./routes/auth.js";
 import { healthRoute } from "./routes/health.js";
@@ -82,6 +84,10 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
   // an external IdP and must never be subject to these guards.
   app.use("/api/*", sameOriginGuard(deps.env.PUBLIC_URL));
   app.use("/api/*", sessionMiddleware(deps.db, deps.clock));
+
+  // Issue #62: ADMIN_EMAILS only changes between deploys, so unpinning
+  // whoever it dropped happens once here rather than on every request.
+  await syncAdminEmailPins(deps.db, deps.clock, deps.env.ADMIN_EMAILS);
 
   const storage = createLocalStorage(deps.env.DATA_DIR);
 
@@ -150,6 +156,7 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
     adminModelsRoute(deps.db, modelRepository, routes),
   );
   app.route("/api/admin/audit", adminAuditRoute(deps.db, routes));
+  app.route("/api/admin/users", adminUsersRoute(deps.db, deps.clock, routes));
   app.route(
     "/api/admin/overview",
     adminOverviewRoute(

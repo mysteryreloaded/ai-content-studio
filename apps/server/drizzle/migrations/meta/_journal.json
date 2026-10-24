@@ -50,6 +50,13 @@
       "when": 1792808952808,
       "tag": "0006_nosy_stardust",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1792810034474,
+      "tag": "0007_majestic_mantis",
+      "breakpoints": true
     }
   ]
 }

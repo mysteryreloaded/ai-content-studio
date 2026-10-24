@@ -26,8 +26,10 @@ describe("upsertUserFromGoogle", () => {
         emailVerified: true,
       },
       ["new-admin@example.com"],
+      "approval",
     );
     expect(user.role).toBe("admin");
+    expect(user.status).toBe("active");
 
     const entries = await db
       .select()
@@ -49,8 +51,10 @@ describe("upsertUserFromGoogle", () => {
         emailVerified: true,
       },
       [], // not yet an ADMIN_EMAILS entry: signs in as a plain user
+      "open", // open sign-up: starts active, so this test is only about role sync
     );
     expect(first.role).toBe("user");
+    expect(first.status).toBe("active");
 
     const second = await upsertUserFromGoogle(
       db,
@@ -63,6 +67,7 @@ describe("upsertUserFromGoogle", () => {
         emailVerified: true,
       },
       ["promoted@example.com"], // now listed: the second sign-in promotes them
+      "open",
     );
     expect(second.role).toBe("admin");
 
@@ -89,6 +94,7 @@ describe("upsertUserFromGoogle", () => {
         emailVerified: true,
       },
       ["stable-admin@example.com"],
+      "approval",
     );
     const before = await db.select().from(auditEntries);
 
@@ -103,9 +109,79 @@ describe("upsertUserFromGoogle", () => {
         emailVerified: true,
       },
       ["stable-admin@example.com"],
+      "approval",
     );
     const after = await db.select().from(auditEntries);
 
     expect(after).toHaveLength(before.length);
+  });
+
+  test("a brand-new user is pending under approval sign-up, active under open sign-up", async () => {
+    const { db } = await testDb;
+
+    const pending = await upsertUserFromGoogle(
+      db,
+      clock,
+      {
+        sub: "sub-approval-new",
+        email: "approval-new@example.com",
+        name: "Approval New",
+        picture: null,
+        emailVerified: true,
+      },
+      [],
+      "approval",
+    );
+    expect(pending.status).toBe("pending");
+
+    const open = await upsertUserFromGoogle(
+      db,
+      clock,
+      {
+        sub: "sub-open-new",
+        email: "open-new@example.com",
+        name: "Open New",
+        picture: null,
+        emailVerified: true,
+      },
+      [],
+      "open",
+    );
+    expect(open.status).toBe("active");
+  });
+
+  test("switching sign-up mode never changes an already-pending user's status", async () => {
+    const { db } = await testDb;
+
+    const first = await upsertUserFromGoogle(
+      db,
+      clock,
+      {
+        sub: "sub-stays-pending",
+        email: "stays-pending@example.com",
+        name: "Stays Pending",
+        picture: null,
+        emailVerified: true,
+      },
+      [],
+      "approval",
+    );
+    expect(first.status).toBe("pending");
+
+    // Admin switches to open sign-up; signing in again must not retroactively approve them.
+    const second = await upsertUserFromGoogle(
+      db,
+      clock,
+      {
+        sub: "sub-stays-pending",
+        email: "stays-pending@example.com",
+        name: "Stays Pending",
+        picture: null,
+        emailVerified: true,
+      },
+      [],
+      "open",
+    );
+    expect(second.status).toBe("pending");
   });
 });

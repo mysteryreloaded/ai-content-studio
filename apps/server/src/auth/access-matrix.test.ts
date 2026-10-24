@@ -90,7 +90,20 @@ describe("every route's access level is declared and enforced", () => {
         status: "active",
       })
       .returning();
-    if (!activeUser || !adminUser)
+    // Issue #62: a pending user (waiting for an Admin's approval) must be
+    // blocked from every `active`/`admin` route the same as before, even
+    // though they do have a session.
+    const [pendingUser] = await db
+      .insert(users)
+      .values({
+        googleSub: "sub-pending",
+        email: "pending@example.com",
+        name: "Pending User",
+        role: "user",
+        status: "pending",
+      })
+      .returning();
+    if (!activeUser || !adminUser || !pendingUser)
       throw new Error("failed to insert test users");
 
     // A fresh session per request: some routes (sign-out) delete the
@@ -129,6 +142,10 @@ describe("every route's access level is declared and enforced", () => {
       "DELETE /api/admin/models/:id": 404,
       "POST /api/admin/models/:id/move-up": 404,
       "POST /api/admin/models/:id/move-down": 404,
+      "GET /api/admin/users/:id": 404,
+      "POST /api/admin/users/:id/approve": 404,
+      "POST /api/admin/users/:id/promote": 404,
+      "POST /api/admin/users/:id/demote": 404,
     };
 
     // No Site terms are set in this test's database, so accepting them
@@ -136,6 +153,16 @@ describe("every route's access level is declared and enforced", () => {
     // — not a different status per role, so it overrides both columns.
     const BOTH_STATUS_OVERRIDES: Record<string, number> = {
       "POST /api/terms/accept": 400,
+    };
+
+    // A pending user has a session but no approval yet: `signed-in`
+    // stays reachable (so they can accept the Site terms), `active`/
+    // `admin` stay blocked exactly like a disabled user.
+    const pendingExpectations: Record<string, number | undefined> = {
+      "signed-in": 200,
+      active: 403,
+      admin: 403,
+      "admin-or-status-token": 403,
     };
 
     for (const route of routes) {
@@ -185,6 +212,22 @@ describe("every route's access level is declared and enforced", () => {
           expected.admin;
         expect(`${context} admin -> ${adminRes.status}`).toBe(
           `${context} admin -> ${expectedAdmin}`,
+        );
+      }
+
+      const expectedPending =
+        BOTH_STATUS_OVERRIDES[`${route.method} ${route.path}`] ??
+        pendingExpectations[route.access];
+      if (expectedPending !== undefined) {
+        const pendingRes = await app.request(route.path, {
+          method: route.method,
+          headers: {
+            ...SAME_ORIGIN_HEADERS,
+            Cookie: await cookieFor(pendingUser.id),
+          },
+        });
+        expect(`${context} pending -> ${pendingRes.status}`).toBe(
+          `${context} pending -> ${expectedPending}`,
         );
       }
     }

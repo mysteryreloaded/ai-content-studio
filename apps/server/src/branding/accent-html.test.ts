@@ -18,6 +18,13 @@ describe("injectBrandingIntoHtml", () => {
     expect(html).toContain(':not([data-theme="light"])');
   });
 
+  test("sets color-scheme so Light/Dark repaints every page, not just the styled landing <main> (issue #65)", () => {
+    const html = injectBrandingIntoHtml(BASE_HTML, "rose", null);
+    expect(html).toContain("color-scheme: light dark;");
+    expect(html).toMatch(/\[data-theme="light"\]\s*\{\s*color-scheme: light;/);
+    expect(html).toMatch(/\[data-theme="dark"\]\s*\{\s*color-scheme: dark;/);
+  });
+
   test("falls back to teal for an unknown accent key", () => {
     const html = injectBrandingIntoHtml(BASE_HTML, "not-a-real-accent", null);
     expect(html).toContain("--accent: #0f766e");

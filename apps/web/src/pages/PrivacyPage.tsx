@@ -8,22 +8,37 @@ interface PrivacyData {
   generatedBody: string;
 }
 
+type PrivacyState =
+  | { status: "loading" }
+  | { status: "error" }
+  | { status: "loaded"; data: PrivacyData };
+
 /** `/privacy` always exists (issue #65): the Operator's own Markdown, then the studio-written section. */
 export function PrivacyPage() {
-  const [data, setData] = useState<PrivacyData | null>(null);
+  const [state, setState] = useState<PrivacyState>({ status: "loading" });
 
   useEffect(() => {
     fetch("/api/privacy")
-      .then((res) => res.json() as Promise<PrivacyData>)
-      .then(setData)
-      .catch(() => setData(null));
+      .then((res) => {
+        if (!res.ok) throw new Error(`unexpected status ${res.status}`);
+        return res.json() as Promise<PrivacyData>;
+      })
+      .then((data) => setState({ status: "loaded", data }))
+      .catch(() => setState({ status: "error" }));
   }, []);
+
+  const data = state.status === "loaded" ? state.data : null;
 
   return (
     <>
       <main>
         <h1>Privacy</h1>
-        {data === null && <p>Loading…</p>}
+        {state.status === "loading" && <p>Loading…</p>}
+        {state.status === "error" && (
+          <p role="alert">
+            Could not load the Privacy policy. Please try again.
+          </p>
+        )}
         {data && (
           <>
             {data.operatorUpdatedAt && (

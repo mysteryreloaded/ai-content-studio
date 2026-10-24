@@ -131,8 +131,15 @@
     {
       "idx": 18,
       "version": "7",
-      "when": 1792827781893,
-      "tag": "0018_lucky_dreadnoughts",
+      "when": 1792827940966,
+      "tag": "0018_stale_the_hunter",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1792828966589,
+      "tag": "0019_elite_kabuki",
       "breakpoints": true
     }
   ]

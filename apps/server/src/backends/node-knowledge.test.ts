@@ -125,4 +125,20 @@ describe("NodeKnowledge", () => {
       fake.stop();
     }
   });
+
+  test("fieldSpecsFor keeps a loader field's image_upload flag (issue #50)", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const knowledge = new NodeKnowledge(noCredsRepo, new FakeClock());
+      const specs = await knowledge.fieldSpecsFor(record(fake.url));
+      expect(specs?.get("LoadImage")?.image).toEqual({
+        type: "COMBO",
+        options: ["example.png"],
+        imageUpload: true,
+      });
+      expect(specs?.get("KSampler")?.sampler_name?.imageUpload).toBeUndefined();
+    } finally {
+      fake.stop();
+    }
+  });
 });

@@ -95,6 +95,12 @@ const inputDefinitionSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     ...inputBaseSchema,
+    kind: z.literal("image_upload"),
+    maxSizeMb: z.number(),
+    maxLongSide: z.number().nullable(),
+  }),
+  z.object({
+    ...inputBaseSchema,
     kind: z.literal("select"),
     options: z.array(
       z.object({
@@ -142,6 +148,8 @@ export function adminModelsRoute(
   backendsService: BackendsService,
   generationsRepository: GenerationsRepository,
   routes: RouteEntry[],
+  /** Issue #50: the ceiling on an Image Upload Input's max size. */
+  maxUploadMb?: number,
 ): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   const basePath = "/api/admin/models";
@@ -472,6 +480,7 @@ export function adminModelsRoute(
           parsed.data.version,
           adminActorFrom(c),
           fieldSpecs,
+          maxUploadMb,
         );
         return c.json(result);
       } catch (err) {

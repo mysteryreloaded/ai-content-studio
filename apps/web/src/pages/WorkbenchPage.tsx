@@ -5,7 +5,7 @@ import {
 } from "@ai-content-studio/shared";
 import type { InputDefinition } from "@ai-content-studio/shared";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Navigate, useParams } from "react-router-dom";
+import { Link, Navigate, useParams } from "react-router-dom";
 import { Footer } from "../Footer.js";
 import {
   httpUploadApi,
@@ -987,6 +987,9 @@ export function WorkbenchPage() {
           <h1>{model.name}</h1>
           {model.description && <p>{model.description}</p>}
           {model.attribution && <p>{model.attribution}</p>}
+          <p>
+            <Link to={`/gallery?model=${model.id}`}>View in Gallery</Link>
+          </p>
           {model.terms && (
             <p>
               <button

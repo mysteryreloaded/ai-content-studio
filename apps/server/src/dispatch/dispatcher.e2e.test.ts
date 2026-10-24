@@ -8,6 +8,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { startFakeComfyUi } from "@ai-content-studio/fake-comfyui";
 import { buildFrozenPrompt, systemClock } from "@ai-content-studio/shared";
 import type { Workflow } from "@ai-content-studio/shared";
+import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import type { AuditActor } from "../audit/audit.js";
 import { createLogEntryWriter } from "../backends/log-entries.js";
@@ -25,6 +26,10 @@ import {
   workflows,
 } from "../db/schema.js";
 import { AssetsRepository } from "../generations/assets-repository.js";
+import {
+  cancelGeneration,
+  cancelSubmission,
+} from "../generations/cancellation.js";
 import { GenerationEvents } from "../generations/events.js";
 import { GenerationsRepository } from "../generations/repository.js";
 import { MediaRunner } from "../media/media.js";
@@ -35,6 +40,25 @@ import { createLocalStorage } from "../storage/storage.js";
 import { createTestDatabase } from "../test/database.js";
 import { Dispatcher } from "./dispatcher.js";
 import { DispatchQueue } from "./queue.js";
+
+/** Polls `generations` directly: the runner/dispatcher move its state outside the repository's own request/response cycle. */
+async function waitForState(
+  db: Awaited<ReturnType<typeof createTestDatabase>>["db"],
+  generationId: string,
+  states: readonly string[],
+  timeoutMs = 2_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const [row] = await db
+      .select({ state: generations.state })
+      .from(generations)
+      .where(eq(generations.id, generationId));
+    if (row && states.includes(row.state)) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timed out waiting for ${generationId} to reach ${states}`);
+}
 
 const SYSTEM: AuditActor = { type: "system" };
 const SECRET_KEY = randomBytes(32).toString("base64");
@@ -117,6 +141,7 @@ describe("Dispatcher end-to-end against a fake ComfyUI", () => {
     logWriterOverride?: (real: ReturnType<typeof createLogEntryWriter>) => {
       log: ReturnType<typeof createLogEntryWriter>["log"];
     },
+    pollIntervalMs = 15,
   ) {
     const { db, sql } = await testDb;
     const modelRepository = new ModelRepository(db, systemClock);
@@ -161,7 +186,7 @@ describe("Dispatcher end-to-end against a fake ComfyUI", () => {
       siteName: "localhost",
       c2pa: null,
       getSiteTitle: async () => "Test Studio",
-      pollIntervalMs: 15,
+      pollIntervalMs,
     });
 
     return {
@@ -648,5 +673,387 @@ describe("Dispatcher end-to-end against a fake ComfyUI", () => {
       fake.stop();
       await Bun.$`rm -rf ${tmpDir}`.quiet();
     }
+  });
+
+  describe("cancelling a Generation (issue #54)", () => {
+    test("a queued Generation cancels at once, with no Backend involved", async () => {
+      const tmpDir = `/tmp/dispatcher-e2e-${randomUUID()}`;
+      const {
+        db,
+        modelRepository,
+        generationsRepository,
+        generationEvents,
+        queue,
+      } = await setup(tmpDir);
+      try {
+        const user = await insertUser(db, "cancel-queued@example.com");
+        const { model, mode, revisionId } = await createModelWithMode(
+          modelRepository,
+          "CancelQueued",
+        );
+        const generationId = randomUUID();
+        const { prompt, nodeTypes } = buildFrozenPrompt(
+          WORKFLOW,
+          ["2"],
+          generationId,
+        );
+        await generationsRepository.create({
+          id: generationId,
+          modelId: model.id,
+          revisionId,
+          modeId: mode.id,
+          modeName: mode.name,
+          userId: user.id,
+          submissionId: randomUUID(),
+          builtPrompt: prompt,
+          nodeTypes,
+          submittedAt: systemClock.now(),
+        });
+
+        await cancelGeneration(generationId, user.id, {
+          queue,
+          generationsRepository,
+          generationEvents,
+          wakeDispatcher: () => {},
+        });
+
+        const [row] = await db
+          .select({ state: generations.state })
+          .from(generations)
+          .where(eq(generations.id, generationId));
+        expect(row?.state).toBe("cancelled");
+
+        const active = await generationsRepository.listActiveForUser(user.id);
+        expect(active).toHaveLength(0);
+      } finally {
+        await Bun.$`rm -rf ${tmpDir}`.quiet();
+      }
+    });
+
+    test("another user can't cancel someone else's Generation", async () => {
+      const tmpDir = `/tmp/dispatcher-e2e-${randomUUID()}`;
+      const {
+        db,
+        modelRepository,
+        generationsRepository,
+        generationEvents,
+        queue,
+      } = await setup(tmpDir);
+      try {
+        const owner = await insertUser(db, "owner-cancel@example.com");
+        const stranger = await insertUser(db, "stranger-cancel@example.com");
+        const { model, mode, revisionId } = await createModelWithMode(
+          modelRepository,
+          "CancelOwnership",
+        );
+        const generationId = randomUUID();
+        const { prompt, nodeTypes } = buildFrozenPrompt(
+          WORKFLOW,
+          ["2"],
+          generationId,
+        );
+        await generationsRepository.create({
+          id: generationId,
+          modelId: model.id,
+          revisionId,
+          modeId: mode.id,
+          modeName: mode.name,
+          userId: owner.id,
+          submissionId: randomUUID(),
+          builtPrompt: prompt,
+          nodeTypes,
+          submittedAt: systemClock.now(),
+        });
+
+        await expect(
+          cancelGeneration(generationId, stranger.id, {
+            queue,
+            generationsRepository,
+            generationEvents,
+            wakeDispatcher: () => {},
+          }),
+        ).rejects.toThrow();
+
+        const [row] = await db
+          .select({ state: generations.state })
+          .from(generations)
+          .where(eq(generations.id, generationId));
+        expect(row?.state).toBe("queued");
+      } finally {
+        await Bun.$`rm -rf ${tmpDir}`.quiet();
+      }
+    });
+
+    test("a running Generation shows cancelling, then confirms once the Backend's interrupt is reported", async () => {
+      const tmpDir = `/tmp/dispatcher-e2e-${randomUUID()}`;
+      const {
+        db,
+        modelRepository,
+        modelBackendsRepository,
+        backendRepository,
+        backendsService,
+        generationsRepository,
+        generationEvents,
+        queue,
+        dispatcher,
+      } = await setup(tmpDir);
+
+      const fake = startFakeComfyUi({ port: 0 });
+      try {
+        const user = await insertUser(db, "cancel-running@example.com");
+        const { model, mode, revisionId } = await createModelWithMode(
+          modelRepository,
+          "CancelRunning",
+        );
+
+        const backend = await backendRepository.create(
+          { name: "FakeCancel", baseUrl: fake.url, auth: "none" },
+          SYSTEM,
+        );
+        await modelBackendsRepository.attach(model.id, backend.id, SYSTEM);
+        backendsService.watch(backend);
+        forceReachable(backendsService, backend.id);
+
+        const generationId = randomUUID();
+        const { prompt, nodeTypes } = buildFrozenPrompt(
+          WORKFLOW,
+          ["2"],
+          generationId,
+        );
+        // Hangs until /api/jobs/:id/cancel is called (issue #54's AC).
+        fake.script(generationId, { hang: true });
+
+        await generationsRepository.create({
+          id: generationId,
+          modelId: model.id,
+          revisionId,
+          modeId: mode.id,
+          modeName: mode.name,
+          userId: user.id,
+          submissionId: randomUUID(),
+          builtPrompt: prompt,
+          nodeTypes,
+          submittedAt: systemClock.now(),
+        });
+
+        const runPromise = dispatcher.runUntilIdle();
+        await waitForState(db, generationId, ["running"]);
+
+        await cancelGeneration(generationId, user.id, {
+          queue,
+          generationsRepository,
+          generationEvents,
+          wakeDispatcher: () => {},
+        });
+
+        const [cancellingRow] = await db
+          .select({ state: generations.state })
+          .from(generations)
+          .where(eq(generations.id, generationId));
+        expect(cancellingRow?.state).toBe("cancelling");
+
+        await runPromise;
+
+        const [row] = await db
+          .select({
+            state: generations.state,
+            pendingBackendCancel: generations.pendingBackendCancel,
+          })
+          .from(generations)
+          .where(eq(generations.id, generationId));
+        expect(row?.state).toBe("cancelled");
+        expect(row?.pendingBackendCancel).toBe(false);
+
+        // The Backend is free again for the next Generation.
+        expect(
+          await generationsRepository.hasUnfinishedForBackend(backend.id),
+        ).toBe(false);
+      } finally {
+        fake.stop();
+        await Bun.$`rm -rf ${tmpDir}`.quiet();
+      }
+    });
+
+    test("cancels anyway when the Backend is unreachable, then re-cancels it before it gets new work", async () => {
+      const tmpDir = `/tmp/dispatcher-e2e-${randomUUID()}`;
+      const {
+        db,
+        modelRepository,
+        modelBackendsRepository,
+        backendRepository,
+        backendsService,
+        generationsRepository,
+        generationEvents,
+        queue,
+        dispatcher,
+        // A wide poll gap: deterministic room to cancel and flip the
+        // Backend unreachable between two of the runner's own polls,
+        // rather than racing its loop at a 15ms cadence.
+      } = await setup(tmpDir, undefined, 300);
+
+      const fake = startFakeComfyUi({ port: 0 });
+      try {
+        const user = await insertUser(db, "cancel-unreachable@example.com");
+        const { model, mode, revisionId } = await createModelWithMode(
+          modelRepository,
+          "CancelUnreachable",
+        );
+
+        const backend = await backendRepository.create(
+          { name: "FakeUnreachable", baseUrl: fake.url, auth: "none" },
+          SYSTEM,
+        );
+        await modelBackendsRepository.attach(model.id, backend.id, SYSTEM);
+        backendsService.watch(backend);
+        forceReachable(backendsService, backend.id);
+
+        const generationId = randomUUID();
+        const { prompt, nodeTypes } = buildFrozenPrompt(
+          WORKFLOW,
+          ["2"],
+          generationId,
+        );
+        fake.script(generationId, { hang: true });
+
+        await generationsRepository.create({
+          id: generationId,
+          modelId: model.id,
+          revisionId,
+          modeId: mode.id,
+          modeName: mode.name,
+          userId: user.id,
+          submissionId: randomUUID(),
+          builtPrompt: prompt,
+          nodeTypes,
+          submittedAt: systemClock.now(),
+        });
+
+        const runPromise = dispatcher.runUntilIdle();
+        await waitForState(db, generationId, ["running"]);
+
+        // Cancel while still reachable, so the Generation is surely
+        // `cancelling` in the database before the Backend drops offline:
+        // the runner's next poll then always finds it that way, however
+        // an in-flight `/api/jobs/:id` call it raced against resolves.
+        await cancelGeneration(generationId, user.id, {
+          queue,
+          generationsRepository,
+          generationEvents,
+          wakeDispatcher: () => {},
+        });
+        fake.setUnreachable(true);
+
+        await runPromise;
+
+        const [row] = await db
+          .select({
+            state: generations.state,
+            pendingBackendCancel: generations.pendingBackendCancel,
+          })
+          .from(generations)
+          .where(eq(generations.id, generationId));
+        expect(row?.state).toBe("cancelled");
+        expect(row?.pendingBackendCancel).toBe(true);
+
+        // The Backend's own job is still "running" there (never told),
+        // so another tick must not hand it new work yet.
+        fake.setUnreachable(false);
+
+        const secondGenerationId = randomUUID();
+        const second = buildFrozenPrompt(WORKFLOW, ["2"], secondGenerationId);
+        fake.script(secondGenerationId, { steps: 1, stepIntervalMs: 5 });
+        await generationsRepository.create({
+          id: secondGenerationId,
+          modelId: model.id,
+          revisionId,
+          modeId: mode.id,
+          modeName: mode.name,
+          userId: user.id,
+          submissionId: randomUUID(),
+          builtPrompt: second.prompt,
+          nodeTypes: second.nodeTypes,
+          submittedAt: systemClock.now(),
+        });
+
+        // This tick's own retryPendingCancels re-sends the Backend's
+        // interrupt before buildPlan ever considers it for new work.
+        await dispatcher.runUntilIdle();
+        const [resentRow] = await db
+          .select({ pendingBackendCancel: generations.pendingBackendCancel })
+          .from(generations)
+          .where(eq(generations.id, generationId));
+        expect(resentRow?.pendingBackendCancel).toBe(false);
+
+        await dispatcher.runUntilIdle();
+        // The second Generation may only get matched on this call (its
+        // Backend's node types are learned asynchronously), so give its
+        // own run a moment to finish past "running".
+        await waitForState(db, secondGenerationId, ["succeeded", "failed"]);
+        const [secondRow] = await db
+          .select({ state: generations.state })
+          .from(generations)
+          .where(eq(generations.id, secondGenerationId));
+        expect(secondRow?.state).toBe("succeeded");
+      } finally {
+        fake.stop();
+        await Bun.$`rm -rf ${tmpDir}`.quiet();
+      }
+    });
+
+    test("cancelling a Submission cancels every one of its own unfinished Generations", async () => {
+      const tmpDir = `/tmp/dispatcher-e2e-${randomUUID()}`;
+      const {
+        db,
+        modelRepository,
+        generationsRepository,
+        generationEvents,
+        queue,
+      } = await setup(tmpDir);
+      try {
+        const user = await insertUser(db, "cancel-submission@example.com");
+        const { model, mode, revisionId } = await createModelWithMode(
+          modelRepository,
+          "CancelSubmission",
+        );
+        const submissionId = randomUUID();
+        const generationIds = [randomUUID(), randomUUID()];
+        for (const generationId of generationIds) {
+          const { prompt, nodeTypes } = buildFrozenPrompt(
+            WORKFLOW,
+            ["2"],
+            generationId,
+          );
+          await generationsRepository.create({
+            id: generationId,
+            modelId: model.id,
+            revisionId,
+            modeId: mode.id,
+            modeName: mode.name,
+            userId: user.id,
+            submissionId,
+            builtPrompt: prompt,
+            nodeTypes,
+            submittedAt: systemClock.now(),
+          });
+        }
+
+        await cancelSubmission(submissionId, user.id, {
+          queue,
+          generationsRepository,
+          generationEvents,
+          wakeDispatcher: () => {},
+        });
+
+        for (const generationId of generationIds) {
+          const [row] = await db
+            .select({ state: generations.state })
+            .from(generations)
+            .where(eq(generations.id, generationId));
+          expect(row?.state).toBe("cancelled");
+        }
+      } finally {
+        await Bun.$`rm -rf ${tmpDir}`.quiet();
+      }
+    });
   });
 });

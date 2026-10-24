@@ -180,9 +180,15 @@ type GenerationState =
   | "running"
   | "saving"
   | "succeeded"
-  | "failed";
+  | "failed"
+  | "cancelling"
+  | "cancelled";
 
-const DONE_STATES = new Set<GenerationState>(["succeeded", "failed"]);
+const DONE_STATES = new Set<GenerationState>([
+  "succeeded",
+  "failed",
+  "cancelled",
+]);
 
 interface AssetSummary {
   id: string;
@@ -274,6 +280,10 @@ function stateLabel(state: GenerationState): string {
       return "Done";
     case "failed":
       return "Failed";
+    case "cancelling":
+      return "Cancelling…";
+    case "cancelled":
+      return "Cancelled";
     default:
       return state;
   }
@@ -511,6 +521,10 @@ export function WorkbenchPage() {
   const [accepting, setAccepting] = useState(false);
   const [selectedSubmission, setSelectedSubmission] =
     useState<SubmissionSummary | null>(null);
+  /** Issue #54: disables a Submission's own Cancel button while its request is in flight. */
+  const [cancellingSubmissionIds, setCancellingSubmissionIds] = useState<
+    Set<string>
+  >(new Set());
 
   const selectedMode =
     model?.modes.find((m) => m.id === selectedModeId) ?? null;
@@ -763,6 +777,24 @@ export function WorkbenchPage() {
     }
   }, [selectedModeId, values, count, selectMode]);
 
+  const handleCancelSubmission = useCallback(async (submissionId: string) => {
+    setCancellingSubmissionIds((current) => new Set(current).add(submissionId));
+    try {
+      await fetch(`/api/submissions/${submissionId}/cancel`, {
+        method: "POST",
+      });
+    } catch {
+      // The SSE stream carries the real outcome either way; a failed
+      // request here just means this button stays enabled to retry.
+    } finally {
+      setCancellingSubmissionIds((current) => {
+        const next = new Set(current);
+        next.delete(submissionId);
+        return next;
+      });
+    }
+  }, []);
+
   if (session.status === "loading") return null;
   if (session.status === "signed-out") return <Navigate to="/" replace />;
   if (notFound) {
@@ -915,33 +947,51 @@ export function WorkbenchPage() {
             <h2>Submissions</h2>
             {submissions.length === 0 && <p>No Submissions yet.</p>}
             <ul>
-              {submissions.map((submission) => (
-                <li key={submission.submissionId}>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedSubmission(submission)}
-                  >
-                    <strong>{submission.modeName}</strong>{" "}
-                    <time dateTime={submission.submittedAt}>
-                      {new Date(submission.submittedAt).toLocaleString()}
-                    </time>
-                    {submission.prompt && (
-                      <span style={{ display: "block" }}>
-                        {submission.prompt}
-                      </span>
+              {submissions.map((submission) => {
+                const hasUnfinished = submission.generations.some(
+                  (g) => !DONE_STATES.has(g.state),
+                );
+                return (
+                  <li key={submission.submissionId}>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedSubmission(submission)}
+                    >
+                      <strong>{submission.modeName}</strong>{" "}
+                      <time dateTime={submission.submittedAt}>
+                        {new Date(submission.submittedAt).toLocaleString()}
+                      </time>
+                      {submission.prompt && (
+                        <span style={{ display: "block" }}>
+                          {submission.prompt}
+                        </span>
+                      )}
+                    </button>
+                    {hasUnfinished && (
+                      <button
+                        type="button"
+                        disabled={cancellingSubmissionIds.has(
+                          submission.submissionId,
+                        )}
+                        onClick={() =>
+                          void handleCancelSubmission(submission.submissionId)
+                        }
+                      >
+                        Cancel
+                      </button>
                     )}
-                  </button>
-                  <ul>
-                    {submission.generations.map((generation) => (
-                      <GenerationCard
-                        key={generation.id}
-                        generation={generation}
-                        progress={progressById.get(generation.id)}
-                      />
-                    ))}
-                  </ul>
-                </li>
-              ))}
+                    <ul>
+                      {submission.generations.map((generation) => (
+                        <GenerationCard
+                          key={generation.id}
+                          generation={generation}
+                          progress={progressById.get(generation.id)}
+                        />
+                      ))}
+                    </ul>
+                  </li>
+                );
+              })}
             </ul>
           </aside>
         </div>

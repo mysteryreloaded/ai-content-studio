@@ -16,6 +16,7 @@ import {
   type Job,
   type JobFile,
   PromptRejected,
+  cancelJob,
   fetchView,
   readJob,
   submitPrompt,
@@ -137,6 +138,36 @@ async function fail(
     generationId: detail.id,
   });
   await publishChange(deps, detail, backendId, "failed", message);
+  deps.onFreed();
+}
+
+/**
+ * Finalizes a cancel (issue #54): confirmed by the Backend (its interrupt
+ * was reported, or the job's gone), or marked anyway when the Backend
+ * couldn't be reached — `pendingBackendCancel` then has the dispatcher
+ * re-send that interrupt before the Backend gets new work.
+ */
+async function cancel(
+  deps: RunnerDeps,
+  detail: RunDetail,
+  backendId: string,
+  pendingBackendCancel: boolean,
+): Promise<void> {
+  deps.progress.discard(detail.id);
+  await deps.queue.markCancelled(detail.id, { pendingBackendCancel });
+  if (pendingBackendCancel) {
+    await deps.logWriter.log({
+      level: "warning",
+      source: "backend",
+      message:
+        "Cancelled, but the Backend was unreachable; it'll be re-cancelled before it gets new work",
+      backendId,
+      userId: detail.userId,
+      modelId: detail.modelId,
+      generationId: detail.id,
+    });
+  }
+  await publishChange(deps, detail, backendId, "cancelled", null);
   deps.onFreed();
 }
 
@@ -262,10 +293,47 @@ export async function runClaimedGeneration(
     deps.clock.now().getTime() + detail.maxRunTimeMinutes * 60_000;
   let job: Job | null = null;
   let runError: string | null = null;
+  // Set once a cancel's own interrupt has been sent to the Backend (issue
+  // #54); `cancelUnreachable` short-circuits to a confirmed cancel right
+  // away rather than waiting on a Backend that can't be reached.
+  let cancelSent = false;
+  let cancelUnreachable = false;
+  let cancelConfirmed = false;
   try {
     while (true) {
-      job = await readJob(target, generationId);
+      if (!cancelSent) {
+        const state = await deps.queue.currentState(generationId);
+        if (state === "cancelling") {
+          cancelSent = true;
+          try {
+            await cancelJob(target, generationId);
+          } catch {
+            cancelUnreachable = true;
+            break;
+          }
+        }
+      }
+
+      try {
+        job = await readJob(target, generationId);
+      } catch (err) {
+        // A poll failure while cancelling is also a Backend reachability
+        // problem, not a run failure (issue #54's AC): cancel anyway
+        // rather than failing a Generation its own user asked to stop.
+        if (
+          cancelSent ||
+          (await deps.queue.currentState(generationId)) === "cancelling"
+        ) {
+          cancelUnreachable = true;
+          break;
+        }
+        throw err;
+      }
       publishProgress(deps, detail.userId, generationId);
+      if (cancelSent && (job === null || job.status === "cancelled")) {
+        cancelConfirmed = true;
+        break;
+      }
       if (job?.status === "completed" || job?.status === "failed") break;
       if (deps.clock.now().getTime() > deadlineMs) {
         runError = "Generation exceeded its Model's max run time";
@@ -280,6 +348,14 @@ export async function runClaimedGeneration(
     socket.close();
   }
 
+  if (cancelUnreachable) {
+    await cancel(deps, detail, backend.id, true);
+    return;
+  }
+  if (cancelConfirmed) {
+    await cancel(deps, detail, backend.id, false);
+    return;
+  }
   if (runError || job?.status === "failed") {
     await fail(
       deps,

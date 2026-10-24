@@ -72,10 +72,12 @@ export interface ScriptedJob {
   outputs?: Record<string, JobOutput>;
   /** Scripts the job to fail once its steps run out, instead of completing. */
   fail?: string;
+  /** Issue #54: never advances on its own, staying `running` until `/api/jobs/:id/cancel` is called. */
+  hang?: boolean;
 }
 
 interface JobState {
-  status: "running" | "completed" | "failed";
+  status: "running" | "completed" | "failed" | "cancelled";
   step: number;
   totalSteps: number;
   outputs: Record<string, JobOutput> | null;
@@ -235,13 +237,42 @@ export function startFakeComfyUi(opts: FakeComfyUiOptions) {
             timer: null,
           };
           jobs.set(promptId, job);
-          job.timer = setInterval(
-            () => advance(promptId),
-            script.stepIntervalMs ?? 5,
-          );
+          // issue #54: a hung job never advances on its own, so it stays
+          // running until cancelled.
+          if (!script.hang) {
+            job.timer = setInterval(
+              () => advance(promptId),
+              script.stepIntervalMs ?? 5,
+            );
+          }
 
           return Response.json({ prompt_id: promptId }, { status: 200 });
         });
+      }
+
+      if (
+        url.pathname.startsWith("/api/jobs/") &&
+        url.pathname.endsWith("/cancel") &&
+        req.method === "POST"
+      ) {
+        if (unreachable)
+          return new Response("down for testing", { status: 503 });
+        if (!isAuthorized(req, opts))
+          return new Response("unauthorized", { status: 401 });
+        const promptId = url.pathname.slice(
+          "/api/jobs/".length,
+          -"/cancel".length,
+        );
+        const job = jobs.get(promptId);
+        if (!job) return new Response("not found", { status: 404 });
+        if (job.timer) clearInterval(job.timer);
+        job.timer = null;
+        job.status = "cancelled";
+        sendTo(job.clientId, {
+          type: "status",
+          data: { prompt_id: promptId, status: "cancelled" },
+        });
+        return new Response(null, { status: 204 });
       }
 
       if (url.pathname.startsWith("/api/jobs/")) {

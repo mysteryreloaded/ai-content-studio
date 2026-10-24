@@ -13,7 +13,9 @@ export type GenerationState =
   | "running"
   | "saving"
   | "succeeded"
-  | "failed";
+  | "failed"
+  | "cancelling"
+  | "cancelled";
 
 export interface AssetSummary {
   id: string;
@@ -225,7 +227,7 @@ export class GenerationsRepository {
       .where(
         and(
           eq(generations.userId, userId),
-          notInArray(generations.state, ["succeeded", "failed"]),
+          notInArray(generations.state, ["succeeded", "failed", "cancelled"]),
         ),
       )
       .orderBy(desc(generations.submittedAt));
@@ -320,7 +322,7 @@ export class GenerationsRepository {
       .where(
         and(
           eq(generations.modelId, modelId),
-          notInArray(generations.state, ["succeeded", "failed"]),
+          notInArray(generations.state, ["succeeded", "failed", "cancelled"]),
         ),
       )
       .limit(1);
@@ -335,10 +337,64 @@ export class GenerationsRepository {
       .where(
         and(
           eq(generations.backendId, backendId),
-          notInArray(generations.state, ["succeeded", "failed"]),
+          notInArray(generations.state, ["succeeded", "failed", "cancelled"]),
         ),
       )
       .limit(1);
     return !!row;
+  }
+
+  /** Just enough to decide how to cancel a Generation (issue #54): who owns it and where it currently is. */
+  async getForCancel(
+    generationId: string,
+  ): Promise<{ userId: string; state: GenerationState } | null> {
+    const [row] = await this.db
+      .select({ userId: generations.userId, state: generations.state })
+      .from(generations)
+      .where(eq(generations.id, generationId));
+    return row ?? null;
+  }
+
+  /** This user's own unfinished Generation ids within one Submission (issue #54's AC: "Cancel all on a Submission block"). */
+  async listUnfinishedIdsForSubmission(
+    submissionId: string,
+    userId: string,
+  ): Promise<string[]> {
+    const rows = await this.db
+      .select({ id: generations.id })
+      .from(generations)
+      .where(
+        and(
+          eq(generations.submissionId, submissionId),
+          eq(generations.userId, userId),
+          notInArray(generations.state, ["succeeded", "failed", "cancelled"]),
+        ),
+      );
+    return rows.map((row) => row.id);
+  }
+
+  /** One Generation, enriched like the SSE/submit events (issue #54: so a cancel's own "change" can be published straight away). */
+  async getSummary(generationId: string): Promise<GenerationSummary | null> {
+    const [row] = await this.db
+      .select({ generation: generations, mode: modes })
+      .from(generations)
+      .innerJoin(modes, eq(modes.id, generations.modeId))
+      .where(eq(generations.id, generationId));
+    if (!row) return null;
+
+    const [model] = await this.db
+      .select({ slug: models.slug, name: models.name })
+      .from(models)
+      .where(eq(models.id, row.generation.modelId));
+    const assetRows = await this.db
+      .select()
+      .from(assets)
+      .where(eq(assets.generationId, generationId));
+
+    return {
+      ...toRecord(row.generation, row.mode.name, assetRows),
+      modelSlug: model?.slug ?? "",
+      modelName: model?.name ?? "",
+    };
   }
 }

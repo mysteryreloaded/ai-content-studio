@@ -60,6 +60,7 @@ function buildPlan(setup: Setup) {
       listQueued: async () => setup.queued,
       activeCountsByUser: async () => setup.activeCounts ?? new Map(),
       busyBackendIds: async () => setup.busyBackendIds ?? new Set(),
+      pendingCancelBackendIds: async () => new Set<string>(),
     } as unknown as DispatcherDeps["queue"],
     backendRepository: {
       list: async () => setup.backends,
@@ -261,6 +262,8 @@ describe("Dispatcher resilience to a DB outage", () => {
         },
         activeCountsByUser: async () => new Map(),
         busyBackendIds: async () => new Set(),
+        pendingBackendCancels: async () => [],
+        pendingCancelBackendIds: async () => new Set<string>(),
       } as unknown as DispatcherDeps["queue"],
       backendRepository: {
         list: async () => [],
@@ -305,11 +308,12 @@ describe("Dispatcher resilience to a DB outage", () => {
     // instead of being stuck forever behind the first failure's `ticking`
     // flag never resetting.
     dispatcher.wake();
-    expect(listQueuedCalls).toBe(2);
 
-    // Let the second tick's own (also failing) claim and Log write settle,
-    // so neither leaves an unhandled rejection behind.
+    // Let the second tick's own (also failing) claim and Log write settle
+    // — now one more microtask away than before, behind retryPendingCancels'
+    // own query — so neither leaves an unhandled rejection behind.
     await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(listQueuedCalls).toBe(2);
     expect(logCalls).toBe(2);
     expect(loggerErrorCalls).toBe(2);
   });

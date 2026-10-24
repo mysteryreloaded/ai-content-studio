@@ -47,6 +47,7 @@ import { modelsRoute } from "./routes/models.js";
 import { privacyRoute } from "./routes/privacy.js";
 import { siteSettingsRoute } from "./routes/site-settings.js";
 import { statusRoute } from "./routes/status.js";
+import { submissionsRoute } from "./routes/submissions.js";
 import { termsRoute } from "./routes/terms.js";
 import { createLocalStorage } from "./storage/storage.js";
 
@@ -214,6 +215,18 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
       generationsRepository,
       generationEvents,
       deps.clock,
+      routes,
+    ),
+  );
+  app.route(
+    "/api/submissions",
+    submissionsRoute(
+      {
+        queue: dispatchQueue,
+        generationsRepository,
+        generationEvents,
+        wakeDispatcher: dispatcher.wake,
+      },
       routes,
     ),
   );

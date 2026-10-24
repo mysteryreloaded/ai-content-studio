@@ -181,6 +181,7 @@ describe("every route's access level is declared and enforced", () => {
       "GET /api/assets/:id/poster": 404,
       "GET /api/assets/:id/thumb": 404,
       "POST /api/models/:slug/terms/accept": 404,
+      "POST /api/submissions/:submissionId/cancel": 404,
     };
 
     // A pending user has a session but no approval yet: `signed-in`

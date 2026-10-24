@@ -7,6 +7,7 @@ import { and, eq, inArray, isNotNull } from "drizzle-orm";
 import { sql } from "drizzle-orm";
 import type { Database } from "../db/client.js";
 import { generations, models, modes } from "../db/schema.js";
+import type { GenerationState } from "../generations/repository.js";
 
 export interface QueuedGeneration {
   id: string;
@@ -76,18 +77,112 @@ export class DispatchQueue {
     return new Map(rows.map((row) => [row.userId, Number(row.count)]));
   }
 
-  /** Backend ids currently mid-run (issue #44's ADR: `saving` doesn't count — the Backend already freed). */
+  /** Backend ids currently mid-run (issue #44's ADR: `saving` doesn't count — the Backend already freed). `cancelling` still counts: the Backend's interrupt hasn't been confirmed yet (issue #54). */
   async busyBackendIds(): Promise<Set<string>> {
     const rows = await this.db
       .select({ backendId: generations.backendId })
       .from(generations)
       .where(
         and(
-          inArray(generations.state, ["starting", "running"]),
+          inArray(generations.state, ["starting", "running", "cancelling"]),
           isNotNull(generations.backendId),
         ),
       );
     return new Set(rows.map((row) => row.backendId as string));
+  }
+
+  /** Cancels a `queued` Generation at once (issue #54's AC): nothing was ever sent to a Backend. Returns whether it actually was still queued. */
+  async cancelQueued(generationId: string): Promise<boolean> {
+    const rows = await this.db
+      .update(generations)
+      .set({ state: "cancelled" })
+      .where(
+        and(eq(generations.id, generationId), eq(generations.state, "queued")),
+      )
+      .returning({ id: generations.id });
+    return rows.length > 0;
+  }
+
+  /**
+   * Moves a `starting`/`running` Generation to `cancelling` (issue #54):
+   * the runner's own poll loop notices this and sends the Backend's
+   * interrupt. Returns whether it actually made that move.
+   */
+  async markCancelling(generationId: string): Promise<boolean> {
+    const rows = await this.db
+      .update(generations)
+      .set({ state: "cancelling" })
+      .where(
+        and(
+          eq(generations.id, generationId),
+          inArray(generations.state, ["starting", "running"]),
+        ),
+      )
+      .returning({ id: generations.id });
+    return rows.length > 0;
+  }
+
+  /**
+   * Finalizes a cancelled Generation (issue #54): confirmed by the
+   * Backend (the interrupt was reported, or the job's gone), or marked
+   * anyway with `pendingBackendCancel` when the Backend couldn't be
+   * reached at all.
+   */
+  async markCancelled(
+    generationId: string,
+    opts: { pendingBackendCancel: boolean },
+  ): Promise<void> {
+    await this.db
+      .update(generations)
+      .set({
+        state: "cancelled",
+        pendingBackendCancel: opts.pendingBackendCancel,
+      })
+      .where(eq(generations.id, generationId));
+  }
+
+  /** Read live mid-run, so the runner's poll loop notices a cancel requested by another request (issue #54). */
+  async currentState(generationId: string): Promise<GenerationState | null> {
+    const [row] = await this.db
+      .select({ state: generations.state })
+      .from(generations)
+      .where(eq(generations.id, generationId));
+    return row?.state ?? null;
+  }
+
+  /** Every Generation still waiting for its Backend to be re-told about a cancel it missed (issue #54), grouped with the Backend it needs resending to. */
+  async pendingBackendCancels(): Promise<
+    { generationId: string; backendId: string }[]
+  > {
+    const rows = await this.db
+      .select({
+        generationId: generations.id,
+        backendId: generations.backendId,
+      })
+      .from(generations)
+      .where(
+        and(
+          eq(generations.pendingBackendCancel, true),
+          isNotNull(generations.backendId),
+        ),
+      );
+    return rows.map((row) => ({
+      generationId: row.generationId,
+      backendId: row.backendId as string,
+    }));
+  }
+
+  /** Backend ids that still owe a re-sent cancel interrupt (issue #54): never matched to new work until this clears. */
+  async pendingCancelBackendIds(): Promise<Set<string>> {
+    const pending = await this.pendingBackendCancels();
+    return new Set(pending.map((row) => row.backendId));
+  }
+
+  async clearPendingBackendCancel(generationId: string): Promise<void> {
+    await this.db
+      .update(generations)
+      .set({ pendingBackendCancel: false })
+      .where(eq(generations.id, generationId));
   }
 
   /**
@@ -119,11 +214,17 @@ export class DispatchQueue {
     }
   }
 
+  /** Guarded to only move `starting` -> `running`: a concurrent cancel may have already moved this Generation to `cancelling` (issue #54), and this must not stomp that back. */
   async markRunning(generationId: string): Promise<void> {
     await this.db
       .update(generations)
       .set({ state: "running" })
-      .where(eq(generations.id, generationId));
+      .where(
+        and(
+          eq(generations.id, generationId),
+          eq(generations.state, "starting"),
+        ),
+      );
   }
 
   /** Moves to `saving`: the Backend's own run has ended, so it's free for the next start. */

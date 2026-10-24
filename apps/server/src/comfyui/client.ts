@@ -43,7 +43,8 @@ export async function submitPrompt(
   }
 }
 
-export type JobStatus = "running" | "completed" | "failed";
+/** `"cancelled"` only ever appears after this studio's own cancel call (issue #54): ComfyUI itself never produces it on its own. */
+export type JobStatus = "running" | "completed" | "failed" | "cancelled";
 
 export interface JobFile {
   filename: string;
@@ -79,6 +80,28 @@ export async function readJob(
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`/api/jobs/${promptId} returned ${res.status}`);
   return (await res.json()) as Job;
+}
+
+/**
+ * Interrupts a starting/running job (issue #54's AC). A 404 ("the job's
+ * gone") counts as cancelled too, not an error: a Backend that's already
+ * dropped the job needs no further interrupt.
+ */
+export async function cancelJob(
+  target: ComfyUiTarget,
+  promptId: string,
+): Promise<void> {
+  const res = await fetch(
+    join(target.baseUrl, `/api/jobs/${promptId}/cancel`),
+    {
+      method: "POST",
+      headers: target.headers,
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    },
+  );
+  if (!res.ok && res.status !== 404) {
+    throw new Error(`/api/jobs/${promptId}/cancel returned ${res.status}`);
+  }
 }
 
 /** Fetches one output file's bytes from `/view`, as a streamable `Response` (issue #44: saved straight to a temp file). */

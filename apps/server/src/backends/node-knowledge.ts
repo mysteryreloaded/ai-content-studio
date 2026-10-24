@@ -19,7 +19,9 @@ interface CacheEntry {
 
 /**
  * Parses `/object_info`'s per-node `input.required`/`input.optional` specs
- * (issue #46): a field is `["TYPE", {...}]` or, for a COMBO, `[["a","b"], {...}]`.
+ * (issue #46): a field is `["TYPE", {...}]` or, for a COMBO, `[["a","b"], {...}]`
+ * (the legacy form) or `["COMBO", {"options": ["a","b"], ...}]` (the V3 form
+ * ComfyUI's `comfy_api/latest/_io.py` nodes, such as LTX, report).
  */
 function parseFieldSpecs(
   body: Record<string, unknown>,
@@ -37,13 +39,23 @@ function parseFieldSpecs(
       if (!group) continue;
       for (const [field, spec] of Object.entries(group)) {
         if (!Array.isArray(spec) || spec.length === 0) continue;
-        const [typeOrOptions] = spec as [unknown, ...unknown[]];
+        const [typeOrOptions, extra] = spec as [unknown, unknown];
         if (Array.isArray(typeOrOptions)) {
           fields[field] = {
             type: "COMBO",
             options: typeOrOptions.filter(
               (option): option is string => typeof option === "string",
             ),
+          };
+        } else if (typeOrOptions === "COMBO") {
+          const options = (extra as { options?: unknown } | undefined)?.options;
+          fields[field] = {
+            type: "COMBO",
+            options: Array.isArray(options)
+              ? options.filter(
+                  (option): option is string => typeof option === "string",
+                )
+              : undefined,
           };
         } else if (typeof typeOrOptions === "string") {
           fields[field] = { type: typeOrOptions };

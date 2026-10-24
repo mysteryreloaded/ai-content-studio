@@ -385,6 +385,60 @@ describe("validateInputDefinition", () => {
     expect(errors.some((e) => e.includes("Backend's choices"))).toBe(true);
   });
 
+  test("accepts any string value for a V3-form COMBO with no known options (issue #46)", () => {
+    const comboCtx = {
+      ...ctx,
+      fieldSpecs: new Map([
+        [
+          "KSampler",
+          {
+            sampler_name: { type: "COMBO", options: undefined },
+          },
+        ],
+      ]),
+    };
+    const samplerWorkflow: Workflow = {
+      ...workflow,
+      "2": {
+        class_type: "KSampler",
+        inputs: { ...workflow["2"]?.inputs, sampler_name: "euler" },
+      },
+    };
+    const input: SelectInputDefinition = {
+      id: "33333333-3333-3333-3333-333333333333",
+      kind: "select",
+      group: "settings",
+      label: "Sampler",
+      help: "",
+      default: null,
+      options: [
+        {
+          id: "44444444-4444-4444-4444-444444444444",
+          label: "Euler",
+          values: ["euler"],
+        },
+        {
+          id: "55555555-5555-5555-5555-555555555555",
+          label: "Ghost",
+          values: ["ghost"],
+        },
+      ],
+      bindings: [
+        {
+          nodeId: "2",
+          field: "sampler_name",
+          classType: "KSampler",
+          title: null,
+        },
+      ],
+    };
+    const errors = validateInputDefinition(input, [], {
+      ...comboCtx,
+      workflow: samplerWorkflow,
+    });
+    expect(errors.some((e) => e.includes("Backend's choices"))).toBe(false);
+  });
+
   test("refuses a decimal number Input bound to an INT field, when known", () => {
     const intCtx = {
       ...ctx,

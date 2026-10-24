@@ -103,7 +103,11 @@ export function listBindableFields(workflow: Workflow): BindableField[] {
   return fields;
 }
 
-/** One field's shape, per a Backend's `/object_info` (issue #46): a `COMBO` field carries its allowed `options`. */
+/**
+ * One field's shape, per a Backend's `/object_info` (issue #46): a `COMBO`
+ * field carries its allowed `options`, when the Backend reported them (a
+ * V3-form COMBO node can omit them).
+ */
 export interface ComfyFieldSpec {
   type: string;
   options?: readonly string[];
@@ -273,9 +277,11 @@ export function validateInputDefinition(
         if (!binding) return;
         const spec = fieldSpecFor(ctx, binding);
         if (spec?.type === "COMBO") {
+          // A V3-form COMBO (issue #46) may report no `options` list; skip
+          // the choice check rather than refusing every value.
           if (
-            typeof value !== "string" ||
-            !(spec.options ?? []).includes(value)
+            spec.options !== undefined &&
+            (typeof value !== "string" || !spec.options.includes(value))
           ) {
             errors.push(
               `option "${option.label}" value for "${binding.field}" isn't one of the Backend's choices`,

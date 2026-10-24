@@ -108,4 +108,20 @@ describe("NodeKnowledge", () => {
       fake.stop();
     }
   });
+
+  test('fieldSpecsFor parses a V3-form COMBO (`["COMBO", {options}]`, issue #46)', async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const clock = new FakeClock();
+      const knowledge = new NodeKnowledge(noCredsRepo, clock);
+      const backend = record(fake.url);
+
+      const specs = await knowledge.fieldSpecsFor(backend);
+      const ltxv = specs?.get("LTXVConditioning");
+      expect(ltxv?.frame_rate_option?.type).toBe("COMBO");
+      expect(ltxv?.frame_rate_option?.options).toEqual(["24", "25", "30"]);
+    } finally {
+      fake.stop();
+    }
+  });
 });

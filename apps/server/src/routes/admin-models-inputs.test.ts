@@ -2,10 +2,18 @@
 // revision on success, and the current Modes carried forward unchanged.
 
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { startFakeComfyUi } from "@ai-content-studio/fake-comfyui";
 import { FakeClock } from "@ai-content-studio/shared";
 import { createApp } from "../app.js";
 import { SESSION_COOKIE_NAME, createSession } from "../auth/session.js";
-import { modelRevisions, models, users, workflows } from "../db/schema.js";
+import {
+  backends,
+  modelBackends,
+  modelRevisions,
+  models,
+  users,
+  workflows,
+} from "../db/schema.js";
 import type { Env } from "../env.js";
 import type { Logger } from "../logger.js";
 import { createTestDatabase } from "../test/database.js";
@@ -17,21 +25,25 @@ const silentLogger: Logger = {
   error() {},
 };
 
-const TEST_ENV: Env = {
-  DATABASE_URL: "unused",
-  PORT: 3000,
-  LOG_LEVEL: "error",
-  PUBLIC_URL: "http://localhost:3000",
-  GOOGLE_CLIENT_ID: "test-client",
-  GOOGLE_CLIENT_SECRET: "test-secret",
-  ADMIN_EMAILS: ["admin@example.com"],
-  OIDC_ISSUER: undefined,
-  DATA_DIR: "/tmp/ai-content-studio-test-data",
-  SECRET_KEY: "4FRG13w9RuN5CeV10Lzfxl78MY+AJRJtGuKrBdYzgCY=",
-  BACKENDS_ENABLED: false,
-  STATUS_TOKEN: undefined,
-  MIN_FREE_DISK_GB: 10,
-};
+function testEnv(backendsEnabled: boolean): Env {
+  return {
+    DATABASE_URL: "unused",
+    PORT: 3000,
+    LOG_LEVEL: "error",
+    PUBLIC_URL: "http://localhost:3000",
+    GOOGLE_CLIENT_ID: "test-client",
+    GOOGLE_CLIENT_SECRET: "test-secret",
+    ADMIN_EMAILS: ["admin@example.com"],
+    OIDC_ISSUER: undefined,
+    DATA_DIR: "/tmp/ai-content-studio-test-data",
+    SECRET_KEY: "4FRG13w9RuN5CeV10Lzfxl78MY+AJRJtGuKrBdYzgCY=",
+    BACKENDS_ENABLED: backendsEnabled,
+    STATUS_TOKEN: undefined,
+    MIN_FREE_DISK_GB: 10,
+  };
+}
+
+const TEST_ENV: Env = testEnv(false);
 
 const SAME_ORIGIN_HEADERS = { "Sec-Fetch-Site": "same-origin" };
 
@@ -73,23 +85,25 @@ describe("PUT /api/admin/models/:id/inputs", () => {
 
   beforeEach(async () => {
     const { db } = await testDb;
+    await db.delete(modelBackends);
     await db.delete(modelRevisions);
     await db.delete(models);
     await db.delete(workflows);
+    await db.delete(backends);
     await db.delete(users);
   });
 
-  async function build() {
+  async function build(env: Env = TEST_ENV) {
     const { db, sql } = await testDb;
-    const { app } = await createApp({
+    const created = await createApp({
       db,
       sql,
       clock,
       logger: silentLogger,
-      env: TEST_ENV,
+      env,
       webDistDir: new URL("../../../web", import.meta.url).pathname,
     });
-    return app;
+    return created;
   }
 
   async function adminHeaders() {
@@ -112,7 +126,7 @@ describe("PUT /api/admin/models/:id/inputs", () => {
   }
 
   async function createModel(
-    app: Awaited<ReturnType<typeof build>>,
+    app: Awaited<ReturnType<typeof build>>["app"],
     headers: Record<string, string>,
   ) {
     const res = await app.request("/api/admin/models", {
@@ -127,7 +141,7 @@ describe("PUT /api/admin/models/:id/inputs", () => {
   }
 
   test("400s a non-UUID Input id", async () => {
-    const app = await build();
+    const { app } = await build();
     const headers = await adminHeaders();
     const model = await createModel(app, headers);
 
@@ -143,7 +157,7 @@ describe("PUT /api/admin/models/:id/inputs", () => {
   });
 
   test("saves Inputs, bumping the version and revision", async () => {
-    const app = await build();
+    const { app } = await build();
     const headers = await adminHeaders();
     const model = await createModel(app, headers);
 
@@ -163,7 +177,7 @@ describe("PUT /api/admin/models/:id/inputs", () => {
   });
 
   test("carries the current Modes forward unchanged onto the new revision", async () => {
-    const app = await build();
+    const { app } = await build();
     const headers = await adminHeaders();
     const model = await createModel(app, headers);
 
@@ -196,5 +210,94 @@ describe("PUT /api/admin/models/:id/inputs", () => {
     };
     expect(detail.modes).toHaveLength(1);
     expect(detail.modes[0]?.name).toBe("Default");
+  });
+
+  test("saves a select Input bound to a V3-form COMBO field (issue #46)", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const { app, backendsService } = await build(testEnv(true));
+      const headers = await adminHeaders();
+
+      const modelRes = await app.request("/api/admin/models", {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "LTXV",
+          workflow: {
+            "1": {
+              class_type: "LTXVConditioning",
+              inputs: { frame_rate_option: "24" },
+            },
+            "2": { class_type: "SaveImage", inputs: { images: ["1", 0] } },
+          },
+        }),
+      });
+      const { model } = (await modelRes.json()) as {
+        model: { id: string; version: number };
+      };
+
+      const backendRes = await app.request("/api/admin/backends", {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "Fake",
+          baseUrl: fake.url,
+          auth: "none",
+        }),
+      });
+      const backend = (await backendRes.json()) as { id: string };
+      await app.request(`/api/admin/models/${model.id}/backends`, {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ backendId: backend.id }),
+      });
+
+      const frameRateInput = {
+        id: "22222222-2222-2222-2222-222222222222",
+        kind: "select",
+        group: "settings",
+        label: "Frame rate",
+        help: "",
+        default: null,
+        options: [
+          {
+            id: "33333333-3333-3333-3333-333333333333",
+            label: "24 fps",
+            values: ["24"],
+          },
+          {
+            id: "44444444-4444-4444-4444-444444444444",
+            label: "30 fps",
+            values: ["30"],
+          },
+        ],
+        bindings: [
+          {
+            nodeId: "1",
+            field: "frame_rate_option",
+            classType: "LTXVConditioning",
+            title: null,
+          },
+        ],
+      };
+
+      const res = await app.request(`/api/admin/models/${model.id}/inputs`, {
+        method: "PUT",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({
+          version: model.version,
+          inputs: [frameRateInput],
+        }),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        inputs: Array<{ label: string }>;
+      };
+      expect(body.inputs[0]?.label).toBe("Frame rate");
+
+      backendsService.stop();
+    } finally {
+      fake.stop();
+    }
   });
 });

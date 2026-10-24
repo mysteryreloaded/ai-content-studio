@@ -45,6 +45,7 @@ import { adminUsersRoute } from "./routes/admin-users.js";
 import { adminRoute } from "./routes/admin.js";
 import { assetsRoute } from "./routes/assets.js";
 import { authRoute } from "./routes/auth.js";
+import { galleryRoute } from "./routes/gallery.js";
 import { generationsRoute } from "./routes/generations.js";
 import { healthRoute } from "./routes/health.js";
 import { modelsRoute } from "./routes/models.js";
@@ -243,6 +244,7 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
     ),
   );
   app.route("/api/assets", assetsRoute(assetsRepository, storage, routes));
+  app.route("/api/gallery", galleryRoute(generationsRepository, routes));
   const uploadsService = new UploadsService({
     repository: uploadsRepository,
     storage,

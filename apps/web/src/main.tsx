@@ -7,6 +7,7 @@ import { RequireActive } from "./RequireActive.js";
 import { RequireTermsAccepted } from "./RequireTermsAccepted.js";
 import { AccountPage } from "./pages/AccountPage.js";
 import { AdminShell } from "./pages/AdminShell.js";
+import { GalleryPage } from "./pages/GalleryPage.js";
 import { ModelsHome } from "./pages/ModelsHome.js";
 import { PrivacyPage } from "./pages/PrivacyPage.js";
 import { TermsPage } from "./pages/TermsPage.js";
@@ -51,6 +52,16 @@ const router = createBrowserRouter([
           <RequireTermsAccepted>
             <RequireActive>
               <WorkbenchPage />
+            </RequireActive>
+          </RequireTermsAccepted>
+        ),
+      },
+      {
+        path: "/gallery",
+        element: (
+          <RequireTermsAccepted>
+            <RequireActive>
+              <GalleryPage />
             </RequireActive>
           </RequireTermsAccepted>
         ),

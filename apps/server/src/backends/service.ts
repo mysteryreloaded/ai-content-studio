@@ -45,6 +45,10 @@ export class BackendsService {
     return this.monitor.healthFor(backendId);
   }
 
+  unreachableSince(backendId: string) {
+    return this.monitor.unreachableSince(backendId);
+  }
+
   stop(): void {
     this.monitor.stopAll();
   }

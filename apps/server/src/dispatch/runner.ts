@@ -583,9 +583,16 @@ export async function pollUntilDone(
         break;
       }
       if (deps.clock.now().getTime() > deadlineMs) {
-        outcome = cancelSent
-          ? { kind: "cancelled", pendingBackendCancel: false }
-          : { kind: "timedOut" };
+        if (cancelSent) {
+          // The earlier `cancelJob` landed but the Backend never actually
+          // stopped the run: a best-effort hard interrupt, and
+          // `pendingBackendCancel` so the dispatcher keeps re-sending the
+          // cancel until it's confirmed, instead of assuming it worked.
+          await interruptJob(target, generationId);
+          outcome = { kind: "cancelled", pendingBackendCancel: true };
+        } else {
+          outcome = { kind: "timedOut" };
+        }
         break;
       }
       await delay(deps.clock, pollIntervalMs);

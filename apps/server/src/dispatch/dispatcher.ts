@@ -381,11 +381,12 @@ export class Dispatcher {
    * Re-sends a cancel's interrupt to a Backend that couldn't be reached
    * last time (issue #54's AC): the Generation it belonged to is already
    * `cancelled`, this just makes sure the Backend itself heard about it
-   * before `buildPlan` can match it to new work. Skips a Backend the
-   * health monitor already knows is unreachable instead of waiting out
-   * `cancelJob`'s own 15s timeout for it on every tick — `buildPlan`
-   * excludes it from new work regardless, by the same `pendingBackendCancel`
-   * row this leaves untouched.
+   * before `buildPlan` can match it to new work. Skips any Backend the
+   * health monitor hasn't confirmed reachable (`unreachable` or still
+   * `unknown`, e.g. right after boot) instead of waiting out `cancelJob`'s
+   * own 15s timeout for it on every tick — `buildPlan` excludes it from
+   * new work regardless, by the same `pendingBackendCancel` row this
+   * leaves untouched.
    */
   private async retryPendingCancels(): Promise<void> {
     const pending = await this.deps.queue.pendingBackendCancels();
@@ -397,9 +398,13 @@ export class Dispatcher {
         continue;
       }
       if (
-        this.deps.backendsService.healthFor(backendId).reachability ===
-        "unreachable"
+        this.deps.backendsService.healthFor(backendId).reachability !==
+        "reachable"
       ) {
+        // Also skips `unknown` (e.g. right after boot, before the health
+        // monitor's first poll lands): no point waiting out `cancelJob`'s
+        // own 15s timeout for a Backend that hasn't even been confirmed
+        // reachable yet.
         continue;
       }
       try {

@@ -434,3 +434,58 @@ describe("Dispatcher Pause gating (issue #59)", () => {
     expect(markFailedCalls).toBe(1);
   });
 });
+
+describe("Dispatcher.retryPendingCancels (issue #54)", () => {
+  function setup(reachability: "reachable" | "unreachable" | "unknown"): {
+    dispatcher: Dispatcher;
+    backendGetCalls: number;
+    clearCalls: string[];
+  } {
+    let backendGetCalls = 0;
+    const clearCalls: string[] = [];
+    const deps: Partial<DispatcherDeps> = {
+      queue: {
+        pendingBackendCancels: async () => [
+          { generationId: "gen-1", backendId: "backend-1" },
+        ],
+        clearPendingBackendCancel: async (generationId: string) => {
+          clearCalls.push(generationId);
+        },
+      } as unknown as DispatcherDeps["queue"],
+      backendRepository: {
+        get: async () => {
+          backendGetCalls += 1;
+          return fakeBackend();
+        },
+      } as unknown as DispatcherDeps["backendRepository"],
+      backendsService: {
+        healthFor: () => ({
+          reachability,
+          comfyuiVersion: null,
+          vramTotal: null,
+          vramFree: null,
+          credentialsError: false,
+        }),
+      } as unknown as DispatcherDeps["backendsService"],
+    };
+    return {
+      dispatcher: new Dispatcher(deps as DispatcherDeps),
+      backendGetCalls,
+      clearCalls,
+    };
+  }
+
+  test("skips a Backend still 'unknown' right after boot, instead of waiting out cancelJob's own timeout for it", async () => {
+    const { dispatcher, clearCalls } = setup("unknown");
+    // biome-ignore lint/suspicious/noExplicitAny: reaching into the private method under test
+    await (dispatcher as any).retryPendingCancels();
+    expect(clearCalls).toEqual([]);
+  });
+
+  test("skips an unreachable Backend the same way", async () => {
+    const { dispatcher, clearCalls } = setup("unreachable");
+    // biome-ignore lint/suspicious/noExplicitAny: reaching into the private method under test
+    await (dispatcher as any).retryPendingCancels();
+    expect(clearCalls).toEqual([]);
+  });
+});

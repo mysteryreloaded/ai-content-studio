@@ -339,6 +339,78 @@ describe("pollUntilDone's max-run-time timeout (issue #55)", () => {
     expect(job.status).toBe("failed");
     expect(job.error).toBe("interrupted");
   });
+
+  test("hitting max run time after the cancel's own interrupt was sent still interrupts and marks it pendingBackendCancel, instead of assuming it worked (issue #54)", async () => {
+    // A bare HTTP stand-in instead of fake-comfyui: `/api/jobs/:id/cancel`
+    // reports success but the Backend never actually stops the run — its
+    // own `/api/jobs/:id` keeps reporting `running` right through the
+    // max-run-time deadline, the way a wedged ComfyUI process would.
+    let interruptCalls = 0;
+    let cancelCalls = 0;
+    const server = Bun.serve({
+      port: 0,
+      fetch(req) {
+        const url = new URL(req.url);
+        if (url.pathname === "/interrupt") {
+          interruptCalls += 1;
+          return new Response(null, { status: 200 });
+        }
+        if (url.pathname.endsWith("/cancel")) {
+          cancelCalls += 1;
+          return new Response(null, { status: 204 });
+        }
+        if (url.pathname.startsWith("/api/jobs/")) {
+          return Response.json({ id: generationId, status: "running" });
+        }
+        return new Response(null, { status: 404 });
+      },
+    });
+    const backend = fakeBackend({ baseUrl: `http://localhost:${server.port}` });
+    const generationId = randomUUID();
+    const { prompt } = buildFrozenPrompt(WORKFLOW, ["2"], generationId);
+    const detail = fakeDetail(generationId, prompt, { maxRunTimeMinutes: 1 });
+
+    const clock = new FakeClock();
+    const markCancelledCalls: {
+      id: string;
+      tries: number;
+      pendingBackendCancel: boolean;
+    }[] = [];
+    const queue = {
+      // `cancelling` from the very first check: the loop sends the
+      // interrupt on its first iteration, then keeps polling a Backend
+      // that never actually stops.
+      currentState: async () => "cancelling" as const,
+      markCancelled: async (
+        id: string,
+        tries: number,
+        opts: { pendingBackendCancel: boolean },
+      ) => {
+        markCancelledCalls.push({ id, tries, ...opts });
+        return true;
+      },
+    };
+    const deps = baseDeps(
+      clock,
+      // biome-ignore lint/suspicious/noExplicitAny: a hand-rolled fake standing in for DispatchQueue
+      queue as any,
+    );
+    const target = { baseUrl: `http://localhost:${server.port}`, headers: {} };
+
+    try {
+      const run = pollUntilDone(backend, detail, 1, target, deps);
+      for (let i = 0; i < 8; i++) await tick(clock, 10_000);
+      await run;
+
+      expect(cancelCalls).toBeGreaterThan(0);
+      expect(interruptCalls).toBe(1);
+      expect(markCancelledCalls).toEqual([
+        { id: generationId, tries: 1, pendingBackendCancel: true },
+      ]);
+    } finally {
+      server.stop(true);
+    }
+  });
 });
 
 describe("pollUntilDone tolerates a dropped /ws (issue #55)", () => {

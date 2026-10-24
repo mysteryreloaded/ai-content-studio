@@ -13,6 +13,8 @@ const DOCS_BY_KEY: Record<string, string> = {
   DATA_DIR: "docs/server-env.md#data_dir",
   SECRET_KEY: "docs/server-env.md#secret_key",
   BACKENDS_ENABLED: "docs/server-env.md#backends_enabled",
+  STATUS_TOKEN: "docs/server-env.md#status_token",
+  MIN_FREE_DISK_GB: "docs/server-env.md#min_free_disk_gb",
 };
 
 function isLocalhost(url: string): boolean {
@@ -56,6 +58,8 @@ const envSchema = z
       .enum(["true", "false"])
       .default("true")
       .transform((value) => value === "true"),
+    STATUS_TOKEN: z.string().min(1).optional(),
+    MIN_FREE_DISK_GB: z.coerce.number().positive().default(10),
   })
   .superRefine((value, ctx) => {
     if (value.OIDC_ISSUER && !isLocalhost(value.PUBLIC_URL)) {
@@ -80,6 +84,8 @@ export const ENV_KEYS: readonly string[] = [
   "DATA_DIR",
   "SECRET_KEY",
   "BACKENDS_ENABLED",
+  "STATUS_TOKEN",
+  "MIN_FREE_DISK_GB",
 ];
 
 export type Env = z.infer<typeof envSchema>;

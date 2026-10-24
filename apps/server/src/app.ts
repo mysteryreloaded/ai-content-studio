@@ -17,16 +17,23 @@ import type { Database } from "./db/client.js";
 import type { Env } from "./env.js";
 import { logUnhandledError } from "./error-logging.js";
 import type { Logger } from "./logger.js";
+import { ProblemsMonitor } from "./problems/monitor.js";
+import { ProblemsRegistry } from "./problems/problems.js";
 import { adminBackendsRoute } from "./routes/admin-backends.js";
 import { adminLogsRoute } from "./routes/admin-logs.js";
+import { adminOverviewRoute } from "./routes/admin-overview.js";
 import { adminSiteSettingsRoute } from "./routes/admin-site-settings.js";
 import { adminRoute } from "./routes/admin.js";
 import { authRoute } from "./routes/auth.js";
 import { healthRoute } from "./routes/health.js";
 import { modelsRoute } from "./routes/models.js";
 import { siteSettingsRoute } from "./routes/site-settings.js";
+import { statusRoute } from "./routes/status.js";
 import { termsRoute } from "./routes/terms.js";
 import { createLocalStorage } from "./storage/storage.js";
+
+/** Tracks package.json's own version by hand; bump it alongside a release. */
+const APP_VERSION = "0.0.0";
 
 export interface AppDeps {
   db: Database;
@@ -44,12 +51,15 @@ export interface CreatedApp {
   routes: RouteEntry[];
   /** Backend health monitoring (issue #39): call `start()` after boot, `stop()` on shutdown. */
   backendsService: BackendsService;
+  /** Problems detection (issue #70): call `start()` after boot, `stop()` on shutdown. */
+  problemsMonitor: ProblemsMonitor;
 }
 
 /** One Hono app answering the API and serving the built SPA from one origin. */
 export async function createApp(deps: AppDeps): Promise<CreatedApp> {
   const app = new Hono<AppEnv>();
   const routes: RouteEntry[] = [];
+  const bootTime = deps.clock.now();
 
   app.use(async (c, next) => {
     const requestId = crypto.randomUUID();
@@ -83,6 +93,17 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
     deps.clock,
     logWriter,
     deps.env.BACKENDS_ENABLED,
+  );
+
+  const problemsRegistry = new ProblemsRegistry(() => deps.clock.now());
+  const problemsMonitor = new ProblemsMonitor(
+    problemsRegistry,
+    deps.clock,
+    deps.sql,
+    backendRepository,
+    backendsService,
+    deps.env.DATA_DIR,
+    deps.env.MIN_FREE_DISK_GB,
   );
 
   app.use(async (c, next) => {
@@ -120,6 +141,22 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
   );
   app.route("/api/admin/logs", adminLogsRoute(deps.db, deps.clock, routes));
   app.route("/api/terms", termsRoute(deps.db, deps.clock, routes));
+  app.route(
+    "/api/admin/overview",
+    adminOverviewRoute(
+      deps.db,
+      deps.clock,
+      problemsRegistry,
+      backendRepository,
+      backendsService,
+      deps.env.DATA_DIR,
+      deps.env.MIN_FREE_DISK_GB,
+      APP_VERSION,
+      bootTime,
+      routes,
+    ),
+  );
+  app.route("/api/status", statusRoute(problemsRegistry, routes));
 
   if (deps.env.OIDC_ISSUER) {
     const issuerUrl = new URL(deps.env.OIDC_ISSUER);
@@ -155,5 +192,5 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
   app.use("*", serveStatic({ root: deps.webDistDir }));
   app.use("*", serveBrandedIndex);
 
-  return { app, routes, backendsService };
+  return { app, routes, backendsService, problemsMonitor };
 }

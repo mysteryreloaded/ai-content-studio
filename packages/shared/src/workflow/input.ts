@@ -5,6 +5,7 @@
 import { z } from "zod";
 import { buildFrozenPrompt } from "./frozen-prompt.js";
 import { computePath } from "./path.js";
+import { SEED_UPPER_BOUND, seedBoundFor } from "./seed.js";
 import { type NodeFieldValue, type Workflow, isNodeLink } from "./types.js";
 
 export type InputGroup = "describe" | "settings";
@@ -74,11 +75,24 @@ export interface ImageUploadInputDefinition extends InputBase {
   maxLongSide: number | null;
 }
 
+/**
+ * A Model's own Input type (issue #47, ADR 0007): bound to exactly one
+ * INT Node field, with no default, at most one per Model. Blank, the
+ * studio draws a random seed; set, the user's own. `max` bounds the
+ * draw/validation (below {@link SEED_UPPER_BOUND} too); an enabled Model
+ * must have it set (checked at enable time, not here).
+ */
+export interface SeedInputDefinition extends InputBase {
+  kind: "seed";
+  max: number | null;
+}
+
 export type InputDefinition =
   | TextInputDefinition
   | NumberInputDefinition
   | SelectInputDefinition
-  | ImageUploadInputDefinition;
+  | ImageUploadInputDefinition
+  | SeedInputDefinition;
 
 export const BYTES_PER_MB = 1024 * 1024;
 
@@ -234,7 +248,7 @@ export function validateBinding(
   if (kind === "text" && typeof value !== "string") {
     return `field "${field}" on node "${nodeId}" isn't a text field`;
   }
-  if (kind === "number" && typeof value !== "number") {
+  if ((kind === "number" || kind === "seed") && typeof value !== "number") {
     return `field "${field}" on node "${nodeId}" isn't a number field`;
   }
   if (kind === "image_upload") {
@@ -329,6 +343,25 @@ export function validateInputDefinition(
       (!Number.isInteger(input.maxLongSide) || input.maxLongSide < 1)
     ) {
       errors.push("max long side must be a whole number of pixels, at least 1");
+    }
+  } else if (input.kind === "seed") {
+    if (input.bindings.length > 1) {
+      errors.push("a Seed Input binds exactly one field");
+    }
+    if (input.max !== null) {
+      if (!Number.isInteger(input.max) || input.max < 1) {
+        errors.push("max must be a positive whole number");
+      } else if (input.max > SEED_UPPER_BOUND) {
+        errors.push(`max must be below ${SEED_UPPER_BOUND + 1}`);
+      }
+    }
+    for (const binding of input.bindings) {
+      const spec = fieldSpecFor(ctx, binding);
+      if (spec?.type === "FLOAT") {
+        errors.push(
+          `field "${binding.field}" on node "${binding.nodeId}" is a decimal field; a Seed Input needs a whole-number (INT) field`,
+        );
+      }
     }
   } else {
     if (input.options.length < 2 || input.options.length > 50) {
@@ -451,6 +484,15 @@ export function buildInputValuesSchema(
       shape[input.id] = z
         .string({ error: "pick a file" })
         .regex(UUID_RE, { message: "must be an Upload id" });
+    } else if (input.kind === "seed") {
+      // Count-awareness (seed + count - 1 <= bound) is checked separately
+      // by `validateSeedRange` once a Submission's count is known.
+      shape[input.id] = z
+        .number()
+        .int()
+        .min(0)
+        .max(seedBoundFor(input))
+        .optional();
     } else {
       const ids = input.options.map((option) => option.id);
       if (ids.length === 0) {
@@ -535,6 +577,16 @@ export function applyInputValues(
         if (!node) return;
         node.inputs[binding.field] = option.values[index] ?? null;
       });
+      continue;
+    }
+
+    if (input.kind === "seed") {
+      if (raw === undefined || raw === "") continue;
+      for (const binding of input.bindings) {
+        const node = result[binding.nodeId];
+        if (!node) continue;
+        node.inputs[binding.field] = raw;
+      }
       continue;
     }
 

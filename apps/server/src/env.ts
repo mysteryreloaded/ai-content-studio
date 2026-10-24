@@ -17,6 +17,9 @@ const DOCS_BY_KEY: Record<string, string> = {
   MIN_FREE_DISK_GB: "docs/server-env.md#min_free_disk_gb",
   MAX_UPLOAD_MB: "docs/server-env.md#max_upload_mb",
   FFMPEG_CONCURRENCY: "docs/server-env.md#ffmpeg_concurrency",
+  C2PA_CERT_PATH: "docs/server-env.md#c2pa_cert_path",
+  C2PA_KEY_PATH: "docs/server-env.md#c2pa_key_path",
+  C2PA_TIMESTAMP_URL: "docs/server-env.md#c2pa_timestamp_url",
 };
 
 function isLocalhost(url: string): boolean {
@@ -64,6 +67,9 @@ const envSchema = z
     MIN_FREE_DISK_GB: z.coerce.number().positive().default(10),
     MAX_UPLOAD_MB: z.coerce.number().int().positive().default(500),
     FFMPEG_CONCURRENCY: z.coerce.number().int().positive().default(2),
+    C2PA_CERT_PATH: z.string().min(1).optional(),
+    C2PA_KEY_PATH: z.string().min(1).optional(),
+    C2PA_TIMESTAMP_URL: z.string().min(1).url().optional(),
   })
   .superRefine((value, ctx) => {
     if (value.OIDC_ISSUER && !isLocalhost(value.PUBLIC_URL)) {
@@ -71,6 +77,20 @@ const envSchema = z
         code: "custom",
         path: ["OIDC_ISSUER"],
         message: "may only be set when PUBLIC_URL is localhost",
+      });
+    }
+    if (Boolean(value.C2PA_CERT_PATH) !== Boolean(value.C2PA_KEY_PATH)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["C2PA_CERT_PATH"],
+        message: "C2PA_CERT_PATH and C2PA_KEY_PATH must be set together",
+      });
+    }
+    if (value.C2PA_TIMESTAMP_URL && !value.C2PA_CERT_PATH) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["C2PA_TIMESTAMP_URL"],
+        message: "may only be set alongside C2PA_CERT_PATH/C2PA_KEY_PATH",
       });
     }
   });
@@ -92,6 +112,9 @@ export const ENV_KEYS: readonly string[] = [
   "MIN_FREE_DISK_GB",
   "MAX_UPLOAD_MB",
   "FFMPEG_CONCURRENCY",
+  "C2PA_CERT_PATH",
+  "C2PA_KEY_PATH",
+  "C2PA_TIMESTAMP_URL",
 ];
 
 export type Env = z.infer<typeof envSchema>;

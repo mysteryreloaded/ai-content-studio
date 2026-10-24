@@ -12,6 +12,7 @@ import type {
   ImageUploadInputDefinition,
   InputDefinition,
   NumberInputDefinition,
+  SeedInputDefinition,
   SelectInputDefinition,
   SelectOption,
   TextInputDefinition,
@@ -148,6 +149,18 @@ function newNumberInput(): NumberInputDefinition {
   };
 }
 
+function newSeedInput(): SeedInputDefinition {
+  return {
+    id: crypto.randomUUID(),
+    kind: "seed",
+    group: "settings",
+    label: "Seed",
+    help: "",
+    max: null,
+    bindings: [],
+  };
+}
+
 function newSelectInput(): SelectInputDefinition {
   return {
     id: crypto.randomUUID(),
@@ -207,7 +220,9 @@ function candidateFieldsFor(
     const key = fieldKey(field.nodeId, field.field);
     if (used.has(key) && !alreadyBound.has(key)) return false;
     if (input.kind === "text") return field.valueType === "string";
-    if (input.kind === "number") return field.valueType === "number";
+    if (input.kind === "number" || input.kind === "seed") {
+      return field.valueType === "number";
+    }
     // Issue #50: a loader's file name field (e.g. LoadImage.image); the
     // server checks the Backend flags it image_upload when it can.
     if (input.kind === "image_upload") return field.valueType === "string";
@@ -226,8 +241,9 @@ function toggleBinding(
   );
 
   if (index === -1) {
+    // A Seed Input binds exactly one field: picking another replaces it (issue #47).
     const bindings = [
-      ...input.bindings,
+      ...(input.kind === "seed" ? [] : input.bindings),
       {
         nodeId: field.nodeId,
         field: field.field,
@@ -582,14 +598,19 @@ export function ModelEditorPage() {
 
   function addInput() {
     if (!inputsDraft) return;
+    if (newInputKind === "seed" && inputsDraft.some((i) => i.kind === "seed")) {
+      return;
+    }
     const created =
       newInputKind === "text"
         ? newTextInput()
         : newInputKind === "number"
           ? newNumberInput()
-          : newInputKind === "image_upload"
-            ? newImageUploadInput()
-            : newSelectInput();
+          : newInputKind === "seed"
+            ? newSeedInput()
+            : newInputKind === "image_upload"
+              ? newImageUploadInput()
+              : newSelectInput();
     setInputsDraft([...inputsDraft, created]);
     setEditingInputIndex(inputsDraft.length);
   }
@@ -1360,6 +1381,30 @@ export function ModelEditorPage() {
               </>
             )}
 
+            {input.kind === "seed" && (
+              <>
+                <p>Bound to exactly one INT field; no default (issue #47).</p>
+                <label htmlFor={`input-max-${index}`}>
+                  Max (required to enable this Model)
+                </label>
+                <input
+                  id={`input-max-${index}`}
+                  type="number"
+                  min={1}
+                  value={input.max ?? ""}
+                  onChange={(event) =>
+                    updateInput(index, {
+                      ...input,
+                      max:
+                        event.target.value === ""
+                          ? null
+                          : Number(event.target.value),
+                    })
+                  }
+                />
+              </>
+            )}
+
             {input.kind === "select" && (
               <>
                 <p>
@@ -1565,6 +1610,12 @@ export function ModelEditorPage() {
           <option value="text">Text</option>
           <option value="number">Number</option>
           <option value="select">Select</option>
+          <option
+            value="seed"
+            disabled={inputsDraft?.some((i) => i.kind === "seed")}
+          >
+            Seed
+          </option>
           <option value="image_upload">Image upload</option>
         </select>
         <button type="button" onClick={addInput}>

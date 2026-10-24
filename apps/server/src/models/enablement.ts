@@ -33,6 +33,11 @@ export async function checkEnableReadiness(
   if (attachedBackends.length === 0) {
     reasons.push("needs at least one attached Backend");
   }
+  for (const input of detail.inputs) {
+    if (input.kind === "seed" && input.max === null) {
+      reasons.push(`Seed Input "${input.label}" needs a max before enabling`);
+    }
+  }
 
   if (detail.modes.length === 0 || attachedBackends.length === 0) {
     return { ok: false, reasons };

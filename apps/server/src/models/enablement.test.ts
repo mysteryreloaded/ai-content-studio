@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { Workflow } from "@ai-content-studio/shared";
+import type { InputDefinition, Workflow } from "@ai-content-studio/shared";
 import type { BackendRecord } from "../backends/repository.js";
 import type { BackendsService } from "../backends/service.js";
 import { checkEnableReadiness } from "./enablement.js";
@@ -41,7 +41,10 @@ function mode(outputNodeIds: string[]): ModeRecord {
   };
 }
 
-function detail(modes: ModeRecord[]): ModelDetail {
+function detail(
+  modes: ModeRecord[],
+  inputs: InputDefinition[] = [],
+): ModelDetail {
   return {
     model: {
       id: "model-1",
@@ -68,7 +71,7 @@ function detail(modes: ModeRecord[]): ModelDetail {
     nodes: [],
     outsideServiceNotes: [],
     modes,
-    inputs: [],
+    inputs,
   };
 }
 
@@ -262,5 +265,50 @@ describe("checkEnableReadiness", () => {
       );
       expect(result).toEqual({ ok: true, reasons: [] });
     });
+  });
+
+  test("refuses a Seed Input with no max (issue #47, ADR 0007)", async () => {
+    const seedInput: InputDefinition = {
+      id: "seed-1",
+      kind: "seed",
+      group: "settings",
+      label: "Seed",
+      help: "",
+      max: null,
+      bindings: [
+        { nodeId: "2", field: "seed", classType: "KSampler", title: null },
+      ],
+    };
+    const result = await checkEnableReadiness(
+      detail([mode(["3"])], [seedInput]),
+      [backend("b1")],
+      serviceWithNodeTypes({
+        b1: new Set(["LoadImage", "KSampler", "SaveImage"]),
+      }),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.reasons.some((r) => r.includes("needs a max"))).toBe(true);
+  });
+
+  test("passes with a Seed Input that has a max set", async () => {
+    const seedInput: InputDefinition = {
+      id: "seed-1",
+      kind: "seed",
+      group: "settings",
+      label: "Seed",
+      help: "",
+      max: 1000,
+      bindings: [
+        { nodeId: "2", field: "seed", classType: "KSampler", title: null },
+      ],
+    };
+    const result = await checkEnableReadiness(
+      detail([mode(["3"])], [seedInput]),
+      [backend("b1")],
+      serviceWithNodeTypes({
+        b1: new Set(["LoadImage", "KSampler", "SaveImage"]),
+      }),
+    );
+    expect(result).toEqual({ ok: true, reasons: [] });
   });
 });

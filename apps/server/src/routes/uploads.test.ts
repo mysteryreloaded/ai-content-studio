@@ -331,19 +331,40 @@ describe("/api/uploads", () => {
   });
 
   test("complete refuses a still over ~100 megapixels before making its thumbnail", async () => {
-    const { insertUser, as, dir } = await setup();
+    // A real 11000x10000 (110 MP) PNG would take real ffmpeg seconds to
+    // encode and decode; probeImage is stubbed with the same facts
+    // instead, so the test stays fast while still proving the cap is
+    // checked before `makeThumbnail` ever runs (Dule's #140 review).
+    let thumbnailCalled = false;
+    const hugeStillMedia: UploadsServiceMedia = {
+      probeImage: async () => ({
+        ok: true,
+        kind: "image",
+        extension: "png",
+        contentType: "image/png",
+        facts: {
+          formatName: "png_pipe",
+          codecName: "png",
+          width: 11000,
+          height: 10000,
+          pixFmt: null,
+        },
+      }),
+      makeThumbnail: async () => {
+        thumbnailCalled = true;
+      },
+    };
+    const { insertUser, as, dir } = await setup(hugeStillMedia);
     const app = as(await insertUser("huge@example.com"));
-    // 11000x10000 = 110 MP: `makeThumbnail` would otherwise decode the
-    // full frame to scale it (Dule's #140 review).
-    const huge = await makeImage(dir, "huge.png", "11000x10000");
+    const png = await makeImage(dir, "huge.png", "32x32");
 
     const created = await createUpload(app, {
       name: "huge.png",
-      size: huge.length,
+      size: png.length,
       type: "image/png",
     });
     const { upload } = (await created.json()) as { upload: { id: string } };
-    await putChunk(app, upload.id, 0, huge);
+    await putChunk(app, upload.id, 0, png);
     const res = await app.request(`/api/uploads/${upload.id}/complete`, {
       method: "POST",
     });
@@ -351,6 +372,7 @@ describe("/api/uploads", () => {
     expect(((await res.json()) as { message: string }).message).toBe(
       "has too many pixels to process",
     );
+    expect(thumbnailCalled).toBe(false);
   });
 
   test("a probe or thumbnail that times out refuses the Upload (422), not a 500 or a hang", async () => {

@@ -298,9 +298,11 @@ describe("POST /:slug/generations with an Image Upload Input", () => {
 
       const ok = await submit({ [UPLOAD_INPUT_ID]: own });
       expect(ok.status).toBe(201);
-      const { generation } = (await ok.json()) as {
-        generation: { id: string };
+      const { generations: created } = (await ok.json()) as {
+        generations: Array<{ id: string }>;
       };
+      const generation = created[0];
+      if (!generation) throw new Error("no generation created");
       const { db } = await testDb;
       const [row] = await db
         .select()

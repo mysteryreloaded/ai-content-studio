@@ -40,6 +40,7 @@ import { RetentionScheduler } from "./retention/scheduler.js";
 import { accountRoute } from "./routes/account.js";
 import { adminAuditRoute } from "./routes/admin-audit.js";
 import { adminBackendsRoute } from "./routes/admin-backends.js";
+import { adminBlockedAccountsRoute } from "./routes/admin-blocked-accounts.js";
 import { adminGenerationsRoute } from "./routes/admin-generations.js";
 import { adminLogsRoute } from "./routes/admin-logs.js";
 import { adminModelsRoute } from "./routes/admin-models.js";
@@ -405,7 +406,25 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
   );
   app.route(
     "/api/admin/users",
-    adminUsersRoute(deps.db, deps.clock, deps.env.ADMIN_EMAILS, routes),
+    adminUsersRoute(
+      deps.db,
+      deps.clock,
+      deps.env.ADMIN_EMAILS,
+      { db: deps.db, generationsRepository, cancellationDeps },
+      {
+        db: deps.db,
+        clock: deps.clock,
+        generationsRepository,
+        uploadsRepository,
+        cancellationDeps,
+        storage,
+      },
+      routes,
+    ),
+  );
+  app.route(
+    "/api/admin/blocked-accounts",
+    adminBlockedAccountsRoute(deps.db, deps.clock, routes),
   );
   app.route(
     "/api/admin/overview",

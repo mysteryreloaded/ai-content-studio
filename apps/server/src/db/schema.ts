@@ -180,10 +180,53 @@ export const users = pgTable("users", {
    */
   dailyCapOverride: integer("daily_cap_override"),
   concurrentCapOverride: integer("concurrent_cap_override"),
+  /**
+   * Issue #64: the Admin-only reason given when disabling this user
+   * (≤500 chars, optional), and when that happened; both null while
+   * `status` isn't `disabled`. Never shown to the user themself — only
+   * in the admin panel and Audit entries.
+   */
+  disabledReason: text("disabled_reason"),
+  disabledAt: timestamp("disabled_at", { withTimezone: true }),
+  /**
+   * Issue #64: set by a self-delete or an Admin delete's scrub
+   * (`scrubbedUserFields`), never cleared — the row keeps its id (ADR
+   * 0005) but is otherwise gone. Every user action (approve, promote,
+   * demote, disable, enable, Cap overrides, a further delete) refuses a
+   * row with this set, 404 like a pinned or self-targeted row, so a
+   * second delete or an enable can't act on a "Deleted user" row.
+   */
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+/**
+ * Issue #64: a Google `sub` an Admin deleted while the account was
+ * disabled, kept so that Google account can't simply sign up again.
+ * `subHash` is a plain SHA-256 of the raw `sub` (no per-row salt, unlike
+ * the self-delete scrub's own hash on `users.googleSub`): the sign-in
+ * callback must be able to recompute it from the `sub` Google just gave
+ * it and look it up directly. An Admin clears a row here (deleting it)
+ * once they've decided the person may sign up again. `userId` still
+ * resolves (ADR 0005: a delete scrubs the row but keeps its id) even
+ * though the row behind it no longer has a name or email to show;
+ * `disabledAt` is copied from that disable, and `createdAt` is this
+ * block's own date — when the Admin delete happened.
+ */
+export const blockedAccounts = pgTable("blocked_accounts", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  subHash: text("sub_hash").notNull().unique(),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => users.id),
+  disabledAt: timestamp("disabled_at", { withTimezone: true }),
+  reason: text("reason"),
+  createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
 });

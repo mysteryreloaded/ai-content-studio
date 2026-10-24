@@ -1,16 +1,26 @@
 // `/api/admin/users`: the Users page's list, search and filters, a
-// user's own page, and approve/promote/demote (issue #62, ADR 0008).
+// user's own page, approve/promote/demote (issue #62, ADR 0008), and
+// disable/enable/delete and Cap overrides (issue #64).
 
+import { userCapOverrideSchema } from "@ai-content-studio/shared";
 import type { Clock } from "@ai-content-studio/shared";
 import { and, desc, eq, ilike, lt, or, sql } from "drizzle-orm";
 import { type Context, Hono } from "hono";
+import { z } from "zod";
 import { adminActorFrom } from "../audit/actor.js";
+import { recordAuditEntry } from "../audit/audit.js";
 import { type RouteEntry, guardedRoute } from "../auth/access.js";
+import type { AccountDeletionDeps } from "../auth/account-deletion.js";
+import { adminDeleteUser } from "../auth/admin-deletion.js";
 import type { AppEnv } from "../auth/app-env.js";
 import {
+  DISABLE_REASON_MAX_LENGTH,
   type UserActionResult,
+  type UserDisableDeps,
   approveUser,
   demoteUser,
+  disableUser,
+  enableUser,
   isPinned,
   promoteUser,
 } from "../auth/users.js";
@@ -43,6 +53,11 @@ function userJson(
     role: user.role,
     status: user.status,
     pinned: isPinned(user.email, adminEmails),
+    dailyCapOverride: user.dailyCapOverride,
+    concurrentCapOverride: user.concurrentCapOverride,
+    disabledReason: user.disabledReason,
+    disabledAt: user.disabledAt,
+    deletedAt: user.deletedAt,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
   };
@@ -56,11 +71,26 @@ async function respondForAction(c: Context<AppEnv>, result: UserActionResult) {
   return c.json({ error: "not in the right state for this action" }, 400);
 }
 
-/** `/api/admin/users`: list/search/filter, one user's page, approve/promote/demote. */
+const disableBodySchema = z.object({
+  reason: z.string().max(DISABLE_REASON_MAX_LENGTH).optional(),
+});
+
+const deleteBodySchema = z.object({
+  reason: z.string().max(DISABLE_REASON_MAX_LENGTH).optional(),
+});
+
+const capsBodySchema = z.object({
+  dailyCapOverride: userCapOverrideSchema,
+  concurrentCapOverride: userCapOverrideSchema,
+});
+
+/** `/api/admin/users`: list/search/filter, a user's own page, approve/promote/demote/disable/enable/delete and Cap overrides. */
 export function adminUsersRoute(
   db: Database,
   clock: Clock,
   adminEmails: readonly string[],
+  userDisableDeps: UserDisableDeps,
+  accountDeletionDeps: AccountDeletionDeps,
   routes: RouteEntry[],
 ): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
@@ -184,6 +214,124 @@ export function adminUsersRoute(
   actionRoute("/:id/approve", approveUser);
   actionRoute("/:id/promote", promoteUser);
   actionRoute("/:id/demote", demoteUser);
+  actionRoute("/:id/enable", enableUser);
+
+  guardedRoute(
+    app,
+    routes,
+    basePath,
+    "post",
+    "/:id/disable",
+    "admin",
+    async (c) => {
+      const id = c.req.param("id");
+      if (!isUuid(id)) return c.json({ error: "not found" }, 404);
+
+      const session = c.get("session");
+      if (!session) return c.json({ error: "unauthorized" }, 401);
+
+      const body = await c.req.json().catch(() => ({}));
+      const parsed = disableBodySchema.safeParse(body);
+      if (!parsed.success) return c.json({ error: "invalid" }, 400);
+      const reason = parsed.data.reason?.trim() || null;
+
+      const result = await disableUser(
+        userDisableDeps,
+        clock,
+        adminActorFrom(c),
+        session.user.id,
+        id,
+        adminEmails,
+        reason,
+      );
+      return respondForAction(c, result);
+    },
+  );
+
+  guardedRoute(
+    app,
+    routes,
+    basePath,
+    "put",
+    "/:id/caps",
+    "admin",
+    async (c) => {
+      const id = c.req.param("id");
+      if (!isUuid(id)) return c.json({ error: "not found" }, 404);
+
+      const session = c.get("session");
+      if (!session) return c.json({ error: "unauthorized" }, 401);
+
+      const body = await c.req.json().catch(() => null);
+      const parsed = capsBodySchema.safeParse(body);
+      if (!parsed.success) return c.json({ error: "invalid" }, 400);
+
+      const result = await db.transaction(async (tx) => {
+        const [user] = await tx.select().from(users).where(eq(users.id, id));
+        // Issue #64: a deleted ("Deleted user") row is refused 404 like
+        // a missing row, the same as every other action here.
+        if (!user || user.deletedAt !== null) {
+          return { ok: false as const, reason: "not_found" as const };
+        }
+
+        const [updated] = await tx
+          .update(users)
+          .set({
+            dailyCapOverride: parsed.data.dailyCapOverride,
+            concurrentCapOverride: parsed.data.concurrentCapOverride,
+            updatedAt: clock.now(),
+          })
+          .where(eq(users.id, id))
+          .returning();
+        if (!updated) throw new Error("user update affected no row");
+
+        await recordAuditEntry(tx, clock, {
+          actor: adminActorFrom(c),
+          targetType: "user",
+          targetId: id,
+          action: "caps",
+          before: {
+            dailyCapOverride: user.dailyCapOverride,
+            concurrentCapOverride: user.concurrentCapOverride,
+          },
+          after: {
+            dailyCapOverride: updated.dailyCapOverride,
+            concurrentCapOverride: updated.concurrentCapOverride,
+          },
+        });
+
+        return { ok: true as const, user: updated };
+      });
+
+      if (!result.ok) return c.json({ error: "not found" }, 404);
+      return c.json(userJson(result.user, adminEmails));
+    },
+  );
+
+  guardedRoute(app, routes, basePath, "delete", "/:id", "admin", async (c) => {
+    const id = c.req.param("id");
+    if (!isUuid(id)) return c.json({ error: "not found" }, 404);
+
+    const session = c.get("session");
+    if (!session) return c.json({ error: "unauthorized" }, 401);
+
+    const body = await c.req.json().catch(() => ({}));
+    const parsed = deleteBodySchema.safeParse(body);
+    if (!parsed.success) return c.json({ error: "invalid" }, 400);
+    const reason = parsed.data.reason?.trim() || null;
+
+    const result = await adminDeleteUser(
+      accountDeletionDeps,
+      clock,
+      adminActorFrom(c),
+      session.user.id,
+      id,
+      adminEmails,
+      reason,
+    );
+    if (!result.ok) return c.json({ error: "not found" }, 404);
+    return c.json({ ok: true });
+  });
 
   return app;
 }

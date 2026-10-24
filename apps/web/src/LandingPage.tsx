@@ -19,7 +19,15 @@ const AUTH_ERROR_MESSAGES: Record<string, string> = {
   failed: "Sign-in didn't complete. Please try again.",
   unverified:
     "That Google account's email isn't verified, so it can't sign in.",
+  disabled: "This account has been disabled.",
+  blocked: "This account can't sign in.",
 };
+
+function contactHref(contact: string): string {
+  return contact.startsWith("http://") || contact.startsWith("https://")
+    ? contact
+    : `mailto:${contact}`;
+}
 
 /** Issue #65: the default landing text when the Operator hasn't written one. */
 function defaultLandingText(
@@ -91,7 +99,18 @@ export function LandingPage() {
         )}
         <h1>{title}</h1>
         {landingText && <p>{landingText}</p>}
-        {bannerMessage && <p role="alert">{bannerMessage}</p>}
+        {bannerMessage && (
+          <p role="alert">
+            {bannerMessage}
+            {authError === "disabled" && settings?.contact && (
+              <>
+                {" "}
+                Questions or reports:{" "}
+                <a href={contactHref(settings.contact)}>{settings.contact}</a>
+              </>
+            )}
+          </p>
+        )}
         <GoogleSignInButton href={signInHref()} />
 
         {models && models.length > 0 && (

@@ -17,7 +17,9 @@ export interface GenerationProgress {
 
 export type GenerationEvent =
   | { type: "change"; generation: GenerationSummary }
-  | { type: "progress"; progress: GenerationProgress };
+  | { type: "progress"; progress: GenerationProgress }
+  /** Issue #64: a disabled user's open stream is closed right away, so the browser's next reconnect attempt hits the 401 their now-deleted sessions leave behind, instead of sitting open until the next heartbeat. */
+  | { type: "disconnect" };
 
 export class GenerationEvents {
   private readonly subscribers = new Map<

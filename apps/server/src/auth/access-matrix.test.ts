@@ -62,6 +62,7 @@ describe("every route's access level is declared and enforced", () => {
       expect([
         "public",
         "signed-in",
+        "signed-in-or-disabled",
         "active",
         "admin",
         "status-token",
@@ -106,7 +107,22 @@ describe("every route's access level is declared and enforced", () => {
         status: "pending",
       })
       .returning();
-    if (!activeUser || !adminUser || !pendingUser)
+    // Issue #64: a disabled user (normally sessionless the moment
+    // they're disabled, but this is the matrix row's own guarantee in
+    // case a session outlives it) must be blocked from every
+    // `signed-in`/`active`/`admin` route, with sign-out the one
+    // exception.
+    const [disabledUser] = await db
+      .insert(users)
+      .values({
+        googleSub: "sub-disabled",
+        email: "disabled@example.com",
+        name: "Disabled User",
+        role: "user",
+        status: "disabled",
+      })
+      .returning();
+    if (!activeUser || !adminUser || !pendingUser || !disabledUser)
       throw new Error("failed to insert test users");
 
     // A fresh session per request: some routes (sign-out) delete the
@@ -123,6 +139,7 @@ describe("every route's access level is declared and enforced", () => {
     // checked for `public`: it must not be 401/403 for anyone.
     const expectations: Record<string, { active: number; admin: number }> = {
       "signed-in": { active: 200, admin: 200 },
+      "signed-in-or-disabled": { active: 200, admin: 200 },
       active: { active: 200, admin: 200 },
       admin: { active: 403, admin: 200 },
       "admin-or-status-token": { active: 403, admin: 200 },
@@ -158,6 +175,11 @@ describe("every route's access level is declared and enforced", () => {
       "POST /api/admin/users/:id/approve": 404,
       "POST /api/admin/users/:id/promote": 404,
       "POST /api/admin/users/:id/demote": 404,
+      "POST /api/admin/users/:id/disable": 404,
+      "POST /api/admin/users/:id/enable": 404,
+      "PUT /api/admin/users/:id/caps": 404,
+      "DELETE /api/admin/users/:id": 404,
+      "DELETE /api/admin/blocked-accounts/:id": 404,
       "GET /api/admin/models/:id/backends": 404,
       "GET /api/admin/models/:id/object-info": 404,
       "POST /api/admin/models/:id/backends": 404,
@@ -224,6 +246,22 @@ describe("every route's access level is declared and enforced", () => {
     // `admin` stay blocked exactly like a disabled user.
     const pendingExpectations: Record<string, number | undefined> = {
       "signed-in": 200,
+      active: 403,
+      admin: 403,
+      "admin-or-status-token": 403,
+    };
+
+    // Issue #64: a disabled user is blocked the same way on every
+    // `signed-in`/`active`/`admin` route — `signed-in-or-disabled`
+    // (sign-out) is the one access level that stays reachable, so a
+    // lingering session can still be cleared. Unlike pending's own
+    // sweep, no per-route override is needed here: the disabled check
+    // runs before any route's own body validation, so every one of
+    // these reads `disabled`, not whatever that route would otherwise
+    // say about a bodyless call.
+    const disabledExpectations: Record<string, number | undefined> = {
+      "signed-in": 403,
+      "signed-in-or-disabled": 200,
       active: 403,
       admin: 403,
       "admin-or-status-token": 403,
@@ -305,6 +343,29 @@ describe("every route's access level is declared and enforced", () => {
           expect(body.error).toBe("pending");
         }
       }
+
+      const expectedDisabled = disabledExpectations[route.access];
+      if (expectedDisabled !== undefined) {
+        const disabledRes = await app.request(route.path, {
+          method: route.method,
+          headers: {
+            ...SAME_ORIGIN_HEADERS,
+            Cookie: await cookieFor(disabledUser.id),
+          },
+        });
+        expect(`${context} disabled -> ${disabledRes.status}`).toBe(
+          `${context} disabled -> ${expectedDisabled}`,
+        );
+        if (
+          route.access === "signed-in" ||
+          route.access === "active" ||
+          route.access === "admin" ||
+          route.access === "admin-or-status-token"
+        ) {
+          const body = (await disabledRes.json()) as { error: string };
+          expect(body.error).toBe("disabled");
+        }
+      }
     }
   });
 
@@ -365,7 +426,10 @@ describe("every route's access level is declared and enforced", () => {
         continue;
       }
 
-      if (route.access === "signed-in") {
+      if (
+        route.access === "signed-in" ||
+        route.access === "signed-in-or-disabled"
+      ) {
         // Issue #63: a bodyless probe sends no email, so the server's
         // re-check always reads as a mismatch, unlike every other
         // signed-in route.

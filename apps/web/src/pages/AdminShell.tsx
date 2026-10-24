@@ -7,6 +7,7 @@ import { AdminGenerationsPage } from "./AdminGenerationsPage.js";
 import { AdminUploadsPage } from "./AdminUploadsPage.js";
 import { AuditPage } from "./AuditPage.js";
 import { BackendsPage } from "./BackendsPage.js";
+import { BlockedAccountsPage } from "./BlockedAccountsPage.js";
 import { BlockedWordsForm } from "./BlockedWordsForm.js";
 import { CapsForm } from "./CapsForm.js";
 import { LogsPage } from "./LogsPage.js";
@@ -110,6 +111,7 @@ export function AdminShell() {
           <Link to="/admin/users">
             Users{pendingCount ? ` (${pendingCount})` : ""}
           </Link>
+          <Link to="/admin/blocked-accounts">Blocked accounts</Link>
           <Link to="/admin/logs">
             Logs{errorCount ? ` (${errorCount})` : ""}
           </Link>
@@ -142,6 +144,7 @@ export function AdminShell() {
           <Route path="users" element={<UsersPage />} />
           <Route path="users/:id" element={<UserPage />} />
           <Route path="users/:id/uploads" element={<AdminUploadsPage />} />
+          <Route path="blocked-accounts" element={<BlockedAccountsPage />} />
           <Route path="logs" element={<LogsPage />} />
           <Route path="audit" element={<AuditPage />} />
         </Routes>

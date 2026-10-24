@@ -2,8 +2,28 @@ import type { Clock, SignUpMode } from "@ai-content-studio/shared";
 import { eq } from "drizzle-orm";
 import { type AuditActor, recordAuditEntry } from "../audit/audit.js";
 import type { Database } from "../db/client.js";
-import { users } from "../db/schema.js";
+import { blockedAccounts, sessions, users } from "../db/schema.js";
+import type { CancellationDeps } from "../generations/cancellation.js";
+import { cancelGeneration } from "../generations/cancellation.js";
+import type { GenerationsRepository } from "../generations/repository.js";
+import { sha256Hex } from "./account-deletion.js";
 import type { GoogleIdentity } from "./oidc.js";
+
+/** Issue #64: an Admin-only reason for disabling a user, never shown to the user themself. */
+export const DISABLE_REASON_MAX_LENGTH = 500;
+
+/** Issue #64: whether this Google `sub` is blocked (an Admin deleted it while disabled, and nobody's cleared it since). Checked before a sign-in creates or refreshes a user row, so a blocked account can't simply come back as a fresh one. */
+export async function isAccountBlocked(
+  db: Database,
+  sub: string,
+): Promise<boolean> {
+  const [row] = await db
+    .select({ id: blockedAccounts.id })
+    .from(blockedAccounts)
+    .where(eq(blockedAccounts.subHash, sha256Hex(sub)))
+    .limit(1);
+  return !!row;
+}
 
 export interface UpsertedUser {
   id: string;
@@ -118,10 +138,13 @@ export function isPinned(
 }
 
 /**
- * ADR 0008: a target that's pinned, or is the acting Admin themselves,
- * is refused 404 like a missing row, not 403 — so the row's existence
- * isn't leaked past what the Users page already shows, and the admin
- * panel can hide the same actions it would otherwise be refused.
+ * ADR 0008: a target that's pinned, is the acting Admin themselves, or
+ * is already deleted (issue #64: a scrubbed "Deleted user" row, kept
+ * only so an Audit entry or Generation that names its id still
+ * resolves) is refused 404 like a missing row, not 403 — so the row's
+ * existence isn't leaked past what the Users page already shows, and
+ * the admin panel can hide the same actions it would otherwise be
+ * refused.
  */
 async function applyUserAction(
   db: Database,
@@ -130,14 +153,18 @@ async function applyUserAction(
   actingUserId: string,
   targetId: string,
   adminEmails: readonly string[],
-  action: "approve" | "promote" | "demote",
+  action: "approve" | "promote" | "demote" | "disable" | "enable",
   precondition: (user: typeof users.$inferSelect) => boolean,
   changes: Partial<typeof users.$inferInsert>,
 ): Promise<UserActionResult> {
   return db.transaction(async (tx) => {
     const [user] = await tx.select().from(users).where(eq(users.id, targetId));
     if (!user) return { ok: false, reason: "not_found" };
-    if (targetId === actingUserId || isPinned(user.email, adminEmails)) {
+    if (
+      targetId === actingUserId ||
+      isPinned(user.email, adminEmails) ||
+      user.deletedAt !== null
+    ) {
       return { ok: false, reason: "not_found" };
     }
     if (!precondition(user)) return { ok: false, reason: "invalid_state" };
@@ -156,7 +183,14 @@ async function applyUserAction(
       targetId,
       action,
       before: { role: user.role, status: user.status },
-      after: { role: updated.role, status: updated.status },
+      after:
+        action === "disable"
+          ? {
+              role: updated.role,
+              status: updated.status,
+              reason: updated.disabledReason,
+            }
+          : { role: updated.role, status: updated.status },
     });
 
     return {
@@ -241,5 +275,83 @@ export function demoteUser(
     "demote",
     (user) => user.role === "admin",
     { role: "user" },
+  );
+}
+
+export interface UserDisableDeps {
+  db: Database;
+  generationsRepository: GenerationsRepository;
+  cancellationDeps: CancellationDeps;
+}
+
+/**
+ * Disables a user (issue #64's AC): refused for a pinned Admin, the
+ * acting Admin's own row, or a user already disabled. Sessions are
+ * deleted and the open SSE stream (if any) closed first, so nothing new
+ * reaches the account while the rest of the cleanup runs; every queued,
+ * starting or running Generation is then cancelled the same way the
+ * owner's own cancel would (a `saving` one finishes on its own — nothing
+ * here can stop it). Files, Assets and Generations are kept, unlike a
+ * delete.
+ */
+export async function disableUser(
+  deps: UserDisableDeps,
+  clock: Clock,
+  actor: AuditActor,
+  actingUserId: string,
+  targetId: string,
+  adminEmails: readonly string[],
+  reason: string | null,
+): Promise<UserActionResult> {
+  const result = await applyUserAction(
+    deps.db,
+    clock,
+    actor,
+    actingUserId,
+    targetId,
+    adminEmails,
+    "disable",
+    (user) => user.status !== "disabled",
+    { status: "disabled", disabledReason: reason, disabledAt: clock.now() },
+  );
+  if (!result.ok) return result;
+
+  await deps.db.delete(sessions).where(eq(sessions.userId, targetId));
+  deps.cancellationDeps.generationEvents.publish(targetId, {
+    type: "disconnect",
+  });
+
+  const unfinishedIds =
+    await deps.generationsRepository.listUnfinishedIdsForUser(targetId);
+  for (const generationId of unfinishedIds) {
+    try {
+      await cancelGeneration(generationId, targetId, deps.cancellationDeps);
+    } catch {
+      // Raced to a terminal state between the list above and this call.
+    }
+  }
+
+  return result;
+}
+
+/** Re-enables a disabled user (issue #64's AC). Refused for a pinned Admin, the acting Admin's own row, or a user that isn't disabled. */
+export function enableUser(
+  db: Database,
+  clock: Clock,
+  actor: AuditActor,
+  actingUserId: string,
+  targetId: string,
+  adminEmails: readonly string[],
+): Promise<UserActionResult> {
+  return applyUserAction(
+    db,
+    clock,
+    actor,
+    actingUserId,
+    targetId,
+    adminEmails,
+    "enable",
+    (user) => user.status === "disabled",
+    { status: "active", disabledReason: null, disabledAt: null },
   );
 }

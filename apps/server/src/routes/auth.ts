@@ -15,7 +15,7 @@ import {
   createSession,
   deleteSession,
 } from "../auth/session.js";
-import { upsertUserFromGoogle } from "../auth/users.js";
+import { isAccountBlocked, upsertUserFromGoogle } from "../auth/users.js";
 import { getSiteSettings } from "../branding/site-settings-store.js";
 import type { Database } from "../db/client.js";
 import type { Env } from "../env.js";
@@ -119,6 +119,13 @@ export function authRoute(
         return c.redirect(`/?auth_error=${result.reason}`);
       }
 
+      // Issue #64: a Google account an Admin deleted while disabled
+      // can't come back, even as a brand-new user — checked before the
+      // upsert below would otherwise create one.
+      if (await isAccountBlocked(deps.db, result.identity.sub)) {
+        return c.redirect("/?auth_error=blocked");
+      }
+
       const settings = await getSiteSettings(deps.db);
       const user = await upsertUserFromGoogle(
         deps.db,
@@ -127,6 +134,14 @@ export function authRoute(
         deps.env.ADMIN_EMAILS,
         settings.signUpMode,
       );
+
+      // Issue #64: a disabled user keeps that status across sign-ins
+      // (upsertUserFromGoogle never touches it for a non-Admin), so no
+      // session is created for them — the landing page shows "account
+      // disabled" with the contact instead.
+      if (user.status === "disabled") {
+        return c.redirect("/?auth_error=disabled");
+      }
 
       const { cookieValue, expiresAt } = await createSession(
         deps.db,
@@ -154,7 +169,7 @@ export function authRoute(
     basePath,
     "post",
     "/signout",
-    "signed-in",
+    "signed-in-or-disabled",
     async (c) => {
       const session = c.get("session");
       if (!session) return c.json({ error: "unauthorized" }, 401);

@@ -226,12 +226,17 @@ describe("/api/models/:slug and :slug/generations", () => {
       const body = (await res.json()) as {
         model: {
           name: string;
-          modes: Array<{ id: string; name: string; description: string }>;
+          modes: Array<{
+            id: string;
+            name: string;
+            description: string;
+            inputs: unknown[];
+          }>;
         };
       };
       expect(body.model.name).toBe("LTX");
       expect(body.model.modes).toEqual([
-        { id: modeId, name: "Default", description: "" },
+        { id: modeId, name: "Default", description: "", inputs: [] },
       ]);
 
       backendsService.stop();

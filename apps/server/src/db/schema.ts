@@ -293,9 +293,11 @@ export const models = pgTable(
 );
 
 /**
- * One saved, immutable, numbered state of a Model's Workflow and Modes
- * (issue #40, #42; Inputs join this later). Never updated or deleted: a
- * save of either makes a new row with the next `revisionNumber`.
+ * One saved, immutable, numbered state of a Model's Workflow, Modes and
+ * Inputs (issue #40, #42, #46). Never updated or deleted: a save of any
+ * of the three makes a new row with the next `revisionNumber`. `inputs`
+ * is an ordered JSON array of `InputDefinition` (packages/shared); it
+ * carries forward unchanged when only Modes (or the reverse) are saved.
  */
 export const modelRevisions = pgTable(
   "model_revisions",
@@ -308,6 +310,7 @@ export const modelRevisions = pgTable(
     workflowHash: text("workflow_hash")
       .notNull()
       .references(() => workflows.hash),
+    inputs: jsonb("inputs").notNull().default([]),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

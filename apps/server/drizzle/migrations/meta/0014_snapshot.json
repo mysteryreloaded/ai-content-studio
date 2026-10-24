@@ -1,5 +1,5 @@
 {
-  "id": "989a108f-0680-4ba0-b0f4-97482e519478",
+  "id": "93ff268b-9b20-410e-97a2-c701e238d3f1",
   "prevId": "ab376db8-a187-4b21-9c80-57a3a4f068f0",
   "version": "7",
   "dialect": "postgresql",
@@ -62,42 +62,6 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
-        },
-        "poster_key": {
-          "name": "poster_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "thumbnail_key": {
-          "name": "thumbnail_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "width": {
-          "name": "width",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "height": {
-          "name": "height",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "duration_ms": {
-          "name": "duration_ms",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "fps": {
-          "name": "fps",
-          "type": "double precision",
-          "primaryKey": false,
-          "notNull": false
         },
         "created_at": {
           "name": "created_at",
@@ -758,6 +722,13 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "inputs": {
+          "name": "inputs",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
         },
         "created_at": {
           "name": "created_at",

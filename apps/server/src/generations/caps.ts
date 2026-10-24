@@ -1,6 +1,8 @@
-// Caps (issue #53): the daily Cap counts the rolling 24h, excluding
-// failed Generations; the concurrent Cap counts queued through saving.
-// A user's effective Cap is their own override (0-1,000) when set,
+// Caps (issue #53, ADR 0007 "Caps are checked in the locking
+// transaction"): the daily Cap counts the rolling 24h, excluding
+// failed Generations (cancelled-before-running isn't modeled yet —
+// #55's concern); the concurrent Cap counts queued through saving. A
+// user's effective Cap is their own override (0-1,000) when set,
 // otherwise the Site default.
 
 import {
@@ -9,7 +11,7 @@ import {
   effectiveCap,
 } from "@ai-content-studio/shared";
 import type { Clock } from "@ai-content-studio/shared";
-import { and, eq, gte, notInArray, sql } from "drizzle-orm";
+import { and, eq, gt, notInArray, sql } from "drizzle-orm";
 import type { Database, Transaction } from "../db/client.js";
 import { generations, siteSettings, users } from "../db/schema.js";
 
@@ -63,7 +65,7 @@ export async function countDailyForUser(
     .where(
       and(
         eq(generations.userId, userId),
-        gte(generations.submittedAt, since),
+        gt(generations.submittedAt, since),
         notInArray(generations.state, ["failed"]),
       ),
     );
@@ -99,7 +101,7 @@ export async function oldestCountedSubmittedAt(
     .where(
       and(
         eq(generations.userId, userId),
-        gte(generations.submittedAt, since),
+        gt(generations.submittedAt, since),
         notInArray(generations.state, ["failed"]),
       ),
     )

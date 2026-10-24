@@ -189,12 +189,14 @@ export class GenerationsRepository {
   }
 
   /**
-   * One Submission's 1-4 Generations (issue #47, ADR 0007; issue #53):
-   * locks the submitting user's row before inserting every Generation, so
-   * two presses of Generate from the same user never interleave their
-   * draws or their Cap checks. Caps are checked all-or-nothing against
-   * this one Submission's own count: a Submission that would exceed
-   * either Cap is refused whole, inserting nothing.
+   * One Submission's 1-4 Generations (issue #47, ADR "Submission
+   * creation is one locked transaction"; issue #53, ADR "Caps are
+   * checked in the locking transaction"): locks the submitting user's
+   * row before inserting every Generation, so two presses of Generate
+   * from the same user never interleave their draws or their Cap
+   * checks. Caps are checked all-or-nothing against this one
+   * Submission's own count: a Submission that would exceed either Cap
+   * is refused whole, inserting nothing.
    */
   async createSubmission(
     userId: string,

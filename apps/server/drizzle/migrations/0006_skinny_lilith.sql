@@ -1,1 +1,0 @@
-ALTER TABLE "site_settings" ADD COLUMN "terms_revision" integer DEFAULT 1 NOT NULL;

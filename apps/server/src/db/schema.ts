@@ -187,6 +187,92 @@ export const logEntries = pgTable("log_entries", {
 });
 
 /**
+ * A Workflow's JSON, content-addressed by `hash` (SHA-256 of its canonical
+ * JSON, see workflow/validate.ts) and kept forever (issue #40): several
+ * Model revisions may point at the same row, and a revision's history must
+ * always be able to resolve the Workflow it ran.
+ */
+export const workflows = pgTable("workflows", {
+  hash: text("hash").primaryKey(),
+  json: jsonb("json").notNull(),
+  nodeCount: integer("node_count").notNull(),
+  size: integer("size").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+/** A Model starts disabled (issue #40); enabling it is a later issue. */
+export const modelState = pgEnum("model_state", ["enabled", "disabled"]);
+
+/**
+ * An admin-defined generation offering (issue #40). `sortOrder` is the
+ * Admin's own ordering of the Models list, reassigned by the up/down
+ * buttons. `currentRevision` is the number of the Model revision this row
+ * currently points at; the revisions themselves live in `modelRevisions`,
+ * immutable and numbered per Model. `version` guards a save against a
+ * concurrent one (409 when stale). Soft-deleted rows are kept (`deletedAt`
+ * set), freeing their name and slug for reuse.
+ */
+export const models = pgTable(
+  "models",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    name: text("name").notNull(),
+    slug: text("slug").notNull(),
+    description: text("description").notNull().default(""),
+    maxRunTimeMinutes: integer("max_run_time_minutes").notNull().default(30),
+    state: modelState("state").notNull().default("disabled"),
+    sortOrder: integer("sort_order").notNull(),
+    currentRevision: integer("current_revision").notNull().default(1),
+    version: integer("version").notNull().default(1),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("models_name_unique")
+      .on(sql`lower(${table.name})`)
+      .where(sql`${table.deletedAt} is null`),
+    uniqueIndex("models_slug_unique")
+      .on(table.slug)
+      .where(sql`${table.deletedAt} is null`),
+  ],
+);
+
+/**
+ * One saved, immutable, numbered state of a Model's Workflow (issue #40;
+ * Inputs and Modes join this later). Never updated or deleted: a save makes
+ * a new row with the next `revisionNumber` for that Model.
+ */
+export const modelRevisions = pgTable(
+  "model_revisions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    modelId: uuid("model_id")
+      .notNull()
+      .references(() => models.id, { onDelete: "cascade" }),
+    revisionNumber: integer("revision_number").notNull(),
+    workflowHash: text("workflow_hash")
+      .notNull()
+      .references(() => workflows.hash),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("model_revisions_model_number_unique").on(
+      table.modelId,
+      table.revisionNumber,
+    ),
+  ],
+);
+
+/**
  * A session cookie's server-side half. The cookie holds `id.secret`; only
  * `secretHash` (SHA-256 of `secret`) is stored, never the secret itself.
  */

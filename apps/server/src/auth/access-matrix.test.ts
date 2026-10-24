@@ -123,6 +123,12 @@ describe("every route's access level is declared and enforced", () => {
       "GET /api/admin/backends/:id": 404,
       "PUT /api/admin/backends/:id": 404,
       "DELETE /api/admin/backends/:id": 404,
+      "POST /api/admin/models": 400,
+      "GET /api/admin/models/:id": 404,
+      "PUT /api/admin/models/:id": 404,
+      "DELETE /api/admin/models/:id": 404,
+      "POST /api/admin/models/:id/move-up": 404,
+      "POST /api/admin/models/:id/move-down": 404,
     };
 
     // No Site terms are set in this test's database, so accepting them

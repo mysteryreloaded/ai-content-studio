@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   boolean,
+  doublePrecision,
   index,
   integer,
   jsonb,
@@ -72,6 +73,15 @@ export const siteSettings = pgTable("site_settings", {
   privacyRevision: integer("privacy_revision").notNull().default(1),
   /** Issue #65: up to 3 extra footer links, each `{ label, url }`. */
   footerLinks: jsonb("footer_links").notNull().default([]),
+  /**
+   * Issue #66: words and phrases the studio refuses in prompts, already
+   * NFKC-normalised, case-folded and deduped (see
+   * `branding/blocked-words.ts`). `blockedWordsRevision` is its own
+   * optimistic-concurrency token, independent of the other Site settings
+   * forms', so saving one never races another into a spurious 409.
+   */
+  blockedWords: jsonb("blocked_words").notNull().default([]),
+  blockedWordsRevision: integer("blocked_words_revision").notNull().default(1),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -485,6 +495,11 @@ export const generations = pgTable(
  * `sortOrder` mirrors the Mode's own output node order, so the first
  * (sortOrder 0) is the main Asset. Idempotent on (generation, node id,
  * ComfyUI file name): a retried save can't double-write the same file.
+ *
+ * Issue #45: `size` and `storageKey` hold the *finished* file (video is
+ * re-muxed in place, metadata-stripped and comment-tagged); the finishing
+ * facts below are null when finishing couldn't read the file (never
+ * attempted for audio's poster/thumbnail, which it doesn't have).
  */
 export const assets = pgTable(
   "assets",
@@ -500,6 +515,12 @@ export const assets = pgTable(
     contentType: text("content_type").notNull(),
     size: integer("size").notNull(),
     storageKey: text("storage_key").notNull(),
+    posterKey: text("poster_key"),
+    thumbnailKey: text("thumbnail_key"),
+    width: integer("width"),
+    height: integer("height"),
+    durationMs: integer("duration_ms"),
+    fps: doublePrecision("fps"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

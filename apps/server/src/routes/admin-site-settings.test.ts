@@ -31,6 +31,7 @@ const TEST_ENV: Env = {
   BACKENDS_ENABLED: false,
   STATUS_TOKEN: undefined,
   MIN_FREE_DISK_GB: 10,
+  FFMPEG_CONCURRENCY: 2,
 };
 
 const SAME_ORIGIN_HEADERS = { "Sec-Fetch-Site": "same-origin" };
@@ -250,6 +251,97 @@ describe("/api/admin/site-settings", () => {
         body: JSON.stringify({
           revision: current.privacyRevision + 1,
           body: "stale write",
+        }),
+      });
+      expect(res.status).toBe(409);
+    });
+  });
+
+  describe("PUT /blocked-words", () => {
+    test("200s, normalising and deduping the list", async () => {
+      const { app, db } = await build();
+      const cookie = await adminCookie();
+      const current = await getSiteSettings(db);
+
+      const res = await app.request("/api/admin/site-settings/blocked-words", {
+        method: "PUT",
+        headers: {
+          ...SAME_ORIGIN_HEADERS,
+          Cookie: cookie,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          revision: current.blockedWordsRevision,
+          text: "Forbidden\n  forbidden  \nBad Wolf\n\n",
+        }),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        blockedWords: string[];
+        blockedWordsRevision: number;
+      };
+      expect(body.blockedWords).toEqual(["forbidden", "bad wolf"]);
+      expect(body.blockedWordsRevision).toBe(current.blockedWordsRevision + 1);
+    });
+
+    test("400s over 1,000 entries", async () => {
+      const { app, db } = await build();
+      const cookie = await adminCookie();
+      const current = await getSiteSettings(db);
+
+      const text = Array.from({ length: 1001 }, (_, i) => `word${i}`).join(
+        "\n",
+      );
+      const res = await app.request("/api/admin/site-settings/blocked-words", {
+        method: "PUT",
+        headers: {
+          ...SAME_ORIGIN_HEADERS,
+          Cookie: cookie,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          revision: current.blockedWordsRevision,
+          text,
+        }),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    test("400s over the 100 character per-entry limit", async () => {
+      const { app, db } = await build();
+      const cookie = await adminCookie();
+      const current = await getSiteSettings(db);
+
+      const res = await app.request("/api/admin/site-settings/blocked-words", {
+        method: "PUT",
+        headers: {
+          ...SAME_ORIGIN_HEADERS,
+          Cookie: cookie,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          revision: current.blockedWordsRevision,
+          text: "a".repeat(101),
+        }),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    test("409s on a stale revision", async () => {
+      const { app, db } = await build();
+      const cookie = await adminCookie();
+      const current = await getSiteSettings(db);
+
+      const res = await app.request("/api/admin/site-settings/blocked-words", {
+        method: "PUT",
+        headers: {
+          ...SAME_ORIGIN_HEADERS,
+          Cookie: cookie,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          revision: current.blockedWordsRevision + 1,
+          text: "stale",
         }),
       });
       expect(res.status).toBe(409);

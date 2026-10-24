@@ -11,6 +11,7 @@ import { type RouteEntry, guardedRoute } from "../auth/access.js";
 import type { AppEnv } from "../auth/app-env.js";
 import type { GenerationsRepository } from "../generations/repository.js";
 import {
+  BlockedWordSubmitted,
   InvalidCount,
   InvalidInputValues,
   InvalidSeed,
@@ -331,6 +332,21 @@ export function modelsRoute(
         }
         if (err instanceof InvalidSeed) {
           return c.json({ error: "invalid_seed", message: err.message }, 400);
+        }
+        if (err instanceof BlockedWordSubmitted) {
+          return c.json(
+            {
+              error: "invalid",
+              issues: [
+                {
+                  path: err.inputId,
+                  code: "blocked_word",
+                  message: "Your prompt contains a blocked word",
+                },
+              ],
+            },
+            400,
+          );
         }
         throw err;
       }

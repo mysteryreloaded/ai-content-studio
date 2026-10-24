@@ -26,6 +26,8 @@ import type {
   GenerationState,
   GenerationSummary,
 } from "../generations/repository.js";
+import { finishAsset } from "../media/finish.js";
+import type { MediaRunner } from "../media/media.js";
 import type { Storage } from "../storage/storage.js";
 import { ProgressTracker } from "./progress.js";
 import type { DispatchQueue, RunDetail } from "./queue.js";
@@ -44,6 +46,10 @@ export interface RunnerDeps {
   /** Wakes the dispatcher: the Backend just freed, or this run ended. */
   onFreed: () => void;
   pollIntervalMs?: number;
+  /** Issue #45: runs ffmpeg/ffprobe for Asset finishing. */
+  media: MediaRunner;
+  /** Issue #45: named in a finished video's "AI-generated" comment tag, alongside the Model and Generation id. */
+  siteName: string;
 }
 
 function describeError(err: unknown): string {
@@ -147,6 +153,8 @@ async function saveAssets(
   job: Job,
   deps: RunnerDeps,
 ): Promise<void> {
+  const comment = `AI-generated with ${detail.modelName} on ${deps.siteName}, Generation ${detail.id}`;
+
   for (const [index, outputNode] of detail.outputNodes.entries()) {
     for (const file of outputFilesFor(job, outputNode.nodeId)) {
       const storageKey = `assets/${detail.id}/${outputNode.nodeId}/${file.filename}`;
@@ -154,16 +162,46 @@ async function saveAssets(
       const contentType =
         response.headers.get("content-type") ?? "application/octet-stream";
       const size = await deps.storage.writeResponseBody(storageKey, response);
+      const kind = outputNode.kind ?? "image";
+
+      const facts = await finishAsset(
+        {
+          media: deps.media,
+          absolutePath: (key) => deps.storage.absolutePath(key),
+          write: (key, data) => deps.storage.write(key, data),
+          onWarning: (message) => {
+            void deps.logWriter
+              .log({
+                level: "warning",
+                source: "app",
+                message: `Asset finishing: ${message}`,
+                userId: detail.userId,
+                modelId: detail.modelId,
+                generationId: detail.id,
+              })
+              .catch(() => {});
+          },
+        },
+        kind,
+        storageKey,
+        comment,
+      );
 
       await deps.assetsRepository.createIfAbsent({
         generationId: detail.id,
         nodeId: outputNode.nodeId,
         sortOrder: index,
-        kind: outputNode.kind ?? "image",
+        kind,
         comfyuiFilename: file.filename,
         contentType,
-        size,
+        size: facts.size,
         storageKey,
+        posterKey: facts.posterKey,
+        thumbnailKey: facts.thumbnailKey,
+        width: facts.width,
+        height: facts.height,
+        durationMs: facts.durationMs,
+        fps: facts.fps,
       });
     }
   }

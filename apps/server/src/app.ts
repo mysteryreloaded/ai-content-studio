@@ -12,7 +12,10 @@ import { createLogEntryWriter } from "./backends/log-entries.js";
 import { BackendRepository } from "./backends/repository.js";
 import { BackendsService } from "./backends/service.js";
 import { injectBrandingIntoHtml } from "./branding/accent-html.js";
-import { getSiteSettings } from "./branding/site-settings-store.js";
+import {
+  getBlockedWords,
+  getSiteSettings,
+} from "./branding/site-settings-store.js";
 import type { Database } from "./db/client.js";
 import { Dispatcher } from "./dispatch/dispatcher.js";
 import { DispatchQueue } from "./dispatch/queue.js";
@@ -22,6 +25,7 @@ import { AssetsRepository } from "./generations/assets-repository.js";
 import { GenerationEvents } from "./generations/events.js";
 import { GenerationsRepository } from "./generations/repository.js";
 import type { Logger } from "./logger.js";
+import { MediaRunner } from "./media/media.js";
 import { ModelBackendsRepository } from "./models/model-backends.js";
 import { ModelRepository } from "./models/repository.js";
 import { ProblemsMonitor } from "./problems/monitor.js";
@@ -156,6 +160,7 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
   const generationEvents = new GenerationEvents();
   const assetsRepository = new AssetsRepository(deps.db);
   const dispatchQueue = new DispatchQueue(deps.db);
+  const media = new MediaRunner(deps.env.FFMPEG_CONCURRENCY);
   const dispatcher = new Dispatcher({
     sql: deps.sql,
     clock: deps.clock,
@@ -168,6 +173,8 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
     assetsRepository,
     storage,
     generationEvents,
+    media,
+    siteName: new URL(deps.env.PUBLIC_URL).hostname,
   });
   wakeDispatcher = dispatcher.wake;
 
@@ -183,6 +190,8 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
         generationsRepository,
         generationEvents,
         clock: deps.clock,
+        logWriter,
+        getBlockedWords: () => getBlockedWords(deps.db),
         onGenerationQueued: dispatcher.wake,
       },
       routes,

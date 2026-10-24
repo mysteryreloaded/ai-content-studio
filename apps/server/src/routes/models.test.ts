@@ -10,6 +10,7 @@ import { SESSION_COOKIE_NAME, createSession } from "../auth/session.js";
 import {
   backends,
   generations,
+  logEntries,
   modelBackends,
   modelRevisions,
   models,
@@ -42,6 +43,7 @@ function testEnv(): Env {
     BACKENDS_ENABLED: true,
     STATUS_TOKEN: undefined,
     MIN_FREE_DISK_GB: 10,
+    FFMPEG_CONCURRENCY: 2,
   };
 }
 
@@ -68,6 +70,7 @@ describe("/api/models/:slug and :slug/generations", () => {
   beforeEach(async () => {
     const { db } = await testDb;
     await db.delete(generations);
+    await db.delete(logEntries);
     await db.delete(modelBackends);
     await db.delete(modelRevisions);
     await db.delete(models);
@@ -546,6 +549,143 @@ describe("/api/models/:slug and :slug/generations", () => {
       expect(res.status).toBe(400);
       const body = (await res.json()) as { error: string };
       expect(body.error).toBe("no_backend");
+
+      backendsService.stop();
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("refuses a submit holding a blocked word (issue #66), per field, and logs a warning naming the user and the word", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const { app, backendsService } = await build();
+      const { db } = await testDb;
+      const { headers: adminHeaders } = await headersFor("admin");
+
+      const createRes = await app.request("/api/admin/models", {
+        method: "POST",
+        headers: { ...adminHeaders, "content-type": "application/json" },
+        body: JSON.stringify({ name: "LTX", workflow: WORKFLOW }),
+      });
+      const { model } = (await createRes.json()) as {
+        model: { id: string; slug: string; version: number };
+      };
+
+      const backendRes = await app.request("/api/admin/backends", {
+        method: "POST",
+        headers: { ...adminHeaders, "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "Fake",
+          baseUrl: fake.url,
+          auth: "none",
+        }),
+      });
+      const backend = (await backendRes.json()) as { id: string };
+      await app.request(`/api/admin/models/${model.id}/backends`, {
+        method: "POST",
+        headers: { ...adminHeaders, "content-type": "application/json" },
+        body: JSON.stringify({ backendId: backend.id }),
+      });
+      clock.advance(30_000);
+      await flushMicrotasks();
+
+      const promptInputId = "22222222-2222-2222-2222-222222222222";
+      const inputsRes = await app.request(
+        `/api/admin/models/${model.id}/inputs`,
+        {
+          method: "PUT",
+          headers: { ...adminHeaders, "content-type": "application/json" },
+          body: JSON.stringify({
+            version: model.version,
+            inputs: [
+              {
+                id: promptInputId,
+                kind: "text",
+                group: "describe",
+                label: "Image",
+                help: "",
+                default: "",
+                multiline: false,
+                maxLength: 2000,
+                bindings: [
+                  {
+                    nodeId: "1",
+                    field: "image",
+                    classType: "LoadImage",
+                    title: null,
+                  },
+                ],
+              },
+            ],
+          }),
+        },
+      );
+      const { record: afterInputs } = (await inputsRes.json()) as {
+        record: { version: number };
+      };
+
+      const modesRes = await app.request(
+        `/api/admin/models/${model.id}/modes`,
+        {
+          method: "PUT",
+          headers: { ...adminHeaders, "content-type": "application/json" },
+          body: JSON.stringify({
+            version: afterInputs.version,
+            modes: [{ name: "Default", description: "", outputNodeIds: ["3"] }],
+          }),
+        },
+      );
+      const { record: afterModes, modes } = (await modesRes.json()) as {
+        record: { version: number };
+        modes: Array<{ id: string }>;
+      };
+
+      await app.request(`/api/admin/models/${model.id}/enable`, {
+        method: "POST",
+        headers: { ...adminHeaders, "content-type": "application/json" },
+        body: JSON.stringify({ version: afterModes.version }),
+      });
+
+      await app.request("/api/admin/site-settings/blocked-words", {
+        method: "PUT",
+        headers: { ...adminHeaders, "content-type": "application/json" },
+        body: JSON.stringify({ revision: 1, text: "Forbidden" }),
+      });
+
+      const { headers: userHeaders, userId } = await headersFor("user");
+      const res = await app.request(`/api/models/${model.slug}/generations`, {
+        method: "POST",
+        headers: { ...userHeaders, "content-type": "application/json" },
+        body: JSON.stringify({
+          modeId: modes[0]?.id,
+          revision: afterModes.version,
+          values: { [promptInputId]: "a FORBIDDEN cat" },
+        }),
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as {
+        error: string;
+        issues: Array<{ path: string; code: string; message: string }>;
+      };
+      expect(body.error).toBe("invalid");
+      expect(body.issues).toEqual([
+        {
+          path: promptInputId,
+          code: "blocked_word",
+          message: "Your prompt contains a blocked word",
+        },
+      ]);
+
+      const generationRows = await db.select().from(generations);
+      expect(generationRows).toHaveLength(0);
+
+      const warnings = (await db.select().from(logEntries)).filter(
+        (row) => row.level === "warning",
+      );
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]?.userId).toBe(userId);
+      expect(warnings[0]?.details).toBe("forbidden");
 
       backendsService.stop();
     } finally {

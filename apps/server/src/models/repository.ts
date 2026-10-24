@@ -22,7 +22,7 @@ import {
   validateModeName,
 } from "@ai-content-studio/shared";
 import type { Clock } from "@ai-content-studio/shared";
-import { and, asc, eq, isNull, max } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, max } from "drizzle-orm";
 import type { AuditActor } from "../audit/audit.js";
 import { recordAuditEntry } from "../audit/audit.js";
 import type { Database, Transaction } from "../db/client.js";
@@ -216,6 +216,21 @@ function nodesFrom(
 export interface WorkflowUploadResult {
   record: ModelRecord;
   outsideServiceNotes: OutsideServiceNote[];
+}
+
+/** One numbered Model revision, listed in the editor's Revisions section (issue #71). */
+export interface RevisionSummary {
+  revisionNumber: number;
+  createdAt: Date;
+  workflowHash: string;
+  modeCount: number;
+  inputCount: number;
+}
+
+export interface RevisionDetail {
+  workflow: Workflow;
+  inputs: InputDefinition[];
+  modes: ModeRecord[];
 }
 
 export class ModelRepository {
@@ -620,6 +635,293 @@ export class ModelRepository {
       modes: await listModesForRevision(this.db, revision.id),
       inputs: revision.inputs as InputDefinition[],
     };
+  }
+
+  /** Every numbered revision of this Model, newest first (issue #71's Revisions section). */
+  async listRevisions(id: string): Promise<RevisionSummary[]> {
+    const rows = await this.db
+      .select()
+      .from(modelRevisions)
+      .where(eq(modelRevisions.modelId, id))
+      .orderBy(desc(modelRevisions.revisionNumber));
+
+    const summaries: RevisionSummary[] = [];
+    for (const row of rows) {
+      const modeRows = await listModesForRevision(this.db, row.id);
+      summaries.push({
+        revisionNumber: row.revisionNumber,
+        createdAt: row.createdAt,
+        workflowHash: row.workflowHash,
+        modeCount: modeRows.length,
+        inputCount: (row.inputs as InputDefinition[]).length,
+      });
+    }
+    return summaries;
+  }
+
+  /** One numbered revision's own Workflow, Inputs and Modes (issue #71), for the restore route's pre-check. */
+  async getRevisionDetail(
+    id: string,
+    revisionNumber: number,
+  ): Promise<RevisionDetail | null> {
+    const [revision] = await this.db
+      .select()
+      .from(modelRevisions)
+      .where(
+        and(
+          eq(modelRevisions.modelId, id),
+          eq(modelRevisions.revisionNumber, revisionNumber),
+        ),
+      );
+    if (!revision) return null;
+
+    const [workflowRow] = await this.db
+      .select()
+      .from(workflows)
+      .where(eq(workflows.hash, revision.workflowHash));
+    if (!workflowRow) return null;
+
+    return {
+      workflow: workflowRow.json as Workflow,
+      inputs: revision.inputs as InputDefinition[],
+      modes: await listModesForRevision(this.db, revision.id),
+    };
+  }
+
+  /**
+   * Inserts a copy of revision `revisionNumber` as a new, current
+   * revision (issue #71's Restore): same Workflow, Inputs and Modes,
+   * through the same optimistic-concurrency check every other save
+   * uses. The caller runs the same `checkModel` gate the Modes/Inputs
+   * routes do first, offering "Restore and disable" when the restored
+   * state has errors on an enabled Model.
+   */
+  async restoreRevision(
+    id: string,
+    revisionNumber: number,
+    expectedVersion: number,
+    actor: AuditActor,
+  ): Promise<{
+    record: ModelRecord;
+    modes: ModeRecord[];
+    inputs: InputDefinition[];
+  }> {
+    return await this.db.transaction(async (tx) => {
+      const [before] = await tx
+        .select()
+        .from(models)
+        .where(and(eq(models.id, id), isNull(models.deletedAt)));
+      if (!before) throw new NotFound();
+
+      const [target] = await tx
+        .select()
+        .from(modelRevisions)
+        .where(
+          and(
+            eq(modelRevisions.modelId, id),
+            eq(modelRevisions.revisionNumber, revisionNumber),
+          ),
+        );
+      if (!target) throw new NotFound();
+
+      const targetModes = await listModesForRevision(tx, target.id);
+
+      const newRevisionNumber = before.currentRevision + 1;
+      const [row] = await tx
+        .update(models)
+        .set({
+          currentRevision: newRevisionNumber,
+          version: before.version + 1,
+          updatedAt: this.clock.now(),
+        })
+        .where(and(eq(models.id, id), eq(models.version, expectedVersion)))
+        .returning();
+      if (!row) throw new StaleVersion();
+
+      const [newRevision] = await tx
+        .insert(modelRevisions)
+        .values({
+          modelId: id,
+          revisionNumber: newRevisionNumber,
+          workflowHash: target.workflowHash,
+          inputs: target.inputs,
+        })
+        .returning();
+      if (!newRevision) throw new Error("insert returned no row");
+
+      if (targetModes.length > 0) {
+        await tx.insert(modes).values(
+          targetModes.map((mode) => ({
+            revisionId: newRevision.id,
+            sortOrder: mode.sortOrder,
+            name: mode.name,
+            description: mode.description,
+            outputNodes: mode.outputNodes,
+            inputSettings: mode.inputSettings,
+          })),
+        );
+      }
+
+      const newModes = await listModesForRevision(tx, newRevision.id);
+
+      await recordAuditEntry(tx, this.clock, {
+        actor,
+        targetType: "model",
+        targetId: id,
+        action: "restore_revision",
+        before: { currentRevision: before.currentRevision },
+        after: {
+          currentRevision: newRevisionNumber,
+          restoredFromRevision: revisionNumber,
+        },
+      });
+
+      return {
+        record: toRecord(row),
+        modes: newModes,
+        inputs: target.inputs as InputDefinition[],
+      };
+    });
+  }
+
+  /**
+   * Replaces this Model's Workflow (issue #71): keeps its Modes' output
+   * nodes and Inputs' bindings exactly as they were, matched only by
+   * node id — a node whose class and value-holding field still exist
+   * there keeps working; one that doesn't is now broken, which
+   * `checkModel` reports as an error against the new Workflow the next
+   * time it runs, same as any other missing binding (ADR-0010). Always
+   * makes a new revision, same reasoning as {@link updateModes}.
+   */
+  async uploadWorkflow(
+    id: string,
+    rawWorkflow: unknown,
+    expectedVersion: number,
+    actor: AuditActor,
+  ): Promise<{
+    record: ModelRecord;
+    modes: ModeRecord[];
+    inputs: InputDefinition[];
+    outsideServiceNotes: OutsideServiceNote[];
+  }> {
+    const errors: ValidationError[] = [];
+
+    const size = Buffer.byteLength(JSON.stringify(rawWorkflow));
+    if (size > MAX_WORKFLOW_BYTES) {
+      errors.push({ field: "workflow", message: "must be 10 MB or smaller" });
+    }
+
+    const parsed = parseApiFormatWorkflow(rawWorkflow);
+    if (!parsed.ok) {
+      errors.push({ field: "workflow", message: parsed.error });
+      throw new ValidationFailed(errors);
+    }
+
+    const missing = findMissingLinkTargets(parsed.workflow);
+    if (missing.length > 0) {
+      errors.push({
+        field: "workflow",
+        message: `links to missing nodes: ${missing.join(", ")}`,
+      });
+    }
+
+    const notes = findOutsideServiceNotes(parsed.workflow);
+    for (const note of notes) {
+      if (note.keySet) {
+        errors.push({
+          field: "workflow",
+          message: `${note.classType} (node ${note.nodeId}) still has a key set; clear it before uploading`,
+        });
+      }
+    }
+
+    if (errors.length > 0) throw new ValidationFailed(errors);
+
+    return await this.db.transaction(async (tx) => {
+      const [before] = await tx
+        .select()
+        .from(models)
+        .where(and(eq(models.id, id), isNull(models.deletedAt)));
+      if (!before) throw new NotFound();
+
+      const [currentRevision] = await tx
+        .select()
+        .from(modelRevisions)
+        .where(
+          and(
+            eq(modelRevisions.modelId, id),
+            eq(modelRevisions.revisionNumber, before.currentRevision),
+          ),
+        );
+      if (!currentRevision) throw new Error("current revision missing");
+
+      const currentModes = await listModesForRevision(tx, currentRevision.id);
+
+      const hash = hashWorkflow(parsed.workflow);
+      await tx
+        .insert(workflows)
+        .values({
+          hash,
+          json: parsed.workflow,
+          nodeCount: Object.keys(parsed.workflow).length,
+          size,
+        })
+        .onConflictDoNothing();
+
+      const newRevisionNumber = before.currentRevision + 1;
+      const [row] = await tx
+        .update(models)
+        .set({
+          currentRevision: newRevisionNumber,
+          version: before.version + 1,
+          updatedAt: this.clock.now(),
+        })
+        .where(and(eq(models.id, id), eq(models.version, expectedVersion)))
+        .returning();
+      if (!row) throw new StaleVersion();
+
+      const [newRevision] = await tx
+        .insert(modelRevisions)
+        .values({
+          modelId: id,
+          revisionNumber: newRevisionNumber,
+          workflowHash: hash,
+          inputs: currentRevision.inputs,
+        })
+        .returning();
+      if (!newRevision) throw new Error("insert returned no row");
+
+      if (currentModes.length > 0) {
+        await tx.insert(modes).values(
+          currentModes.map((mode) => ({
+            revisionId: newRevision.id,
+            sortOrder: mode.sortOrder,
+            name: mode.name,
+            description: mode.description,
+            outputNodes: mode.outputNodes,
+            inputSettings: mode.inputSettings,
+          })),
+        );
+      }
+
+      const newModes = await listModesForRevision(tx, newRevision.id);
+
+      await recordAuditEntry(tx, this.clock, {
+        actor,
+        targetType: "model",
+        targetId: id,
+        action: "upload_workflow",
+        before: { workflowHash: currentRevision.workflowHash },
+        after: { workflowHash: hash },
+      });
+
+      return {
+        record: toRecord(row),
+        modes: newModes,
+        inputs: currentRevision.inputs as InputDefinition[],
+        outsideServiceNotes: notes,
+      };
+    });
   }
 
   /**

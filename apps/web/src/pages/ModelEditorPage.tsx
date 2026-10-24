@@ -409,6 +409,19 @@ interface ErrorPayload {
   errors?: { field: string; message: string }[];
 }
 
+interface RevisionSummary {
+  revisionNumber: number;
+  createdAt: string;
+  workflowHash: string;
+  modeCount: number;
+  inputCount: number;
+}
+
+async function readFileAsJson(file: File): Promise<unknown> {
+  const text = await file.text();
+  return JSON.parse(text);
+}
+
 function detailsFrom(detail: ModelDetail): DetailsForm {
   return {
     name: detail.model.name,
@@ -511,6 +524,27 @@ export function ModelEditorPage() {
   const [askAgain, setAskAgain] = useState(false);
   const [savingTerms, setSavingTerms] = useState(false);
   const [termsSaveError, setTermsSaveError] = useState<string | null>(null);
+  // Issue #71: a re-uploaded Workflow file lives only in the editor
+  // (parsed client-side) until "Replace Workflow" sends it in one PUT —
+  // there's no separate server-side draft.
+  const [pendingWorkflow, setPendingWorkflow] = useState<unknown | null>(null);
+  const [pendingWorkflowFileName, setPendingWorkflowFileName] = useState<
+    string | null
+  >(null);
+  const [workflowUploadError, setWorkflowUploadError] = useState<string | null>(
+    null,
+  );
+  const [uploadingWorkflow, setUploadingWorkflow] = useState(false);
+  const [revisions, setRevisions] = useState<RevisionSummary[] | null>(null);
+  const [revisionsLoadError, setRevisionsLoadError] = useState<string | null>(
+    null,
+  );
+  const [restoringRevision, setRestoringRevision] = useState<number | null>(
+    null,
+  );
+  const [restoreErrors, setRestoreErrors] = useState<Record<number, string>>(
+    {},
+  );
   // Set right before navigating away after a successful delete: `dirty`
   // is still computed from this render's (pre-setForm(null)) state when
   // the blocker runs, since state updates haven't flushed yet, so without
@@ -616,12 +650,113 @@ export function ModelEditorPage() {
       });
   }
 
+  /** Issue #71: every numbered revision, for the Revisions section. */
+  function loadRevisions() {
+    if (!id) return;
+    fetch(`/api/admin/models/${id}/revisions`)
+      .then((res) => {
+        if (!res.ok) throw new Error(`unexpected status ${res.status}`);
+        return res.json() as Promise<{ revisions: RevisionSummary[] }>;
+      })
+      .then((body) => {
+        setRevisions(body.revisions);
+        setRevisionsLoadError(null);
+      })
+      .catch(() => setRevisionsLoadError("could not load revisions"));
+  }
+
   // biome-ignore lint/correctness/useExhaustiveDependencies: reload only when the route's :id changes
   useEffect(() => {
     loadAttachedBackends();
     loadAllBackends();
     loadObjectInfo();
+    loadRevisions();
   }, [id]);
+
+  async function handlePickWorkflowFile(file: File | null) {
+    setWorkflowUploadError(null);
+    if (!file) {
+      setPendingWorkflow(null);
+      setPendingWorkflowFileName(null);
+      return;
+    }
+    try {
+      setPendingWorkflow(await readFileAsJson(file));
+      setPendingWorkflowFileName(file.name);
+    } catch {
+      setPendingWorkflow(null);
+      setPendingWorkflowFileName(null);
+      setWorkflowUploadError("that file isn't valid JSON");
+    }
+  }
+
+  async function handleReplaceWorkflow() {
+    if (!detail || pendingWorkflow === null) return;
+    setUploadingWorkflow(true);
+    setWorkflowUploadError(null);
+
+    try {
+      const res = await fetch(`/api/admin/models/${detail.model.id}/workflow`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          version: detail.model.version,
+          workflow: pendingWorkflow,
+          ...(mustDisableToSaveWorkflow ? { disable: true } : {}),
+        }),
+      });
+
+      if (!res.ok) {
+        setWorkflowUploadError(await messageFrom(res, "upload failed"));
+        return;
+      }
+
+      setPendingWorkflow(null);
+      setPendingWorkflowFileName(null);
+      load();
+      loadRevisions();
+    } finally {
+      setUploadingWorkflow(false);
+    }
+  }
+
+  async function handleRestoreRevision(
+    revisionNumber: number,
+    disable: boolean,
+  ) {
+    if (!detail) return;
+    setRestoringRevision(revisionNumber);
+    setRestoreErrors((prev) => {
+      const next = { ...prev };
+      delete next[revisionNumber];
+      return next;
+    });
+
+    try {
+      const res = await fetch(
+        `/api/admin/models/${detail.model.id}/revisions/${revisionNumber}/restore`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            version: detail.model.version,
+            ...(disable ? { disable: true } : {}),
+          }),
+        },
+      );
+
+      if (!res.ok) {
+        const message = await messageFrom(res, "restore failed");
+        setRestoreErrors((prev) => ({ ...prev, [revisionNumber]: message }));
+        return;
+      }
+
+      load();
+      loadRevisions();
+    } finally {
+      setRestoringRevision(null);
+    }
+  }
 
   async function handleAttach(event: FormEvent) {
     event.preventDefault();
@@ -1009,6 +1144,36 @@ export function ModelEditorPage() {
   // #49): Modes/Inputs then offer "Save and disable" instead of Save.
   const mustDisableToSave = detail?.model.state === "enabled" && modelHasErrors;
 
+  // Issue #71: the same rail, run against the picked-but-not-yet-saved
+  // Workflow file plus the Model's currently *saved* Modes/Inputs (what
+  // "Replace Workflow" actually carries forward, by node id) — not the
+  // Modes/Inputs drafts, which are saved separately.
+  const pendingWorkflowIssues: ModelIssue[] = useMemo(() => {
+    if (!detail || pendingWorkflow === null || !checkModelBackends) return [];
+    try {
+      return checkModel(
+        {
+          workflow: pendingWorkflow as Workflow,
+          inputs: detail.inputs,
+          modes: detail.modes.map((mode) => ({
+            id: mode.id,
+            name: mode.name,
+            outputNodeIds: mode.outputNodes.map((node) => node.nodeId),
+            inputSettings: mode.inputSettings,
+          })),
+        },
+        checkModelBackends,
+      );
+    } catch {
+      // Not a Workflow-shaped object; the server's own parse will refuse
+      // it with a clear message once "Replace Workflow" is pressed.
+      return [];
+    }
+  }, [detail, pendingWorkflow, checkModelBackends]);
+  const mustDisableToSaveWorkflow =
+    detail?.model.state === "enabled" &&
+    hasBlockingErrors(pendingWorkflowIssues);
+
   const editingMode =
     editingModeIndex !== null ? (modesDraft?.[editingModeIndex] ?? null) : null;
   const editingPath =
@@ -1144,6 +1309,76 @@ export function ModelEditorPage() {
       )}
 
       <ModelCheckRail issues={modelIssues} />
+
+      <section>
+        <h3>Revisions</h3>
+        {revisionsLoadError && <p role="alert">{revisionsLoadError}</p>}
+        {revisions && revisions.length > 0 && (
+          <table>
+            <thead>
+              <tr>
+                <th>Revision</th>
+                <th>Created</th>
+                <th>Modes</th>
+                <th>Inputs</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {revisions.map((revision) => (
+                <tr key={revision.revisionNumber}>
+                  <td>
+                    {revision.revisionNumber}
+                    {revision.revisionNumber === detail.model.currentRevision &&
+                      " (current)"}
+                  </td>
+                  <td>{new Date(revision.createdAt).toLocaleString()}</td>
+                  <td>{revision.modeCount}</td>
+                  <td>{revision.inputCount}</td>
+                  <td>
+                    <button
+                      type="button"
+                      disabled={
+                        restoringRevision !== null ||
+                        revision.revisionNumber === detail.model.currentRevision
+                      }
+                      onClick={() =>
+                        void handleRestoreRevision(
+                          revision.revisionNumber,
+                          false,
+                        )
+                      }
+                    >
+                      Restore
+                    </button>
+                    {restoreErrors[revision.revisionNumber] && (
+                      <>
+                        <p role="alert">
+                          {restoreErrors[revision.revisionNumber]}
+                        </p>
+                        {detail.model.state === "enabled" && (
+                          <button
+                            type="button"
+                            disabled={restoringRevision !== null}
+                            onClick={() =>
+                              void handleRestoreRevision(
+                                revision.revisionNumber,
+                                true,
+                              )
+                            }
+                          >
+                            Restore and disable
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
 
       {detail.outsideServiceNotes.length > 0 && (
         <ul>
@@ -2069,6 +2304,37 @@ export function ModelEditorPage() {
 
       <section>
         <h3>Workflow</h3>
+
+        <label htmlFor="replace-workflow-file">
+          Replace Workflow (API format JSON)
+        </label>
+        <input
+          id="replace-workflow-file"
+          type="file"
+          accept="application/json"
+          onChange={(event) =>
+            void handlePickWorkflowFile(event.target.files?.[0] ?? null)
+          }
+        />
+        {pendingWorkflowFileName && (
+          <p>
+            Picked "{pendingWorkflowFileName}": Modes' output nodes and Inputs'
+            bindings carry forward by node id. Nothing is sent until you press
+            "Replace Workflow".
+          </p>
+        )}
+        <ModelCheckRail issues={pendingWorkflowIssues} />
+        <button
+          type="button"
+          disabled={uploadingWorkflow || pendingWorkflow === null}
+          onClick={() => void handleReplaceWorkflow()}
+        >
+          {mustDisableToSaveWorkflow
+            ? "Replace Workflow and disable"
+            : "Replace Workflow"}
+        </button>
+        {workflowUploadError && <p role="alert">{workflowUploadError}</p>}
+
         {editingMode && (
           <p>
             Picking output nodes for "{editingMode.name || "this Mode"}": click

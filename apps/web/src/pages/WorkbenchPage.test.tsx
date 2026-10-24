@@ -298,7 +298,7 @@ describe("WorkbenchPage", () => {
   });
 
   test("sends the picked count in the POST when the Mode has a bound Seed Input (issue #47)", async () => {
-    let postBody: Record<string, unknown> | null = null;
+    const posts: Array<Record<string, unknown> | null> = [];
     mockFetch((call) => {
       if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
         return Response.json({ model: MODEL_WITH_SEED });
@@ -313,8 +313,11 @@ describe("WorkbenchPage", () => {
         call.url.endsWith("/api/models/ltx/generations") &&
         call.method === "POST"
       ) {
-        postBody = call.body;
-        return Response.json({ generations: [], prompt: null }, 201);
+        posts.push(call.body);
+        return Response.json(
+          { generations: [], prompt: null },
+          { status: 201 },
+        );
       }
       throw new Error(`unexpected fetch ${call.url}`);
     });
@@ -323,14 +326,11 @@ describe("WorkbenchPage", () => {
     const { default: userEvent } = await import("@testing-library/user-event");
 
     await view.findByLabelText("How many (1-4)");
-    await userEvent.selectOptions(
-      view.getByLabelText("How many (1-4)"),
-      "3",
-    );
+    await userEvent.selectOptions(view.getByLabelText("How many (1-4)"), "3");
     await userEvent.click(view.getByRole("button", { name: "Generate" }));
 
-    await waitFor(() => expect(postBody).not.toBeNull());
-    expect((postBody as Record<string, unknown>).count).toBe(3);
+    await waitFor(() => expect(posts.length).toBe(1));
+    expect(posts[0]?.count).toBe(3);
   });
 
   test("shows a Submission's prompt, prefixed when it's the Workflow's own unset value", async () => {
@@ -357,9 +357,7 @@ describe("WorkbenchPage", () => {
 
     const view = renderWorkbench();
 
-    expect(
-      await view.findByText("Default prompt: a cat"),
-    ).toBeTruthy();
+    expect(await view.findByText("Default prompt: a cat")).toBeTruthy();
   });
 
   describe("Model terms and Attribution (issue #61)", () => {

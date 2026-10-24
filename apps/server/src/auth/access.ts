@@ -78,12 +78,20 @@ export function requireAccess(access: AccessLevel): Handler<AppEnv> {
 
     if (access === "admin") {
       if (session.user.status !== "active" || session.user.role !== "admin") {
-        await c.get("logWriter")?.log({
-          level: "warning",
-          source: "app",
-          message: `non-Admin called an admin route: ${c.req.method} ${c.req.path}`,
-          userId: session.user.id,
-        });
+        // A forbidden response must go out even if this Log entry can't
+        // be written (e.g. the DB a non-Admin was just refused from is
+        // itself down), so a logging failure is never let to turn a
+        // clean 403 into an unhandled 500.
+        try {
+          await c.get("logWriter")?.log({
+            level: "warning",
+            source: "app",
+            message: `non-Admin called an admin route: ${c.req.method} ${c.req.path}`,
+            userId: session.user.id,
+          });
+        } catch {
+          // best-effort: the 403 below still answers either way
+        }
         return c.json({ error: "forbidden" }, 403);
       }
       return next();

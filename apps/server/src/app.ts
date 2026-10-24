@@ -15,6 +15,7 @@ import { injectBrandingIntoHtml } from "./branding/accent-html.js";
 import { getSiteSettings } from "./branding/site-settings-store.js";
 import type { Database } from "./db/client.js";
 import type { Env } from "./env.js";
+import { logUnhandledError } from "./error-logging.js";
 import type { Logger } from "./logger.js";
 import { adminBackendsRoute } from "./routes/admin-backends.js";
 import { adminLogsRoute } from "./routes/admin-logs.js";
@@ -90,13 +91,7 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
 
   app.onError(async (err, c) => {
     const session = c.get("session");
-    await logWriter.log({
-      level: "error",
-      source: "app",
-      message: err instanceof Error ? err.message : "unhandled error",
-      details: err instanceof Error ? err.stack : undefined,
-      userId: session?.user.id,
-    });
+    await logUnhandledError(logWriter, deps.logger, session?.user.id, err);
     return c.json({ error: "internal error" }, 500);
   });
 

@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 
 type LogLevel = "error" | "warning" | "info";
 type LogSource = "backend" | "app";
@@ -66,29 +66,42 @@ function queryStringFrom(filters: FilterState): string {
 
 /** The admin Logs page: filters, raw ComfyUI errors as recorded, refresh (issue #67). */
 export function LogsPage() {
-  const [filters, setFilters] = useState<FilterState>(BLANK_FILTERS);
+  // `draft` is what the form shows as the user types/picks; `applied` is
+  // what was last actually sent to the server, only updated on Apply (or
+  // Refresh with the same filters), so filling in a Model/User/Generation
+  // id or Text search doesn't fire a request per keystroke.
+  const [draft, setDraft] = useState<FilterState>(BLANK_FILTERS);
+  const [applied, setApplied] = useState<FilterState>(BLANK_FILTERS);
   const [data, setData] = useState<LogsResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [backendOptions, setBackendOptions] = useState<AdminBackendOption[]>(
     [],
   );
+  const requestSeq = useRef(0);
 
   function load() {
-    const qs = queryStringFrom(filters);
+    const seq = ++requestSeq.current;
+    const qs = queryStringFrom(applied);
     fetch(`/api/admin/logs${qs ? `?${qs}` : ""}`)
       .then((res) => {
         if (!res.ok) throw new Error(`unexpected status ${res.status}`);
         return res.json() as Promise<LogsResponse>;
       })
       .then((body) => {
+        // An older request that resolves after a newer one must not
+        // overwrite it with stale results.
+        if (seq !== requestSeq.current) return;
         setData(body);
         setLoadError(null);
       })
-      .catch(() => setLoadError("could not load Log entries"));
+      .catch(() => {
+        if (seq !== requestSeq.current) return;
+        setLoadError("could not load Log entries");
+      });
   }
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: load is re-created each render, filters is the actual dependency
-  useEffect(load, [filters]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: load is re-created each render, applied is the actual dependency
+  useEffect(load, [applied]);
 
   useEffect(() => {
     fetch("/api/admin/backends")
@@ -101,7 +114,12 @@ export function LogsPage() {
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
-    load();
+    setApplied(draft);
+  }
+
+  function handleClear() {
+    setDraft(BLANK_FILTERS);
+    setApplied(BLANK_FILTERS);
   }
 
   return (
@@ -112,10 +130,10 @@ export function LogsPage() {
         <label htmlFor="log-level">Level</label>
         <select
           id="log-level"
-          value={filters.level}
+          value={draft.level}
           onChange={(event) =>
-            setFilters({
-              ...filters,
+            setDraft({
+              ...draft,
               level: event.target.value as FilterState["level"],
             })
           }
@@ -129,10 +147,10 @@ export function LogsPage() {
         <label htmlFor="log-source">Source</label>
         <select
           id="log-source"
-          value={filters.source}
+          value={draft.source}
           onChange={(event) =>
-            setFilters({
-              ...filters,
+            setDraft({
+              ...draft,
               source: event.target.value as FilterState["source"],
             })
           }
@@ -145,9 +163,9 @@ export function LogsPage() {
         <label htmlFor="log-backend">Backend</label>
         <select
           id="log-backend"
-          value={filters.backendId}
+          value={draft.backendId}
           onChange={(event) =>
-            setFilters({ ...filters, backendId: event.target.value })
+            setDraft({ ...draft, backendId: event.target.value })
           }
         >
           <option value="">Any</option>
@@ -162,9 +180,9 @@ export function LogsPage() {
         <input
           id="log-model"
           placeholder="Model id"
-          value={filters.modelId}
+          value={draft.modelId}
           onChange={(event) =>
-            setFilters({ ...filters, modelId: event.target.value })
+            setDraft({ ...draft, modelId: event.target.value })
           }
         />
 
@@ -172,9 +190,9 @@ export function LogsPage() {
         <input
           id="log-user"
           placeholder="User id"
-          value={filters.userId}
+          value={draft.userId}
           onChange={(event) =>
-            setFilters({ ...filters, userId: event.target.value })
+            setDraft({ ...draft, userId: event.target.value })
           }
         />
 
@@ -182,9 +200,9 @@ export function LogsPage() {
         <input
           id="log-generation"
           placeholder="Generation id"
-          value={filters.generationId}
+          value={draft.generationId}
           onChange={(event) =>
-            setFilters({ ...filters, generationId: event.target.value })
+            setDraft({ ...draft, generationId: event.target.value })
           }
         />
 
@@ -192,34 +210,28 @@ export function LogsPage() {
         <input
           id="log-from"
           type="datetime-local"
-          value={filters.from}
-          onChange={(event) =>
-            setFilters({ ...filters, from: event.target.value })
-          }
+          value={draft.from}
+          onChange={(event) => setDraft({ ...draft, from: event.target.value })}
         />
 
         <label htmlFor="log-to">To</label>
         <input
           id="log-to"
           type="datetime-local"
-          value={filters.to}
-          onChange={(event) =>
-            setFilters({ ...filters, to: event.target.value })
-          }
+          value={draft.to}
+          onChange={(event) => setDraft({ ...draft, to: event.target.value })}
         />
 
         <label htmlFor="log-text">Text</label>
         <input
           id="log-text"
           placeholder="Search message or details"
-          value={filters.q}
-          onChange={(event) =>
-            setFilters({ ...filters, q: event.target.value })
-          }
+          value={draft.q}
+          onChange={(event) => setDraft({ ...draft, q: event.target.value })}
         />
 
         <button type="submit">Apply</button>
-        <button type="button" onClick={() => setFilters(BLANK_FILTERS)}>
+        <button type="button" onClick={handleClear}>
           Clear
         </button>
         <button type="button" onClick={load}>

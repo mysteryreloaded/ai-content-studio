@@ -29,6 +29,7 @@ const TEST_ENV: Env = {
   BACKENDS_ENABLED: false,
   STATUS_TOKEN: undefined,
   MIN_FREE_DISK_GB: 10,
+  MAX_UPLOAD_MB: 500,
 };
 
 describe("every route's access level is declared and enforced", () => {
@@ -177,6 +178,14 @@ describe("every route's access level is declared and enforced", () => {
       // No Asset with this fake id exists in this test's database.
       "GET /api/assets/:id": 404,
       "POST /api/models/:slug/terms/accept": 404,
+      // Issue #50: a bodyless create fails validation; no Upload with
+      // this fake id exists.
+      "POST /api/uploads": 400,
+      "GET /api/uploads/:id/status": 404,
+      "PUT /api/uploads/:id/chunk": 404,
+      "POST /api/uploads/:id/complete": 404,
+      "GET /api/uploads/:id": 404,
+      "GET /api/uploads/:id/thumb": 404,
     };
 
     // A pending user has a session but no approval yet: `signed-in`

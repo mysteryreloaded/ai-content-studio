@@ -51,6 +51,7 @@ function testEnv(): Env {
     BACKENDS_ENABLED: true,
     STATUS_TOKEN: undefined,
     MIN_FREE_DISK_GB: 10,
+    MAX_UPLOAD_MB: 500,
   };
 }
 

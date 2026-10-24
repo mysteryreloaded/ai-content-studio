@@ -41,6 +41,7 @@ const TEST_ENV: Env = {
   BACKENDS_ENABLED: false,
   STATUS_TOKEN: undefined,
   MIN_FREE_DISK_GB: 10,
+  MAX_UPLOAD_MB: 500,
 };
 
 const SAME_ORIGIN_HEADERS = { "Sec-Fetch-Site": "same-origin" };

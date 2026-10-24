@@ -247,4 +247,159 @@ describe("/api/admin/models", () => {
     });
     expect(getRes.status).toBe(404);
   });
+
+  describe("PUT /:id/terms (issue #61)", () => {
+    async function createModel(app: Awaited<ReturnType<typeof build>>) {
+      const headers = await adminHeaders();
+      const res = await app.request("/api/admin/models", {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ name: "LTX 2.5", workflow: VALID_WORKFLOW }),
+      });
+      const { model } = (await res.json()) as {
+        model: { id: string; termsRevision: number };
+      };
+      return { headers, model };
+    }
+
+    test("sets the terms, starting a version, and bumps termsRevision", async () => {
+      const app = await build();
+      const { headers, model } = await createModel(app);
+
+      const res = await app.request(`/api/admin/models/${model.id}/terms`, {
+        method: "PUT",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({
+          revision: model.termsRevision,
+          termsBody: "# Terms",
+          licenseUrl: "https://example.com/license",
+          attribution: "Model by Example Corp",
+          askAgain: false,
+        }),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        termsBody: string;
+        licenseUrl: string;
+        attribution: string;
+        termsVersion: number | null;
+        termsRevision: number;
+      };
+      expect(body.termsBody).toBe("# Terms");
+      expect(body.licenseUrl).toBe("https://example.com/license");
+      expect(body.attribution).toBe("Model by Example Corp");
+      expect(body.termsVersion).toBe(1);
+      expect(body.termsRevision).toBe(model.termsRevision + 1);
+    });
+
+    test("a quiet text edit keeps the version; 'ask everyone to accept again' bumps it", async () => {
+      const app = await build();
+      const { headers, model } = await createModel(app);
+
+      const first = await app.request(`/api/admin/models/${model.id}/terms`, {
+        method: "PUT",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({
+          revision: model.termsRevision,
+          termsBody: "v1",
+          licenseUrl: "",
+          attribution: "",
+          askAgain: false,
+        }),
+      });
+      const afterFirst = (await first.json()) as {
+        termsVersion: number;
+        termsRevision: number;
+      };
+
+      const quietEdit = await app.request(
+        `/api/admin/models/${model.id}/terms`,
+        {
+          method: "PUT",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({
+            revision: afterFirst.termsRevision,
+            termsBody: "v1, lightly reworded",
+            licenseUrl: "",
+            attribution: "",
+            askAgain: false,
+          }),
+        },
+      );
+      const afterQuiet = (await quietEdit.json()) as {
+        termsVersion: number;
+        termsRevision: number;
+      };
+      expect(afterQuiet.termsVersion).toBe(afterFirst.termsVersion);
+
+      const askAgain = await app.request(
+        `/api/admin/models/${model.id}/terms`,
+        {
+          method: "PUT",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({
+            revision: afterQuiet.termsRevision,
+            termsBody: "v2",
+            licenseUrl: "",
+            attribution: "",
+            askAgain: true,
+          }),
+        },
+      );
+      const afterAskAgain = (await askAgain.json()) as { termsVersion: number };
+      expect(afterAskAgain.termsVersion).toBe(afterFirst.termsVersion + 1);
+    });
+
+    test("409s a stale termsRevision", async () => {
+      const app = await build();
+      const { headers, model } = await createModel(app);
+
+      const res = await app.request(`/api/admin/models/${model.id}/terms`, {
+        method: "PUT",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({
+          revision: model.termsRevision + 1,
+          termsBody: "v1",
+          licenseUrl: "",
+          attribution: "",
+          askAgain: false,
+        }),
+      });
+      expect(res.status).toBe(409);
+    });
+
+    test("rejects a non-http(s) license URL and an Attribution over 120 characters", async () => {
+      const app = await build();
+      const { headers, model } = await createModel(app);
+
+      const badUrl = await app.request(`/api/admin/models/${model.id}/terms`, {
+        method: "PUT",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({
+          revision: model.termsRevision,
+          termsBody: "",
+          licenseUrl: "not-a-url",
+          attribution: "",
+          askAgain: false,
+        }),
+      });
+      expect(badUrl.status).toBe(400);
+
+      const badAttribution = await app.request(
+        `/api/admin/models/${model.id}/terms`,
+        {
+          method: "PUT",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({
+            revision: model.termsRevision,
+            termsBody: "",
+            licenseUrl: "",
+            attribution: "x".repeat(121),
+            askAgain: false,
+          }),
+        },
+      );
+      expect(badAttribution.status).toBe(400);
+    });
+  });
 });

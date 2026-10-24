@@ -1,3 +1,4 @@
+import { renderMarkdown } from "@ai-content-studio/shared";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Navigate, useParams } from "react-router-dom";
 import { useSession } from "../useSession.js";
@@ -74,12 +75,21 @@ function valuesPayload(
   return payload;
 }
 
+interface ModelTerms {
+  version: number;
+  body: string;
+  licenseUrl: string;
+  accepted: boolean;
+}
+
 interface WorkbenchModel {
   id: string;
   slug: string;
   name: string;
   description: string;
   revision: number;
+  attribution: string;
+  terms: ModelTerms | null;
   modes: WorkbenchMode[];
 }
 
@@ -121,6 +131,113 @@ function dedupeBySubmission(
   return result.slice(0, 8);
 }
 
+/**
+ * The Model terms dialog (issue #61): blocking (no dismiss, no Escape)
+ * the first time a user opens a Model with terms and again whenever
+ * re-asked; otherwise dismissible, for viewing the terms any time via
+ * the Workbench's own link.
+ */
+function ModelTermsDialog({
+  modelName,
+  terms,
+  blocking,
+  accepting,
+  error,
+  onAccept,
+  onClose,
+}: {
+  modelName: string;
+  terms: ModelTerms;
+  blocking: boolean;
+  accepting: boolean;
+  error: string | null;
+  onAccept: () => void;
+  onClose: () => void;
+}) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    if (!dialog.open) dialog.showModal();
+  }, []);
+
+  return (
+    <dialog
+      ref={dialogRef}
+      onCancel={(event) => {
+        if (blocking) event.preventDefault();
+      }}
+      onClose={onClose}
+    >
+      <h2>{modelName}'s terms</h2>
+      <div
+        // biome-ignore lint/security/noDangerouslySetInnerHtml: renderMarkdown (shared) strips raw HTML and images
+        dangerouslySetInnerHTML={{ __html: renderMarkdown(terms.body) }}
+      />
+      {terms.licenseUrl && (
+        <p>
+          <a href={terms.licenseUrl} target="_blank" rel="noopener noreferrer">
+            License
+          </a>
+        </p>
+      )}
+
+      {!terms.accepted && (
+        <button type="button" disabled={accepting} onClick={onAccept}>
+          Accept
+        </button>
+      )}
+      {!blocking && (
+        <button type="button" onClick={() => dialogRef.current?.close()}>
+          Close
+        </button>
+      )}
+      {error && <p role="alert">{error}</p>}
+    </dialog>
+  );
+}
+
+interface GenerationDetail {
+  submission: SubmissionSummary;
+  model: WorkbenchModel;
+}
+
+/** The Generation detail dialog (issue #61): a Submission's own state plus the Model's Attribution and terms link. */
+function GenerationDetailDialog({
+  detail,
+  onClose,
+}: {
+  detail: GenerationDetail;
+  onClose: () => void;
+}) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    if (!dialog.open) dialog.showModal();
+  }, []);
+
+  return (
+    <dialog ref={dialogRef} onClose={onClose}>
+      <h2>{detail.submission.modeName}</h2>
+      <time dateTime={detail.submission.submittedAt}>
+        {new Date(detail.submission.submittedAt).toLocaleString()}
+      </time>
+      <ul>
+        {detail.submission.generations.map((generation) => (
+          <li key={generation.id}>{generation.state}</li>
+        ))}
+      </ul>
+      {detail.model.attribution && <p>{detail.model.attribution}</p>}
+      <button type="button" onClick={() => dialogRef.current?.close()}>
+        Close
+      </button>
+    </dialog>
+  );
+}
+
 /** A Model's Workbench at its slug (issue #43): pick the Mode, press Generate, watch it queue live. */
 export function WorkbenchPage() {
   const { slug = "" } = useParams();
@@ -138,6 +255,13 @@ export function WorkbenchPage() {
     status: "idle",
   });
   const [activeCount, setActiveCount] = useState(0);
+  const [termsDialog, setTermsDialog] = useState<{
+    blocking: boolean;
+    error: string | null;
+  } | null>(null);
+  const [accepting, setAccepting] = useState(false);
+  const [selectedSubmission, setSelectedSubmission] =
+    useState<SubmissionSummary | null>(null);
 
   const selectedMode =
     model?.modes.find((m) => m.id === selectedModeId) ?? null;
@@ -171,6 +295,11 @@ export function WorkbenchPage() {
         setModel(body.model);
         const firstMode = body.model.modes[0];
         if (firstMode) selectMode(firstMode);
+        // Blocking dialog the first time a user opens a Model with terms,
+        // and again whenever re-asked (issue #61).
+        if (body.model.terms && !body.model.terms.accepted) {
+          setTermsDialog({ blocking: true, error: null });
+        }
       })
       .catch(() => {
         if (!cancelled) setNotFound(true);
@@ -277,6 +406,22 @@ export function WorkbenchPage() {
           });
           return;
         }
+        if (body.error === "model_terms_required") {
+          // Re-fetch so the dialog shows the current (possibly re-asked)
+          // terms version; the submit itself queued nothing (issue #61).
+          const refreshed = await fetch(`/api/models/${current.slug}`)
+            .then((r) =>
+              r.ok ? (r.json() as Promise<{ model: WorkbenchModel }>) : null,
+            )
+            .catch(() => null);
+          if (refreshed) setModel(refreshed.model);
+          setTermsDialog({
+            blocking: true,
+            error: "Accept this Model's terms to continue.",
+          });
+          setSubmitState({ status: "idle" });
+          return;
+        }
         setSubmitState({
           status: "error",
           message: "This Model is no longer available.",
@@ -326,6 +471,31 @@ export function WorkbenchPage() {
     );
   }
   if (!model) return <p>Loading…</p>;
+  const currentModel = model;
+
+  async function handleAcceptTerms() {
+    setAccepting(true);
+    try {
+      const res = await fetch(`/api/models/${currentModel.slug}/terms/accept`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        setTermsDialog({
+          blocking: true,
+          error: "Could not record your acceptance. Please try again.",
+        });
+        return;
+      }
+      setModel((current) =>
+        current?.terms
+          ? { ...current, terms: { ...current.terms, accepted: true } }
+          : current,
+      );
+      setTermsDialog(null);
+    } finally {
+      setAccepting(false);
+    }
+  }
 
   return (
     <main className="workbench">
@@ -334,7 +504,37 @@ export function WorkbenchPage() {
       <header className="workbench-header">
         <h1>{model.name}</h1>
         {model.description && <p>{model.description}</p>}
+        {model.attribution && <p>{model.attribution}</p>}
+        {model.terms && (
+          <p>
+            <button
+              type="button"
+              onClick={() => setTermsDialog({ blocking: false, error: null })}
+            >
+              Model terms
+            </button>
+          </p>
+        )}
       </header>
+
+      {termsDialog && model.terms && (
+        <ModelTermsDialog
+          modelName={model.name}
+          terms={model.terms}
+          blocking={termsDialog.blocking}
+          accepting={accepting}
+          error={termsDialog.error}
+          onAccept={() => void handleAcceptTerms()}
+          onClose={() => setTermsDialog(null)}
+        />
+      )}
+
+      {selectedSubmission && (
+        <GenerationDetailDialog
+          detail={{ submission: selectedSubmission, model }}
+          onClose={() => setSelectedSubmission(null)}
+        />
+      )}
 
       <div className="workbench-layout">
         <section className="workbench-form">
@@ -378,11 +578,16 @@ export function WorkbenchPage() {
           <ul>
             {submissions.map((submission) => (
               <li key={submission.submissionId}>
-                <strong>{submission.modeName}</strong>{" "}
-                <time dateTime={submission.submittedAt}>
-                  {new Date(submission.submittedAt).toLocaleString()}
-                </time>{" "}
-                <span>Queued</span>
+                <button
+                  type="button"
+                  onClick={() => setSelectedSubmission(submission)}
+                >
+                  <strong>{submission.modeName}</strong>{" "}
+                  <time dateTime={submission.submittedAt}>
+                    {new Date(submission.submittedAt).toLocaleString()}
+                  </time>{" "}
+                  <span>Queued</span>
+                </button>
               </li>
             ))}
           </ul>

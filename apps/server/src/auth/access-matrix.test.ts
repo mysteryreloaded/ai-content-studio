@@ -151,6 +151,7 @@ describe("every route's access level is declared and enforced", () => {
       "DELETE /api/admin/models/:id/backends/:backendId": 404,
       "PUT /api/admin/models/:id/modes": 404,
       "PUT /api/admin/models/:id/inputs": 404,
+      "PUT /api/admin/models/:id/terms": 404,
       "POST /api/admin/models/:id/enable": 404,
       "POST /api/admin/models/:id/disable": 404,
     };
@@ -171,6 +172,7 @@ describe("every route's access level is declared and enforced", () => {
       "GET /api/models/:slug": 404,
       "GET /api/models/:slug/generations": 404,
       "POST /api/models/:slug/generations": 400,
+      "POST /api/models/:slug/terms/accept": 404,
     };
 
     // A pending user has a session but no approval yet: `signed-in`

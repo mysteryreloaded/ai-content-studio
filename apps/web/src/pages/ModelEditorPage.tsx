@@ -1,7 +1,11 @@
 import {
+  MODEL_ATTRIBUTION_MAX_LENGTH,
+  MODEL_TERMS_MAX_LENGTH,
   computeModePath,
   fieldKey,
+  isValidModelLicenseUrl,
   listBindableFields,
+  renderMarkdown,
 } from "@ai-content-studio/shared";
 import type {
   BindableField,
@@ -60,6 +64,12 @@ interface ModelDetail {
     state: "enabled" | "disabled";
     currentRevision: number;
     version: number;
+    termsBody: string;
+    licenseUrl: string;
+    attribution: string;
+    termsVersion: number | null;
+    termsVersionCreatedAt: string | null;
+    termsRevision: number;
   };
   workflowHash: string;
   workflow: Workflow;
@@ -265,6 +275,28 @@ function sameDetails(a: DetailsForm, b: DetailsForm): boolean {
   );
 }
 
+interface TermsForm {
+  termsBody: string;
+  licenseUrl: string;
+  attribution: string;
+}
+
+function termsFrom(detail: ModelDetail): TermsForm {
+  return {
+    termsBody: detail.model.termsBody,
+    licenseUrl: detail.model.licenseUrl,
+    attribution: detail.model.attribution,
+  };
+}
+
+function sameTerms(a: TermsForm, b: TermsForm): boolean {
+  return (
+    a.termsBody === b.termsBody &&
+    a.licenseUrl === b.licenseUrl &&
+    a.attribution === b.attribution
+  );
+}
+
 /** The message for a failed save: field errors, then the server's own `error` (a stale version, a taken name/slug, ...), else a fallback. */
 async function messageFrom(res: Response, fallback: string): Promise<string> {
   const payload: ErrorPayload = await res.json().catch(() => ({}));
@@ -313,6 +345,10 @@ export function ModelEditorPage() {
   const [savingInputs, setSavingInputs] = useState(false);
   const [stateError, setStateError] = useState<string[] | null>(null);
   const [togglingState, setTogglingState] = useState(false);
+  const [termsForm, setTermsForm] = useState<TermsForm | null>(null);
+  const [askAgain, setAskAgain] = useState(false);
+  const [savingTerms, setSavingTerms] = useState(false);
+  const [termsSaveError, setTermsSaveError] = useState<string | null>(null);
   // Set right before navigating away after a successful delete: `dirty`
   // is still computed from this render's (pre-setForm(null)) state when
   // the blocker runs, since state updates haven't flushed yet, so without
@@ -338,6 +374,9 @@ export function ModelEditorPage() {
         setInputsSaveError(null);
         setStateError(null);
         setLoadError(null);
+        setTermsForm(termsFrom(body));
+        setAskAgain(false);
+        setTermsSaveError(null);
       })
       .catch(() => setLoadError("could not load this Model"));
   }
@@ -609,6 +648,42 @@ export function ModelEditorPage() {
     detail && inputsDraft && !sameInputs(detail.inputs, inputsDraft),
   );
 
+  const termsDirty = Boolean(
+    detail &&
+      termsForm &&
+      (!sameTerms(termsFrom(detail), termsForm) || askAgain),
+  );
+
+  const termsPreviewHtml = termsForm ? renderMarkdown(termsForm.termsBody) : "";
+
+  async function handleSaveTerms(event: FormEvent) {
+    event.preventDefault();
+    if (!detail || !termsForm) return;
+    setSavingTerms(true);
+    setTermsSaveError(null);
+
+    try {
+      const res = await fetch(`/api/admin/models/${detail.model.id}/terms`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          revision: detail.model.termsRevision,
+          ...termsForm,
+          askAgain,
+        }),
+      });
+
+      if (!res.ok) {
+        setTermsSaveError(await messageFrom(res, "save failed"));
+        return;
+      }
+
+      load();
+    } finally {
+      setSavingTerms(false);
+    }
+  }
+
   const editingMode =
     editingModeIndex !== null ? (modesDraft?.[editingModeIndex] ?? null) : null;
   const editingPath =
@@ -626,13 +701,13 @@ export function ModelEditorPage() {
       : null;
 
   useEffect(() => {
-    if (!dirty && !modesDirty && !inputsDirty) return;
+    if (!dirty && !modesDirty && !inputsDirty && !termsDirty) return;
     const handler = (event: BeforeUnloadEvent) => {
       event.preventDefault();
     };
     window.addEventListener("beforeunload", handler);
     return () => window.removeEventListener("beforeunload", handler);
-  }, [dirty, modesDirty, inputsDirty]);
+  }, [dirty, modesDirty, inputsDirty, termsDirty]);
 
   // Catches every in-app navigation away from the editor while dirty: the
   // "Back to Models" button, AdminShell's nav links, and the browser's
@@ -641,7 +716,7 @@ export function ModelEditorPage() {
   useBlocker(({ currentLocation, nextLocation }) => {
     if (
       bypassBlockerRef.current ||
-      (!dirty && !modesDirty && !inputsDirty) ||
+      (!dirty && !modesDirty && !inputsDirty && !termsDirty) ||
       currentLocation.pathname === nextLocation.pathname
     ) {
       return false;
@@ -954,6 +1029,91 @@ export function ModelEditorPage() {
         </button>
         {modesSaveError && <p role="alert">{modesSaveError}</p>}
       </section>
+
+      {termsForm && (
+        <form onSubmit={(event) => void handleSaveTerms(event)}>
+          <h3>Terms and attribution</h3>
+          <p>
+            <a
+              href="https://github.com/mysteryreloaded/ai-content-studio/blob/main/docs/licensing.md"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Licensing docs
+            </a>
+          </p>
+
+          <label htmlFor="model-terms-body">Model terms (Markdown)</label>
+          <textarea
+            id="model-terms-body"
+            rows={10}
+            value={termsForm.termsBody}
+            maxLength={MODEL_TERMS_MAX_LENGTH}
+            onChange={(event) =>
+              setTermsForm({ ...termsForm, termsBody: event.target.value })
+            }
+          />
+
+          <h4>Preview</h4>
+          {/* biome-ignore lint/security/noDangerouslySetInnerHtml: renderMarkdown (shared) strips raw HTML and images */}
+          <div dangerouslySetInnerHTML={{ __html: termsPreviewHtml }} />
+
+          <label htmlFor="model-license-url">License URL</label>
+          <input
+            id="model-license-url"
+            value={termsForm.licenseUrl}
+            onChange={(event) =>
+              setTermsForm({ ...termsForm, licenseUrl: event.target.value })
+            }
+          />
+          {!isValidModelLicenseUrl(termsForm.licenseUrl) && (
+            <p role="alert">Must be an http(s) URL, or blank</p>
+          )}
+
+          <label htmlFor="model-attribution">Attribution</label>
+          <input
+            id="model-attribution"
+            value={termsForm.attribution}
+            maxLength={MODEL_ATTRIBUTION_MAX_LENGTH}
+            onChange={(event) =>
+              setTermsForm({ ...termsForm, attribution: event.target.value })
+            }
+          />
+
+          <p>
+            {detail.model.termsBody === ""
+              ? "No terms are set: anyone can use this Model without accepting anything."
+              : `Current version ${detail.model.termsVersion}, effective ${
+                  detail.model.termsVersionCreatedAt
+                    ? new Date(
+                        detail.model.termsVersionCreatedAt,
+                      ).toLocaleDateString()
+                    : "unknown"
+                }.`}
+          </p>
+
+          <label>
+            <input
+              type="checkbox"
+              checked={askAgain}
+              onChange={(event) => setAskAgain(event.target.checked)}
+            />
+            Ask everyone to accept again
+          </label>
+
+          <button
+            type="submit"
+            disabled={
+              savingTerms ||
+              !termsDirty ||
+              !isValidModelLicenseUrl(termsForm.licenseUrl)
+            }
+          >
+            Save Terms
+          </button>
+          {termsSaveError && <p role="alert">{termsSaveError}</p>}
+        </form>
+      )}
 
       <section>
         <h3>Inputs</h3>

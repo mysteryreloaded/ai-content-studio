@@ -293,7 +293,14 @@ describe("ModelRepository.setState", () => {
 
     const summaries = await repository.listEnabledSummaries();
     expect(summaries).toEqual([
-      { id: a.id, slug: a.slug, name: "A", description: "", modeCount: 1 },
+      {
+        id: a.id,
+        slug: a.slug,
+        name: "A",
+        description: "",
+        modeCount: 1,
+        attribution: "",
+      },
     ]);
   });
 });

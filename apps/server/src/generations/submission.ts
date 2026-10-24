@@ -12,7 +12,11 @@ import type { Clock } from "@ai-content-studio/shared";
 import type { z } from "zod";
 import type { BackendsService } from "../backends/service.js";
 import type { ModelBackendsRepository } from "../models/model-backends.js";
-import type { ModelDetail, ModelRepository } from "../models/repository.js";
+import {
+  type ModelDetail,
+  type ModelRepository,
+  activeModelTermsVersion,
+} from "../models/repository.js";
 import type { GenerationEvents } from "./events.js";
 import type { GenerationRecord, GenerationsRepository } from "./repository.js";
 
@@ -32,6 +36,13 @@ export class ModelChanged extends Error {
 export class ModelDisabled extends Error {
   constructor() {
     super("model_disabled");
+  }
+}
+
+/** The caller hasn't accepted this Model's current terms version (issue #61). */
+export class ModelTermsRequired extends Error {
+  constructor() {
+    super("model_terms_required");
   }
 }
 
@@ -107,6 +118,15 @@ export async function submitGeneration(
   if (detail.model.state !== "enabled") throw new ModelDisabled();
   if (detail.model.currentRevision !== params.revision) {
     throw new ModelChanged(detail);
+  }
+
+  const requiredTermsVersion = activeModelTermsVersion(detail.model);
+  if (requiredTermsVersion !== null) {
+    const accepted = await deps.modelRepository.getAcceptedTermsVersion(
+      detail.model.id,
+      params.userId,
+    );
+    if (accepted !== requiredTermsVersion) throw new ModelTermsRequired();
   }
 
   const mode = detail.modes.find((m) => m.id === params.modeId);

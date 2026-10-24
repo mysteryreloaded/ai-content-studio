@@ -256,4 +256,106 @@ describe("WorkbenchPage", () => {
       await view.findByText("no server available for this Model"),
     ).toBeTruthy();
   });
+
+  describe("Model terms and Attribution (issue #61)", () => {
+    const MODEL_WITH_TERMS = {
+      ...MODEL,
+      attribution: "Model by Example Corp",
+      terms: {
+        version: 1,
+        body: "Be nice.",
+        licenseUrl: "https://example.com/license",
+        accepted: false,
+      },
+    };
+
+    test("shows Attribution atop the Workbench and a blocking dialog when terms aren't accepted", async () => {
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
+          return Response.json({ model: MODEL_WITH_TERMS });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ submissions: [] });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+
+      expect(await view.findByText("Model by Example Corp")).toBeTruthy();
+      expect(await view.findByText("Be nice.")).toBeTruthy();
+    });
+
+    test("accepting closes the dialog; the Workbench links the Model terms afterwards", async () => {
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
+          return Response.json({ model: MODEL_WITH_TERMS });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ submissions: [] });
+        }
+        if (call.url.endsWith("/api/models/ltx/terms/accept")) {
+          return Response.json({ ok: true, version: 1 });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await view.findByText("Be nice.");
+      await userEvent.click(view.getByRole("button", { name: "Accept" }));
+
+      await waitFor(() => expect(view.queryByText("Be nice.")).toBeNull());
+      expect(view.getByRole("button", { name: "Model terms" })).toBeTruthy();
+    });
+
+    test("409 model_terms_required reopens the blocking dialog without queuing anything", async () => {
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
+          return Response.json({ model: MODEL_WITH_TERMS });
+        }
+        if (
+          call.url.endsWith("/api/models/ltx/generations") &&
+          call.method === "GET"
+        ) {
+          return Response.json({ submissions: [] });
+        }
+        if (call.url.endsWith("/api/models/ltx/terms/accept")) {
+          return Response.json({ ok: true, version: 1 });
+        }
+        if (
+          call.url.endsWith("/api/models/ltx/generations") &&
+          call.method === "POST"
+        ) {
+          return Response.json(
+            { error: "model_terms_required" },
+            { status: 409 },
+          );
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      // Accept once (closing the initial blocking dialog) to reach
+      // Generate; the server still reports the version unaccepted, as a
+      // re-ask would, so submitting re-opens the dialog.
+      await view.findByText("Be nice.");
+      await userEvent.click(view.getByRole("button", { name: "Accept" }));
+      await waitFor(() => expect(view.queryByText("Be nice.")).toBeNull());
+
+      await userEvent.click(view.getByRole("button", { name: "Generate" }));
+
+      expect(await view.findByText("Be nice.")).toBeTruthy();
+      expect(
+        view.getByText("Accept this Model's terms to continue."),
+      ).toBeTruthy();
+    });
+  });
 });

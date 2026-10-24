@@ -1,5 +1,5 @@
 {
-  "id": "bbb76026-2a34-4469-a06a-51eeb752c611",
+  "id": "6cb388f6-5b31-48d8-9aaa-3787259c3d39",
   "prevId": "b9aa21e0-2180-4a68-bb0c-f10128d36ab3",
   "version": "7",
   "dialect": "postgresql",
@@ -560,13 +560,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "inputs": {
-          "name": "inputs",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -619,6 +612,67 @@
         }
       },
       "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.model_terms_acceptances": {
+      "name": "model_terms_acceptances",
+      "schema": "",
+      "columns": {
+        "model_id": {
+          "name": "model_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "accepted_at": {
+          "name": "accepted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "model_terms_acceptances_model_id_models_id_fk": {
+          "name": "model_terms_acceptances_model_id_models_id_fk",
+          "tableFrom": "model_terms_acceptances",
+          "tableTo": "models",
+          "columnsFrom": ["model_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "model_terms_acceptances_user_id_users_id_fk": {
+          "name": "model_terms_acceptances_user_id_users_id_fk",
+          "tableFrom": "model_terms_acceptances",
+          "tableTo": "users",
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "model_terms_acceptances_model_id_user_id_pk": {
+          "name": "model_terms_acceptances_model_id_user_id_pk",
+          "columns": ["model_id", "user_id"]
+        }
+      },
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
@@ -684,6 +738,46 @@
         },
         "version": {
           "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "terms_body": {
+          "name": "terms_body",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "''"
+        },
+        "license_url": {
+          "name": "license_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "''"
+        },
+        "attribution": {
+          "name": "attribution",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "''"
+        },
+        "terms_version": {
+          "name": "terms_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "terms_version_created_at": {
+          "name": "terms_version_created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "terms_revision": {
+          "name": "terms_revision",
           "type": "integer",
           "primaryKey": false,
           "notNull": true,

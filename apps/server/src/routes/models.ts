@@ -16,11 +16,15 @@ import {
   ModelChanged,
   ModelDisabled,
   ModelNotFound,
+  ModelTermsRequired,
   NoBackend,
   type SubmissionDeps,
   submitGeneration,
 } from "../generations/submission.js";
-import type { ModelRepository } from "../models/repository.js";
+import {
+  type ModelRepository,
+  activeModelTermsVersion,
+} from "../models/repository.js";
 
 const submitSchema = z.object({
   modeId: z.string(),
@@ -83,14 +87,17 @@ function toWorkbenchInput(input: InputDefinition, workflow: Workflow) {
 /** Trims a Model's admin detail down to what a signed-in user's Workbench may see. */
 function toWorkbenchDetail(
   detail: Awaited<ReturnType<ModelRepository["getBySlug"]>>,
+  acceptedTermsVersion: number | null,
 ) {
   if (!detail) return null;
+  const termsVersion = activeModelTermsVersion(detail.model);
   return {
     id: detail.model.id,
     slug: detail.model.slug,
     name: detail.model.name,
     description: detail.model.description,
     revision: detail.model.currentRevision,
+    attribution: detail.model.attribution,
     modes: detail.modes.map((mode) => ({
       id: mode.id,
       name: mode.name,
@@ -101,6 +108,15 @@ function toWorkbenchDetail(
       ).map((input) => toWorkbenchInput(input, detail.workflow)),
       description: mode.description,
     })),
+    terms:
+      termsVersion === null
+        ? null
+        : {
+            version: termsVersion,
+            body: detail.model.termsBody,
+            licenseUrl: detail.model.licenseUrl,
+            accepted: acceptedTermsVersion === termsVersion,
+          },
   };
 }
 
@@ -146,7 +162,41 @@ export function modelsRoute(
       if (!detail || detail.model.state !== "enabled") {
         return c.json({ error: "not found" }, 404);
       }
-      return c.json({ model: toWorkbenchDetail(detail) });
+      const session = c.get("session");
+      if (!session) return c.json({ error: "unauthorized" }, 401);
+      const acceptedTermsVersion =
+        await modelRepository.getAcceptedTermsVersion(
+          detail.model.id,
+          session.user.id,
+        );
+      return c.json({ model: toWorkbenchDetail(detail, acceptedTermsVersion) });
+    },
+  );
+
+  guardedRoute(
+    app,
+    routes,
+    "/api/models",
+    "post",
+    "/:slug/terms/accept",
+    "active",
+    async (c) => {
+      const detail = await modelRepository.getBySlug(slugParam(c));
+      if (!detail || detail.model.state !== "enabled") {
+        return c.json({ error: "not found" }, 404);
+      }
+      const session = c.get("session");
+      if (!session) return c.json({ error: "unauthorized" }, 401);
+
+      const version = activeModelTermsVersion(detail.model);
+      if (version === null) return c.json({ error: "no_terms" }, 400);
+
+      await modelRepository.acceptTerms(
+        detail.model.id,
+        session.user.id,
+        version,
+      );
+      return c.json({ ok: true, version });
     },
   );
 
@@ -214,13 +264,24 @@ export function modelsRoute(
           return c.json({ error: "not found" }, 404);
         }
         if (err instanceof ModelChanged) {
+          const acceptedTermsVersion =
+            await modelRepository.getAcceptedTermsVersion(
+              err.detail.model.id,
+              session.user.id,
+            );
           return c.json(
-            { error: "model_changed", model: toWorkbenchDetail(err.detail) },
+            {
+              error: "model_changed",
+              model: toWorkbenchDetail(err.detail, acceptedTermsVersion),
+            },
             409,
           );
         }
         if (err instanceof ModelDisabled) {
           return c.json({ error: "model_disabled" }, 409);
+        }
+        if (err instanceof ModelTermsRequired) {
+          return c.json({ error: "model_terms_required" }, 409);
         }
         if (err instanceof ModeNotFound) {
           return c.json({ error: "mode not found" }, 400);

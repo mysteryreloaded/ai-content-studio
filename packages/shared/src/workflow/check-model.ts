@@ -363,6 +363,33 @@ export function checkModel(
       });
     }
 
+    // Issue #52: unlike a Points Input's own (write) binding, checked
+    // generically just above, its Width/Height fields are only ever
+    // *read*; a Mode can still show the Input while one of them sits
+    // off that Mode's Path, which would resolve against whatever the
+    // Workflow's node there happens to hold, not this Mode's own run.
+    for (const input of model.inputs) {
+      if (input.kind !== "points") continue;
+      const setting = modeInputSetting(mode.inputSettings, input.id);
+      if (setting.state === "hidden") continue;
+      if (!path.nodeIds.has(input.widthField.nodeId)) {
+        issues.push({
+          severity: "error",
+          message: `"${input.label}"'s Width field is off Mode "${mode.name}"'s Path`,
+          modeId: mode.id,
+          inputId: input.id,
+        });
+      }
+      if (!path.nodeIds.has(input.heightField.nodeId)) {
+        issues.push({
+          severity: "error",
+          message: `"${input.label}"'s Height field is off Mode "${mode.name}"'s Path`,
+          modeId: mode.id,
+          inputId: input.id,
+        });
+      }
+    }
+
     if (backends.length === 0) continue;
 
     const classTypes = pathClassTypes(workflow, path.nodeIds);

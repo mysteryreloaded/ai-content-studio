@@ -286,6 +286,10 @@ export function validateModeInputSettings(
             ? "a Video Upload"
             : "an Audio Upload";
       errors.push(`"${input.label}" is ${kindLabel} and can't be fixed`);
+    } else if (input.kind === "points") {
+      // issue #52: like an Upload, a Points Input always takes the
+      // user's own click positions; there's nothing to fix it to.
+      errors.push(`"${input.label}" is a Points Input and can't be fixed`);
     }
   }
 

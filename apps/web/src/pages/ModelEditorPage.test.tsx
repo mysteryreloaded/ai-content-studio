@@ -834,6 +834,178 @@ describe("ModelEditorPage", () => {
     ]);
   });
 
+  test("adds a Points Input: picks its video Input, Width/Height fields and its own bound field, then saves it (issue #52)", async () => {
+    const videoInput = {
+      id: "video-input",
+      kind: "video_upload",
+      group: "describe",
+      label: "Clip",
+      help: "",
+      maxSizeMb: 50,
+      maxLongSide: null,
+      minDurationMs: 0,
+      maxDurationMs: 10_000,
+      trimmable: true,
+      bindings: [
+        {
+          nodeId: "1",
+          field: "video",
+          classType: "VHS_LoadVideo",
+          title: null,
+        },
+      ],
+    };
+    const detail = {
+      ...DETAIL,
+      workflow: {
+        "1": { class_type: "VHS_LoadVideo", inputs: { video: "example.mp4" } },
+        "2": {
+          class_type: "EmptyLatentImage",
+          inputs: { width: 512, height: 512 },
+        },
+        "3": { class_type: "PointsEditor", inputs: { points: "" } },
+      },
+      nodes: [
+        { id: "1", classType: "VHS_LoadVideo", title: null },
+        { id: "2", classType: "EmptyLatentImage", title: null },
+        { id: "3", classType: "PointsEditor", title: null },
+      ],
+      inputs: [videoInput],
+    };
+    const calls = mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1")) {
+        return Response.json(detail);
+      }
+      if (call.method === "GET") return respondGet(call.url);
+      if (call.method === "PUT" && call.url.endsWith("/inputs")) {
+        return Response.json({
+          record: { ...DETAIL.model, currentRevision: 2, version: 2 },
+          inputs: [],
+        });
+      }
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+
+    await view.findByText("LTX 2.5");
+    await userEvent.selectOptions(
+      view.getByLabelText("New Input kind"),
+      "points",
+    );
+    await userEvent.click(view.getByText("Add Input"));
+    const labelFields = view.getAllByLabelText("Label");
+    await userEvent.type(
+      labelFields[labelFields.length - 1] as HTMLElement,
+      "Who to replace",
+    );
+
+    await userEvent.selectOptions(
+      view.getByLabelText("Video Upload Input"),
+      "video-input",
+    );
+    await userEvent.selectOptions(
+      view.getByLabelText("Width field"),
+      "2::width",
+    );
+    await userEvent.selectOptions(
+      view.getByLabelText("Height field"),
+      "2::height",
+    );
+
+    // `addInput` already opens field-picking for the newly added Input.
+    const pointsRow = (await view.findByText("points")).closest(
+      "tr",
+    ) as HTMLElement;
+    await userEvent.click(
+      pointsRow.querySelector("button") as HTMLButtonElement,
+    );
+
+    await userEvent.click(view.getByText("Save Inputs"));
+
+    const saved = calls.find(
+      (c) => c.method === "PUT" && c.url.endsWith("/inputs"),
+    );
+    expect(saved?.body?.inputs).toEqual([
+      videoInput,
+      {
+        id: expect.any(String),
+        kind: "points",
+        group: "describe",
+        label: "Who to replace",
+        help: "",
+        videoInputId: "video-input",
+        widthField: { nodeId: "2", field: "width" },
+        heightField: { nodeId: "2", field: "height" },
+        bindings: [
+          {
+            nodeId: "3",
+            field: "points",
+            classType: "PointsEditor",
+            title: null,
+          },
+        ],
+      },
+    ]);
+  });
+
+  test("the Mode x Input grid's State select never offers 'fixed' for a Points Input (issue #52)", async () => {
+    const DETAIL_POINTS = {
+      ...DETAIL,
+      modes: [
+        {
+          id: "mode-1",
+          sortOrder: 0,
+          name: "Mode 1",
+          description: "",
+          outputNodes: [
+            { nodeId: "1", classType: "LoadImage", title: null, kind: null },
+          ],
+          inputSettings: [],
+        },
+      ],
+      inputs: [
+        {
+          id: "points-input",
+          kind: "points",
+          group: "describe",
+          label: "Who to replace",
+          help: "",
+          videoInputId: "video-input",
+          widthField: { nodeId: "1", field: "width" },
+          heightField: { nodeId: "1", field: "height" },
+          bindings: [
+            {
+              nodeId: "1",
+              field: "image",
+              classType: "LoadImage",
+              title: null,
+            },
+          ],
+        },
+      ],
+    };
+
+    mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1")) {
+        return Response.json(DETAIL_POINTS);
+      }
+      if (call.method === "GET") return Response.json(NO_BACKENDS);
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+
+    const row = (
+      await view.findByText("Who to replace", { selector: "th" })
+    ).closest("tr") as HTMLElement;
+    const select = row.querySelector("select") as HTMLSelectElement;
+    const options = [...select.options].map((o) => o.value);
+    expect(options).not.toContain("fixed");
+    expect(options).toContain("optional");
+  });
+
   test("Save Modes becomes 'Save and disable' and sends disable:true once checkModel has errors (issue #49 CEO review)", async () => {
     const detail = {
       ...DETAIL,

@@ -178,6 +178,83 @@ describe("PUT /api/admin/models/:id/inputs", () => {
     expect(body.inputs[0]?.label).toBe("Prompt");
   });
 
+  test("saves a Points Input bound to a video Input and Width/Height fields (issue #52)", async () => {
+    const { app } = await build();
+    const headers = await adminHeaders();
+
+    const pointsWorkflow = {
+      "1": { class_type: "VHS_LoadVideo", inputs: { video: "example.mp4" } },
+      "2": {
+        class_type: "EmptyLatentImage",
+        inputs: { width: 512, height: 512 },
+      },
+      "3": { class_type: "PointsEditor", inputs: { points: "" } },
+      "4": { class_type: "SaveImage", inputs: { images: ["2", 0] } },
+    };
+    const createRes = await app.request("/api/admin/models", {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({ name: "Points model", workflow: pointsWorkflow }),
+    });
+    const { model } = (await createRes.json()) as {
+      model: { id: string; version: number };
+    };
+
+    const videoInput = {
+      id: "22222222-2222-2222-2222-222222222222",
+      kind: "video_upload",
+      group: "describe",
+      label: "Clip",
+      help: "",
+      maxSizeMb: 50,
+      maxLongSide: null,
+      minDurationMs: 0,
+      maxDurationMs: 10_000,
+      trimmable: true,
+      bindings: [
+        {
+          nodeId: "1",
+          field: "video",
+          classType: "VHS_LoadVideo",
+          title: null,
+        },
+      ],
+    };
+    const pointsInput = {
+      id: "33333333-3333-3333-3333-333333333333",
+      kind: "points",
+      group: "describe",
+      label: "Who to replace",
+      help: "",
+      videoInputId: videoInput.id,
+      widthField: { nodeId: "2", field: "width" },
+      heightField: { nodeId: "2", field: "height" },
+      bindings: [
+        {
+          nodeId: "3",
+          field: "points",
+          classType: "PointsEditor",
+          title: null,
+        },
+      ],
+    };
+
+    const res = await app.request(`/api/admin/models/${model.id}/inputs`, {
+      method: "PUT",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({
+        version: model.version,
+        inputs: [videoInput, pointsInput],
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      inputs: Array<{ kind: string; label: string }>;
+    };
+    expect(body.inputs.map((i) => i.kind)).toEqual(["video_upload", "points"]);
+    expect(body.inputs[1]?.label).toBe("Who to replace");
+  });
+
   test("carries the current Modes forward unchanged onto the new revision", async () => {
     const { app } = await build();
     const headers = await adminHeaders();

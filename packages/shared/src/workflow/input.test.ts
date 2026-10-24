@@ -17,6 +17,7 @@ import type {
   AudioUploadInputDefinition,
   ImageUploadInputDefinition,
   NumberInputDefinition,
+  PointsInputDefinition,
   SeedInputDefinition,
   SelectInputDefinition,
   TextInputDefinition,
@@ -1144,5 +1145,141 @@ describe("Seed Input (issue #47)", () => {
   test("leaves the Workflow's own seed when blank", () => {
     const applied = applyInputValues(workflow, [seedInput()], {});
     expect(applied["2"]?.inputs.seed).toBe(0);
+  });
+});
+
+describe("Points Input (issue #52)", () => {
+  const pointsWorkflow: Workflow = {
+    "20": {
+      class_type: "VHS_LoadVideo",
+      inputs: { video: "example.mp4" },
+    },
+    "30": {
+      class_type: "EmptyLatentImage",
+      inputs: { width: 50, height: 50 },
+    },
+    "31": {
+      class_type: "PointsEditor",
+      inputs: { points: "" },
+    },
+    "22": {
+      class_type: "SaveVideo",
+      inputs: { images: ["20", 0], filename_prefix: "ComfyUI" },
+    },
+  };
+  const ctx = {
+    workflow: pointsWorkflow,
+    outputNodeIds: new Set(["22"]),
+    usedFields: new Set<string>(),
+  };
+  const videoInputId = "8a3c1c5e-2d4b-4d55-9d0e-3f1f0f6b7a02";
+  const videoInput: VideoUploadInputDefinition = {
+    id: videoInputId,
+    kind: "video_upload",
+    group: "describe",
+    label: "Reference clip",
+    help: "",
+    maxSizeMb: 50,
+    maxLongSide: 1920,
+    minDurationMs: 500,
+    maxDurationMs: 10_000,
+    trimmable: true,
+    bindings: [
+      { nodeId: "20", field: "video", classType: "VHS_LoadVideo", title: null },
+    ],
+  };
+  const pointsInput: PointsInputDefinition = {
+    id: "8a3c1c5e-2d4b-4d55-9d0e-3f1f0f6b7a04",
+    kind: "points",
+    group: "describe",
+    label: "Who to replace",
+    help: "",
+    videoInputId,
+    widthField: { nodeId: "30", field: "width" },
+    heightField: { nodeId: "30", field: "height" },
+    bindings: [
+      { nodeId: "31", field: "points", classType: "PointsEditor", title: null },
+    ],
+  };
+  const allInputs = [videoInput, pointsInput];
+
+  test("binds a text-shaped field only", () => {
+    expect(validateBinding("points", "31", "points", ctx)).toBeNull();
+    expect(validateBinding("points", "30", "width", ctx)).toContain(
+      "isn't a text field",
+    );
+  });
+
+  test("validates its video Input and Width/Height field references", () => {
+    expect(
+      validateInputDefinition(pointsInput, [], ctx, [], allInputs),
+    ).toEqual([]);
+    expect(
+      validateInputDefinition(
+        { ...pointsInput, videoInputId: "not-an-input" },
+        [],
+        ctx,
+        [],
+        allInputs,
+      ),
+    ).toContain("video Input must be one of this Model's Video Uploads");
+    expect(
+      validateInputDefinition(
+        { ...pointsInput, widthField: { nodeId: "99", field: "width" } },
+        [],
+        ctx,
+        [],
+        allInputs,
+      ).some((e) => e.includes("width field")),
+    ).toBe(true);
+    expect(
+      validateInputDefinition(
+        {
+          ...pointsInput,
+          heightField: { nodeId: "20", field: "video" },
+        },
+        [],
+        ctx,
+        [],
+        allInputs,
+      ).some((e) => e.includes("height field")),
+    ).toBe(true);
+  });
+
+  test("a shown Points Input is always required and takes 1-10 in-frame points", () => {
+    const schema = buildInputValuesSchema([pointsInput]);
+    expect(schema.safeParse({}).success).toBe(false);
+    expect(
+      schema.safeParse({ [pointsInput.id]: JSON.stringify([]) }).success,
+    ).toBe(false);
+    expect(
+      schema.safeParse({
+        [pointsInput.id]: JSON.stringify([{ x: 1.5, y: 0.5 }]),
+      }).success,
+    ).toBe(false);
+    expect(
+      schema.safeParse({
+        [pointsInput.id]: JSON.stringify([{ x: 0.5, y: 0.5 }]),
+      }).success,
+    ).toBe(true);
+  });
+
+  test("buildPrompt resolves Width/Height and writes whole-pixel points", () => {
+    const applied = applyInputValues(
+      pointsWorkflow,
+      [pointsInput],
+      { [pointsInput.id]: JSON.stringify([{ x: 0.5, y: 0.5 }]) },
+      { [pointsInput.id]: { width: 200, height: 100 } },
+    );
+    expect(applied["31"]?.inputs.points).toBe(
+      JSON.stringify([{ x: 25, y: 25 }]),
+    );
+  });
+
+  test("leaves the bound field untouched when the frame size isn't known", () => {
+    const applied = applyInputValues(pointsWorkflow, [pointsInput], {
+      [pointsInput.id]: JSON.stringify([{ x: 0.5, y: 0.5 }]),
+    });
+    expect(applied["31"]?.inputs.points).toBe("");
   });
 });

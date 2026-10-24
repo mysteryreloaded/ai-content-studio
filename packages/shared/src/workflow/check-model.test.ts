@@ -358,7 +358,10 @@ describe("checkModel", () => {
       ...WORKFLOW,
       "7": { class_type: "PointsEditor", inputs: { points: "" } },
       // Not a dependency of output node "3": off the Path.
-      "8": { class_type: "EmptyLatentImage", inputs: { width: 512, height: 512 } },
+      "8": {
+        class_type: "EmptyLatentImage",
+        inputs: { width: 512, height: 512 },
+      },
     };
     const offPathPoints = pointsInput({
       widthField: { nodeId: "8", field: "width" },

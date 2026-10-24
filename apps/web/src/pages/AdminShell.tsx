@@ -4,6 +4,7 @@ import { useSession } from "../useSession.js";
 import { AuditPage } from "./AuditPage.js";
 import { BackendsPage } from "./BackendsPage.js";
 import { LogsPage } from "./LogsPage.js";
+import { OverviewPage } from "./OverviewPage.js";
 import { SiteSettingsForm } from "./SiteSettingsForm.js";
 
 const ERROR_BADGE_POLL_MS = 30_000;
@@ -57,14 +58,16 @@ export function AdminShell() {
     <main>
       <h1>Admin</h1>
       <nav>
-        <Link to="/admin">Dashboard</Link>
+        <Link to="/admin">Overview</Link>
+        <Link to="/admin/settings">Settings</Link>
         <Link to="/admin/logs">Logs{errorCount ? ` (${errorCount})` : ""}</Link>
         <Link to="/admin/audit">Audit</Link>
       </nav>
 
       <Routes>
+        <Route index element={<OverviewPage />} />
         <Route
-          index
+          path="settings"
           element={
             <>
               <SiteSettingsForm />

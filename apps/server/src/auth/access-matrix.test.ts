@@ -26,6 +26,8 @@ const TEST_ENV: Env = {
   DATA_DIR: "/tmp/ai-content-studio-test-data",
   SECRET_KEY: "4FRG13w9RuN5CeV10Lzfxl78MY+AJRJtGuKrBdYzgCY=",
   BACKENDS_ENABLED: false,
+  STATUS_TOKEN: undefined,
+  MIN_FREE_DISK_GB: 10,
 };
 
 describe("every route's access level is declared and enforced", () => {
@@ -59,6 +61,7 @@ describe("every route's access level is declared and enforced", () => {
         "active",
         "admin",
         "status-token",
+        "admin-or-status-token",
       ]).toContain(route.access);
     }
   });
@@ -105,6 +108,7 @@ describe("every route's access level is declared and enforced", () => {
       "signed-in": { active: 200, admin: 200 },
       active: { active: 200, admin: 200 },
       admin: { active: 403, admin: 200 },
+      "admin-or-status-token": { active: 403, admin: 200 },
     };
 
     // A route that needs a request body to do anything (e.g. a save)

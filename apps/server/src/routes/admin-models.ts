@@ -1,6 +1,7 @@
 // `/api/admin/models`: create a Model from a Workflow, list/edit/reorder/
 // soft-delete and History (issue #40).
 
+import { modelTermsFieldsSchema } from "@ai-content-studio/shared";
 import { and, desc, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import type { Context } from "hono";
@@ -151,6 +152,45 @@ export function adminModelsRoute(
       return handleError(c, err);
     }
   });
+
+  guardedRoute(
+    app,
+    routes,
+    basePath,
+    "put",
+    "/:id/terms",
+    "admin",
+    async (c) => {
+      const id = idParam(c);
+      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+
+      const body = await readJsonBody(c);
+      if (body === null) return c.json({ error: "invalid JSON body" }, 400);
+
+      const revisionResult = versionSchema.safeParse(body.revision);
+      if (!revisionResult.success)
+        return c.json({ error: "revision is required" }, 400);
+
+      const fieldsResult = modelTermsFieldsSchema.safeParse(body);
+      if (!fieldsResult.success)
+        return c.json(
+          { error: "invalid input", issues: fieldsResult.error.issues },
+          400,
+        );
+
+      try {
+        const record = await repository.updateTerms(
+          id,
+          fieldsResult.data,
+          revisionResult.data,
+          adminActorFrom(c),
+        );
+        return c.json(record);
+      } catch (err) {
+        return handleError(c, err);
+      }
+    },
+  );
 
   guardedRoute(app, routes, basePath, "delete", "/:id", "admin", async (c) => {
     const id = idParam(c);

@@ -42,6 +42,7 @@ const TEST_ENV: Env = {
   STATUS_TOKEN: undefined,
   MIN_FREE_DISK_GB: 10,
   MAX_UPLOAD_MB: 500,
+  FFMPEG_CONCURRENCY: 2,
 };
 
 const SAME_ORIGIN_HEADERS = { "Sec-Fetch-Site": "same-origin" };

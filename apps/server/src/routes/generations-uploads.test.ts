@@ -96,6 +96,7 @@ describe("POST /:slug/generations with an Image Upload Input", () => {
       STATUS_TOKEN: undefined,
       MIN_FREE_DISK_GB: minFreeDiskGb,
       MAX_UPLOAD_MB: 500,
+      FFMPEG_CONCURRENCY: 2,
     };
     return createApp({
       db,

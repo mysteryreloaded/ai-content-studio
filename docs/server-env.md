@@ -121,3 +121,11 @@ The largest Upload, in MB (1 MB = 1,048,576 bytes), a user may send
 it completes; also the ceiling on an Image Upload Input's own max size,
 and sent to the browser in the current-user response so a too-large
 file is refused on pick. Defaults to `500`.
+
+## `ffmpeg_concurrency`
+
+### `FFMPEG_CONCURRENCY`
+
+The most ffmpeg/ffprobe processes Asset finishing (issue #45) runs at
+once; each also gets a share of the box's CPU threads, so a burst of
+saves can't starve it. Defaults to `2`.

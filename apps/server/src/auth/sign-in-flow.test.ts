@@ -36,6 +36,7 @@ async function startTestServer() {
     STATUS_TOKEN: undefined,
     MIN_FREE_DISK_GB: 10,
     MAX_UPLOAD_MB: 500,
+    FFMPEG_CONCURRENCY: 2,
   };
 
   const { app } = await createApp({

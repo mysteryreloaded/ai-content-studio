@@ -30,6 +30,7 @@ const TEST_ENV: Env = {
   STATUS_TOKEN: undefined,
   MIN_FREE_DISK_GB: 10,
   MAX_UPLOAD_MB: 500,
+  FFMPEG_CONCURRENCY: 2,
 };
 
 describe("every route's access level is declared and enforced", () => {
@@ -134,6 +135,7 @@ describe("every route's access level is declared and enforced", () => {
       "PUT /api/admin/site-settings": 400,
       "PUT /api/admin/site-settings/terms": 400,
       "PUT /api/admin/site-settings/privacy": 400,
+      "PUT /api/admin/site-settings/blocked-words": 400,
       "POST /api/admin/backends": 400,
       "GET /api/admin/backends/:id": 404,
       "PUT /api/admin/backends/:id": 404,
@@ -177,6 +179,8 @@ describe("every route's access level is declared and enforced", () => {
       "POST /api/models/:slug/generations": 400,
       // No Asset with this fake id exists in this test's database.
       "GET /api/assets/:id": 404,
+      "GET /api/assets/:id/poster": 404,
+      "GET /api/assets/:id/thumb": 404,
       "POST /api/models/:slug/terms/accept": 404,
       // Issue #50: a bodyless create fails validation; no Upload with
       // this fake id exists.

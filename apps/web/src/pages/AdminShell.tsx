@@ -4,6 +4,7 @@ import { Footer } from "../Footer.js";
 import { useSession } from "../useSession.js";
 import { AuditPage } from "./AuditPage.js";
 import { BackendsPage } from "./BackendsPage.js";
+import { BlockedWordsForm } from "./BlockedWordsForm.js";
 import { LogsPage } from "./LogsPage.js";
 import { ModelEditorPage } from "./ModelEditorPage.js";
 import { ModelsPage } from "./ModelsPage.js";
@@ -118,6 +119,7 @@ export function AdminShell() {
                 <SiteSettingsForm />
                 <SiteTermsForm />
                 <SitePrivacyForm />
+                <BlockedWordsForm />
                 <BackendsPage />
               </>
             }

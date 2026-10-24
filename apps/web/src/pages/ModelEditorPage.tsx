@@ -25,6 +25,18 @@ interface ModelNode {
   title: string | null;
 }
 
+/** A bound field's own JS value type, for coercing a select option's typed-in value to match it (issue #46). */
+function bindingValueKind(
+  workflow: Workflow,
+  nodeId: string,
+  field: string,
+): "string" | "number" | "boolean" | null {
+  const value = workflow[nodeId]?.inputs[field];
+  if (value === undefined || value === null) return null;
+  if (Array.isArray(value)) return null;
+  return typeof value as "string" | "number" | "boolean";
+}
+
 interface OutsideServiceNote {
   nodeId: string;
   classType: string;
@@ -1308,36 +1320,65 @@ export function ModelEditorPage() {
                         })
                       }
                     />
-                    {input.bindings.map((binding, bindingIndex) => (
-                      <span key={fieldKey(binding.nodeId, binding.field)}>
-                        <label
-                          htmlFor={`input-option-value-${index}-${optionIndex}-${bindingIndex}`}
-                        >
-                          {binding.nodeId}.{binding.field}
-                        </label>
-                        <input
-                          id={`input-option-value-${index}-${optionIndex}-${bindingIndex}`}
-                          value={String(option.values[bindingIndex] ?? "")}
-                          onChange={(event) =>
-                            updateInput(index, {
-                              ...input,
-                              options: input.options.map((o, i) =>
-                                i === optionIndex
-                                  ? {
-                                      ...o,
-                                      values: o.values.map((v, vi) =>
-                                        vi === bindingIndex
-                                          ? event.target.value
-                                          : v,
-                                      ),
-                                    }
-                                  : o,
-                              ),
-                            })
-                          }
-                        />
-                      </span>
-                    ))}
+                    {input.bindings.map((binding, bindingIndex) => {
+                      const valueKind = bindingValueKind(
+                        detail.workflow,
+                        binding.nodeId,
+                        binding.field,
+                      );
+                      const setOptionValue = (
+                        value: string | number | boolean,
+                      ) => {
+                        updateInput(index, {
+                          ...input,
+                          options: input.options.map((o, i) =>
+                            i === optionIndex
+                              ? {
+                                  ...o,
+                                  values: o.values.map((v, vi) =>
+                                    vi === bindingIndex ? value : v,
+                                  ),
+                                }
+                              : o,
+                          ),
+                        });
+                      };
+                      const fieldId = `input-option-value-${index}-${optionIndex}-${bindingIndex}`;
+                      return (
+                        <span key={fieldKey(binding.nodeId, binding.field)}>
+                          <label htmlFor={fieldId}>
+                            {binding.nodeId}.{binding.field}
+                          </label>
+                          {valueKind === "boolean" ? (
+                            <input
+                              id={fieldId}
+                              type="checkbox"
+                              checked={option.values[bindingIndex] === true}
+                              onChange={(event) =>
+                                setOptionValue(event.target.checked)
+                              }
+                            />
+                          ) : valueKind === "number" ? (
+                            <input
+                              id={fieldId}
+                              type="number"
+                              value={String(option.values[bindingIndex] ?? "")}
+                              onChange={(event) =>
+                                setOptionValue(Number(event.target.value))
+                              }
+                            />
+                          ) : (
+                            <input
+                              id={fieldId}
+                              value={String(option.values[bindingIndex] ?? "")}
+                              onChange={(event) =>
+                                setOptionValue(event.target.value)
+                              }
+                            />
+                          )}
+                        </span>
+                      );
+                    })}
                     {input.options.length > 2 && (
                       <button
                         type="button"

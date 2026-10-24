@@ -1,5 +1,10 @@
-import { renderMarkdown } from "@ai-content-studio/shared";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  parseInputValues,
+  renderMarkdown,
+  toInputIssues,
+} from "@ai-content-studio/shared";
+import type { InputDefinition } from "@ai-content-studio/shared";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, useParams } from "react-router-dom";
 import { useSession } from "../useSession.js";
 
@@ -73,6 +78,65 @@ function valuesPayload(
     payload[input.id] = input.kind === "number" ? Number(raw) : raw;
   }
   return payload;
+}
+
+/** `WorkbenchInput` carries everything `buildInputValuesSchema` needs; `bindings`/`group`/`help` are unused filler (the Workbench never sees them). */
+function toInputDefinition(input: WorkbenchInput): InputDefinition {
+  const base = {
+    id: input.id,
+    group: "describe" as const,
+    label: input.label,
+    help: input.help,
+    bindings: [],
+  };
+  if (input.kind === "text") {
+    return {
+      ...base,
+      kind: "text",
+      multiline: input.multiline,
+      maxLength: input.maxLength,
+      default: input.default,
+    };
+  }
+  if (input.kind === "number") {
+    return {
+      ...base,
+      kind: "number",
+      numberMode: input.numberMode,
+      min: input.min,
+      max: input.max,
+      step: input.step,
+      default: input.default,
+    };
+  }
+  return {
+    ...base,
+    kind: "select",
+    options: input.options.map((option) => ({
+      id: option.id,
+      label: option.label,
+      values: [],
+    })),
+    default: input.default,
+  };
+}
+
+/** Live, client-side validation (issue #46): the same `parseInputValues` schema the server uses, so field issues show before submit. */
+function liveIssuesFor(
+  revision: number,
+  mode: WorkbenchMode,
+  values: Record<string, string>,
+): Record<string, string> {
+  const schema = parseInputValues(
+    String(revision),
+    mode.id,
+    mode.inputs.map(toInputDefinition),
+  );
+  const result = schema.safeParse(valuesPayload(mode, values));
+  if (result.success) return {};
+  return Object.fromEntries(
+    toInputIssues(result.error).map((issue) => [issue.path, issue.message]),
+  );
 }
 
 interface ModelTerms {
@@ -272,6 +336,18 @@ export function WorkbenchPage() {
     setIssuesByInputId({});
   }, []);
 
+  // Live validation (issue #46): the same parseInputValues schema the
+  // server uses as the form resolver, so issues show before submit.
+  const liveIssuesByInputId = useMemo(() => {
+    if (!model || !selectedMode) return {};
+    return liveIssuesFor(model.revision, selectedMode, values);
+  }, [model, selectedMode, values]);
+
+  const displayedIssuesByInputId = {
+    ...liveIssuesByInputId,
+    ...issuesByInputId,
+  };
+
   const modelRef = useRef(model);
   modelRef.current = model;
 
@@ -374,6 +450,17 @@ export function WorkbenchPage() {
     const current = modelRef.current;
     const mode = current?.modes.find((m) => m.id === selectedModeId);
     if (!current || !mode) return;
+
+    const issues = liveIssuesFor(current.revision, mode, values);
+    if (Object.keys(issues).length > 0) {
+      setIssuesByInputId(issues);
+      setSubmitState({
+        status: "error",
+        message: "Check the highlighted fields.",
+      });
+      return;
+    }
+
     setSubmitState({ status: "submitting" });
     setIssuesByInputId({});
 
@@ -562,8 +649,23 @@ export function WorkbenchPage() {
             <InputGroups
               mode={selectedMode}
               values={values}
-              setValues={setValues}
-              issuesByInputId={issuesByInputId}
+              setValues={(update) => {
+                setValues((current) => {
+                  const next = update(current);
+                  const changedIds = Object.keys(next).filter(
+                    (id) => next[id] !== current[id],
+                  );
+                  if (changedIds.length > 0) {
+                    setIssuesByInputId((issues) => {
+                      const remaining = { ...issues };
+                      for (const id of changedIds) delete remaining[id];
+                      return remaining;
+                    });
+                  }
+                  return next;
+                });
+              }}
+              issuesByInputId={displayedIssuesByInputId}
             />
           )}
 

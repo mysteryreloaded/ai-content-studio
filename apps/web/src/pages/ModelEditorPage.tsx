@@ -13,6 +13,7 @@ import {
   relevantInputs,
   renderMarkdown,
   resolveModeInputs,
+  toWorkbenchInput,
   visibleModeBoundFields,
 } from "@ai-content-studio/shared";
 import type {
@@ -32,11 +33,29 @@ import type {
   SelectOption,
   TextInputDefinition,
   VideoUploadInputDefinition,
+  WorkbenchInput,
   Workflow,
 } from "@ai-content-studio/shared";
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useBlocker, useNavigate, useParams } from "react-router-dom";
+import {
+  httpUploadApi,
+  trimUpload,
+  uploadResumable,
+} from "../lib/chunkedUpload.js";
 import { useSession } from "../useSession.js";
+import {
+  InputField,
+  PointsPickers,
+  UPLOAD_KINDS,
+  type UploadState,
+  type ImageUploadInput as WorkbenchImageUploadInput,
+  type MediaUploadInput as WorkbenchMediaUploadInput,
+  type PointsInput as WorkbenchPointsInput,
+  YourFiles,
+  YourMedia,
+  issueFor,
+} from "./WorkbenchPage.js";
 
 interface ModelNode {
   id: string;
@@ -570,6 +589,21 @@ export function ModelEditorPage() {
   const [testSubmitting, setTestSubmitting] = useState(false);
   const [testError, setTestError] = useState<string[] | null>(null);
   const [testRuns, setTestRuns] = useState<TestRun[]>([]);
+  // Issue #74 CEO review: an Upload or Points Input on the Mode under
+  // test needs the same picker the Workbench itself uses, so this
+  // mirrors its own upload bookkeeping (uploads, running promises, a
+  // trim range), scoped to the test form instead of a real Submission.
+  const [testUploads, setTestUploads] = useState<Record<string, UploadState>>(
+    {},
+  );
+  const testRunningUploadsRef = useRef(
+    new Map<string, { promise: Promise<void>; controller: AbortController }>(),
+  );
+  const [testTrimRangeByInputId, setTestTrimRangeByInputId] = useState<
+    Record<string, { startMs: number; endMs: number }>
+  >({});
+  const testMaxUploadMb =
+    session.status === "signed-in" ? (session.user.maxUploadMb ?? null) : null;
   // Set right before navigating away after a successful delete: `dirty`
   // is still computed from this render's (pre-setForm(null)) state when
   // the blocker runs, since state updates haven't flushed yet, so without
@@ -931,19 +965,192 @@ export function ModelEditorPage() {
       setTestOpenForModeKey(null);
       return;
     }
+    for (const running of testRunningUploadsRef.current.values()) {
+      running.controller.abort();
+    }
+    testRunningUploadsRef.current.clear();
     setTestOpenForModeKey(mode.key);
     setTestValues({});
+    setTestUploads({});
+    setTestTrimRangeByInputId({});
     setTestBackendId("");
     setTestError(null);
+  }
+
+  /** Mirrors WorkbenchPage's own `startUpload` (issue #74 CEO review): picking a file for a Test's Upload Input watches it upload the same way, scoped to `testUploads`/`testValues` instead of the Workbench's own. */
+  function startTestUpload(
+    input: WorkbenchImageUploadInput | WorkbenchMediaUploadInput,
+    file: File,
+  ) {
+    testRunningUploadsRef.current.get(input.id)?.controller.abort();
+    testRunningUploadsRef.current.delete(input.id);
+    setTestValues((v) => ({ ...v, [input.id]: "" }));
+    setTestTrimRangeByInputId((ranges) => {
+      const { [input.id]: _, ...rest } = ranges;
+      return rest;
+    });
+
+    const controller = new AbortController();
+    const promise = issueFor(input, file, testMaxUploadMb).then((issue) => {
+      if (controller.signal.aborted) return;
+      if (issue) {
+        setTestUploads((u) => ({
+          ...u,
+          [input.id]: {
+            status: "error",
+            name: file.name,
+            message: `${file.name} ${issue}.`,
+          },
+        }));
+        return;
+      }
+      setTestUploads((u) => ({
+        ...u,
+        [input.id]: { status: "uploading", name: file.name, progress: 0 },
+      }));
+      return uploadResumable(file, httpUploadApi(), {
+        hint: { modelId: detail?.model.id ?? "", inputId: input.id },
+        signal: controller.signal,
+        onProgress: (progress) => {
+          if (controller.signal.aborted) return;
+          setTestUploads((u) => ({
+            ...u,
+            [input.id]: { status: "uploading", name: file.name, progress },
+          }));
+        },
+      })
+        .then((done) => {
+          if (controller.signal.aborted) return;
+          setTestValues((v) => ({ ...v, [input.id]: done.id }));
+          setTestUploads((u) => ({
+            ...u,
+            [input.id]: {
+              status: "complete",
+              name: file.name,
+              uploadId: done.id,
+              durationMs: done.durationMs,
+              browserPlayable: done.browserPlayable,
+            },
+          }));
+          if (done.durationMs !== null) {
+            setTestTrimRangeByInputId((ranges) => ({
+              ...ranges,
+              [input.id]: { startMs: 0, endMs: done.durationMs as number },
+            }));
+          }
+        })
+        .catch((err: unknown) => {
+          if (controller.signal.aborted) return;
+          setTestUploads((u) => ({
+            ...u,
+            [input.id]: {
+              status: "error",
+              name: file.name,
+              message: `${file.name} ${err instanceof Error ? err.message : "couldn't be uploaded"}.`,
+            },
+          }));
+        });
+    });
+    testRunningUploadsRef.current.set(input.id, { promise, controller });
+  }
+
+  /** The Test submit payload (issue #74 CEO review, mirrors WorkbenchPage's valuesPayload): blank values are left out, a number/seed is parsed, not sent as the raw typed string. */
+  function testValuesPayload(
+    inputs: InputDefinition[],
+    values: Record<string, string>,
+  ): Record<string, string | number> {
+    const byId = new Map(inputs.map((input) => [input.id, input]));
+    const payload: Record<string, string | number> = {};
+    for (const [id, raw] of Object.entries(values)) {
+      if (raw === "") continue;
+      const input = byId.get(id);
+      payload[id] =
+        input?.kind === "number" || input?.kind === "seed" ? Number(raw) : raw;
+    }
+    return payload;
   }
 
   async function handleTestSubmit(mode: DraftMode) {
     if (!detail) return;
     const inputs = inputsDraft ?? detail.inputs ?? [];
+
+    // Issue #74 CEO review: Generate's own wait-for-Uploads-then-trim
+    // steps (see WorkbenchPage's handleGenerate), so a Test on a Mode
+    // with a trimmable Video/Audio Input submits the trimmed range, not
+    // whatever's still uploading or the untrimmed file.
+    const running = [...testRunningUploadsRef.current.values()];
+    if (running.length > 0) {
+      await Promise.allSettled(running.map((r) => r.promise));
+    }
+
     setTestSubmitting(true);
     setTestError(null);
 
     try {
+      let values = testValues;
+      const mediaInputs = inputs.filter(
+        (
+          input,
+        ): input is VideoUploadInputDefinition | AudioUploadInputDefinition =>
+          input.kind === "video_upload" || input.kind === "audio_upload",
+      );
+      const toTrim = mediaInputs.filter((input) => {
+        const upload = testUploads[input.id];
+        const range = testTrimRangeByInputId[input.id];
+        return (
+          upload?.status === "complete" &&
+          upload.durationMs !== null &&
+          range &&
+          (range.startMs > 0 || range.endMs < upload.durationMs)
+        );
+      });
+      const toTrimIds = new Set(toTrim.map((input) => input.id));
+      const untrimmedUpdates = Object.fromEntries(
+        mediaInputs
+          .filter((input) => !toTrimIds.has(input.id))
+          .map((input): readonly [string, string] | null => {
+            const upload = testUploads[input.id];
+            return upload?.status === "complete"
+              ? [input.id, upload.uploadId]
+              : null;
+          })
+          .filter(
+            (entry): entry is readonly [string, string] => entry !== null,
+          ),
+      );
+      if (Object.keys(untrimmedUpdates).length > 0) {
+        values = { ...values, ...untrimmedUpdates };
+        setTestValues((v) => ({ ...v, ...untrimmedUpdates }));
+      }
+
+      if (toTrim.length > 0) {
+        try {
+          const trimmed = await Promise.all(
+            toTrim.map(async (input) => {
+              const upload = testUploads[input.id];
+              const range = testTrimRangeByInputId[input.id];
+              if (upload?.status !== "complete" || !range) return null;
+              const result = await trimUpload(
+                upload.uploadId,
+                range.startMs,
+                range.endMs,
+              );
+              return [input.id, result.id] as const;
+            }),
+          );
+          const updates = Object.fromEntries(
+            trimmed.filter((t): t is readonly [string, string] => t !== null),
+          );
+          values = { ...values, ...updates };
+          setTestValues((v) => ({ ...v, ...updates }));
+        } catch (err) {
+          setTestError([
+            err instanceof Error ? err.message : "couldn't be trimmed",
+          ]);
+          return;
+        }
+      }
+
       const currentInputIds = new Set(inputs.map((input) => input.id));
       const res = await fetch(`/api/admin/models/${detail.model.id}/test`, {
         method: "POST",
@@ -958,7 +1165,7 @@ export function ModelEditorPage() {
             ),
           },
           inputs,
-          values: testValues,
+          values: testValuesPayload(inputs, values),
           backendId: testBackendId || null,
         }),
       });
@@ -1545,6 +1752,15 @@ export function ModelEditorPage() {
                 attachedBackends={attachedBackends}
                 values={testValues}
                 onValuesChange={setTestValues}
+                uploads={testUploads}
+                onPick={(input, file) => startTestUpload(input, file)}
+                trimRangeByInputId={testTrimRangeByInputId}
+                onTrimRangeChange={(inputId, range) =>
+                  setTestTrimRangeByInputId((ranges) => ({
+                    ...ranges,
+                    [inputId]: range,
+                  }))
+                }
                 backendId={testBackendId}
                 onBackendIdChange={setTestBackendId}
                 submitting={testSubmitting}
@@ -2550,63 +2766,14 @@ function RecentTests({ runs }: { runs: TestRun[] }) {
   );
 }
 
-/** One Test form field, by the relevant Input's own kind (issue #74). Upload Inputs aren't supported here yet — a Mode needing one can't be tested until that's added. */
-function TestField({
-  input,
-  value,
-  onChange,
-}: {
-  input: InputDefinition;
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  if (input.kind === "text") {
-    return (
-      <input
-        aria-label={input.label}
-        value={value}
-        maxLength={input.maxLength}
-        onChange={(event) => onChange(event.target.value)}
-      />
-    );
-  }
-  if (input.kind === "number" || input.kind === "seed") {
-    return (
-      <input
-        aria-label={input.label}
-        type="number"
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        placeholder={input.kind === "seed" ? "blank = random" : undefined}
-      />
-    );
-  }
-  if (input.kind === "select") {
-    return (
-      <select
-        aria-label={input.label}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-      >
-        <option value="">Choose…</option>
-        {input.options.map((option) => (
-          <option key={option.id} value={option.id}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-    );
-  }
-  return (
-    <p>Testing a Mode with a "{input.label}" Upload isn't supported yet.</p>
-  );
-}
-
 /**
  * A Mode's test form (issue #74): the editor's own unsaved Mode and
  * Inputs, run against Any or one chosen attached Backend — on an
  * unnumbered revision that never becomes current, blocked only while
- * the Mode has an error.
+ * the Mode has an error. Issue #74 CEO review: an Upload or Points
+ * Input reuses the Workbench's own picker (`YourFiles`/`YourMedia`/
+ * `PointsPickers`), the rest the Workbench's own `InputField`, so "any
+ * Mode" (the AC) really does include one with an Upload.
  */
 function TestPanel({
   mode,
@@ -2615,6 +2782,10 @@ function TestPanel({
   attachedBackends,
   values,
   onValuesChange,
+  uploads,
+  onPick,
+  trimRangeByInputId,
+  onTrimRangeChange,
   backendId,
   onBackendIdChange,
   submitting,
@@ -2627,6 +2798,16 @@ function TestPanel({
   attachedBackends: AttachedBackendEntry[] | null;
   values: Record<string, string>;
   onValuesChange: (values: Record<string, string>) => void;
+  uploads: Record<string, UploadState>;
+  onPick: (
+    input: WorkbenchImageUploadInput | WorkbenchMediaUploadInput,
+    file: File,
+  ) => void;
+  trimRangeByInputId: Record<string, { startMs: number; endMs: number }>;
+  onTrimRangeChange: (
+    inputId: string,
+    range: { startMs: number; endMs: number },
+  ) => void;
   backendId: string;
   onBackendIdChange: (id: string) => void;
   submitting: boolean;
@@ -2642,7 +2823,31 @@ function TestPanel({
     mode.outputNodeIds.length === 0
       ? []
       : relevantInputs(inputsDraft, workflow, mode.outputNodeIds, unresolvable);
-  const { formInputs } = resolveModeInputs(relevant, mode.inputSettings ?? []);
+  const { formInputs, requiredIds } = resolveModeInputs(
+    relevant,
+    mode.inputSettings ?? [],
+  );
+  const workbenchInputs: WorkbenchInput[] = formInputs.map((input) =>
+    toWorkbenchInput(input, workflow, requiredIds.has(input.id), formInputs),
+  );
+  const imageInputs = workbenchInputs.filter(
+    (input): input is WorkbenchImageUploadInput =>
+      input.kind === "image_upload",
+  );
+  const mediaInputs = workbenchInputs.filter(
+    (input): input is WorkbenchMediaUploadInput =>
+      input.kind === "video_upload" || input.kind === "audio_upload",
+  );
+  const pointsInputs = workbenchInputs.filter(
+    (input): input is WorkbenchPointsInput => input.kind === "points",
+  );
+  const plainInputs = workbenchInputs.filter(
+    (input) => !UPLOAD_KINDS.has(input.kind) && input.kind !== "points",
+  );
+
+  function setValue(inputId: string, value: string) {
+    onValuesChange({ ...values, [inputId]: value });
+  }
 
   return (
     <section aria-label={`Test ${mode.name || "this Mode"}`}>
@@ -2664,17 +2869,37 @@ function TestPanel({
         ))}
       </select>
 
-      {formInputs.map((input) => (
-        <div key={input.id}>
-          <span>{input.label}</span>
-          <TestField
-            input={input}
-            value={values[input.id] ?? ""}
-            onChange={(value) =>
-              onValuesChange({ ...values, [input.id]: value })
-            }
-          />
-        </div>
+      <YourFiles
+        inputs={imageInputs}
+        uploads={uploads}
+        issuesByInputId={{}}
+        onPick={onPick}
+      />
+      <YourMedia
+        inputs={mediaInputs}
+        uploads={uploads}
+        trimRangeByInputId={trimRangeByInputId}
+        onTrimRangeChange={onTrimRangeChange}
+        issuesByInputId={{}}
+        onPick={onPick}
+      />
+      <PointsPickers
+        inputs={pointsInputs}
+        allInputs={workbenchInputs}
+        uploads={uploads}
+        trimRangeByInputId={trimRangeByInputId}
+        values={values}
+        onPointsChange={(inputId, raw) => setValue(inputId, raw)}
+        issuesByInputId={{}}
+      />
+      {plainInputs.map((input) => (
+        <InputField
+          key={input.id}
+          input={input}
+          value={values[input.id] ?? ""}
+          onChange={(value) => setValue(input.id, value)}
+          issue={undefined}
+        />
       ))}
 
       <button

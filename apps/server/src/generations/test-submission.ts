@@ -48,6 +48,7 @@ import {
 import {
   InvalidInputValues,
   InvalidSeed,
+  resolvePointsFrameSizes,
   resolveUploadValues,
 } from "./submission.js";
 import type { SubmissionDeps } from "./submission.js";
@@ -225,11 +226,30 @@ export async function submitTestGeneration(
   const parsedValues = schema.safeParse(valuesForSchema);
   if (!parsedValues.success) throw new InvalidInputValues(parsedValues.error);
 
+  const uploadDeps = {
+    uploadsRepository: deps.uploadsRepository,
+  } as unknown as SubmissionDeps;
+
+  // issue #74 CEO review: a Points Input (issue #52) needs the same
+  // frame-size check submission.ts applies, resolved from the
+  // still-raw submitted values the same way, before resolveUploadValues
+  // below rewrites an Upload id to a Backend file name.
+  const frameSizes = await resolvePointsFrameSizes(
+    nonHiddenRelevant,
+    workflowForMode,
+    {
+      ...(parsedValues.data as Record<string, string | number | undefined>),
+      ...(fixedValues as Record<string, string | number | undefined>),
+    },
+    params.userId,
+    uploadDeps,
+  );
+
   const { values: resolvedValues, uploadIds } = await resolveUploadValues(
     formInputs,
     parsedValues.data as Record<string, string | number | undefined>,
     params.userId,
-    { uploadsRepository: deps.uploadsRepository } as unknown as SubmissionDeps,
+    uploadDeps,
   );
 
   let seedValue: number | undefined;
@@ -260,6 +280,7 @@ export async function submitTestGeneration(
     values,
     outputNodeIds,
     generationId,
+    frameSizes,
   );
 
   const { revisionId, modeId } = await deps.modelRepository.createTestRevision(

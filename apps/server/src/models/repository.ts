@@ -642,10 +642,17 @@ export class ModelRepository {
     },
   ): Promise<{ revisionId: string; modeId: string }> {
     return await this.db.transaction(async (tx) => {
+      // Locked (issue #74 CEO review): two Tests of the same Model at
+      // once would otherwise both read the same `min()` below and race
+      // to insert the same testRevisionNumber, 500ing on
+      // model_revisions_model_number_unique. Serializing on the Model's
+      // own row makes the second transaction wait for the first's
+      // insert, then see its lower number.
       const [before] = await tx
         .select()
         .from(models)
-        .where(and(eq(models.id, modelId), isNull(models.deletedAt)));
+        .where(and(eq(models.id, modelId), isNull(models.deletedAt)))
+        .for("update");
       if (!before) throw new NotFound();
 
       const [currentRevision] = await tx

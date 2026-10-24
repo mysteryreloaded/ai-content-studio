@@ -61,6 +61,7 @@ function detail(modes: ModeRecord[]): ModelDetail {
     nodes: [],
     outsideServiceNotes: [],
     modes,
+    inputs: [],
   };
 }
 

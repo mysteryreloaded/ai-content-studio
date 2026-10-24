@@ -17,6 +17,7 @@ import type {
   ModeInputSetting,
   ModeInputState,
   NumberInputDefinition,
+  SeedInputDefinition,
   SelectInputDefinition,
   SelectOption,
   TextInputDefinition,
@@ -168,6 +169,18 @@ function newNumberInput(): NumberInputDefinition {
   };
 }
 
+function newSeedInput(): SeedInputDefinition {
+  return {
+    id: crypto.randomUUID(),
+    kind: "seed",
+    group: "settings",
+    label: "Seed",
+    help: "",
+    max: null,
+    bindings: [],
+  };
+}
+
 function newSelectInput(): SelectInputDefinition {
   return {
     id: crypto.randomUUID(),
@@ -214,7 +227,9 @@ function candidateFieldsFor(
     const key = fieldKey(field.nodeId, field.field);
     if (used.has(key) && !alreadyBound.has(key)) return false;
     if (input.kind === "text") return field.valueType === "string";
-    if (input.kind === "number") return field.valueType === "number";
+    if (input.kind === "number" || input.kind === "seed") {
+      return field.valueType === "number";
+    }
     return true;
   });
 }
@@ -230,8 +245,9 @@ function toggleBinding(
   );
 
   if (index === -1) {
+    // A Seed Input binds exactly one field: picking another replaces it (issue #47).
     const bindings = [
-      ...input.bindings,
+      ...(input.kind === "seed" ? [] : input.bindings),
       {
         nodeId: field.nodeId,
         field: field.field,
@@ -685,12 +701,17 @@ export function ModelEditorPage() {
 
   function addInput() {
     if (!inputsDraft) return;
+    if (newInputKind === "seed" && inputsDraft.some((i) => i.kind === "seed")) {
+      return;
+    }
     const created =
       newInputKind === "text"
         ? newTextInput()
         : newInputKind === "number"
           ? newNumberInput()
-          : newSelectInput();
+          : newInputKind === "seed"
+            ? newSeedInput()
+            : newSelectInput();
     setInputsDraft([...inputsDraft, created]);
     setEditingInputIndex(inputsDraft.length);
   }
@@ -1437,6 +1458,30 @@ export function ModelEditorPage() {
               </>
             )}
 
+            {input.kind === "seed" && (
+              <>
+                <p>Bound to exactly one INT field; no default (issue #47).</p>
+                <label htmlFor={`input-max-${index}`}>
+                  Max (required to enable this Model)
+                </label>
+                <input
+                  id={`input-max-${index}`}
+                  type="number"
+                  min={1}
+                  value={input.max ?? ""}
+                  onChange={(event) =>
+                    updateInput(index, {
+                      ...input,
+                      max:
+                        event.target.value === ""
+                          ? null
+                          : Number(event.target.value),
+                    })
+                  }
+                />
+              </>
+            )}
+
             {input.kind === "select" && (
               <>
                 <p>
@@ -1642,6 +1687,12 @@ export function ModelEditorPage() {
           <option value="text">Text</option>
           <option value="number">Number</option>
           <option value="select">Select</option>
+          <option
+            value="seed"
+            disabled={inputsDraft?.some((i) => i.kind === "seed")}
+          >
+            Seed
+          </option>
         </select>
         <button type="button" onClick={addInput}>
           Add Input
@@ -1808,6 +1859,9 @@ function FixedValueEditor({
       />
     );
   }
+  // A Seed can't be fixed (ADR 0007: the grid never offers it), so the
+  // only kind left here is select.
+  if (input.kind !== "select") return null;
   return (
     <select
       aria-label={`${input.label} fixed value`}
@@ -1962,11 +2016,18 @@ function ModeInputGrid({
                           })
                         }
                       >
-                        {MODE_INPUT_STATES.map((state) => (
-                          <option key={state} value={state}>
-                            {state}
-                          </option>
-                        ))}
+                        {MODE_INPUT_STATES
+                          // ADR 0007: a Seed can't be fixed, or every
+                          // Submission would draw the same one.
+                          .filter(
+                            (state) =>
+                              state !== "fixed" || input.kind !== "seed",
+                          )
+                          .map((state) => (
+                            <option key={state} value={state}>
+                              {state}
+                            </option>
+                          ))}
                       </select>
                     </label>
 

@@ -12,10 +12,15 @@ import type { Context } from "hono";
 import { z } from "zod";
 import { type RouteEntry, guardedRoute } from "../auth/access.js";
 import type { AppEnv } from "../auth/app-env.js";
-import type { GenerationsRepository } from "../generations/repository.js";
+import {
+  type GenerationsRepository,
+  promptBindingFor,
+} from "../generations/repository.js";
 import {
   BlockedWordSubmitted,
+  InvalidCount,
   InvalidInputValues,
+  InvalidSeed,
   ModeNotFound,
   ModelChanged,
   ModelDisabled,
@@ -34,6 +39,8 @@ const submitSchema = z.object({
   modeId: z.string(),
   revision: z.number().int().min(1),
   values: z.record(z.string(), z.unknown()).default({}),
+  /** 1-4 (issue #47); ignored when the Mode's Path holds no bound Seed Input. */
+  count: z.number().int().min(1).max(4).optional(),
 });
 
 /** The Workflow's own value for an Input's first binding, shown as its placeholder when blank. */
@@ -80,6 +87,13 @@ function toWorkbenchInput(
       max: input.max,
       step: input.step,
       default: input.default,
+    };
+  }
+  if (input.kind === "seed") {
+    return {
+      ...base,
+      kind: "seed" as const,
+      max: input.max,
     };
   }
   return {
@@ -251,6 +265,7 @@ export function modelsRoute(
           detail.model.id,
           session.user.id,
           8,
+          promptBindingFor(detail.inputs, detail.workflow),
         );
       return c.json({ submissions });
     },
@@ -279,17 +294,18 @@ export function modelsRoute(
       if (!session) return c.json({ error: "unauthorized" }, 401);
 
       try {
-        const generation = await submitGeneration(
+        const { generations, prompt } = await submitGeneration(
           {
             slug: slugParam(c),
             modeId: parsed.data.modeId,
             revision: parsed.data.revision,
             userId: session.user.id,
             values: parsed.data.values,
+            count: parsed.data.count,
           },
           submissionDeps,
         );
-        return c.json({ generation }, 201);
+        return c.json({ generations, prompt }, 201);
       } catch (err) {
         if (err instanceof ModelNotFound) {
           return c.json({ error: "not found" }, 404);
@@ -325,6 +341,12 @@ export function modelsRoute(
             { error: "invalid", issues: toInputIssues(err.zodError) },
             400,
           );
+        }
+        if (err instanceof InvalidCount) {
+          return c.json({ error: "invalid_count", message: err.message }, 400);
+        }
+        if (err instanceof InvalidSeed) {
+          return c.json({ error: "invalid_seed", message: err.message }, 400);
         }
         if (err instanceof BlockedWordSubmitted) {
           return c.json(

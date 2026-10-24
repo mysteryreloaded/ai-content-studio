@@ -159,6 +159,8 @@ describe("Dispatcher end-to-end against a fake ComfyUI", () => {
       generationEvents,
       media: new MediaRunner(2),
       siteName: "localhost",
+      c2pa: null,
+      getSiteTitle: async () => "Test Studio",
       pollIntervalMs: 15,
     });
 

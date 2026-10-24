@@ -392,11 +392,13 @@ describe("Mode × Input grid effects (issue #48)", () => {
         }),
       });
       expect(res.status).toBe(201);
-      const body = (await res.json()) as { generation: { id: string } };
+      const body = (await res.json()) as {
+        generations: Array<{ id: string }>;
+      };
       const [row] = await db
         .select()
         .from(generations)
-        .where(eq(generations.id, body.generation.id));
+        .where(eq(generations.id, body.generations[0]?.id as string));
       const prompt = row?.builtPrompt as Record<
         string,
         { inputs: Record<string, unknown> }
@@ -440,11 +442,13 @@ describe("Mode × Input grid effects (issue #48)", () => {
         }),
       });
       expect(res.status).toBe(201);
-      const body = (await res.json()) as { generation: { id: string } };
+      const body = (await res.json()) as {
+        generations: Array<{ id: string }>;
+      };
       const [row] = await db
         .select()
         .from(generations)
-        .where(eq(generations.id, body.generation.id));
+        .where(eq(generations.id, body.generations[0]?.id as string));
       const prompt = row?.builtPrompt as Record<
         string,
         { inputs: Record<string, unknown> }

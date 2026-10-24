@@ -41,6 +41,10 @@ type WorkbenchInput = {
       options: WorkbenchInputOption[];
       default: string | null;
     }
+  | {
+      kind: "seed";
+      max: number | null;
+    }
 );
 
 type ModeMenuGroup = "prompt" | "images" | "audio" | "video";
@@ -87,6 +91,10 @@ interface InputIssue {
 function initialValuesFor(mode: WorkbenchMode): Record<string, string> {
   const values: Record<string, string> = {};
   for (const input of mode.inputs) {
+    if (input.kind === "seed") {
+      values[input.id] = "";
+      continue;
+    }
     values[input.id] =
       input.default === null || input.default === undefined
         ? ""
@@ -106,6 +114,14 @@ function valueParsesForInput(input: WorkbenchInput, raw: string): boolean {
     if (input.numberMode === "integer" && !Number.isInteger(n)) return false;
     const steps = (n - input.min) / input.step;
     return Math.abs(steps - Math.round(steps)) < 1e-9;
+  }
+  if (input.kind === "seed") {
+    const n = Number(raw);
+    return (
+      Number.isInteger(n) &&
+      n >= 0 &&
+      n <= (input.max ?? Number.POSITIVE_INFINITY)
+    );
   }
   return input.options.some((option) => option.id === raw);
 }
@@ -142,7 +158,8 @@ function valuesPayload(
   for (const input of mode.inputs) {
     const raw = values[input.id];
     if (raw === undefined || raw === "") continue;
-    payload[input.id] = input.kind === "number" ? Number(raw) : raw;
+    payload[input.id] =
+      input.kind === "number" || input.kind === "seed" ? Number(raw) : raw;
   }
   return payload;
 }
@@ -174,6 +191,13 @@ function toInputDefinition(input: WorkbenchInput): InputDefinition {
       max: input.max,
       step: input.step,
       default: input.default,
+    };
+  }
+  if (input.kind === "seed") {
+    return {
+      ...base,
+      kind: "seed",
+      max: input.max,
     };
   }
   return {
@@ -277,6 +301,7 @@ interface SubmissionSummary {
   modeId: string;
   modeName: string;
   submittedAt: string;
+  prompt?: string | null;
   generations: GenerationSummary[];
 }
 
@@ -543,6 +568,8 @@ export function WorkbenchPage() {
   const [notFound, setNotFound] = useState(false);
   const [selectedModeId, setSelectedModeId] = useState<string | null>(null);
   const [values, setValues] = useState<Record<string, string>>({});
+  /** 1-4 (issue #47); only meaningful when the Mode's Path holds a bound Seed Input. */
+  const [count, setCount] = useState(1);
   const [issuesByInputId, setIssuesByInputId] = useState<
     Record<string, string>
   >({});
@@ -569,11 +596,15 @@ export function WorkbenchPage() {
 
   const selectedMode =
     model?.modes.find((m) => m.id === selectedModeId) ?? null;
+  /** The count picker shows whenever the Mode's Path holds a bound Seed Input (issue #47's AC), even one not otherwise rendered. */
+  const hasSeedInput =
+    selectedMode?.inputs.some((input) => input.kind === "seed") ?? false;
 
   const selectMode = useCallback((mode: WorkbenchMode) => {
     setSelectedModeId(mode.id);
     setValues((current) => carryValuesFor(mode, current));
     setIssuesByInputId({});
+    setCount(1);
   }, []);
 
   // Live validation (issue #46): the same parseInputValues schema the
@@ -716,6 +747,9 @@ export function WorkbenchPage() {
           modeId: mode.id,
           revision: current.revision,
           values: valuesPayload(mode, values),
+          ...(mode.inputs.some((input) => input.kind === "seed")
+            ? { count }
+            : {}),
         }),
       });
 
@@ -789,11 +823,30 @@ export function WorkbenchPage() {
         return;
       }
 
+      // The 201 carries this Submission's own prompt (issue #47 AC); SSE's
+      // `change` events, which have no prompt, would otherwise leave it
+      // blank until a reload.
+      const created = (await res.json()) as {
+        generations: GenerationSummary[];
+        prompt: string | null;
+      };
+      if (created.generations.length > 0) {
+        const submissionId = created.generations[0]?.submissionId;
+        setSubmissions((current) => {
+          const next = created.generations.reduce(upsertGeneration, current);
+          return next.map((submission) =>
+            submission.submissionId === submissionId
+              ? { ...submission, prompt: created.prompt }
+              : submission,
+          );
+        });
+      }
+
       setSubmitState({ status: "idle" });
     } catch {
       setSubmitState({ status: "error", message: "could not submit" });
     }
-  }, [selectedModeId, values]);
+  }, [selectedModeId, values, count]);
 
   if (session.status === "loading") return null;
   if (session.status === "signed-out") return <Navigate to="/" replace />;
@@ -925,6 +978,24 @@ export function WorkbenchPage() {
               />
             )}
 
+            {hasSeedInput && (
+              <fieldset>
+                <legend>Variants</legend>
+                <label htmlFor="submission-count">How many (1-4)</label>
+                <select
+                  id="submission-count"
+                  value={count}
+                  onChange={(event) => setCount(Number(event.target.value))}
+                >
+                  {[1, 2, 3, 4].map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+              </fieldset>
+            )}
+
             {submitState.status === "error" && (
               <p role="alert">{submitState.message}</p>
             )}
@@ -944,6 +1015,11 @@ export function WorkbenchPage() {
                     <time dateTime={submission.submittedAt}>
                       {new Date(submission.submittedAt).toLocaleString()}
                     </time>
+                    {submission.prompt && (
+                      <span style={{ display: "block" }}>
+                        {submission.prompt}
+                      </span>
+                    )}
                   </button>
                   <ul>
                     {submission.generations.map((generation) => (
@@ -1080,6 +1156,20 @@ function InputField({ input, value, onChange, issue }: InputFieldProps) {
           min={input.min}
           max={input.max}
           step={input.step}
+          aria-describedby={describedBy}
+          onChange={(event) => onChange(event.target.value)}
+        />
+      )}
+
+      {input.kind === "seed" && (
+        <input
+          id={`input-${input.id}`}
+          type="number"
+          value={value}
+          placeholder="Random"
+          min={0}
+          max={input.max ?? undefined}
+          step={1}
           aria-describedby={describedBy}
           onChange={(event) => onChange(event.target.value)}
         />

@@ -236,6 +236,10 @@ export function validateModeInputSettings(
           `"${input.label}"'s fixed value must be one of its options`,
         );
       }
+    } else if (input.kind === "seed") {
+      // ADR 0007: blank always means "draw one"; fixing a Seed would
+      // make every Submission draw the same one, defeating the point.
+      errors.push(`"${input.label}" is a Seed and can't be fixed`);
     }
   }
 

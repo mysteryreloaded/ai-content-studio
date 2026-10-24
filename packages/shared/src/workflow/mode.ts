@@ -19,16 +19,23 @@ export const SAVE_NODE_KINDS: Record<string, AssetKind> = {
   SaveAudioMP3: "audio",
   SaveAudioOpus: "audio",
   VHS_VideoCombine: "video",
+  SaveVideo: "video",
+  SaveWEBM: "video",
 };
 
 /**
  * Preview-only node classes: ADR 0001 refuses these as a Mode's output
  * node ("side outputs such as a preview node ... are not allowed").
- * `PreviewImage` is ComfyUI's core preview node; VideoHelperSuite's
- * preview node is commonly paired with it.
+ * `PreviewImage`, `PreviewAudio`, `PreviewAny` and `Preview3D` are
+ * ComfyUI's own core preview nodes; `MaskPreview` and VideoHelperSuite's
+ * preview node are commonly paired with them.
  */
 export const PREVIEW_NODE_CLASSES: ReadonlySet<string> = new Set([
   "PreviewImage",
+  "PreviewAudio",
+  "PreviewAny",
+  "Preview3D",
+  "MaskPreview",
   "VHS_VideoPreview",
 ]);
 

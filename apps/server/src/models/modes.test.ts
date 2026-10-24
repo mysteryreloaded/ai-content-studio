@@ -170,6 +170,38 @@ describe("ModelRepository Modes", () => {
     ).rejects.toBeInstanceOf(StaleVersion);
   });
 
+  test("two concurrent saves from the same version: one wins, the other gets StaleVersion, not a 500 from the revision-number unique constraint", async () => {
+    const repository = await repo();
+    const { record: model } = await repository.createFromWorkflow(
+      "M1",
+      WORKFLOW_WITH_SAVE,
+      SYSTEM,
+    );
+
+    const results = await Promise.allSettled([
+      repository.updateModes(
+        model.id,
+        [{ name: "A", description: "", outputNodeIds: ["2"] }],
+        model.version,
+        SYSTEM,
+      ),
+      repository.updateModes(
+        model.id,
+        [{ name: "B", description: "", outputNodeIds: ["2"] }],
+        model.version,
+        SYSTEM,
+      ),
+    ]);
+
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    const rejected = results.filter((r) => r.status === "rejected");
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(
+      StaleVersion,
+    );
+  });
+
   test("refuses a missing Model", async () => {
     const repository = await repo();
     await expect(

@@ -17,6 +17,7 @@ describe("resolveModeOutputNodes", () => {
       _meta: { title: "Final frame" },
     },
     "3": { class_type: "PreviewImage", inputs: { image: ["1", 0] } },
+    "4": { class_type: "PreviewAudio", inputs: { audio: ["1", 0] } },
   };
 
   test("resolves ordered output nodes, inferring kind and title", () => {
@@ -55,6 +56,14 @@ describe("resolveModeOutputNodes", () => {
     }
   });
 
+  test("refuses a PreviewAudio output node", () => {
+    const result = resolveModeOutputNodes(workflow, ["4"]);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors[0]).toContain("preview node");
+    }
+  });
+
   test("refuses a node named twice", () => {
     const result = resolveModeOutputNodes(workflow, ["2", "2"]);
     expect(result.ok).toBe(false);
@@ -74,7 +83,16 @@ describe("inferOutputNodeKind / isPreviewNodeClass", () => {
 
   test("flags known preview classes", () => {
     expect(isPreviewNodeClass("PreviewImage")).toBe(true);
+    expect(isPreviewNodeClass("PreviewAudio")).toBe(true);
+    expect(isPreviewNodeClass("PreviewAny")).toBe(true);
+    expect(isPreviewNodeClass("Preview3D")).toBe(true);
+    expect(isPreviewNodeClass("MaskPreview")).toBe(true);
     expect(isPreviewNodeClass("SaveImage")).toBe(false);
+  });
+
+  test("infers SaveVideo/SaveWEBM as video", () => {
+    expect(inferOutputNodeKind("SaveVideo")).toBe("video");
+    expect(inferOutputNodeKind("SaveWEBM")).toBe("video");
   });
 });
 

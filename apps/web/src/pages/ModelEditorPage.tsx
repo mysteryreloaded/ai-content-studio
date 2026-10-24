@@ -277,7 +277,8 @@ export function ModelEditorPage() {
     );
   }
 
-  function toggleOutputNode(nodeId: string) {
+  /** Toggles `nodeId` in and out of the currently *picking* Mode's output nodes (the Workflow table's Add/Remove button). */
+  function toggleOutputNodeInEditingMode(nodeId: string) {
     if (editingModeIndex === null || !modesDraft) return;
     const mode = modesDraft[editingModeIndex];
     if (!mode) return;
@@ -287,21 +288,40 @@ export function ModelEditorPage() {
     updateMode(editingModeIndex, { outputNodeIds });
   }
 
-  function moveOutputNode(nodeId: string, direction: "up" | "down") {
-    if (editingModeIndex === null || !modesDraft) return;
-    const mode = modesDraft[editingModeIndex];
+  /** Removes `nodeId` from Mode `index`'s own output-node list, regardless of which Mode is currently being picked. */
+  function removeOutputNode(index: number, nodeId: string) {
+    if (!modesDraft) return;
+    const mode = modesDraft[index];
     if (!mode) return;
-    const index = mode.outputNodeIds.indexOf(nodeId);
-    const swapWith = direction === "up" ? index - 1 : index + 1;
-    if (index === -1 || swapWith < 0 || swapWith >= mode.outputNodeIds.length) {
+    updateMode(index, {
+      outputNodeIds: mode.outputNodeIds.filter((id) => id !== nodeId),
+    });
+  }
+
+  /** Reorders `nodeId` within Mode `index`'s own output-node list, regardless of which Mode is currently being picked. */
+  function moveOutputNode(
+    index: number,
+    nodeId: string,
+    direction: "up" | "down",
+  ) {
+    if (!modesDraft) return;
+    const mode = modesDraft[index];
+    if (!mode) return;
+    const position = mode.outputNodeIds.indexOf(nodeId);
+    const swapWith = direction === "up" ? position - 1 : position + 1;
+    if (
+      position === -1 ||
+      swapWith < 0 ||
+      swapWith >= mode.outputNodeIds.length
+    ) {
       return;
     }
     const outputNodeIds = [...mode.outputNodeIds];
-    const a = outputNodeIds[index] as string;
+    const a = outputNodeIds[position] as string;
     const b = outputNodeIds[swapWith] as string;
-    outputNodeIds[index] = b;
+    outputNodeIds[position] = b;
     outputNodeIds[swapWith] = a;
-    updateMode(editingModeIndex, { outputNodeIds });
+    updateMode(index, { outputNodeIds });
   }
 
   async function handleSaveModes() {
@@ -656,30 +676,19 @@ export function ModelEditorPage() {
                   {nodeId}
                   <button
                     type="button"
-                    disabled={editingModeIndex !== index}
-                    onClick={() => {
-                      setEditingModeIndex(index);
-                      moveOutputNode(nodeId, "up");
-                    }}
+                    onClick={() => moveOutputNode(index, nodeId, "up")}
                   >
                     ↑
                   </button>
                   <button
                     type="button"
-                    disabled={editingModeIndex !== index}
-                    onClick={() => {
-                      setEditingModeIndex(index);
-                      moveOutputNode(nodeId, "down");
-                    }}
+                    onClick={() => moveOutputNode(index, nodeId, "down")}
                   >
                     ↓
                   </button>
                   <button
                     type="button"
-                    onClick={() => {
-                      setEditingModeIndex(index);
-                      toggleOutputNode(nodeId);
-                    }}
+                    onClick={() => removeOutputNode(index, nodeId)}
                   >
                     Remove
                   </button>
@@ -760,7 +769,7 @@ export function ModelEditorPage() {
                     <td>
                       <button
                         type="button"
-                        onClick={() => toggleOutputNode(node.id)}
+                        onClick={() => toggleOutputNodeInEditingMode(node.id)}
                       >
                         {chosen ? "Remove" : "Add"}
                       </button>

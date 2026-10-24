@@ -531,7 +531,24 @@ export class ModelRepository {
 
       const beforeModes = await listModesForRevision(tx, currentRevision.id);
 
+      // The version-checked claim runs first, before anything that could
+      // collide: two concurrent saves both reading currentRevision=1 and
+      // both inserting revisionNumber=2 would otherwise hit
+      // model_revisions_model_number_unique and surface as a 500, not the
+      // 409 a stale save should get. Only the winner of this UPDATE goes
+      // on to insert the new revision/Modes.
       const newRevisionNumber = before.currentRevision + 1;
+      const [row] = await tx
+        .update(models)
+        .set({
+          currentRevision: newRevisionNumber,
+          version: before.version + 1,
+          updatedAt: this.clock.now(),
+        })
+        .where(and(eq(models.id, id), eq(models.version, expectedVersion)))
+        .returning();
+      if (!row) throw new StaleVersion();
+
       const [newRevision] = await tx
         .insert(modelRevisions)
         .values({
@@ -553,17 +570,6 @@ export class ModelRepository {
           })),
         );
       }
-
-      const [row] = await tx
-        .update(models)
-        .set({
-          currentRevision: newRevisionNumber,
-          version: before.version + 1,
-          updatedAt: this.clock.now(),
-        })
-        .where(and(eq(models.id, id), eq(models.version, expectedVersion)))
-        .returning();
-      if (!row) throw new StaleVersion();
 
       const afterModes = await listModesForRevision(tx, newRevision.id);
       await recordAuditEntry(tx, this.clock, {

@@ -39,6 +39,21 @@ class FakeEventSource {
     this.listeners[type] = list;
   }
   close() {}
+  /** The Gallery also opens `usePauseNotice`'s shared stream; tests target the Generations one by its URL. */
+  static generationsStream(): FakeEventSource {
+    const source = FakeEventSource.instances.find((instance) =>
+      instance.url.includes("/api/generations/stream"),
+    );
+    if (!source) throw new Error("no Generations EventSource yet");
+    return source;
+  }
+  static noticeStream(): FakeEventSource {
+    const source = FakeEventSource.instances.find((instance) =>
+      instance.url.includes("/api/site-settings/notice-stream"),
+    );
+    if (!source) throw new Error("no notice EventSource yet");
+    return source;
+  }
   emit(type: string, data: unknown) {
     for (const cb of this.listeners[type] ?? []) {
       cb({ data: JSON.stringify(data) });
@@ -140,6 +155,39 @@ describe("GalleryPage", () => {
     expect(view.getByText("That's everything.")).toBeTruthy();
   });
 
+  test('shows a queued Generation as "Queued · paused" while Paused (issue #59)', async () => {
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/gallery/models")) {
+        return Response.json({ models: [] });
+      }
+      if (call.url.includes("/api/gallery?")) {
+        return Response.json({
+          submissions: [
+            {
+              ...SUBMISSION_1,
+              generations: [
+                { ...SUBMISSION_1.generations[0], state: "queued" },
+              ],
+            },
+          ],
+          hasMore: false,
+        });
+      }
+      throw new Error(`unexpected fetch ${call.url}`);
+    });
+
+    const view = renderGallery();
+    await view.findByText("Queued");
+
+    await waitFor(() => FakeEventSource.noticeStream());
+    FakeEventSource.noticeStream().emit("notice", {
+      paused: true,
+      notice: "",
+    });
+
+    expect(await view.findByText("Queued · paused")).toBeTruthy();
+  });
+
   test("filters by Model via the URL and shows Clear filters on no match", async () => {
     mockFetch((call) => {
       if (call.url.endsWith("/api/gallery/models")) {
@@ -173,8 +221,8 @@ describe("GalleryPage", () => {
     const view = renderGallery();
     await view.findByText("Nothing here yet");
 
-    await waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
-    const source = FakeEventSource.instances[0] as FakeEventSource;
+    await waitFor(() => FakeEventSource.generationsStream());
+    const source = FakeEventSource.generationsStream();
     source.emit("change", {
       id: "g2",
       modelId: "m2",
@@ -206,8 +254,8 @@ describe("GalleryPage", () => {
     const view = renderGallery();
     await view.findByRole("link", { name: "LTX 2.5" });
 
-    await waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
-    const source = FakeEventSource.instances[0] as FakeEventSource;
+    await waitFor(() => FakeEventSource.generationsStream());
+    const source = FakeEventSource.generationsStream();
     const olderSubmittedAt = new Date(
       new Date(SUBMISSION_1.submittedAt).getTime() - 60_000,
     ).toISOString();
@@ -248,8 +296,8 @@ describe("GalleryPage", () => {
     const view = renderGallery();
     await view.findByRole("link", { name: "LTX 2.5" });
 
-    await waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
-    const source = FakeEventSource.instances[0] as FakeEventSource;
+    await waitFor(() => FakeEventSource.generationsStream());
+    const source = FakeEventSource.generationsStream();
     const olderSubmittedAt = new Date(
       new Date(SUBMISSION_1.submittedAt).getTime() - 60_000,
     ).toISOString();
@@ -286,8 +334,8 @@ describe("GalleryPage", () => {
     const view = renderGallery("/gallery?state=bogus");
     await view.findByText("Nothing here yet");
 
-    await waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
-    const source = FakeEventSource.instances[0] as FakeEventSource;
+    await waitFor(() => FakeEventSource.generationsStream());
+    const source = FakeEventSource.generationsStream();
     source.emit("change", {
       id: "g2",
       modelId: "m2",

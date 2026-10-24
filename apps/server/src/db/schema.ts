@@ -84,6 +84,26 @@ export const siteSettings = pgTable("site_settings", {
   blockedWords: jsonb("blocked_words").notNull().default([]),
   blockedWordsRevision: integer("blocked_words_revision").notNull().default(1),
   /**
+   * Issue #59: a short plain-text banner shown on every page, signed in
+   * or out. `noticeRevision` is its own optimistic-concurrency token,
+   * independent of the other Site settings forms', so saving one never
+   * races another into a spurious 409. The standard message shown when
+   * this is blank during a Pause lives in shared (`STANDARD_PAUSE_NOTICE`),
+   * not here, since it's never actually saved.
+   */
+  notice: text("notice").notNull().default(""),
+  noticeRevision: integer("notice_revision").notNull().default(1),
+  /**
+   * Issue #59: an Admin stopping generating site-wide for maintenance,
+   * until an Admin resumes it. `pausedAt`/`pausedByName` are null while
+   * not paused; `pausedByName` is the Admin's display name at the time
+   * they paused (not a live join), so "Paused since … by …" keeps
+   * reading correctly even if that Admin is later renamed or removed.
+   */
+  paused: boolean("paused").notNull().default(false),
+  pausedAt: timestamp("paused_at", { withTimezone: true }),
+  pausedByName: text("paused_by_name"),
+  /**
    * Issue #53: the daily Cap (rolling 24h) and the concurrent Cap (queued
    * through saving), both Admin-editable defaults; a user's own override
    * lives on `users` instead. `capsRevision` is its own

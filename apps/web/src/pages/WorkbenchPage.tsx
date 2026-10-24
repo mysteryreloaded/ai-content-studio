@@ -1,5 +1,6 @@
 import {
   capsFooterText,
+  effectiveNoticeText,
   parseInputValues,
   renderMarkdown,
   toInputIssues,
@@ -17,6 +18,7 @@ import {
   trimUpload,
   uploadResumable,
 } from "../lib/chunkedUpload.js";
+import { usePauseNotice } from "../usePauseNotice.js";
 import { useSession } from "../useSession.js";
 
 interface WorkbenchInputOption {
@@ -385,9 +387,14 @@ type SubmitState =
   | { status: "error"; message: string };
 
 /** Issue #55's AC: a queued card says it's waiting for a GPU or retrying, never a queue position. */
-function stateLabel(state: GenerationState, tries: number): string {
+function stateLabel(
+  state: GenerationState,
+  tries: number,
+  paused: boolean,
+): string {
   switch (state) {
     case "queued":
+      if (paused) return "Queued · paused";
       return tries > 0 ? "Retrying…" : "Waiting for a GPU…";
     case "starting":
       return "Starting…";
@@ -471,14 +478,16 @@ function DownloadAsset({ asset }: { asset: AssetSummary }) {
 function GenerationCard({
   generation,
   progress,
+  paused,
 }: {
   generation: GenerationSummary;
   progress: GenerationProgress | undefined;
+  paused: boolean;
 }) {
   const mainAsset = generation.assets?.[0];
   return (
     <li>
-      <span>{stateLabel(generation.state, generation.tries)}</span>{" "}
+      <span>{stateLabel(generation.state, generation.tries, paused)}</span>{" "}
       {(generation.state === "starting" || generation.state === "running") && (
         <ProgressLabel progress={progress} />
       )}
@@ -610,6 +619,8 @@ function GenerationDetailDialog({
 export function WorkbenchPage() {
   const { slug = "" } = useParams();
   const { session } = useSession();
+  const { paused, notice } = usePauseNotice();
+  const pauseNoticeText = effectiveNoticeText(paused, notice);
 
   const [model, setModel] = useState<WorkbenchModel | null>(null);
   const [notFound, setNotFound] = useState(false);
@@ -1332,6 +1343,7 @@ export function WorkbenchPage() {
                         key={generation.id}
                         generation={generation}
                         progress={progressById.get(generation.id)}
+                        paused={paused}
                       />
                     ))}
                   </ul>
@@ -1360,13 +1372,23 @@ export function WorkbenchPage() {
           ) : submitState.status === "trimming" ? (
             <output>Trimming your video or audio…</output>
           ) : (
-            <button
-              type="button"
-              onClick={handleGenerate}
-              disabled={!selectedModeId || submitState.status === "submitting"}
-            >
-              Generate
-            </button>
+            <>
+              {paused && pauseNoticeText && (
+                // biome-ignore lint/a11y/useSemanticElements: <output> is for a form's calculated result, not this status message
+                <p role="status">{pauseNoticeText}</p>
+              )}
+              <button
+                type="button"
+                onClick={handleGenerate}
+                disabled={
+                  !selectedModeId ||
+                  submitState.status === "submitting" ||
+                  paused
+                }
+              >
+                Generate
+              </button>
+            </>
           )}
         </footer>
       </main>

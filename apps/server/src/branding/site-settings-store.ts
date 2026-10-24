@@ -34,6 +34,11 @@ export interface SiteSettingsSnapshot {
   footerLinks: FooterLink[];
   blockedWords: string[];
   blockedWordsRevision: number;
+  notice: string;
+  noticeRevision: number;
+  paused: boolean;
+  pausedAt: Date | null;
+  pausedByName: string | null;
   dailyCap: number;
   concurrentCap: number;
   capsRevision: number;
@@ -115,10 +120,31 @@ function rowToSnapshot(
     footerLinks: row.footerLinks as FooterLink[],
     blockedWords: row.blockedWords as string[],
     blockedWordsRevision: row.blockedWordsRevision,
+    notice: row.notice,
+    noticeRevision: row.noticeRevision,
+    paused: row.paused,
+    pausedAt: row.pausedAt,
+    pausedByName: row.pausedByName,
     dailyCap: row.dailyCap,
     concurrentCap: row.concurrentCap,
     capsRevision: row.capsRevision,
   };
+}
+
+/** The Pause/Notice fields alone (issue #59), for the public banner and the Generation submit/dispatch gates. */
+export interface PauseNoticeSnapshot {
+  paused: boolean;
+  notice: string;
+}
+
+export async function getPauseNotice(
+  db: Database,
+): Promise<PauseNoticeSnapshot> {
+  const [row] = await db
+    .select({ paused: siteSettings.paused, notice: siteSettings.notice })
+    .from(siteSettings)
+    .limit(1);
+  return { paused: row?.paused ?? false, notice: row?.notice ?? "" };
 }
 
 /** The branding fields alone, excluding Site terms' (up to 50,000 chars) from the Audit entry below. */
@@ -453,6 +479,59 @@ export async function updateSiteBlockedWords(
   });
 }
 
+export interface SiteNoticeUpdateInput {
+  /** `noticeRevision`, independent of the other Site settings forms', so saving one never races another into a spurious 409. */
+  revision: number;
+  text: string;
+}
+
+export type SiteNoticeUpdateResult =
+  | { ok: true; settings: SiteSettingsSnapshot }
+  | { ok: false; reason: "stale" };
+
+/** Saves the Notice text (issue #59). Its standard "paused" fallback is computed by the caller, never stored. */
+export async function updateSiteNotice(
+  db: Database,
+  clock: Clock,
+  actor: AuditActor,
+  input: SiteNoticeUpdateInput,
+): Promise<SiteNoticeUpdateResult> {
+  return db.transaction(async (tx) => {
+    const [current] = await tx.select().from(siteSettings).limit(1);
+    if (!current) throw new Error("site_settings row is missing");
+    if (current.noticeRevision !== input.revision) {
+      return { ok: false, reason: "stale" };
+    }
+
+    const before = rowToSnapshot(current);
+    const now = clock.now();
+
+    const [updated] = await tx
+      .update(siteSettings)
+      .set({
+        noticeRevision: current.noticeRevision + 1,
+        notice: input.text,
+        updatedAt: now,
+      })
+      .where(eq(siteSettings.singleton, true))
+      .returning();
+    if (!updated) throw new Error("site_settings update affected no row");
+
+    const after = rowToSnapshot(updated);
+
+    await recordAuditEntry(tx, clock, {
+      actor,
+      targetType: "site_settings",
+      targetId: "singleton",
+      action: "update-notice",
+      before: { notice: before.notice },
+      after: { notice: after.notice },
+    });
+
+    return { ok: true, settings: after };
+  });
+}
+
 export interface SiteCapsUpdateInput {
   /** `capsRevision`, independent of the other Site settings forms', so saving one never races another into a 409. */
   revision: number;
@@ -505,6 +584,112 @@ export async function updateSiteCaps(
         concurrentCap: before.concurrentCap,
       },
       after: { dailyCap: after.dailyCap, concurrentCap: after.concurrentCap },
+    });
+
+    return { ok: true, settings: after };
+  });
+}
+
+export type PauseResult =
+  | { ok: true; settings: SiteSettingsSnapshot }
+  | { ok: false; reason: "already-paused" };
+
+export type ResumeResult =
+  | { ok: true; settings: SiteSettingsSnapshot }
+  | { ok: false; reason: "not-paused" };
+
+/**
+ * Pauses generating site-wide (issue #59): refused when already paused,
+ * so a double click never overwrites an earlier pause's own `pausedAt`/
+ * `pausedByName`, or writes a second "pause" Audit entry for the same
+ * Pause. `adminName` is the acting Admin's display name at this moment,
+ * kept on the row (not a live join) so it keeps reading correctly even
+ * if that Admin is later renamed or removed.
+ */
+export async function pauseGenerating(
+  db: Database,
+  clock: Clock,
+  actor: AuditActor,
+  adminName: string,
+): Promise<PauseResult> {
+  return db.transaction(async (tx) => {
+    const [current] = await tx.select().from(siteSettings).limit(1);
+    if (!current) throw new Error("site_settings row is missing");
+    if (current.paused) return { ok: false, reason: "already-paused" };
+
+    const before = rowToSnapshot(current);
+    const now = clock.now();
+
+    const [updated] = await tx
+      .update(siteSettings)
+      .set({
+        paused: true,
+        pausedAt: now,
+        pausedByName: adminName,
+        updatedAt: now,
+      })
+      .where(eq(siteSettings.singleton, true))
+      .returning();
+    if (!updated) throw new Error("site_settings update affected no row");
+
+    const after = rowToSnapshot(updated);
+
+    await recordAuditEntry(tx, clock, {
+      actor,
+      targetType: "site_settings",
+      targetId: "singleton",
+      action: "pause",
+      before: { paused: before.paused },
+      after: {
+        paused: after.paused,
+        pausedAt: after.pausedAt,
+        pausedByName: after.pausedByName,
+      },
+    });
+
+    return { ok: true, settings: after };
+  });
+}
+
+/** Resumes generating (issue #59): refused when not currently paused, so it never writes a spurious "resume" Audit entry. */
+export async function resumeGenerating(
+  db: Database,
+  clock: Clock,
+  actor: AuditActor,
+): Promise<ResumeResult> {
+  return db.transaction(async (tx) => {
+    const [current] = await tx.select().from(siteSettings).limit(1);
+    if (!current) throw new Error("site_settings row is missing");
+    if (!current.paused) return { ok: false, reason: "not-paused" };
+
+    const before = rowToSnapshot(current);
+    const now = clock.now();
+
+    const [updated] = await tx
+      .update(siteSettings)
+      .set({
+        paused: false,
+        pausedAt: null,
+        pausedByName: null,
+        updatedAt: now,
+      })
+      .where(eq(siteSettings.singleton, true))
+      .returning();
+    if (!updated) throw new Error("site_settings update affected no row");
+
+    const after = rowToSnapshot(updated);
+
+    await recordAuditEntry(tx, clock, {
+      actor,
+      targetType: "site_settings",
+      targetId: "singleton",
+      action: "resume",
+      before: {
+        paused: before.paused,
+        pausedAt: before.pausedAt,
+        pausedByName: before.pausedByName,
+      },
+      after: { paused: after.paused },
     });
 
     return { ok: true, settings: after };

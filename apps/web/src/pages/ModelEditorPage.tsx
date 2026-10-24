@@ -24,7 +24,9 @@ import type {
   ModeInputSetting,
   ModeInputState,
   ModelIssue,
+  NodeFieldRef,
   NumberInputDefinition,
+  PointsInputDefinition,
   SeedInputDefinition,
   SelectInputDefinition,
   SelectOption,
@@ -373,6 +375,21 @@ function newAudioUploadInput(): AudioUploadInputDefinition {
   };
 }
 
+/** A new Points Input (issue #52): no video Input or Width/Height field picked yet. */
+function newPointsInput(): PointsInputDefinition {
+  return {
+    id: crypto.randomUUID(),
+    kind: "points",
+    group: "describe",
+    label: "",
+    help: "",
+    videoInputId: "",
+    widthField: { nodeId: "", field: "" },
+    heightField: { nodeId: "", field: "" },
+    bindings: [],
+  };
+}
+
 /** `fieldKey` of every field bound by an Input other than `excludingId`. */
 function usedFieldKeys(
   inputs: InputDefinition[],
@@ -414,8 +431,18 @@ function candidateFieldsFor(
     if (input.kind === "video_upload" || input.kind === "audio_upload") {
       return field.valueType === "string";
     }
+    // Issue #52: the one field a Points Input writes its resolved
+    // pixel JSON to.
+    if (input.kind === "points") return field.valueType === "string";
     return true;
   });
+}
+
+/** The workflow's own number-valued fields (issue #52), for a Points Input's Width/Height field pickers; not restricted to unused ones, since those fields are only ever read, never written by the Points Input itself. */
+function numberFieldsFor(workflow: Workflow): BindableField[] {
+  return listBindableFields(workflow).filter(
+    (field) => field.valueType === "number",
+  );
 }
 
 /** Adds or removes a binding, keeping a select Input's option values arrays the same length as its bindings. */
@@ -1117,7 +1144,9 @@ export function ModelEditorPage() {
                 ? newVideoUploadInput()
                 : newInputKind === "audio_upload"
                   ? newAudioUploadInput()
-                  : newSelectInput();
+                  : newInputKind === "points"
+                    ? newPointsInput()
+                    : newSelectInput();
     setInputsDraft([...inputsDraft, created]);
     setEditingInputIndex(inputsDraft.length);
   }
@@ -2138,6 +2167,81 @@ export function ModelEditorPage() {
               </>
             )}
 
+            {input.kind === "points" && (
+              <>
+                <p>
+                  A user picks 1-10 points on the first frame of the chosen
+                  Video Upload Input's trimmed clip, inside the crop the
+                  Width/Height fields resolve to. Bind its own field (the
+                  resolved pixel points, as a JSON string) below.
+                </p>
+
+                <label htmlFor={`input-video-${index}`}>
+                  Video Upload Input
+                </label>
+                <select
+                  id={`input-video-${index}`}
+                  value={input.videoInputId}
+                  onChange={(event) =>
+                    updateInput(index, {
+                      ...input,
+                      videoInputId: event.target.value,
+                    })
+                  }
+                >
+                  <option value="">(choose one)</option>
+                  {inputsDraft
+                    ?.filter(
+                      (other): other is VideoUploadInputDefinition =>
+                        other.kind === "video_upload",
+                    )
+                    .map((videoInput) => (
+                      <option key={videoInput.id} value={videoInput.id}>
+                        {videoInput.label || videoInput.id}
+                      </option>
+                    ))}
+                </select>
+
+                {(["widthField", "heightField"] as const).map((key) => {
+                  const ref = input[key];
+                  return (
+                    <div key={key}>
+                      <label htmlFor={`input-${key}-${index}`}>
+                        {key === "widthField" ? "Width" : "Height"} field
+                      </label>
+                      <select
+                        id={`input-${key}-${index}`}
+                        value={
+                          ref.nodeId ? fieldKey(ref.nodeId, ref.field) : ""
+                        }
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          const nextRef: NodeFieldRef =
+                            value === ""
+                              ? { nodeId: "", field: "" }
+                              : {
+                                  nodeId: value.slice(0, value.indexOf("::")),
+                                  field: value.slice(value.indexOf("::") + 2),
+                                };
+                          updateInput(index, { ...input, [key]: nextRef });
+                        }}
+                      >
+                        <option value="">(choose one)</option>
+                        {numberFieldsFor(detail.workflow).map((field) => (
+                          <option
+                            key={fieldKey(field.nodeId, field.field)}
+                            value={fieldKey(field.nodeId, field.field)}
+                          >
+                            {field.nodeId}.{field.field} ({field.classType})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  );
+                })}
+              </>
+            )}
+
             {input.kind === "number" && (
               <>
                 <label htmlFor={`input-mode-${index}`}>Number</label>
@@ -2454,6 +2558,7 @@ export function ModelEditorPage() {
           <option value="image_upload">Image upload</option>
           <option value="video_upload">Video upload</option>
           <option value="audio_upload">Audio upload</option>
+          <option value="points">Points</option>
         </select>
         <button type="button" onClick={addInput}>
           Add Input
@@ -2890,13 +2995,16 @@ function ModeInputGrid({
                           // Image/Video/Audio Upload always takes a
                           // real Upload id (issue #48 CEO review, issue
                           // #51), so none of them can be fixed either.
+                          // A Points Input always takes the user's own
+                          // clicks (issue #52), same reasoning.
                           .filter(
                             (state) =>
                               state !== "fixed" ||
                               (input.kind !== "seed" &&
                                 input.kind !== "image_upload" &&
                                 input.kind !== "video_upload" &&
-                                input.kind !== "audio_upload"),
+                                input.kind !== "audio_upload" &&
+                                input.kind !== "points"),
                           )
                           .map((state) => (
                             <option key={state} value={state}>

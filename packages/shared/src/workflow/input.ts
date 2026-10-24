@@ -5,6 +5,7 @@
 import { z } from "zod";
 import { buildFrozenPrompt } from "./frozen-prompt.js";
 import { computePath } from "./path.js";
+import { decodePointsValue, resolvePointsPixels } from "./points.js";
 import { SEED_UPPER_BOUND, seedBoundFor } from "./seed.js";
 import { type NodeFieldValue, type Workflow, isNodeLink } from "./types.js";
 
@@ -119,6 +120,33 @@ export interface SeedInputDefinition extends InputBase {
   max: number | null;
 }
 
+/** A Node field a Points Input reads from, rather than writes to (issue #52). */
+export interface NodeFieldRef {
+  nodeId: string;
+  field: string;
+}
+
+/**
+ * A Points Input (issue #52): the user clicks who to replace on the
+ * first frame of `videoInputId`'s trimmed Upload, inside the crop
+ * `widthField`/`heightField` resolve to. Its value is 1-10 points, each
+ * a fraction (0-1) of that first frame; `buildPrompt` resolves
+ * `widthField`/`heightField` from the built prompt, reproduces
+ * `ImageScale`'s own centre crop and writes the points in whole pixels,
+ * as a JSON string, to its one bound field. Like an Upload, it's always
+ * required once shown: there's no Workflow-default fallback for "no
+ * points".
+ */
+export interface PointsInputDefinition extends InputBase {
+  kind: "points";
+  /** The Video Upload Input (on the same Model) whose first frame this picks on. */
+  videoInputId: string;
+  /** The INT Node field `buildPrompt` reads the crop/scale target width from. */
+  widthField: NodeFieldRef;
+  /** The INT Node field `buildPrompt` reads the crop/scale target height from. */
+  heightField: NodeFieldRef;
+}
+
 export type InputDefinition =
   | TextInputDefinition
   | NumberInputDefinition
@@ -126,7 +154,8 @@ export type InputDefinition =
   | ImageUploadInputDefinition
   | VideoUploadInputDefinition
   | AudioUploadInputDefinition
-  | SeedInputDefinition;
+  | SeedInputDefinition
+  | PointsInputDefinition;
 
 export const BYTES_PER_MB = 1024 * 1024;
 
@@ -405,15 +434,42 @@ export function validateBinding(
       return `field "${field}" on node "${nodeId}" isn't an audio upload loader field`;
     }
   }
+  if (kind === "points" && typeof value !== "string") {
+    return `field "${field}" on node "${nodeId}" isn't a text field`;
+  }
   return null;
 }
 
-/** Validates one Input's own shape and every one of its bindings against `ctx`. */
+/** Why `ref` can't be a Points Input's Width/Height field, or null (issue #52): must exist, hold a number, and not be link-fed. */
+export function validatePointsFieldRef(
+  label: "width" | "height",
+  ref: NodeFieldRef,
+  ctx: BindingValidationContext,
+): string | null {
+  const node = ctx.workflow[ref.nodeId];
+  if (!node)
+    return `${label} field's node "${ref.nodeId}" is not in the Workflow`;
+  const value = node.inputs[ref.field];
+  if (value === undefined) {
+    return `${label} field "${ref.field}" is not on node "${ref.nodeId}"`;
+  }
+  if (isNodeLink(value)) {
+    return `${label} field "${ref.field}" on node "${ref.nodeId}" is fed by a link, not a value`;
+  }
+  const spec = ctx.fieldSpecs?.get(node.class_type)?.[ref.field];
+  if (spec ? spec.type !== "INT" : typeof value !== "number") {
+    return `${label} field "${ref.field}" on node "${ref.nodeId}" isn't a whole-number (INT) field`;
+  }
+  return null;
+}
+
+/** Validates one Input's own shape and every one of its bindings against `ctx`. `allInputs` is this Model's full Inputs list (issue #52: a Points Input's `videoInputId` must name one of them). */
 export function validateInputDefinition(
   input: InputDefinition,
   otherLabels: readonly string[],
   ctx: BindingValidationContext,
   otherIds: readonly string[] = [],
+  allInputs: readonly InputDefinition[] = [],
 ): string[] {
   const errors: string[] = [];
 
@@ -524,6 +580,24 @@ export function validateInputDefinition(
     ) {
       errors.push("max duration must be greater than min duration");
     }
+  } else if (input.kind === "points") {
+    if (input.bindings.length > 1) {
+      errors.push("a Points Input binds exactly one field");
+    }
+    const videoInput = allInputs.find(
+      (other) => other.id === input.videoInputId,
+    );
+    if (!videoInput || videoInput.kind !== "video_upload") {
+      errors.push("video Input must be one of this Model's Video Uploads");
+    }
+    const widthError = validatePointsFieldRef("width", input.widthField, ctx);
+    if (widthError) errors.push(widthError);
+    const heightError = validatePointsFieldRef(
+      "height",
+      input.heightField,
+      ctx,
+    );
+    if (heightError) errors.push(heightError);
   } else if (input.kind === "seed") {
     if (input.bindings.length > 1) {
       errors.push("a Seed Input binds exactly one field");
@@ -686,6 +760,25 @@ export function buildInputValuesSchema(
         .min(0)
         .max(seedBoundFor(input))
         .optional();
+    } else if (input.kind === "points") {
+      // Always required, like an Upload: there's no Workflow-default
+      // fallback for "no points" (issue #52). The crop-membership check
+      // needs the first frame's and the target's pixel sizes, neither
+      // known here, so it runs separately (`pointsValidationIssue`) once
+      // the built prompt resolves them.
+      shape[input.id] = z.string().refine(
+        (raw) => {
+          const points = decodePointsValue(raw);
+          if (!points || points.length < 1 || points.length > 10) {
+            return false;
+          }
+          return points.every(
+            (point) =>
+              point.x >= 0 && point.x <= 1 && point.y >= 0 && point.y <= 1,
+          );
+        },
+        { message: "needs 1-10 points, each within the frame" },
+      );
     } else {
       const ids = input.options.map((option) => option.id);
       if (ids.length === 0) {
@@ -753,13 +846,24 @@ export function applyInputValues(
   workflow: Workflow,
   inputs: readonly InputDefinition[],
   values: Record<string, string | number | undefined>,
+  /** Issue #52: a Points Input's referenced video's first-frame pixel size, by Points Input id. */
+  frameSizes: Readonly<Record<string, { width: number; height: number }>> = {},
 ): Workflow {
   const result: Workflow = {};
   for (const [nodeId, node] of Object.entries(workflow)) {
     result[nodeId] = { ...node, inputs: { ...node.inputs } };
   }
 
+  // Points Inputs resolve last, against the final value of their
+  // Width/Height fields (which another Input may itself bind), so every
+  // other kind is written to `result` first.
+  const pointsInputs: PointsInputDefinition[] = [];
+
   for (const input of inputs) {
+    if (input.kind === "points") {
+      pointsInputs.push(input);
+      continue;
+    }
     const raw = values[input.id];
     if (input.kind === "select") {
       const optionId =
@@ -802,6 +906,38 @@ export function applyInputValues(
     }
   }
 
+  for (const input of pointsInputs) {
+    const raw = values[input.id];
+    if (typeof raw !== "string" || raw === "") continue;
+    const points = decodePointsValue(raw);
+    const frameSize = frameSizes[input.id];
+    const width =
+      result[input.widthField.nodeId]?.inputs[input.widthField.field];
+    const height =
+      result[input.heightField.nodeId]?.inputs[input.heightField.field];
+    if (
+      !points ||
+      !frameSize ||
+      typeof width !== "number" ||
+      typeof height !== "number"
+    ) {
+      continue;
+    }
+    const pixels = resolvePointsPixels(
+      points,
+      frameSize.width,
+      frameSize.height,
+      width,
+      height,
+    );
+    const encoded = JSON.stringify(pixels);
+    for (const binding of input.bindings) {
+      const node = result[binding.nodeId];
+      if (!node) continue;
+      node.inputs[binding.field] = encoded;
+    }
+  }
+
   return result;
 }
 
@@ -809,6 +945,8 @@ export function applyInputValues(
  * Builds the prompt a Generation sends (issue #46): each relevant Input's
  * value (or, blank, the Workflow's own value) written into its bound
  * fields, then frozen the same way `buildFrozenPrompt` always has been.
+ * `frameSizes` (issue #52) is a Points Input's video's first-frame pixel
+ * size, by Points Input id.
  */
 export function buildPrompt(
   workflow: Workflow,
@@ -816,7 +954,8 @@ export function buildPrompt(
   values: Record<string, string | number | undefined>,
   outputNodeIds: readonly string[],
   generationId: string,
+  frameSizes?: Readonly<Record<string, { width: number; height: number }>>,
 ) {
-  const applied = applyInputValues(workflow, inputs, values);
+  const applied = applyInputValues(workflow, inputs, values, frameSizes);
   return buildFrozenPrompt(applied, outputNodeIds, generationId);
 }

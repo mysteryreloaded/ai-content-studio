@@ -92,8 +92,49 @@ interface FfprobeOutput {
     r_frame_rate?: string;
     avg_frame_rate?: string;
     disposition?: { attached_pic?: number };
+    /** The legacy rotation tag (older ffmpeg/ffprobe). */
+    tags?: { rotate?: string };
+    /** The modern rotation (newer ffmpeg/ffprobe's Display Matrix side data). */
+    side_data_list?: Array<{ rotation?: number }>;
   }>;
   format?: { format_name?: string; duration?: string };
+}
+
+/**
+ * The clockwise rotation (degrees) ffprobe reports a video stream asks
+ * every player to apply before display (issue #52 CEO review round 2
+ * point 5): the modern `side_data_list` Display Matrix wins when
+ * present, else the legacy `tags.rotate`, else 0 (no rotation).
+ */
+function streamRotationDegrees(stream: {
+  tags?: { rotate?: string };
+  side_data_list?: Array<{ rotation?: number }>;
+}): number {
+  const fromSideData = stream.side_data_list?.find(
+    (entry) => typeof entry.rotation === "number",
+  )?.rotation;
+  if (typeof fromSideData === "number") return fromSideData;
+  const fromTag = Number(stream.tags?.rotate ?? "0");
+  return Number.isFinite(fromTag) ? fromTag : 0;
+}
+
+/**
+ * `width`/`height` as the stream is actually displayed once `rotation`
+ * is applied: an Android portrait MP4 stores its frame sideways (e.g.
+ * 1920x1080, rotation -90) and every player — a browser's `<video>`,
+ * and ComfyUI itself — shows it right-side up (1080x1920), so storing
+ * the stream's own unrotated dimensions here would compute a Points
+ * Input's crop against the wrong aspect ratio.
+ */
+function rotatedDimensions(
+  width: number,
+  height: number,
+  rotation: number,
+): { width: number; height: number } {
+  const normalized = ((rotation % 360) + 360) % 360;
+  return normalized === 90 || normalized === 270
+    ? { width: height, height: width }
+    : { width, height };
 }
 
 /** Parses ffprobe's `-show_streams -show_format` JSON for an accepted still, or says why not. */
@@ -267,6 +308,12 @@ export function parseVideoProbeOutput(
     (extension.toLowerCase() === "webm" &&
       (stream.codec_name === "vp8" || stream.codec_name === "vp9"));
 
+  const { width, height } = rotatedDimensions(
+    stream.width,
+    stream.height,
+    streamRotationDegrees(stream),
+  );
+
   return {
     ok: true,
     kind: "video",
@@ -276,8 +323,8 @@ export function parseVideoProbeOutput(
       formatName,
       codecName: stream.codec_name,
       audioCodecName: audioStream?.codec_name ?? null,
-      width: stream.width,
-      height: stream.height,
+      width,
+      height,
       durationMs: Math.round(durationSeconds * 1000),
       fps,
       pixFmt: stream.pix_fmt ?? null,

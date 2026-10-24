@@ -7,7 +7,11 @@ import {
   hasBlockingErrors,
   modeBackendGaps,
 } from "./check-model.js";
-import type { NumberInputDefinition, SelectInputDefinition } from "./input.js";
+import type {
+  NumberInputDefinition,
+  PointsInputDefinition,
+  SelectInputDefinition,
+} from "./input.js";
 import type { Workflow } from "./types.js";
 
 const WORKFLOW: Workflow = {
@@ -64,6 +68,25 @@ function stepsInput(
     default: null,
     bindings: [
       { nodeId: "2", field: "steps", classType: "KSampler", title: null },
+    ],
+    ...overrides,
+  };
+}
+
+function pointsInput(
+  overrides: Partial<PointsInputDefinition> = {},
+): PointsInputDefinition {
+  return {
+    id: "00000000-0000-0000-0000-000000000002",
+    kind: "points",
+    group: "describe",
+    label: "Who to replace",
+    help: "",
+    videoInputId: "00000000-0000-0000-0000-000000000003",
+    widthField: { nodeId: "2", field: "steps" },
+    heightField: { nodeId: "2", field: "steps" },
+    bindings: [
+      { nodeId: "7", field: "points", classType: "PointsEditor", title: null },
     ],
     ...overrides,
   };
@@ -383,6 +406,56 @@ describe("checkModel", () => {
           issue.message.includes("isn't on its Path"),
       ),
     ).toBe(true);
+  });
+
+  test("errors when a Points Input's Width or Height field is off the Mode's Path (issue #52)", () => {
+    const pointsWorkflow: Workflow = {
+      ...WORKFLOW,
+      "7": { class_type: "PointsEditor", inputs: { points: "" } },
+      // Not a dependency of output node "3": off the Path.
+      "8": {
+        class_type: "EmptyLatentImage",
+        inputs: { width: 512, height: 512 },
+      },
+    };
+    const offPathPoints = pointsInput({
+      widthField: { nodeId: "8", field: "width" },
+      heightField: { nodeId: "8", field: "height" },
+    });
+    const issues = checkModel(
+      model({ workflow: pointsWorkflow, inputs: [offPathPoints] }),
+      [backend("b1")],
+    );
+    expect(
+      issues.some(
+        (issue) =>
+          issue.severity === "error" &&
+          issue.modeId === "mode-1" &&
+          issue.message.includes("Width field is off"),
+      ),
+    ).toBe(true);
+    expect(
+      issues.some(
+        (issue) =>
+          issue.severity === "error" &&
+          issue.modeId === "mode-1" &&
+          issue.message.includes("Height field is off"),
+      ),
+    ).toBe(true);
+  });
+
+  test("no error when a Points Input's Width/Height fields are on the Mode's Path", () => {
+    const pointsWorkflow: Workflow = {
+      ...WORKFLOW,
+      "7": { class_type: "PointsEditor", inputs: { points: "" } },
+    };
+    const issues = checkModel(
+      model({ workflow: pointsWorkflow, inputs: [pointsInput()] }),
+      [backend("b1")],
+    );
+    expect(issues.some((issue) => issue.message.includes("field is off"))).toBe(
+      false,
+    );
   });
 
   test("warns about duplicate Modes with the same Path and fixed values", () => {

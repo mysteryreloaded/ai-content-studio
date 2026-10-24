@@ -1,14 +1,17 @@
 import { timingSafeEqual } from "node:crypto";
-import type { Context, Handler, Hono, Next } from "hono";
+import type { Context, Handler, Hono } from "hono";
 import type { AppEnv } from "./app-env.js";
 
 /**
  * Every route must declare one of these. `active` (and `admin`, which
  * implies it) additionally requires the current Site terms to be
- * accepted (issue #60) when any are set; a route that must stay usable
- * before that — reading/accepting the terms, the current user,
- * sign-out, account delete, `/privacy`, `/terms` and the public landing
- * data — is `signed-in` or `public` instead, which skips the check.
+ * accepted (issue #60) when any are set, and then that the user is
+ * `active`, not `pending` (issue #62, ADR 0008) — terms always gate
+ * first, so a pending user who hasn't accepted yet sees `terms_required`,
+ * not `pending`. A route that must stay usable before either gate —
+ * reading/accepting the terms, the current user, sign-out, account
+ * delete, `/privacy`, `/terms` and the public landing data — is
+ * `signed-in` or `public` instead, which skips both checks.
  */
 export type AccessLevel =
   | "public"
@@ -84,10 +87,14 @@ export function requireAccess(access: AccessLevel): Handler<AppEnv> {
 
       const session = c.get("session");
       if (!session) return c.json({ error: "unauthorized" }, 401);
+      if (termsRequired(c)) return c.json({ error: "terms_required" }, 403);
+      if (session.user.status === "pending") {
+        return c.json({ error: "pending" }, 403);
+      }
       if (session.user.status !== "active" || session.user.role !== "admin") {
         return c.json({ error: "forbidden" }, 403);
       }
-      return requireTermsAccepted(c, next);
+      return next();
     }
 
     const session = c.get("session");
@@ -98,13 +105,21 @@ export function requireAccess(access: AccessLevel): Handler<AppEnv> {
     if (access === "signed-in") return next();
 
     if (access === "active") {
+      if (termsRequired(c)) return c.json({ error: "terms_required" }, 403);
+      if (session.user.status === "pending") {
+        return c.json({ error: "pending" }, 403);
+      }
       if (session.user.status !== "active") {
         return c.json({ error: "forbidden" }, 403);
       }
-      return requireTermsAccepted(c, next);
+      return next();
     }
 
     if (access === "admin") {
+      if (termsRequired(c)) return c.json({ error: "terms_required" }, 403);
+      if (session.user.status === "pending") {
+        return c.json({ error: "pending" }, 403);
+      }
       if (session.user.status !== "active" || session.user.role !== "admin") {
         // A forbidden response must go out even if this Log entry can't
         // be written (e.g. the DB a non-Admin was just refused from is
@@ -122,7 +137,7 @@ export function requireAccess(access: AccessLevel): Handler<AppEnv> {
         }
         return c.json({ error: "forbidden" }, 403);
       }
-      return requireTermsAccepted(c, next);
+      return next();
     }
 
     return c.json({ error: "forbidden" }, 403);
@@ -130,19 +145,18 @@ export function requireAccess(access: AccessLevel): Handler<AppEnv> {
 }
 
 /**
- * The issue #60 terms gate: blocks with 403 `terms_required` when the
- * Site terms are set and this session's user hasn't accepted the
- * current version. `termsVersion` is set by `sessionMiddleware`.
+ * The issue #60 terms gate: true when the Site terms are set and this
+ * session's user hasn't accepted the current version. `termsVersion` is
+ * set by `sessionMiddleware`. Checked before status (issue #62, ADR
+ * 0008), so a pending user who hasn't accepted yet is asked for terms
+ * first, not told they're pending.
  */
-function requireTermsAccepted(c: Context<AppEnv>, next: Next) {
+function termsRequired(c: Context<AppEnv>): boolean {
   const session = c.get("session");
   const termsVersion = c.get("termsVersion");
-  if (
+  return !!(
     session &&
     termsVersion !== null &&
     session.user.termsAcceptedVersion !== termsVersion
-  ) {
-    return c.json({ error: "terms_required" }, 403);
-  }
-  return next();
+  );
 }

@@ -73,6 +73,8 @@ export function adminSiteSettingsRoute(
       title: body.title,
       landingText: body.landingText,
       accent: body.accent,
+      signUpMode: body.signUpMode,
+      contact: body.contact,
     });
     if (!fieldsResult.success) {
       return c.json(
@@ -103,6 +105,8 @@ export function adminSiteSettingsRoute(
         title: fieldsResult.data.title,
         landingText: fieldsResult.data.landingText,
         accent: fieldsResult.data.accent,
+        signUpMode: fieldsResult.data.signUpMode,
+        contact: fieldsResult.data.contact,
         logo,
         background,
       },

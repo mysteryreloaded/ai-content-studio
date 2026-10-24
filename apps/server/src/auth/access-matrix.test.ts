@@ -90,7 +90,20 @@ describe("every route's access level is declared and enforced", () => {
         status: "active",
       })
       .returning();
-    if (!activeUser || !adminUser)
+    // Issue #62: a pending user (waiting for an Admin's approval) must be
+    // blocked from every `active`/`admin` route the same as before, even
+    // though they do have a session.
+    const [pendingUser] = await db
+      .insert(users)
+      .values({
+        googleSub: "sub-pending",
+        email: "pending@example.com",
+        name: "Pending User",
+        role: "user",
+        status: "pending",
+      })
+      .returning();
+    if (!activeUser || !adminUser || !pendingUser)
       throw new Error("failed to insert test users");
 
     // A fresh session per request: some routes (sign-out) delete the
@@ -129,6 +142,10 @@ describe("every route's access level is declared and enforced", () => {
       "DELETE /api/admin/models/:id": 404,
       "POST /api/admin/models/:id/move-up": 404,
       "POST /api/admin/models/:id/move-down": 404,
+      "GET /api/admin/users/:id": 404,
+      "POST /api/admin/users/:id/approve": 404,
+      "POST /api/admin/users/:id/promote": 404,
+      "POST /api/admin/users/:id/demote": 404,
       "GET /api/admin/models/:id/backends": 404,
       "POST /api/admin/models/:id/backends": 404,
       "DELETE /api/admin/models/:id/backends/:backendId": 404,
@@ -142,6 +159,16 @@ describe("every route's access level is declared and enforced", () => {
     // — not a different status per role, so it overrides both columns.
     const BOTH_STATUS_OVERRIDES: Record<string, number> = {
       "POST /api/terms/accept": 400,
+    };
+
+    // A pending user has a session but no approval yet: `signed-in`
+    // stays reachable (so they can accept the Site terms), `active`/
+    // `admin` stay blocked exactly like a disabled user.
+    const pendingExpectations: Record<string, number | undefined> = {
+      "signed-in": 200,
+      active: 403,
+      admin: 403,
+      "admin-or-status-token": 403,
     };
 
     for (const route of routes) {
@@ -192,6 +219,30 @@ describe("every route's access level is declared and enforced", () => {
         expect(`${context} admin -> ${adminRes.status}`).toBe(
           `${context} admin -> ${expectedAdmin}`,
         );
+      }
+
+      const expectedPending =
+        BOTH_STATUS_OVERRIDES[`${route.method} ${route.path}`] ??
+        pendingExpectations[route.access];
+      if (expectedPending !== undefined) {
+        const pendingRes = await app.request(route.path, {
+          method: route.method,
+          headers: {
+            ...SAME_ORIGIN_HEADERS,
+            Cookie: await cookieFor(pendingUser.id),
+          },
+        });
+        expect(`${context} pending -> ${pendingRes.status}`).toBe(
+          `${context} pending -> ${expectedPending}`,
+        );
+        if (
+          route.access === "active" ||
+          route.access === "admin" ||
+          route.access === "admin-or-status-token"
+        ) {
+          const body = (await pendingRes.json()) as { error: string };
+          expect(body.error).toBe("pending");
+        }
       }
     }
   });
@@ -261,6 +312,46 @@ describe("every route's access level is declared and enforced", () => {
       const expected = expectedByAccess[route.access];
       expect(`${context} -> ${res.status}`).toBe(`${context} -> ${expected}`);
       const body = (await res.json()) as { error: string };
+      expect(body.error).toBe("terms_required");
+    }
+  });
+
+  test("ADR 0008: the terms gate comes before the pending check, for a pending user too", async () => {
+    const { app, routes, db } = await build();
+
+    await db
+      .update(siteSettings)
+      .set({ termsBody: "Do not be evil.", termsVersion: 1 })
+      .where(eq(siteSettings.singleton, true));
+
+    const [pendingNoTerms] = await db
+      .insert(users)
+      .values({
+        googleSub: "sub-pending-no-terms",
+        email: "pending-no-terms@example.com",
+        name: "Pending No Terms",
+        role: "user",
+        status: "pending",
+      })
+      .returning();
+    if (!pendingNoTerms) throw new Error("failed to insert test user");
+
+    const SAME_ORIGIN_HEADERS = { "Sec-Fetch-Site": "same-origin" };
+    const session = await createSession(db, clock, pendingNoTerms.id);
+    const cookie = `${SESSION_COOKIE_NAME}=${session.cookieValue}`;
+
+    for (const route of routes) {
+      if (route.access !== "active" && route.access !== "admin") continue;
+
+      const res = await app.request(route.path, {
+        method: route.method,
+        headers: { ...SAME_ORIGIN_HEADERS, Cookie: cookie },
+      });
+      const context = `${route.method} ${route.path} (${route.access})`;
+      expect(`${context} -> ${res.status}`).toBe(`${context} -> 403`);
+      const body = (await res.json()) as { error: string };
+      // Not "pending": a user who hasn't accepted the current Site
+      // terms is asked for that first, no matter their status.
       expect(body.error).toBe("terms_required");
     }
   });

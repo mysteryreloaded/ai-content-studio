@@ -2,12 +2,14 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { RouterProvider, createBrowserRouter } from "react-router-dom";
 import { LandingPage } from "./LandingPage.js";
+import { RequireActive } from "./RequireActive.js";
 import { RequireTermsAccepted } from "./RequireTermsAccepted.js";
 import { AccountPage } from "./pages/AccountPage.js";
 import { AdminShell } from "./pages/AdminShell.js";
 import { ModelsHome } from "./pages/ModelsHome.js";
 import { PrivacyPage } from "./pages/PrivacyPage.js";
 import { TermsPage } from "./pages/TermsPage.js";
+import { WaitingPage } from "./pages/WaitingPage.js";
 
 const root = document.getElementById("root");
 if (!root) throw new Error("missing #root element");
@@ -22,7 +24,9 @@ const router = createBrowserRouter([
     path: "/models",
     element: (
       <RequireTermsAccepted>
-        <ModelsHome />
+        <RequireActive>
+          <ModelsHome />
+        </RequireActive>
       </RequireTermsAccepted>
     ),
   },
@@ -31,12 +35,22 @@ const router = createBrowserRouter([
     path: "/admin/*",
     element: (
       <RequireTermsAccepted>
-        <AdminShell />
+        <RequireActive>
+          <AdminShell />
+        </RequireActive>
       </RequireTermsAccepted>
     ),
   },
   { path: "/terms", element: <TermsPage /> },
   { path: "/privacy", element: <PrivacyPage /> },
+  {
+    path: "/waiting",
+    element: (
+      <RequireTermsAccepted>
+        <WaitingPage />
+      </RequireTermsAccepted>
+    ),
+  },
 ]);
 
 createRoot(root).render(

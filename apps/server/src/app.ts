@@ -27,6 +27,7 @@ import { adminLogsRoute } from "./routes/admin-logs.js";
 import { adminModelsRoute } from "./routes/admin-models.js";
 import { adminOverviewRoute } from "./routes/admin-overview.js";
 import { adminSiteSettingsRoute } from "./routes/admin-site-settings.js";
+import { adminUsersRoute } from "./routes/admin-users.js";
 import { adminRoute } from "./routes/admin.js";
 import { authRoute } from "./routes/auth.js";
 import { healthRoute } from "./routes/health.js";
@@ -161,6 +162,10 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
     ),
   );
   app.route("/api/admin/audit", adminAuditRoute(deps.db, routes));
+  app.route(
+    "/api/admin/users",
+    adminUsersRoute(deps.db, deps.clock, deps.env.ADMIN_EMAILS, routes),
+  );
   app.route(
     "/api/admin/overview",
     adminOverviewRoute(

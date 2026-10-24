@@ -17,12 +17,18 @@ import {
  * primary key, so the table can never hold more than one row. `version`
  * guards a save against a concurrent one (a stale save gets 409).
  */
+export const signUpMode = pgEnum("sign_up_mode", ["open", "approval"]);
+
 export const siteSettings = pgTable("site_settings", {
   singleton: boolean("singleton").primaryKey().default(true),
   version: integer("version").notNull().default(1),
   title: text("title").notNull().default("AI Content Studio"),
   landingText: text("landing_text").notNull().default(""),
   accent: text("accent").notNull().default("teal"),
+  /** Issue #62: whether a new sign-in needs an Admin's approval. Switching this approves nobody already pending. */
+  signUpMode: signUpMode("sign_up_mode").notNull().default("approval"),
+  /** Issue #62: shown on the waiting page, for reports and account questions. An email or an http(s) URL; blank means unset. */
+  contact: text("contact").notNull().default(""),
   logoKey: text("logo_key"),
   logoContentType: text("logo_content_type"),
   logoHash: text("logo_hash"),
@@ -94,8 +100,10 @@ export const userStatus = pgEnum("user_status", [
 
 /**
  * A person who has signed in with Google, keyed on the Google `sub`.
- * `pinned` is set for every email in `ADMIN_EMAILS`: the admin panel must
- * never demote, disable or delete a pinned user.
+ * `pinned` is not authoritative and no guard or route reads it (ADR 0008):
+ * whether a user is pinned is always `isPinned(email, adminEmails)`,
+ * computed live against the current `ADMIN_EMAILS`, so removing an email
+ * unpins immediately without a write here.
  */
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),

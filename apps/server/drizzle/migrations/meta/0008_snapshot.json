@@ -1,5 +1,5 @@
 {
-  "id": "6c8fa046-2afb-489c-a764-a83cb85229be",
+  "id": "8a9cf702-a6c4-4c6e-9fa1-9fadfcb93b0b",
   "prevId": "c3beebb1-1008-4f85-8b27-b14f6becb0e7",
   "version": "7",
   "dialect": "postgresql",
@@ -564,96 +564,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.modes": {
-      "name": "modes",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "revision_id": {
-          "name": "revision_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "sort_order": {
-          "name": "sort_order",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "name": {
-          "name": "name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "description": {
-          "name": "description",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "''"
-        },
-        "output_nodes": {
-          "name": "output_nodes",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "modes_revision_name_unique": {
-          "name": "modes_revision_name_unique",
-          "columns": [
-            {
-              "expression": "revision_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "lower(\"name\")",
-              "asc": true,
-              "isExpression": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "modes_revision_id_model_revisions_id_fk": {
-          "name": "modes_revision_id_model_revisions_id_fk",
-          "tableFrom": "modes",
-          "tableTo": "model_revisions",
-          "columnsFrom": ["revision_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.sessions": {
       "name": "sessions",
       "schema": "",
@@ -753,6 +663,21 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'teal'"
+        },
+        "sign_up_mode": {
+          "name": "sign_up_mode",
+          "type": "sign_up_mode",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'approval'"
+        },
+        "contact": {
+          "name": "contact",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "''"
         },
         "logo_key": {
           "name": "logo_key",
@@ -1015,6 +940,11 @@
       "name": "model_state",
       "schema": "public",
       "values": ["enabled", "disabled"]
+    },
+    "public.sign_up_mode": {
+      "name": "sign_up_mode",
+      "schema": "public",
+      "values": ["open", "approval"]
     },
     "public.user_role": {
       "name": "user_role",

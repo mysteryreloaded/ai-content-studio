@@ -15,8 +15,10 @@ import { injectBrandingIntoHtml } from "./branding/accent-html.js";
 import { getSiteSettings } from "./branding/site-settings-store.js";
 import type { Database } from "./db/client.js";
 import type { Env } from "./env.js";
+import { logUnhandledError } from "./error-logging.js";
 import type { Logger } from "./logger.js";
 import { adminBackendsRoute } from "./routes/admin-backends.js";
+import { adminLogsRoute } from "./routes/admin-logs.js";
 import { adminSiteSettingsRoute } from "./routes/admin-site-settings.js";
 import { adminRoute } from "./routes/admin.js";
 import { authRoute } from "./routes/auth.js";
@@ -74,17 +76,24 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
     deps.clock,
     deps.env.SECRET_KEY,
   );
-  const backendLogWriter = createLogEntryWriter(
-    deps.db,
-    deps.clock,
-    deps.logger,
-  );
+  const logWriter = createLogEntryWriter(deps.db, deps.clock, deps.logger);
   const backendsService = new BackendsService(
     backendRepository,
     deps.clock,
-    backendLogWriter,
+    logWriter,
     deps.env.BACKENDS_ENABLED,
   );
+
+  app.use(async (c, next) => {
+    c.set("logWriter", logWriter);
+    return next();
+  });
+
+  app.onError(async (err, c) => {
+    const session = c.get("session");
+    await logUnhandledError(logWriter, deps.logger, session?.user.id, err);
+    return c.json({ error: "internal error" }, 500);
+  });
 
   app.route("/healthz", healthRoute(deps.sql, deps.clock, routes));
   app.route("/api/site-settings", siteSettingsRoute(deps.db, storage, routes));
@@ -108,6 +117,7 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
       routes,
     ),
   );
+  app.route("/api/admin/logs", adminLogsRoute(deps.db, deps.clock, routes));
 
   if (deps.env.OIDC_ISSUER) {
     const issuerUrl = new URL(deps.env.OIDC_ISSUER);

@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, Fragment, useEffect, useState } from "react";
 
 type AuthKind = "none" | "basic" | "header";
 type Reachability = "unknown" | "reachable" | "unreachable";
@@ -25,6 +25,15 @@ interface BackendsResponse {
   backends: AdminBackend[];
   disabledBanner: string | null;
 }
+
+interface RecentLogEntry {
+  id: string;
+  level: "error" | "warning" | "info";
+  message: string;
+  createdAt: string;
+}
+
+const RECENT_LOGS_LIMIT = 10;
 
 interface FormState {
   id: string | null;
@@ -69,6 +78,10 @@ export function BackendsPage() {
   const [formOpen, setFormOpen] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [recentLogs, setRecentLogs] = useState<
+    Record<string, RecentLogEntry[]>
+  >({});
+  const [expandedLogsFor, setExpandedLogsFor] = useState<string | null>(null);
 
   function load() {
     fetch("/api/admin/backends")
@@ -84,6 +97,29 @@ export function BackendsPage() {
   }
 
   useEffect(load, []);
+
+  function toggleRecentLogs(backendId: string) {
+    if (expandedLogsFor === backendId) {
+      setExpandedLogsFor(null);
+      return;
+    }
+    setExpandedLogsFor(backendId);
+    fetch(`/api/admin/logs?backendId=${backendId}&limit=${RECENT_LOGS_LIMIT}`)
+      .then((res) =>
+        res.ok ? (res.json() as Promise<{ entries: RecentLogEntry[] }>) : null,
+      )
+      .then((body) => {
+        if (body) {
+          setRecentLogs((current) => ({
+            ...current,
+            [backendId]: body.entries,
+          }));
+        }
+      })
+      .catch(() => {
+        /* the table row below just stays without recent logs */
+      });
+  }
 
   function startAdd() {
     setForm(BLANK_FORM);
@@ -207,27 +243,55 @@ export function BackendsPage() {
           </thead>
           <tbody>
             {data.backends.map((backend) => (
-              <tr key={backend.id}>
-                <td>{backend.name}</td>
-                <td>{backend.baseUrl}</td>
-                <td>{healthLabel(backend)}</td>
-                <td>{backend.health.comfyuiVersion ?? "–"}</td>
-                <td>{formatVram(backend.health.vramFree)}</td>
-                <td>
-                  <button type="button" onClick={() => startEdit(backend)}>
-                    Edit
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void handleDelete(backend)}
-                  >
-                    Delete
-                  </button>
-                  <a href={`/api/admin/backends/${backend.id}/history`}>
-                    History
-                  </a>
-                </td>
-              </tr>
+              <Fragment key={backend.id}>
+                <tr>
+                  <td>{backend.name}</td>
+                  <td>{backend.baseUrl}</td>
+                  <td>{healthLabel(backend)}</td>
+                  <td>{backend.health.comfyuiVersion ?? "–"}</td>
+                  <td>{formatVram(backend.health.vramFree)}</td>
+                  <td>
+                    <button type="button" onClick={() => startEdit(backend)}>
+                      Edit
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleDelete(backend)}
+                    >
+                      Delete
+                    </button>
+                    <a href={`/api/admin/backends/${backend.id}/history`}>
+                      History
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => toggleRecentLogs(backend.id)}
+                    >
+                      {expandedLogsFor === backend.id
+                        ? "Hide logs"
+                        : "Recent logs"}
+                    </button>
+                  </td>
+                </tr>
+                {expandedLogsFor === backend.id && (
+                  <tr>
+                    <td colSpan={6}>
+                      {(recentLogs[backend.id]?.length ?? 0) === 0 ? (
+                        <p>No recent Log entries for this Backend.</p>
+                      ) : (
+                        <ul>
+                          {recentLogs[backend.id]?.map((entry) => (
+                            <li key={entry.id}>
+                              {new Date(entry.createdAt).toLocaleString()} —{" "}
+                              {entry.level}: {entry.message}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
             ))}
           </tbody>
         </table>

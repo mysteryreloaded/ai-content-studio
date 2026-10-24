@@ -132,18 +132,33 @@ export const backends = pgTable(
   ],
 );
 
-/** An operational record about the app or a Backend (issue #39), distinct from Audit entries. */
+/**
+ * An operational record about the app or a Backend (issue #39), distinct
+ * from Audit entries. `source` says what wired it (issue #67): `backend`
+ * for Backend health, `app` for everything else (unhandled 500s, a
+ * non-Admin calling an admin route). `userId` is nulled, not kept, once
+ * its user is gone, mirroring ADR 0005's live join for Audit entries.
+ * `modelId`/`generationId` have no foreign key yet: Models and
+ * Generations don't exist until later issues wire entries that set them.
+ */
 export const logLevel = pgEnum("log_level", ["error", "warning", "info"]);
+export const logSource = pgEnum("log_source", ["backend", "app"]);
 
 export const logEntries = pgTable("log_entries", {
   id: uuid("id").primaryKey().defaultRandom(),
   level: logLevel("level").notNull(),
+  source: logSource("source").notNull().default("backend"),
   message: text("message").notNull(),
   /** Truncated by the writer before insert; see backends/log-entries.ts. */
   details: text("details"),
   backendId: uuid("backend_id").references(() => backends.id, {
     onDelete: "set null",
   }),
+  userId: uuid("user_id").references(() => users.id, {
+    onDelete: "set null",
+  }),
+  modelId: uuid("model_id"),
+  generationId: uuid("generation_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
 });
 

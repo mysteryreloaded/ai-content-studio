@@ -1,7 +1,7 @@
 import type { InputDefinition, Workflow } from "@ai-content-studio/shared";
 import {
-  applyModeFixedValues,
   STANDARD_PAUSE_NOTICE,
+  applyModeFixedValues,
   isNodeLink,
   modeMenuGroup,
   relevantInputs,

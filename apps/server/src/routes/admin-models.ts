@@ -173,6 +173,13 @@ const inputDefinitionSchema = z.discriminatedUnion("kind", [
     kind: z.literal("seed"),
     max: z.number().nullable(),
   }),
+  z.object({
+    ...inputBaseSchema,
+    kind: z.literal("points"),
+    videoInputId: z.string().regex(UUID_RE, "videoInputId must be a UUID"),
+    widthField: z.object({ nodeId: z.string(), field: z.string() }),
+    heightField: z.object({ nodeId: z.string(), field: z.string() }),
+  }),
 ]);
 
 const inputsSchema = z.object({

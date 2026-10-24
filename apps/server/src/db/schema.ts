@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   boolean,
+  index,
   integer,
   jsonb,
   pgEnum,
@@ -331,6 +332,63 @@ export const modes = pgTable(
       table.revisionId,
       sql`lower(${table.name})`,
     ),
+  ],
+);
+
+/**
+ * A Generation's state (issue #43). Only `queued` exists so far: this
+ * ticket submits and streams it but never dispatches it, so nothing can
+ * yet move it on. Later issues add `running`, `succeeded`, `failed` and
+ * `cancelled`. Every state here counts as "unfinished" for the delete
+ * guards on Models and Backends.
+ */
+export const generationState = pgEnum("generation_state", ["queued"]);
+
+/**
+ * One request to produce output from a Model in a chosen Mode (issue
+ * #43, ADR 0002: this table is the queue). `revisionId` and `modeId`
+ * freeze the Model revision and Mode this Generation ran with, so later
+ * edits never rewrite its history. `submissionId` groups the 1-4
+ * Generations a single press of Generate makes (ADR 0007); all of them
+ * share `submittedAt`. `builtPrompt` is the frozen prompt actually sent
+ * to a Backend: the Mode's Path (ADR 0001) with each output node's
+ * `filename_prefix` set to `studio/<generation-id>/`. `nodeTypes` is the
+ * Path's distinct node class types, read back without recomputing the
+ * Path against a Workflow that may since have changed. `backendId` is
+ * set only once a later issue's dispatcher claims this Generation.
+ */
+export const generations = pgTable(
+  "generations",
+  {
+    id: uuid("id").primaryKey(),
+    modelId: uuid("model_id")
+      .notNull()
+      .references(() => models.id),
+    revisionId: uuid("revision_id")
+      .notNull()
+      .references(() => modelRevisions.id),
+    modeId: uuid("mode_id")
+      .notNull()
+      .references(() => modes.id),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id),
+    backendId: uuid("backend_id").references(() => backends.id, {
+      onDelete: "set null",
+    }),
+    submissionId: uuid("submission_id").notNull(),
+    state: generationState("state").notNull().default("queued"),
+    builtPrompt: jsonb("built_prompt").notNull(),
+    nodeTypes: text("node_types").array().notNull(),
+    submittedAt: timestamp("submitted_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("generations_model_id_idx").on(table.modelId),
+    index("generations_user_id_idx").on(table.userId),
+    index("generations_submission_id_idx").on(table.submissionId),
   ],
 );
 

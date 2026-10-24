@@ -55,6 +55,7 @@ function detail(modes: ModeRecord[]): ModelDetail {
       createdAt: new Date(),
       updatedAt: new Date(),
     },
+    revisionId: "revision-1",
     workflowHash: "hash",
     workflow: WORKFLOW,
     nodes: [],

@@ -11,6 +11,7 @@ import type { AppEnv } from "../auth/app-env.js";
 import type { BackendsService } from "../backends/service.js";
 import type { Database } from "../db/client.js";
 import { auditEntries } from "../db/schema.js";
+import type { GenerationsRepository } from "../generations/repository.js";
 import { checkEnableReadiness } from "../models/enablement.js";
 import { NotFound as BackendNotFound } from "../models/model-backends.js";
 import type { ModelBackendsRepository } from "../models/model-backends.js";
@@ -76,6 +77,7 @@ export function adminModelsRoute(
   repository: ModelRepository,
   modelBackends: ModelBackendsRepository,
   backendsService: BackendsService,
+  generationsRepository: GenerationsRepository,
   routes: RouteEntry[],
 ): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
@@ -157,6 +159,10 @@ export function adminModelsRoute(
     const versionResult = versionSchema.safeParse(c.req.query("version"));
     if (!versionResult.success)
       return c.json({ error: "version is required" }, 400);
+
+    if (await generationsRepository.hasUnfinishedForModel(id)) {
+      return c.json({ error: "has unfinished Generations" }, 409);
+    }
 
     try {
       await repository.softDelete(id, versionResult.data, adminActorFrom(c));

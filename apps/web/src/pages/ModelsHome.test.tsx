@@ -58,7 +58,11 @@ describe("ModelsHome", () => {
 
     expect(await view.findByRole("heading", { name: "LTX 2.5" })).toBeTruthy();
     expect(view.getByRole("navigation", { name: "Models" })).toBeTruthy();
-    expect(view.getByRole("link", { name: "LTX 2.5" })).toBeTruthy();
+    const links = view.getAllByRole("link", { name: "LTX 2.5" });
+    expect(links.length).toBe(2);
+    for (const link of links) {
+      expect(link.getAttribute("href")).toBe("/models/ltx");
+    }
     expect(view.getByText("2 Modes")).toBeTruthy();
   });
 

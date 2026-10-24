@@ -1,7 +1,13 @@
 // `/api/admin/models`: create a Model from a Workflow, list/edit/reorder/
 // soft-delete and History (issue #40).
 
-import { modelTermsFieldsSchema } from "@ai-content-studio/shared";
+import {
+  type CheckModelMode,
+  checkModel,
+  hasBlockingErrors,
+  modelTermsFieldsSchema,
+  reviseModeInputSettings,
+} from "@ai-content-studio/shared";
 import type {
   ComfyFieldSpec,
   InputDefinition,
@@ -20,6 +26,10 @@ import type { GenerationsRepository } from "../generations/repository.js";
 import { checkEnableReadiness } from "../models/enablement.js";
 import { NotFound as BackendNotFound } from "../models/model-backends.js";
 import type { ModelBackendsRepository } from "../models/model-backends.js";
+import {
+  buildObjectInfo,
+  toCheckModelBackends,
+} from "../models/object-info.js";
 import {
   NameTaken,
   NotFound,
@@ -68,6 +78,8 @@ const modesSchema = z.object({
       inputSettings: z.array(modeInputSettingSchema).default([]),
     }),
   ),
+  /** Issue #49: an enabled Model with errors can only be saved by disabling it. */
+  disable: z.boolean().optional(),
 });
 
 const bindingSchema = z.object({
@@ -149,6 +161,8 @@ const inputDefinitionSchema = z.discriminatedUnion("kind", [
 const inputsSchema = z.object({
   version: z.number().int().min(1),
   inputs: z.array(inputDefinitionSchema),
+  /** Issue #49: an enabled Model with errors can only be saved by disabling it. */
+  disable: z.boolean().optional(),
 });
 
 function idParam(c: Context<AppEnv>): string {
@@ -377,6 +391,23 @@ export function adminModelsRoute(
     app,
     routes,
     basePath,
+    "get",
+    "/:id/object-info",
+    "admin",
+    async (c) => {
+      const id = idParam(c);
+      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+
+      const attached = await modelBackends.listForModel(id);
+      const backends = await buildObjectInfo(attached, backendsService);
+      return c.json({ backends });
+    },
+  );
+
+  guardedRoute(
+    app,
+    routes,
+    basePath,
     "post",
     "/:id/backends",
     "admin",
@@ -449,6 +480,42 @@ export function adminModelsRoute(
           400,
         );
 
+      const detail = await repository.get(id);
+      if (!detail) return c.json({ error: "not found" }, 404);
+
+      // Issue #49: an enabled Model with errors can only be saved by
+      // disabling it in the same request.
+      if (detail.model.state === "enabled" && !parsed.data.disable) {
+        const attached = await modelBackends.listForModel(id);
+        const objectInfo = toCheckModelBackends(
+          await buildObjectInfo(attached, backendsService),
+        );
+        const issues = checkModel(
+          {
+            workflow: detail.workflow,
+            inputs: detail.inputs,
+            modes: parsed.data.modes.map((mode, index) => ({
+              id: String(index),
+              name: mode.name,
+              outputNodeIds: mode.outputNodeIds,
+              inputSettings: mode.inputSettings,
+            })) satisfies CheckModelMode[],
+          },
+          objectInfo,
+        );
+        if (hasBlockingErrors(issues)) {
+          return c.json(
+            {
+              error: "has errors; disable this Model to save it anyway",
+              reasons: issues
+                .filter((issue) => issue.severity === "error")
+                .map((issue) => issue.message),
+            },
+            400,
+          );
+        }
+      }
+
       try {
         const result = await repository.updateModes(
           id,
@@ -456,6 +523,15 @@ export function adminModelsRoute(
           parsed.data.version,
           adminActorFrom(c),
         );
+        if (parsed.data.disable) {
+          const record = await repository.setState(
+            id,
+            "disabled",
+            result.record.version,
+            adminActorFrom(c),
+          );
+          return c.json({ ...result, record });
+        }
         return c.json(result);
       } catch (err) {
         return handleError(c, err);
@@ -484,6 +560,9 @@ export function adminModelsRoute(
           400,
         );
 
+      const detail = await repository.get(id);
+      if (!detail) return c.json({ error: "not found" }, 404);
+
       try {
         const attached = await modelBackends.listForModel(id);
         const specsByBackend = await Promise.all(
@@ -500,6 +579,43 @@ export function adminModelsRoute(
           }
         }
 
+        // Issue #49: an enabled Model with errors can only be saved by
+        // disabling it in the same request. Carries each Mode's Input
+        // settings forward the same way `updateInputs` itself does, so
+        // this precheck matches what actually gets saved.
+        if (detail.model.state === "enabled" && !parsed.data.disable) {
+          const objectInfo = toCheckModelBackends(
+            await buildObjectInfo(attached, backendsService),
+          );
+          const issues = checkModel(
+            {
+              workflow: detail.workflow,
+              inputs: parsed.data.inputs as InputDefinition[],
+              modes: detail.modes.map((mode) => ({
+                id: mode.id,
+                name: mode.name,
+                outputNodeIds: mode.outputNodes.map((node) => node.nodeId),
+                inputSettings: reviseModeInputSettings(
+                  mode.inputSettings,
+                  parsed.data.inputs as InputDefinition[],
+                ),
+              })) satisfies CheckModelMode[],
+            },
+            objectInfo,
+          );
+          if (hasBlockingErrors(issues)) {
+            return c.json(
+              {
+                error: "has errors; disable this Model to save it anyway",
+                reasons: issues
+                  .filter((issue) => issue.severity === "error")
+                  .map((issue) => issue.message),
+              },
+              400,
+            );
+          }
+        }
+
         const result = await repository.updateInputs(
           id,
           parsed.data.inputs as InputDefinition[],
@@ -508,6 +624,15 @@ export function adminModelsRoute(
           fieldSpecs,
           maxUploadMb,
         );
+        if (parsed.data.disable) {
+          const record = await repository.setState(
+            id,
+            "disabled",
+            result.record.version,
+            adminActorFrom(c),
+          );
+          return c.json({ ...result, record });
+        }
         return c.json(result);
       } catch (err) {
         return handleError(c, err);
@@ -541,8 +666,33 @@ export function adminModelsRoute(
         attached,
         backendsService,
       );
-      if (!readiness.ok) {
-        return c.json({ error: "not ready", reasons: readiness.reasons }, 400);
+
+      // Issue #49: checkModel's errors block enabling too, not just
+      // saving an already-enabled Model — otherwise the API (or a stale
+      // tab) could enable a Model checkModel itself calls broken.
+      const objectInfo = toCheckModelBackends(
+        await buildObjectInfo(attached, backendsService),
+      );
+      const issues = checkModel(
+        {
+          workflow: detail.workflow,
+          inputs: detail.inputs,
+          modes: detail.modes.map((mode) => ({
+            id: mode.id,
+            name: mode.name,
+            outputNodeIds: mode.outputNodes.map((node) => node.nodeId),
+            inputSettings: mode.inputSettings,
+          })) satisfies CheckModelMode[],
+        },
+        objectInfo,
+      );
+      const checkModelReasons = issues
+        .filter((issue) => issue.severity === "error")
+        .map((issue) => issue.message);
+
+      const reasons = [...readiness.reasons, ...checkModelReasons];
+      if (reasons.length > 0) {
+        return c.json({ error: "not ready", reasons }, 400);
       }
 
       try {

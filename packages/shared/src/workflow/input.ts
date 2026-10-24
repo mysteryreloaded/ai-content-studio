@@ -295,6 +295,10 @@ export interface ComfyFieldSpec {
   videoUpload?: boolean;
   /** Issue #51: the Backend flags this loader field `audio_upload`. */
   audioUpload?: boolean;
+  /** An INT/FLOAT field's own range and step, when the Backend reports them (issue #49). */
+  min?: number;
+  max?: number;
+  step?: number;
 }
 
 export interface BindingValidationContext {

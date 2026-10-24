@@ -833,4 +833,85 @@ describe("ModelEditorPage", () => {
       },
     ]);
   });
+
+  test("Save Modes becomes 'Save and disable' and sends disable:true once checkModel has errors (issue #49 CEO review)", async () => {
+    const detail = {
+      ...DETAIL,
+      model: { ...DETAIL.model, state: "enabled" as const },
+      inputs: [],
+      modes: [
+        {
+          id: "mode-1",
+          sortOrder: 0,
+          name: "Default",
+          description: "",
+          outputNodes: [
+            { nodeId: "1", classType: "LoadImage", title: null, kind: "image" },
+          ],
+          inputSettings: [],
+        },
+      ],
+    };
+    // No attached Backend (respondGet's default NO_BACKENDS) means
+    // checkModel flags "needs at least one attached Backend" once
+    // object-info loads, so saving the enabled Model must disable it.
+    const calls = mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1")) {
+        return Response.json(detail);
+      }
+      if (call.method === "GET") return respondGet(call.url);
+      if (call.method === "PUT" && call.url.endsWith("/modes")) {
+        return Response.json({
+          record: { ...detail.model, state: "disabled", version: 2 },
+          modes: [],
+        });
+      }
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+
+    await view.findByText("LTX 2.5");
+    await userEvent.click(await view.findByText("Duplicate Mode"));
+
+    // Both the Modes and Inputs sections read "Save and disable" once
+    // checkModel has errors; only the Modes one is enabled here (Modes is
+    // dirty, Inputs isn't).
+    const saveButtons = await view.findAllByText("Save and disable");
+    const saveButton = saveButtons.find(
+      (button) => !(button as HTMLButtonElement).disabled,
+    );
+    if (!saveButton) throw new Error("no enabled 'Save and disable' button");
+    await userEvent.click(saveButton);
+
+    const saved = calls.find(
+      (c) => c.method === "PUT" && c.url.endsWith("/modes"),
+    );
+    expect(saved?.body?.disable).toBe(true);
+  });
+
+  test("Enable stays disabled once checkModel has errors, without asking the server", async () => {
+    const detail = {
+      ...DETAIL,
+      inputs: [],
+      modes: [],
+    };
+    const calls = mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1")) {
+        return Response.json(detail);
+      }
+      if (call.method === "GET") return respondGet(call.url);
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+
+    const enableButton = (await view.findByText("Enable")) as HTMLButtonElement;
+    await waitFor(() => expect(enableButton.disabled).toBe(true));
+    await userEvent.click(enableButton);
+
+    expect(calls.some((c) => c.url.endsWith("/enable"))).toBe(false);
+  });
 });

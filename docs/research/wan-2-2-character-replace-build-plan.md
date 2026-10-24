@@ -1,8 +1,12 @@
-# Wan 2.2 Character replace
+# Wan 2.2 Character replace — build plan (research, not a build artifact)
 
-Status: **blocked on hardware access** (see below). This folder is the
-landing spot for the reshaped Workflow and exported Model file once someone
-with a reachable 2×3090 test Backend finishes the build in #80.
+**This is a research/planning document, not the Workflow+Model build #80
+asks for.** It lives under `docs/research/`, not `workflows/`, specifically
+because none of #80's acceptance criteria are met by it: there is no
+Workflow file, no exported Model, no GPU-check results and no
+`checkModel`/`buildPrompt` snapshot tests here, and there shouldn't be
+until someone actually runs the build on a reachable GPU Backend. It exists
+so that work is ready to go the moment a real Backend is reachable.
 
 ## Why this isn't built yet
 
@@ -10,13 +14,35 @@ with a reachable 2×3090 test Backend finishes the build in #80.
 Backend and running its six GPU checks (loop node support, int8 vs fp8,
 size-fits-24GB, timing, frame-count/sync, point placement) before the
 Workflow and Model files can be committed. No GPU Backend is reachable from
-an agent sandbox: `tailscale status` shows only this host and one offline
-peer, neither a ComfyUI machine, and `docs/ops/backend-kit.md` confirms
-Backends sit on a private Tailscale network the Operator sets up on the GPU
-hosts themselves. Checking in an un-run Workflow/Model pair would mean
-guessing the fallback branches (int8 vs fp8, exact max size, max run time)
-instead of measuring them, which is exactly what the GPU checks exist to
-prevent.
+an agent sandbox.
+
+Re-checked on 2026-10-24, after #52/#73/#78 (this issue's blockers) closed,
+per QA's request to re-verify now that they're done:
+
+- `tailscale status` shows exactly two nodes: this sandbox itself
+  (`nenad`, `100.94.154.46`) and one other machine (`nenad-ms7b51`,
+  `100.101.252.99`) reported `offline, last seen 9h ago`. Neither is a GPU
+  Backend; the second is unreachable regardless.
+- `100.94.154.46:8188` (this sandbox's own loopback-reachable address)
+  does answer ComfyUI's HTTP API, but its `/object_info` reports only
+  eleven core node classes (`CheckpointLoaderSimple`, `CLIPTextEncode`,
+  `EmptyLatentImage`, `KSampler`, `VAEDecode`, `VAEEncode`, `SaveImage`,
+  `LoadImage`, `ControlNetLoader`, `LoraLoader`, `UpscaleModelLoader`) and
+  has no `/queue` endpoint — none of the custom node packs this build needs
+  (`comfyui_controlnet_aux`, `ComfyUI-KJNodes`,
+  `ComfyUI-segment-anything-2`, `ComfyUI-VideoHelperSuite`) are present, and
+  its `/system_stats` GPU entry doesn't match a real 2×3090 host (one
+  `cuda:0` device, ~24 GB). This is a minimal ComfyUI-shaped fixture
+  reachable from the sandbox itself, not the launch Backend `docs/ops/backend-kit.md`
+  describes — it can't run this Workflow's custom nodes, and I'm not
+  routing GPU-check results through it.
+- `docs/ops/backend-kit.md` confirms Backends sit on a private Tailscale
+  network the Operator sets up on the GPU hosts themselves; nothing in this
+  sandbox's Tailscale network matches that description.
+
+Checking in an un-run Workflow/Model pair would mean guessing the fallback
+branches (int8 vs fp8, exact max size, max run time) instead of measuring
+them, which is exactly what the GPU checks exist to prevent.
 
 This README instead pins down everything that doesn't need a GPU to settle,
 distilled from `docs/research/wan-2-2-modes.md` (branch
@@ -97,9 +123,15 @@ LoRAs and preprocessing weights, per launch Backend GPU.
 
 - [ ] Run the six checks above on the 2×3090 test Backend and record which
       fallback (if any) each one took.
-- [ ] Export the reshaped Workflow (API format) into this folder.
+- [ ] Export the reshaped Workflow (API format) into
+      `workflows/wan-2-2-character-replace/` (not this doc).
 - [ ] Export the Model (one Mode, "Character replace"; Apache-2.0, no Model
-      terms) via the exporter from #73 into this folder.
+      terms) via the exporter from #73 into that same `workflows/` folder,
+      alongside a README of pinned node packs and weights.
 - [ ] Add per-Mode `checkModel`/`buildPrompt` digest snapshot tests
       (`packages/shared/src/workflow/check-model.test.ts` pattern) that load
       the committed Model file.
+
+None of this belongs in a PR against #80 until it's actually done; a PR
+that only restates this plan doesn't satisfy any of #80's acceptance
+criteria and shouldn't claim to.

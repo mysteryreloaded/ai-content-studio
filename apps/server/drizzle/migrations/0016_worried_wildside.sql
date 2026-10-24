@@ -1,0 +1,2 @@
+ALTER TABLE "site_settings" ADD COLUMN "blocked_words" jsonb DEFAULT '[]'::jsonb NOT NULL;--> statement-breakpoint
+ALTER TABLE "site_settings" ADD COLUMN "blocked_words_revision" integer DEFAULT 1 NOT NULL;

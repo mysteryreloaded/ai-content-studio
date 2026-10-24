@@ -5,6 +5,7 @@ import { BackendsPage } from "./BackendsPage.js";
 import { LogsPage } from "./LogsPage.js";
 import { ModelEditorPage } from "./ModelEditorPage.js";
 import { ModelsPage } from "./ModelsPage.js";
+import { OverviewPage } from "./OverviewPage.js";
 import { SiteSettingsForm } from "./SiteSettingsForm.js";
 
 const ERROR_BADGE_POLL_MS = 30_000;
@@ -58,14 +59,16 @@ export function AdminShell() {
     <main>
       <h1>Admin</h1>
       <nav>
-        <Link to="/admin">Dashboard</Link>
+        <Link to="/admin">Overview</Link>
+        <Link to="/admin/settings">Settings</Link>
         <Link to="/admin/models">Models</Link>
         <Link to="/admin/logs">Logs{errorCount ? ` (${errorCount})` : ""}</Link>
       </nav>
 
       <Routes>
+        <Route index element={<OverviewPage />} />
         <Route
-          index
+          path="settings"
           element={
             <>
               <SiteSettingsForm />

@@ -192,6 +192,48 @@ describe("BackendMonitor", () => {
     expect(entries.filter((e) => e.level === "error")).toHaveLength(1);
   });
 
+  test("exposes unreachableSince, set as soon as the Backend goes unreachable", async () => {
+    const clock = new FakeClock();
+    const { logger } = fakeLogger();
+    const monitor = new BackendMonitor(clock, logger);
+    const failing = { value: true };
+    const target = targetThatAlternates(STATS, failing);
+    monitor.watch(target);
+
+    expect(monitor.unreachableSince("b1")).toBeNull();
+
+    await monitor.poll(target);
+    await monitor.poll(target);
+    expect(monitor.unreachableSince("b1")).toBeNull();
+
+    await monitor.poll(target);
+    expect(monitor.unreachableSince("b1")).toEqual(clock.now());
+
+    clock.advance(1_000);
+    failing.value = false;
+    await monitor.poll(target);
+    expect(monitor.unreachableSince("b1")).toBeNull();
+  });
+
+  test("a credentials error sets unreachableSince immediately, not after 3 failures", async () => {
+    const clock = new FakeClock();
+    const { logger } = fakeLogger();
+    const monitor = new BackendMonitor(clock, logger);
+    const target: BackendTarget = {
+      id: "b3",
+      name: "T",
+      baseUrl: "http://x",
+      async fetchSystemStats() {
+        throw new CredentialsNeedReentry();
+      },
+    };
+    monitor.watch(target);
+
+    await monitor.poll(target);
+
+    expect(monitor.unreachableSince("b3")).toEqual(clock.now());
+  });
+
   test("a stale poll from before an unwatch+watch (an edit) doesn't corrupt the new watch", async () => {
     const clock = new FakeClock();
     const { logger } = fakeLogger();

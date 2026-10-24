@@ -52,7 +52,7 @@ export class BackendMonitor {
   private readonly health = new Map<string, BackendHealth>();
   private readonly consecutiveFailures = new Map<string, number>();
   private readonly consecutiveSuccesses = new Map<string, number>();
-  private readonly unreachableSince = new Map<string, Date>();
+  private readonly unreachableSinceByBackend = new Map<string, Date>();
   private readonly timers = new Map<string, Timer>();
   /**
    * One token per active watch. A poll started before an unwatch+watch
@@ -71,13 +71,18 @@ export class BackendMonitor {
     return this.health.get(backendId) ?? BLANK_HEALTH;
   }
 
+  /** When this Backend became unreachable, or `null` while it's reachable/unknown. */
+  unreachableSince(backendId: string): Date | null {
+    return this.unreachableSinceByBackend.get(backendId) ?? null;
+  }
+
   watch(target: BackendTarget): void {
     const token = Symbol(target.id);
     this.watchTokens.set(target.id, token);
     this.health.set(target.id, { ...BLANK_HEALTH });
     this.consecutiveFailures.delete(target.id);
     this.consecutiveSuccesses.delete(target.id);
-    this.unreachableSince.delete(target.id);
+    this.unreachableSinceByBackend.delete(target.id);
     this.scheduleNextPoll(target, token);
   }
 
@@ -89,7 +94,7 @@ export class BackendMonitor {
     this.health.delete(backendId);
     this.consecutiveFailures.delete(backendId);
     this.consecutiveSuccesses.delete(backendId);
-    this.unreachableSince.delete(backendId);
+    this.unreachableSinceByBackend.delete(backendId);
   }
 
   stopAll(): void {
@@ -156,11 +161,11 @@ export class BackendMonitor {
     });
 
     if (becameReachable) {
-      const since = this.unreachableSince.get(target.id);
+      const since = this.unreachableSinceByBackend.get(target.id);
       const downtimeMs = since
         ? this.clock.now().getTime() - since.getTime()
         : null;
-      this.unreachableSince.delete(target.id);
+      this.unreachableSinceByBackend.delete(target.id);
       await this.logger.log({
         level: "info",
         source: "backend",
@@ -181,15 +186,13 @@ export class BackendMonitor {
 
     const current = this.healthFor(target.id);
     const wasReachable = current.reachability !== "unreachable";
-    const becameUnreachable = failures >= FAILURE_THRESHOLD && wasReachable;
     const credentialsError = err instanceof CredentialsNeedReentry;
+    const nowUnreachable = credentialsError || failures >= FAILURE_THRESHOLD;
+    const becameUnreachable = nowUnreachable && wasReachable;
 
     this.health.set(target.id, {
       ...current,
-      reachability:
-        credentialsError || failures >= FAILURE_THRESHOLD
-          ? "unreachable"
-          : current.reachability,
+      reachability: nowUnreachable ? "unreachable" : current.reachability,
       credentialsError: credentialsError || current.credentialsError,
     });
 
@@ -204,7 +207,7 @@ export class BackendMonitor {
     }
 
     if (becameUnreachable) {
-      this.unreachableSince.set(target.id, this.clock.now());
+      this.unreachableSinceByBackend.set(target.id, this.clock.now());
       await this.logger.log({
         level: "warning",
         source: "backend",

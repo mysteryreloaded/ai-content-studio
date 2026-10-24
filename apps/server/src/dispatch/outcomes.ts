@@ -7,11 +7,14 @@
 
 import type { Clock } from "@ai-content-studio/shared";
 import type { LogEntryWriter } from "../backends/log-entries.js";
+import { deleteStorageFor } from "../generations/deletion.js";
 import type { GenerationEvents } from "../generations/events.js";
 import type {
   GenerationState,
   GenerationSummary,
+  GenerationsRepository,
 } from "../generations/repository.js";
+import type { Storage } from "../storage/storage.js";
 import type { DispatchQueue, LoseTryOutcome, RunDetail } from "./queue.js";
 
 export interface OutcomeDeps {
@@ -19,6 +22,31 @@ export interface OutcomeDeps {
   generationEvents: GenerationEvents;
   logWriter: LogEntryWriter;
   clock: Clock;
+  /** Issue #63 round 4: finalizes a Tombstone for a Generation whose owner self-deleted while it was still under way, the moment it reaches a terminal state here. */
+  generationsRepository: Pick<
+    GenerationsRepository,
+    "finalizeIfPendingDeletion"
+  >;
+  storage: Storage;
+}
+
+/**
+ * Issue #63 round 4: Tombstones a Generation for good right after its
+ * terminal write lands, but only if {@link GenerationsRepository}'s own
+ * `markUnfinishedForPendingDeletion` already flagged it — its owner
+ * self-deleted while this one was still under way. A no-op otherwise.
+ * Shared by every terminal write below and by `runner.ts`'s own
+ * `finalizeCancelled`/`finalizeSucceeded`.
+ */
+export async function finalizePendingDeletion(
+  deps: OutcomeDeps,
+  generationId: string,
+): Promise<void> {
+  const keys = await deps.generationsRepository.finalizeIfPendingDeletion(
+    generationId,
+    deps.clock.now(),
+  );
+  if (keys) await deleteStorageFor(deps.storage, keys);
 }
 
 function toSummary(
@@ -103,6 +131,7 @@ export async function reportFailure(
     generationId: detail.id,
   });
   await publishChange(deps, detail, "failed", tries, message);
+  await finalizePendingDeletion(deps, detail.id);
   return true;
 }
 
@@ -149,6 +178,7 @@ export async function reportLostTry(
     await publishChange(deps, detail, "queued", tries, null);
   } else {
     await publishChange(deps, detail, "failed", tries, exhaustedMessage);
+    await finalizePendingDeletion(deps, detail.id);
   }
   return outcome;
 }

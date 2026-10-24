@@ -2,7 +2,11 @@ import type { Clock } from "@ai-content-studio/shared";
 import type { Database, Transaction } from "../db/client.js";
 import { auditEntries } from "../db/schema.js";
 
-/** ADR 0005: an Admin (named) or "system". A deleted/non-Admin target is id-only. */
+/**
+ * ADR 0005: an Admin (named) or "system". A deleted/non-Admin target is
+ * id-only. `"user"` is a non-Admin acting on themself (issue #63's
+ * self-delete) — id-only too, with no email, IP address or user agent.
+ */
 export type AuditActor =
   | {
       type: "admin";
@@ -12,7 +16,8 @@ export type AuditActor =
       userAgent: string | null;
       requestId: string;
     }
-  | { type: "system" };
+  | { type: "system" }
+  | { type: "user"; userId: string };
 
 export interface AuditImage {
   key: string;
@@ -39,7 +44,10 @@ export async function recordAuditEntry(
   await db.insert(auditEntries).values({
     createdAt: clock.now(),
     actorType: entry.actor.type,
-    actorUserId: entry.actor.type === "admin" ? entry.actor.userId : null,
+    actorUserId:
+      entry.actor.type === "admin" || entry.actor.type === "user"
+        ? entry.actor.userId
+        : null,
     actorEmail: entry.actor.type === "admin" ? entry.actor.email : null,
     actorIp: entry.actor.type === "admin" ? entry.actor.ip : null,
     actorUserAgent: entry.actor.type === "admin" ? entry.actor.userAgent : null,

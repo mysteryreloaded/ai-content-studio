@@ -37,6 +37,7 @@ import { hasFreeDisk } from "./problems/disk.js";
 import { ProblemsMonitor } from "./problems/monitor.js";
 import { ProblemsRegistry } from "./problems/problems.js";
 import { RetentionScheduler } from "./retention/scheduler.js";
+import { accountRoute } from "./routes/account.js";
 import { adminAuditRoute } from "./routes/admin-audit.js";
 import { adminBackendsRoute } from "./routes/admin-backends.js";
 import { adminGenerationsRoute } from "./routes/admin-generations.js";
@@ -209,6 +210,7 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
     modelBackendsRepository,
     queue: dispatchQueue,
     assetsRepository,
+    generationsRepository,
     storage,
     generationEvents,
     media,
@@ -266,19 +268,34 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
       routes,
     ),
   );
+  const cancellationDeps = {
+    queue: dispatchQueue,
+    generationsRepository,
+    generationEvents,
+    wakeDispatcher: dispatcher.wake,
+    clock: deps.clock,
+  };
   app.route(
     "/api/submissions",
     submissionsRoute(
-      {
-        queue: dispatchQueue,
-        generationsRepository,
-        generationEvents,
-        wakeDispatcher: dispatcher.wake,
-        clock: deps.clock,
-      },
+      cancellationDeps,
       generationsRepository,
       storage,
       deps.clock,
+      routes,
+    ),
+  );
+  app.route(
+    "/api/auth",
+    accountRoute(
+      {
+        db: deps.db,
+        clock: deps.clock,
+        generationsRepository,
+        uploadsRepository,
+        cancellationDeps,
+        storage,
+      },
       routes,
     ),
   );

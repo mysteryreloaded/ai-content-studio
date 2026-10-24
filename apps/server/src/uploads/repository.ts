@@ -2,7 +2,7 @@
 // chunks, from create through complete (or a refusal at complete).
 
 import type { Clock } from "@ai-content-studio/shared";
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import { type AuditActor, recordAuditEntry } from "../audit/audit.js";
 import type { Database } from "../db/client.js";
 import { generations, uploads } from "../db/schema.js";
@@ -191,6 +191,34 @@ export class UploadsRepository {
       .update(uploads)
       .set({ status: "failed", error })
       .where(eq(uploads.id, id));
+  }
+
+  /**
+   * Deletes every Upload this user has left, but not one in `inUseIds`
+   * (issue #63's account delete, round 4 fix): unused, failed and still-
+   * uploading ones go straight away — `finishDelete`'s own sweep only
+   * catches an Upload a Tombstoned Generation referenced, so this is the
+   * rest. Returns each deleted row's storage/thumbnail keys for the
+   * caller to remove from `Storage`.
+   */
+  async deleteAllForUserExcept(
+    userId: string,
+    inUseIds: readonly string[],
+  ): Promise<{ storageKey: string; thumbnailKey: string | null }[]> {
+    return this.db
+      .delete(uploads)
+      .where(
+        inUseIds.length === 0
+          ? eq(uploads.userId, userId)
+          : and(
+              eq(uploads.userId, userId),
+              notInArray(uploads.id, [...inUseIds]),
+            ),
+      )
+      .returning({
+        storageKey: uploads.storageKey,
+        thumbnailKey: uploads.thumbnailKey,
+      });
   }
 
   /** This user's own Uploads (issue #68's AC: a user's page links to their Uploads, read-only), newest first. */

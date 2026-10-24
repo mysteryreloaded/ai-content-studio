@@ -19,10 +19,15 @@ export type SessionState =
   | { status: "signed-in"; user: SessionUser };
 
 /** The current sign-in state, from `/api/auth/me`, refetched on demand. */
+export type DeleteAccountResult =
+  | { ok: true }
+  | { ok: false; error: "forbidden" | "email_mismatch" | "unknown" };
+
 export function useSession(): {
   session: SessionState;
   refresh: () => void;
   signOut: () => Promise<void>;
+  deleteAccount: (email: string) => Promise<DeleteAccountResult>;
 } {
   const [session, setSession] = useState<SessionState>({ status: "loading" });
   const [generation, setGeneration] = useState(0);
@@ -62,5 +67,23 @@ export function useSession(): {
     setSession({ status: "signed-out" });
   }, []);
 
-  return { session, refresh, signOut };
+  const deleteAccount = useCallback(
+    async (email: string): Promise<DeleteAccountResult> => {
+      const res = await fetch("/api/auth/account", {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      if (res.ok) {
+        setSession({ status: "signed-out" });
+        return { ok: true };
+      }
+      if (res.status === 403) return { ok: false, error: "forbidden" };
+      if (res.status === 400) return { ok: false, error: "email_mismatch" };
+      return { ok: false, error: "unknown" };
+    },
+    [],
+  );
+
+  return { session, refresh, signOut, deleteAccount };
 }

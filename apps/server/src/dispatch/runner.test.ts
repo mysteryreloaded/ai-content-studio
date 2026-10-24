@@ -170,6 +170,7 @@ function baseDeps(
     queue: queue as any,
     // biome-ignore lint/suspicious/noExplicitAny: a hand-rolled fake standing in for AssetsRepository
     assetsRepository: fakeAssetsRepository() as any,
+    generationsRepository: { finalizeIfPendingDeletion: async () => null },
     storage: createLocalStorage(`/tmp/runner-test-${randomUUID()}`),
     backendRepository: { decryptedCredentials: async () => null },
     backendsService: {

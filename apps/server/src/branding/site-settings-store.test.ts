@@ -10,8 +10,12 @@ import { createTestDatabase } from "../test/database.js";
 import {
   LOGO_STORAGE_KEY,
   getBlockedWords,
+  getPauseNotice,
   getSiteSettings,
+  pauseGenerating,
+  resumeGenerating,
   updateSiteBlockedWords,
+  updateSiteNotice,
   updateSitePrivacy,
   updateSiteSettings,
   updateSiteTerms,
@@ -372,5 +376,139 @@ describe("Site settings and Site terms have independent concurrency locks", () =
       words: ["stale"],
     });
     expect(result).toEqual({ ok: false, reason: "stale" });
+  });
+});
+
+describe("Notice and Pause (issue #59)", () => {
+  const testDb = createTestDatabase("site_notice_pause_test");
+  const clock = new FakeClock();
+
+  afterAll(async () => {
+    await (await testDb).close();
+  });
+
+  const admin = {
+    type: "admin" as const,
+    userId: "00000000-0000-0000-0000-00000000000d",
+    email: "admin@example.com",
+    ip: "203.0.113.1",
+    userAgent: "test-agent",
+    requestId: "req-notice",
+  };
+
+  test("updateSiteNotice saves the text, bumps its revision and writes an Audit entry", async () => {
+    const { db } = await testDb;
+    const current = await getSiteSettings(db);
+    expect(current.notice).toBe("");
+
+    const result = await updateSiteNotice(db, clock, admin, {
+      revision: current.noticeRevision,
+      text: "Maintenance window at 2am.",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.settings.notice).toBe("Maintenance window at 2am.");
+    expect(result.settings.noticeRevision).toBe(current.noticeRevision + 1);
+    expect(await getPauseNotice(db)).toEqual({
+      paused: false,
+      notice: "Maintenance window at 2am.",
+    });
+
+    const [entry] = await db
+      .select()
+      .from(auditEntries)
+      .where(eq(auditEntries.action, "update-notice"));
+    expect(entry?.targetType).toBe("site_settings");
+  });
+
+  test("updateSiteNotice rejects a stale revision", async () => {
+    const { db } = await testDb;
+    const current = await getSiteSettings(db);
+
+    const result = await updateSiteNotice(db, clock, admin, {
+      revision: current.noticeRevision - 1,
+      text: "stale write",
+    });
+    expect(result).toEqual({ ok: false, reason: "stale" });
+  });
+
+  test("pauseGenerating sets paused, pausedAt and pausedByName, and writes a 'pause' Audit entry", async () => {
+    const { db } = await testDb;
+
+    const result = await pauseGenerating(db, clock, admin, "Alice");
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.settings.paused).toBe(true);
+    expect(result.settings.pausedAt).not.toBeNull();
+    expect(result.settings.pausedByName).toBe("Alice");
+    expect(await getPauseNotice(db)).toEqual({
+      paused: true,
+      notice: "Maintenance window at 2am.",
+    });
+
+    const [entry] = await db
+      .select()
+      .from(auditEntries)
+      .where(eq(auditEntries.action, "pause"));
+    expect(entry?.targetType).toBe("site_settings");
+  });
+
+  test("pausing again while already paused is refused, with no second Audit entry", async () => {
+    const { db } = await testDb;
+    const before = await db
+      .select()
+      .from(auditEntries)
+      .where(eq(auditEntries.action, "pause"));
+
+    const result = await pauseGenerating(db, clock, admin, "Bob");
+    expect(result).toEqual({ ok: false, reason: "already-paused" });
+
+    const after = await db
+      .select()
+      .from(auditEntries)
+      .where(eq(auditEntries.action, "pause"));
+    expect(after).toHaveLength(before.length);
+
+    // Bob's attempted (refused) pause never overwrote Alice's own.
+    const current = await getSiteSettings(db);
+    expect(current.pausedByName).toBe("Alice");
+  });
+
+  test("resumeGenerating clears paused, pausedAt and pausedByName, and writes a 'resume' Audit entry", async () => {
+    const { db } = await testDb;
+
+    const result = await resumeGenerating(db, clock, admin);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.settings.paused).toBe(false);
+    expect(result.settings.pausedAt).toBeNull();
+    expect(result.settings.pausedByName).toBeNull();
+    expect(await getPauseNotice(db)).toEqual({
+      paused: false,
+      notice: "Maintenance window at 2am.",
+    });
+
+    const [entry] = await db
+      .select()
+      .from(auditEntries)
+      .where(eq(auditEntries.action, "resume"));
+    expect(entry?.targetType).toBe("site_settings");
+  });
+
+  test("resuming while not paused is refused, with no second Audit entry", async () => {
+    const { db } = await testDb;
+    const before = await db
+      .select()
+      .from(auditEntries)
+      .where(eq(auditEntries.action, "resume"));
+
+    const result = await resumeGenerating(db, clock, admin);
+    expect(result).toEqual({ ok: false, reason: "not-paused" });
+
+    const after = await db
+      .select()
+      .from(auditEntries)
+      .where(eq(auditEntries.action, "resume"));
+    expect(after).toHaveLength(before.length);
   });
 });

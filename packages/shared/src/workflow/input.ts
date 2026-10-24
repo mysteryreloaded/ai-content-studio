@@ -9,6 +9,9 @@ import { type NodeFieldValue, type Workflow, isNodeLink } from "./types.js";
 
 export type InputGroup = "describe" | "settings";
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /** Where one Input writes: a Node field, snapshotted at save time (issue #46). */
 export interface InputBinding {
   nodeId: string;
@@ -100,12 +103,49 @@ export function listBindableFields(workflow: Workflow): BindableField[] {
   return fields;
 }
 
+/** One field's shape, per a Backend's `/object_info` (issue #46): a `COMBO` field carries its allowed `options`. */
+export interface ComfyFieldSpec {
+  type: string;
+  options?: readonly string[];
+}
+
 export interface BindingValidationContext {
   workflow: Workflow;
   /** Node ids that are a Mode's named output (`filename_prefix` there can't be bound). */
   outputNodeIds: ReadonlySet<string>;
   /** `fieldKey` of every field already bound by another Input. */
   usedFields: ReadonlySet<string>;
+  /**
+   * A reachable Backend's `/object_info` field shapes, by class type
+   * (issue #46). When absent, or a class type/field isn't in it, checks
+   * that need it fall back to the Workflow's own JSON value type.
+   */
+  fieldSpecs?: ReadonlyMap<string, Record<string, ComfyFieldSpec>>;
+}
+
+type JsValueKind = "string" | "number" | "boolean";
+
+function comfyTypeToJsKind(type: string): JsValueKind | null {
+  switch (type) {
+    case "INT":
+    case "FLOAT":
+      return "number";
+    case "STRING":
+      return "string";
+    case "BOOLEAN":
+      return "boolean";
+    default:
+      return null;
+  }
+}
+
+function fieldSpecFor(
+  ctx: BindingValidationContext,
+  binding: InputBinding,
+): ComfyFieldSpec | null {
+  const classType =
+    ctx.workflow[binding.nodeId]?.class_type ?? binding.classType;
+  return ctx.fieldSpecs?.get(classType)?.[binding.field] ?? null;
 }
 
 /** Refuses a link-fed field, a field already bound elsewhere, an output node's `filename_prefix`, and a type mismatch. */
@@ -145,9 +185,16 @@ export function validateInputDefinition(
   input: InputDefinition,
   otherLabels: readonly string[],
   ctx: BindingValidationContext,
+  otherIds: readonly string[] = [],
 ): string[] {
   const errors: string[] = [];
 
+  if (!UUID_RE.test(input.id)) {
+    errors.push("id must be a UUID");
+  }
+  if (otherIds.includes(input.id)) {
+    errors.push("id must be unique");
+  }
   if (input.label.length < 1 || input.label.length > 60) {
     errors.push("label must be 1-60 characters");
   }
@@ -188,19 +235,68 @@ export function validateInputDefinition(
     ) {
       errors.push("default must be between min and max");
     }
+    if (input.numberMode === "decimal") {
+      for (const binding of input.bindings) {
+        const spec = fieldSpecFor(ctx, binding);
+        if (spec?.type === "INT") {
+          errors.push(
+            `field "${binding.field}" on node "${binding.nodeId}" is whole (INT); a decimal Input can't bind it`,
+          );
+        }
+      }
+    }
   } else {
     if (input.options.length < 2 || input.options.length > 50) {
       errors.push("needs 2-50 options");
     }
+    const optionIds = new Set<string>();
     for (const option of input.options) {
       if (option.label.length < 1) {
         errors.push("every option needs a label");
       }
+      if (!UUID_RE.test(option.id)) {
+        errors.push(`option id "${option.id}" must be a UUID`);
+      }
+      if (optionIds.has(option.id)) {
+        errors.push(`option id "${option.id}" is used more than once`);
+      }
+      optionIds.add(option.id);
       if (option.values.length !== input.bindings.length) {
         errors.push(
           `option "${option.label}" needs a value for each bound field`,
         );
+        continue;
       }
+      option.values.forEach((value, valueIndex) => {
+        if (value === null) return;
+        const binding = input.bindings[valueIndex];
+        if (!binding) return;
+        const spec = fieldSpecFor(ctx, binding);
+        if (spec?.type === "COMBO") {
+          if (
+            typeof value !== "string" ||
+            !(spec.options ?? []).includes(value)
+          ) {
+            errors.push(
+              `option "${option.label}" value for "${binding.field}" isn't one of the Backend's choices`,
+            );
+          }
+          return;
+        }
+        const expectedKind = spec ? comfyTypeToJsKind(spec.type) : null;
+        const workflowValue =
+          ctx.workflow[binding.nodeId]?.inputs[binding.field];
+        const kind =
+          expectedKind ??
+          (workflowValue !== undefined && !isNodeLink(workflowValue)
+            ? (typeof workflowValue as JsValueKind)
+            : null);
+        if (kind && (typeof value as JsValueKind) !== kind) {
+          errors.push(
+            `option "${option.label}" value for "${binding.field}" must be a ${kind}`,
+          );
+        }
+      });
     }
     if (
       input.default !== null &&

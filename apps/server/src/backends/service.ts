@@ -1,6 +1,7 @@
 // Ties the repository and monitor together, honoring BACKENDS_ENABLED
 // (issue #39: `false` stops all Backend contact and shows Admins a banner).
 
+import type { ComfyFieldSpec } from "@ai-content-studio/shared";
 import type { Clock } from "@ai-content-studio/shared";
 import { backendTarget } from "./client.js";
 import type { LogEntryWriter } from "./log-entries.js";
@@ -59,6 +60,18 @@ export class BackendsService {
   async nodeTypesFor(backend: BackendRecord): Promise<Set<string> | null> {
     if (this.healthFor(backend.id).reachability !== "reachable") return null;
     return this.nodeKnowledge.nodeTypesFor(backend);
+  }
+
+  /**
+   * `backend`'s `/object_info` field shapes (issue #46), only while it's
+   * reachable, so an Admin's Input validation can check a select Input's
+   * option values against a COMBO field's real choices.
+   */
+  async fieldSpecsFor(
+    backend: BackendRecord,
+  ): Promise<Map<string, Record<string, ComfyFieldSpec>> | null> {
+    if (this.healthFor(backend.id).reachability !== "reachable") return null;
+    return this.nodeKnowledge.fieldSpecsFor(backend);
   }
 
   unreachableSince(backendId: string) {

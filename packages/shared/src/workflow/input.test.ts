@@ -86,9 +86,59 @@ describe("validateInputDefinition", () => {
     usedFields: new Set<string>(),
   };
 
-  test("accepts a well-formed text Input", () => {
+  test("refuses a non-UUID id", () => {
     const input: TextInputDefinition = {
       id: "i1",
+      kind: "text",
+      group: "describe",
+      label: "Prompt",
+      help: "",
+      default: "",
+      multiline: true,
+      maxLength: 2000,
+      bindings: [
+        {
+          nodeId: "1",
+          field: "text",
+          classType: "CLIPTextEncode",
+          title: "Prompt",
+        },
+      ],
+    };
+    expect(validateInputDefinition(input, [], ctx)).toContain(
+      "id must be a UUID",
+    );
+  });
+
+  test("refuses an id already used by another Input", () => {
+    const input: TextInputDefinition = {
+      id: "11111111-1111-1111-1111-111111111111",
+      kind: "text",
+      group: "describe",
+      label: "Prompt",
+      help: "",
+      default: "",
+      multiline: true,
+      maxLength: 2000,
+      bindings: [
+        {
+          nodeId: "1",
+          field: "text",
+          classType: "CLIPTextEncode",
+          title: "Prompt",
+        },
+      ],
+    };
+    expect(
+      validateInputDefinition(input, [], ctx, [
+        "11111111-1111-1111-1111-111111111111",
+      ]),
+    ).toContain("id must be unique");
+  });
+
+  test("accepts a well-formed text Input", () => {
+    const input: TextInputDefinition = {
+      id: "11111111-1111-1111-1111-111111111111",
       kind: "text",
       group: "describe",
       label: "Prompt",
@@ -110,7 +160,7 @@ describe("validateInputDefinition", () => {
 
   test("refuses a duplicate label", () => {
     const input: TextInputDefinition = {
-      id: "i1",
+      id: "11111111-1111-1111-1111-111111111111",
       kind: "text",
       group: "describe",
       label: "Prompt",
@@ -134,7 +184,7 @@ describe("validateInputDefinition", () => {
 
   test("refuses a number Input with max <= min or step <= 0", () => {
     const input: NumberInputDefinition = {
-      id: "i2",
+      id: "22222222-2222-2222-2222-222222222222",
       kind: "number",
       group: "settings",
       label: "Steps",
@@ -155,13 +205,19 @@ describe("validateInputDefinition", () => {
 
   test("refuses a select Input with fewer than 2 options", () => {
     const input: SelectInputDefinition = {
-      id: "i3",
+      id: "33333333-3333-3333-3333-333333333333",
       kind: "select",
       group: "settings",
       label: "Quality",
       help: "",
       default: null,
-      options: [{ id: "o1", label: "Fast", values: [10] }],
+      options: [
+        {
+          id: "44444444-4444-4444-4444-444444444444",
+          label: "Fast",
+          values: [10],
+        },
+      ],
       bindings: [
         { nodeId: "2", field: "steps", classType: "KSampler", title: null },
       ],
@@ -173,15 +229,23 @@ describe("validateInputDefinition", () => {
 
   test("refuses an option missing a value per bound field", () => {
     const input: SelectInputDefinition = {
-      id: "i3",
+      id: "33333333-3333-3333-3333-333333333333",
       kind: "select",
       group: "settings",
       label: "Quality",
       help: "",
       default: null,
       options: [
-        { id: "o1", label: "Fast", values: [] },
-        { id: "o2", label: "Slow", values: [40] },
+        {
+          id: "44444444-4444-4444-4444-444444444444",
+          label: "Fast",
+          values: [],
+        },
+        {
+          id: "55555555-5555-5555-5555-555555555555",
+          label: "Slow",
+          values: [40],
+        },
       ],
       bindings: [
         { nodeId: "2", field: "steps", classType: "KSampler", title: null },
@@ -190,6 +254,160 @@ describe("validateInputDefinition", () => {
     expect(
       validateInputDefinition(input, [], ctx).some((e) =>
         e.includes("value for each bound field"),
+      ),
+    ).toBe(true);
+  });
+
+  test("refuses a duplicate option id", () => {
+    const input: SelectInputDefinition = {
+      id: "33333333-3333-3333-3333-333333333333",
+      kind: "select",
+      group: "settings",
+      label: "Quality",
+      help: "",
+      default: null,
+      options: [
+        {
+          id: "44444444-4444-4444-4444-444444444444",
+          label: "Fast",
+          values: [10],
+        },
+        {
+          id: "44444444-4444-4444-4444-444444444444",
+          label: "Slow",
+          values: [40],
+        },
+      ],
+      bindings: [
+        { nodeId: "2", field: "steps", classType: "KSampler", title: null },
+      ],
+    };
+    expect(
+      validateInputDefinition(input, [], ctx).some((e) =>
+        e.includes("used more than once"),
+      ),
+    ).toBe(true);
+  });
+
+  test("refuses a boolean-field option value sent as a string", () => {
+    const boolWorkflow: Workflow = {
+      ...workflow,
+      "4": {
+        class_type: "Toggle",
+        inputs: { enabled: true },
+      },
+    };
+    const boolCtx = { ...ctx, workflow: boolWorkflow };
+    const input: SelectInputDefinition = {
+      id: "33333333-3333-3333-3333-333333333333",
+      kind: "select",
+      group: "settings",
+      label: "Mode",
+      help: "",
+      default: null,
+      options: [
+        {
+          id: "44444444-4444-4444-4444-444444444444",
+          label: "Off",
+          values: ["false"],
+        },
+        {
+          id: "55555555-5555-5555-5555-555555555555",
+          label: "On",
+          values: [true],
+        },
+      ],
+      bindings: [
+        { nodeId: "4", field: "enabled", classType: "Toggle", title: null },
+      ],
+    };
+    expect(
+      validateInputDefinition(input, [], boolCtx).some((e) =>
+        e.includes("must be a boolean"),
+      ),
+    ).toBe(true);
+  });
+
+  test("refuses a COMBO option value not in the Backend's choices", () => {
+    const comboCtx = {
+      ...ctx,
+      fieldSpecs: new Map([
+        [
+          "KSampler",
+          {
+            sampler_name: {
+              type: "COMBO",
+              options: ["euler", "euler_ancestral"],
+            },
+          },
+        ],
+      ]),
+    };
+    const samplerWorkflow: Workflow = {
+      ...workflow,
+      "2": {
+        class_type: "KSampler",
+        inputs: { ...workflow["2"]?.inputs, sampler_name: "euler" },
+      },
+    };
+    const input: SelectInputDefinition = {
+      id: "33333333-3333-3333-3333-333333333333",
+      kind: "select",
+      group: "settings",
+      label: "Sampler",
+      help: "",
+      default: null,
+      options: [
+        {
+          id: "44444444-4444-4444-4444-444444444444",
+          label: "Euler",
+          values: ["euler"],
+        },
+        {
+          id: "55555555-5555-5555-5555-555555555555",
+          label: "Ghost",
+          values: ["ghost"],
+        },
+      ],
+      bindings: [
+        {
+          nodeId: "2",
+          field: "sampler_name",
+          classType: "KSampler",
+          title: null,
+        },
+      ],
+    };
+    const errors = validateInputDefinition(input, [], {
+      ...comboCtx,
+      workflow: samplerWorkflow,
+    });
+    expect(errors.some((e) => e.includes("Backend's choices"))).toBe(true);
+  });
+
+  test("refuses a decimal number Input bound to an INT field, when known", () => {
+    const intCtx = {
+      ...ctx,
+      fieldSpecs: new Map([["KSampler", { steps: { type: "INT" } }]]),
+    };
+    const input: NumberInputDefinition = {
+      id: "22222222-2222-2222-2222-222222222222",
+      kind: "number",
+      group: "settings",
+      label: "Steps",
+      help: "",
+      default: null,
+      numberMode: "decimal",
+      min: 1,
+      max: 100,
+      step: 1,
+      bindings: [
+        { nodeId: "2", field: "steps", classType: "KSampler", title: null },
+      ],
+    };
+    expect(
+      validateInputDefinition(input, [], intCtx).some((e) =>
+        e.includes("whole (INT)"),
       ),
     ).toBe(true);
   });

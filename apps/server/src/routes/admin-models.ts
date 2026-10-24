@@ -2,7 +2,10 @@
 // soft-delete and History (issue #40).
 
 import { modelTermsFieldsSchema } from "@ai-content-studio/shared";
-import type { InputDefinition } from "@ai-content-studio/shared";
+import type {
+  ComfyFieldSpec,
+  InputDefinition,
+} from "@ai-content-studio/shared";
 import { and, desc, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import type { Context } from "hono";
@@ -62,8 +65,11 @@ const bindingSchema = z.object({
   title: z.string().nullable(),
 });
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 const inputBaseSchema = {
-  id: z.string(),
+  id: z.string().regex(UUID_RE, "id must be a UUID"),
   group: z.enum(["describe", "settings"]),
   label: z.string(),
   help: z.string(),
@@ -92,7 +98,7 @@ const inputDefinitionSchema = z.discriminatedUnion("kind", [
     kind: z.literal("select"),
     options: z.array(
       z.object({
-        id: z.string(),
+        id: z.string().regex(UUID_RE, "option id must be a UUID"),
         label: z.string(),
         values: z.array(
           z.union([z.string(), z.number(), z.boolean(), z.null()]),
@@ -107,9 +113,6 @@ const inputsSchema = z.object({
   version: z.number().int().min(1),
   inputs: z.array(inputDefinitionSchema),
 });
-
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function idParam(c: Context<AppEnv>): string {
   const id = c.req.param("id");
@@ -443,11 +446,27 @@ export function adminModelsRoute(
         );
 
       try {
+        const attached = await modelBackends.listForModel(id);
+        const specsByBackend = await Promise.all(
+          attached.map((backend) => backendsService.fieldSpecsFor(backend)),
+        );
+        const fieldSpecs = new Map<string, Record<string, ComfyFieldSpec>>();
+        for (const specs of specsByBackend) {
+          if (!specs) continue;
+          for (const [classType, fields] of specs) {
+            fieldSpecs.set(classType, {
+              ...fieldSpecs.get(classType),
+              ...fields,
+            });
+          }
+        }
+
         const result = await repository.updateInputs(
           id,
           parsed.data.inputs as InputDefinition[],
           parsed.data.version,
           adminActorFrom(c),
+          fieldSpecs,
         );
         return c.json(result);
       } catch (err) {

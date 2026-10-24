@@ -5,6 +5,7 @@
 
 import {
   type BindingValidationContext,
+  type ComfyFieldSpec,
   type InputDefinition,
   type OutsideServiceNote,
   type ResolvedOutputNode,
@@ -754,6 +755,7 @@ export class ModelRepository {
     input: InputDefinition[],
     expectedVersion: number,
     actor: AuditActor,
+    fieldSpecs?: ReadonlyMap<string, Record<string, ComfyFieldSpec>>,
   ): Promise<{ record: ModelRecord; inputs: InputDefinition[] }> {
     return await this.db.transaction(async (tx) => {
       const [before] = await tx
@@ -790,18 +792,26 @@ export class ModelRepository {
       const errors: ValidationError[] = [];
       const usedFields = new Set<string>();
       const labelsSoFar: string[] = [];
+      const idsSoFar: string[] = [];
 
       input.forEach((def, index) => {
         const ctx: BindingValidationContext = {
           workflow,
           outputNodeIds,
           usedFields,
+          fieldSpecs,
         };
-        const defErrors = validateInputDefinition(def, labelsSoFar, ctx);
+        const defErrors = validateInputDefinition(
+          def,
+          labelsSoFar,
+          ctx,
+          idsSoFar,
+        );
         for (const message of defErrors) {
           errors.push({ field: `inputs[${index}]`, message });
         }
         labelsSoFar.push(def.label);
+        idsSoFar.push(def.id);
         for (const binding of def.bindings) {
           usedFields.add(fieldKey(binding.nodeId, binding.field));
         }

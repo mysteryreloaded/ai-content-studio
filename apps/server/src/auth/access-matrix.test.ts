@@ -229,6 +229,14 @@ describe("every route's access level is declared and enforced", () => {
         expect(`${context} pending -> ${pendingRes.status}`).toBe(
           `${context} pending -> ${expectedPending}`,
         );
+        if (
+          route.access === "active" ||
+          route.access === "admin" ||
+          route.access === "admin-or-status-token"
+        ) {
+          const body = (await pendingRes.json()) as { error: string };
+          expect(body.error).toBe("pending");
+        }
       }
     }
   });
@@ -298,6 +306,46 @@ describe("every route's access level is declared and enforced", () => {
       const expected = expectedByAccess[route.access];
       expect(`${context} -> ${res.status}`).toBe(`${context} -> ${expected}`);
       const body = (await res.json()) as { error: string };
+      expect(body.error).toBe("terms_required");
+    }
+  });
+
+  test("ADR 0007: the terms gate comes before the pending check, for a pending user too", async () => {
+    const { app, routes, db } = await build();
+
+    await db
+      .update(siteSettings)
+      .set({ termsBody: "Do not be evil.", termsVersion: 1 })
+      .where(eq(siteSettings.singleton, true));
+
+    const [pendingNoTerms] = await db
+      .insert(users)
+      .values({
+        googleSub: "sub-pending-no-terms",
+        email: "pending-no-terms@example.com",
+        name: "Pending No Terms",
+        role: "user",
+        status: "pending",
+      })
+      .returning();
+    if (!pendingNoTerms) throw new Error("failed to insert test user");
+
+    const SAME_ORIGIN_HEADERS = { "Sec-Fetch-Site": "same-origin" };
+    const session = await createSession(db, clock, pendingNoTerms.id);
+    const cookie = `${SESSION_COOKIE_NAME}=${session.cookieValue}`;
+
+    for (const route of routes) {
+      if (route.access !== "active" && route.access !== "admin") continue;
+
+      const res = await app.request(route.path, {
+        method: route.method,
+        headers: { ...SAME_ORIGIN_HEADERS, Cookie: cookie },
+      });
+      const context = `${route.method} ${route.path} (${route.access})`;
+      expect(`${context} -> ${res.status}`).toBe(`${context} -> 403`);
+      const body = (await res.json()) as { error: string };
+      // Not "pending": a user who hasn't accepted the current Site
+      // terms is asked for that first, no matter their status.
       expect(body.error).toBe("terms_required");
     }
   });

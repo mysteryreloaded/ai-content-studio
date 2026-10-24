@@ -85,7 +85,7 @@ export function UserPage() {
           Approve
         </button>
       )}
-      {canAct && user.role === "user" && (
+      {canAct && user.role === "user" && user.status === "active" && (
         <button type="button" onClick={() => void act("promote")}>
           Promote to Admin
         </button>

@@ -101,35 +101,59 @@ export async function upsertUserFromGoogle(
 
 export type UserActionResult =
   | { ok: true; user: UpsertedUser }
-  | { ok: false; reason: "not_found" | "pinned" | "invalid_state" };
+  | { ok: false; reason: "not_found" | "invalid_state" };
 
+/**
+ * Whether `email` is pinned: read live against `adminEmails` on every
+ * check (ADR 0007), never from a stored flag, so removing an email from
+ * `ADMIN_EMAILS` unpins that Admin immediately, with no write and no
+ * Audit entry of its own — only the Operator's configuration changed,
+ * not anything about the user.
+ */
+export function isPinned(
+  email: string,
+  adminEmails: readonly string[],
+): boolean {
+  return adminEmails.includes(email.toLowerCase());
+}
+
+/**
+ * ADR 0007: a target that's pinned, or is the acting Admin themselves,
+ * is refused 404 like a missing row, not 403 — so the row's existence
+ * isn't leaked past what the Users page already shows, and the admin
+ * panel can hide the same actions it would otherwise be refused.
+ */
 async function applyUserAction(
   db: Database,
   clock: Clock,
   actor: AuditActor,
-  userId: string,
+  actingUserId: string,
+  targetId: string,
+  adminEmails: readonly string[],
   action: "approve" | "promote" | "demote",
   precondition: (user: typeof users.$inferSelect) => boolean,
   changes: Partial<typeof users.$inferInsert>,
 ): Promise<UserActionResult> {
   return db.transaction(async (tx) => {
-    const [user] = await tx.select().from(users).where(eq(users.id, userId));
+    const [user] = await tx.select().from(users).where(eq(users.id, targetId));
     if (!user) return { ok: false, reason: "not_found" };
-    if (user.pinned) return { ok: false, reason: "pinned" };
+    if (targetId === actingUserId || isPinned(user.email, adminEmails)) {
+      return { ok: false, reason: "not_found" };
+    }
     if (!precondition(user)) return { ok: false, reason: "invalid_state" };
 
     const now = clock.now();
     const [updated] = await tx
       .update(users)
       .set({ ...changes, updatedAt: now })
-      .where(eq(users.id, userId))
+      .where(eq(users.id, targetId))
       .returning();
     if (!updated) throw new Error("user update affected no row");
 
     await recordAuditEntry(tx, clock, {
       actor,
       targetType: "user",
-      targetId: userId,
+      targetId,
       action,
       before: { role: user.role, status: user.status },
       after: { role: updated.role, status: updated.status },
@@ -149,94 +173,73 @@ async function applyUserAction(
   });
 }
 
-/** Approves a pending user (issue #62). Refused for a pinned Admin (never pending) or a user that isn't pending. */
+/** Approves a pending user (issue #62). Refused for a pinned Admin (never pending), the acting Admin's own row, or a user that isn't pending. */
 export function approveUser(
   db: Database,
   clock: Clock,
   actor: AuditActor,
-  userId: string,
+  actingUserId: string,
+  targetId: string,
+  adminEmails: readonly string[],
 ): Promise<UserActionResult> {
   return applyUserAction(
     db,
     clock,
     actor,
-    userId,
+    actingUserId,
+    targetId,
+    adminEmails,
     "approve",
     (user) => user.status === "pending",
     { status: "active" },
   );
 }
 
-/** Promotes a user to Admin (issue #62). Refused for a pinned Admin or a user already an Admin. */
+/**
+ * Promotes a user to Admin (issue #62). Refused for a pinned Admin, the
+ * acting Admin's own row, a user already an Admin, or a user still
+ * pending (ADR 0007: approve before promote — two clicks, two Audit
+ * entries, never one).
+ */
 export function promoteUser(
   db: Database,
   clock: Clock,
   actor: AuditActor,
-  userId: string,
+  actingUserId: string,
+  targetId: string,
+  adminEmails: readonly string[],
 ): Promise<UserActionResult> {
   return applyUserAction(
     db,
     clock,
     actor,
-    userId,
+    actingUserId,
+    targetId,
+    adminEmails,
     "promote",
-    (user) => user.role === "user",
+    (user) => user.role === "user" && user.status === "active",
     { role: "admin" },
   );
 }
 
-/** Demotes an Admin to a plain user (issue #62). Refused for a pinned Admin or a user that isn't an Admin. */
+/** Demotes an Admin to a plain user (issue #62). Refused for a pinned Admin, the acting Admin's own row, or a user that isn't an Admin. */
 export function demoteUser(
   db: Database,
   clock: Clock,
   actor: AuditActor,
-  userId: string,
+  actingUserId: string,
+  targetId: string,
+  adminEmails: readonly string[],
 ): Promise<UserActionResult> {
   return applyUserAction(
     db,
     clock,
     actor,
-    userId,
+    actingUserId,
+    targetId,
+    adminEmails,
     "demote",
     (user) => user.role === "admin",
     { role: "user" },
   );
-}
-
-/**
- * Unpins any Admin no longer listed in `ADMIN_EMAILS`, without touching
- * their role or status (issue #62). Call once at boot: `ADMIN_EMAILS`
- * only changes between deploys, never mid-request.
- */
-export async function syncAdminEmailPins(
-  db: Database,
-  clock: Clock,
-  adminEmails: readonly string[],
-): Promise<void> {
-  const lowerEmails = new Set(adminEmails.map((email) => email.toLowerCase()));
-
-  await db.transaction(async (tx) => {
-    const pinned = await tx
-      .select({ id: users.id, email: users.email })
-      .from(users)
-      .where(eq(users.pinned, true));
-
-    for (const user of pinned) {
-      if (lowerEmails.has(user.email.toLowerCase())) continue;
-
-      await tx
-        .update(users)
-        .set({ pinned: false, updatedAt: clock.now() })
-        .where(eq(users.id, user.id));
-
-      await recordAuditEntry(tx, clock, {
-        actor: { type: "system" },
-        targetType: "user",
-        targetId: user.id,
-        action: "unpin",
-        before: { pinned: true },
-        after: { pinned: false },
-      });
-    }
-  });
 }

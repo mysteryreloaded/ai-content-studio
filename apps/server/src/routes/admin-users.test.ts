@@ -1,5 +1,5 @@
 // `/api/admin/users`: list/search/filter, pending-count, and
-// approve/promote/demote (issue #62).
+// approve/promote/demote (issue #62, ADR 0007).
 
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { FakeClock } from "@ai-content-studio/shared";
@@ -52,14 +52,14 @@ describe("/api/admin/users", () => {
     await db.delete(users);
   });
 
-  async function build() {
+  async function build(env: Env = TEST_ENV) {
     const { db, sql } = await testDb;
     const { app } = await createApp({
       db,
       sql,
       clock,
       logger: silentLogger,
-      env: TEST_ENV,
+      env,
       webDistDir: new URL("../../../web", import.meta.url).pathname,
     });
     return { app, db };
@@ -244,13 +244,29 @@ describe("/api/admin/users", () => {
     expect(entries.map((e) => e.action).sort()).toEqual(["demote", "promote"]);
   });
 
-  test("pinned Admins can't be approved, promoted or demoted", async () => {
+  test("promote refuses a user who's still pending (ADR 0007: approve before promote)", async () => {
     const { app } = await build();
     const admin = await makeUser({ email: "admin@example.com", role: "admin" });
+    const pending = await makeUser({
+      email: "still-pending@example.com",
+      status: "pending",
+    });
+
+    const res = await app.request(`/api/admin/users/${pending.id}/promote`, {
+      method: "POST",
+      headers: { ...SAME_ORIGIN_HEADERS, Cookie: await cookieFor(admin.id) },
+    });
+    expect(res.status).toBe(400);
+  });
+
+  test("pinned Admins can't be approved, promoted or demoted (404, like a missing row)", async () => {
+    const { app } = await build();
+    const admin = await makeUser({ email: "admin@example.com", role: "admin" });
+    // Pinned because this email is listed in TEST_ENV's ADMIN_EMAILS, not
+    // because of anything stored on the row (ADR 0007: read live).
     const pinned = await makeUser({
       email: "pinned-admin@example.com",
       role: "admin",
-      pinned: true,
     });
 
     for (const action of ["approve", "promote", "demote"]) {
@@ -261,11 +277,49 @@ describe("/api/admin/users", () => {
           Cookie: await cookieFor(admin.id),
         },
       });
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(404);
     }
   });
 
-  test("nobody changes their own role or status", async () => {
+  test("removing an email from ADMIN_EMAILS unpins immediately, with no write and no Audit entry", async () => {
+    const stillListed = await build();
+    const admin = await makeUser({ email: "admin@example.com", role: "admin" });
+    const formerlyPinned = await makeUser({
+      email: "pinned-admin@example.com",
+      role: "admin",
+    });
+
+    const stillPinnedRes = await stillListed.app.request(
+      `/api/admin/users/${formerlyPinned.id}/demote`,
+      {
+        method: "POST",
+        headers: { ...SAME_ORIGIN_HEADERS, Cookie: await cookieFor(admin.id) },
+      },
+    );
+    expect(stillPinnedRes.status).toBe(404);
+
+    const { app: appWithoutThatAdmin, db } = await build({
+      ...TEST_ENV,
+      ADMIN_EMAILS: ["someone-else@example.com"],
+    });
+    const before = await db.select().from(auditEntries);
+
+    const unpinnedRes = await appWithoutThatAdmin.request(
+      `/api/admin/users/${formerlyPinned.id}/demote`,
+      {
+        method: "POST",
+        headers: { ...SAME_ORIGIN_HEADERS, Cookie: await cookieFor(admin.id) },
+      },
+    );
+    expect(unpinnedRes.status).toBe(200);
+    expect(((await unpinnedRes.json()) as { role: string }).role).toBe("user");
+
+    const after = await db.select().from(auditEntries);
+    // The demote itself writes one Audit entry; unpinning writes none.
+    expect(after.length).toBe(before.length + 1);
+  });
+
+  test("nobody changes their own role or status (404, like a missing row)", async () => {
     const { app } = await build();
     const admin = await makeUser({ email: "admin@example.com", role: "admin" });
 
@@ -277,7 +331,7 @@ describe("/api/admin/users", () => {
           Cookie: await cookieFor(admin.id),
         },
       });
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(404);
     }
   });
 });

@@ -177,14 +177,16 @@ export function UsersPage() {
                         Approve
                       </button>
                     )}
-                    {canAct && user.role === "user" && (
-                      <button
-                        type="button"
-                        onClick={() => act(user.id, "promote")}
-                      >
-                        Promote
-                      </button>
-                    )}
+                    {canAct &&
+                      user.role === "user" &&
+                      user.status === "active" && (
+                        <button
+                          type="button"
+                          onClick={() => act(user.id, "promote")}
+                        >
+                          Promote
+                        </button>
+                      )}
                     {canAct && user.role === "admin" && (
                       <button
                         type="button"

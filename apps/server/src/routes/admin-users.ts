@@ -1,5 +1,5 @@
 // `/api/admin/users`: the Users page's list, search and filters, a
-// user's own page, and approve/promote/demote (issue #62).
+// user's own page, and approve/promote/demote (issue #62, ADR 0007).
 
 import type { Clock } from "@ai-content-studio/shared";
 import { and, desc, eq, ilike, lt, or, sql } from "drizzle-orm";
@@ -11,6 +11,7 @@ import {
   type UserActionResult,
   approveUser,
   demoteUser,
+  isPinned,
   promoteUser,
 } from "../auth/users.js";
 import type { Database } from "../db/client.js";
@@ -29,7 +30,11 @@ function isUuid(value: string | undefined): value is string {
 const ROLES = ["user", "admin"] as const;
 const STATUSES = ["pending", "active", "disabled"] as const;
 
-function userJson(user: typeof users.$inferSelect) {
+/** `pinned` is read live against `adminEmails`, never stored (ADR 0007). */
+function userJson(
+  user: typeof users.$inferSelect,
+  adminEmails: readonly string[],
+) {
   return {
     id: user.id,
     email: user.email,
@@ -37,7 +42,7 @@ function userJson(user: typeof users.$inferSelect) {
     picture: user.picture,
     role: user.role,
     status: user.status,
-    pinned: user.pinned,
+    pinned: isPinned(user.email, adminEmails),
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
   };
@@ -45,9 +50,8 @@ function userJson(user: typeof users.$inferSelect) {
 
 async function respondForAction(c: Context<AppEnv>, result: UserActionResult) {
   if (result.ok) return c.json(result.user);
-  if (result.reason === "not_found") return c.json({ error: "not found" }, 404);
-  if (result.reason === "pinned") {
-    return c.json({ error: "pinned Admins can't be changed here" }, 403);
+  if (result.reason === "not_found") {
+    return c.json({ error: "not found" }, 404);
   }
   return c.json({ error: "not in the right state for this action" }, 400);
 }
@@ -56,6 +60,7 @@ async function respondForAction(c: Context<AppEnv>, result: UserActionResult) {
 export function adminUsersRoute(
   db: Database,
   clock: Clock,
+  adminEmails: readonly string[],
   routes: RouteEntry[],
 ): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
@@ -114,7 +119,10 @@ export function adminUsersRoute(
     const hasMore = fetched.length > limit;
     const rows = hasMore ? fetched.slice(0, limit) : fetched;
 
-    return c.json({ users: rows.map(userJson), hasMore });
+    return c.json({
+      users: rows.map((row) => userJson(row, adminEmails)),
+      hasMore,
+    });
   });
 
   guardedRoute(
@@ -140,7 +148,7 @@ export function adminUsersRoute(
     const [user] = await db.select().from(users).where(eq(users.id, id));
     if (!user) return c.json({ error: "not found" }, 404);
 
-    return c.json(userJson(user));
+    return c.json(userJson(user, adminEmails));
   });
 
   function actionRoute(
@@ -149,7 +157,9 @@ export function adminUsersRoute(
       db: Database,
       clock: Clock,
       actor: ReturnType<typeof adminActorFrom>,
-      userId: string,
+      actingUserId: string,
+      targetId: string,
+      adminEmails: readonly string[],
     ) => Promise<UserActionResult>,
   ) {
     guardedRoute(app, routes, basePath, "post", path, "admin", async (c) => {
@@ -158,12 +168,15 @@ export function adminUsersRoute(
 
       const session = c.get("session");
       if (!session) return c.json({ error: "unauthorized" }, 401);
-      // AC: nobody changes their own role or status.
-      if (id === session.user.id) {
-        return c.json({ error: "can't change your own role or status" }, 403);
-      }
 
-      const result = await action(db, clock, adminActorFrom(c), id);
+      const result = await action(
+        db,
+        clock,
+        adminActorFrom(c),
+        session.user.id,
+        id,
+        adminEmails,
+      );
       return respondForAction(c, result);
     });
   }

@@ -1,8 +1,9 @@
-ALTER TYPE "public"."generation_state" ADD VALUE 'starting';--> statement-breakpoint
-ALTER TYPE "public"."generation_state" ADD VALUE 'running';--> statement-breakpoint
-ALTER TYPE "public"."generation_state" ADD VALUE 'saving';--> statement-breakpoint
-ALTER TYPE "public"."generation_state" ADD VALUE 'succeeded';--> statement-breakpoint
-ALTER TYPE "public"."generation_state" ADD VALUE 'failed';--> statement-breakpoint
+ALTER TYPE "public"."generation_state" RENAME TO "generation_state__old";--> statement-breakpoint
+CREATE TYPE "public"."generation_state" AS ENUM('queued', 'starting', 'running', 'saving', 'succeeded', 'failed');--> statement-breakpoint
+ALTER TABLE "generations" ALTER COLUMN "state" DROP DEFAULT;--> statement-breakpoint
+ALTER TABLE "generations" ALTER COLUMN "state" TYPE "public"."generation_state" USING "state"::text::"public"."generation_state";--> statement-breakpoint
+ALTER TABLE "generations" ALTER COLUMN "state" SET DEFAULT 'queued';--> statement-breakpoint
+DROP TYPE "public"."generation_state__old";--> statement-breakpoint
 CREATE TABLE "assets" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"generation_id" uuid NOT NULL,

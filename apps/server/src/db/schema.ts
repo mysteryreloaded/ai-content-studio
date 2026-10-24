@@ -361,6 +361,14 @@ export const modelRevisions = pgTable(
       .notNull()
       .references(() => workflows.hash),
     inputs: jsonb("inputs").notNull().default([]),
+    /**
+     * Issue #74: a Test's own revision, made of whatever's unsaved in the
+     * editor right now. Never current (models.currentRevision never
+     * points at one) and never audited; `revisionNumber` is a negative
+     * number (one per Model, counting down), so it never collides with a
+     * real, saved revision's own 1-based numbering.
+     */
+    isTest: boolean("is_test").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -528,6 +536,17 @@ export const generations = pgTable(
     }),
     submissionId: uuid("submission_id").notNull(),
     state: generationState("state").notNull().default("queued"),
+    /**
+     * Issue #74: a test run of the Model editor's own unsaved state, made
+     * from an admin on the Model Editor page. Never counts toward Caps
+     * (generations/caps.ts), never blocked by a Pause or a disabled
+     * Model, and dispatched only to `pinnedBackendId` when that's set
+     * (null means Any attached Backend, the normal rule).
+     */
+    isTest: boolean("is_test").notNull().default(false),
+    pinnedBackendId: uuid("pinned_backend_id").references(() => backends.id, {
+      onDelete: "set null",
+    }),
     builtPrompt: jsonb("built_prompt").notNull(),
     nodeTypes: text("node_types").array().notNull(),
     /** Issue #50: the Uploads its prompt names, sent to the claimed Backend before the prompt is queued. */

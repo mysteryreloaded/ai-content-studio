@@ -48,6 +48,7 @@ function toSummary(
     deletedAt: null,
     modelSlug: detail.modelSlug,
     modelName: detail.modelName,
+    isTest: detail.isTest,
     assets,
   };
 }

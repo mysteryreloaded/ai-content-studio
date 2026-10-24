@@ -27,6 +27,10 @@ export interface QueuedGeneration {
   nodeTypes: string[];
   tries: number;
   submittedAt: Date;
+  /** Issue #74: a Test run, still claimable while Paused. */
+  isTest: boolean;
+  /** Issue #74: the one attached Backend a Test pinned itself to, or null for Any. */
+  pinnedBackendId: string | null;
 }
 
 /** Everything the runner needs once a Generation is claimed. */
@@ -46,6 +50,8 @@ export interface RunDetail {
   maxRunTimeMinutes: number;
   /** Issue #50: each Upload the prompt names, sent to the Backend before the prompt. */
   uploads: RunUpload[];
+  /** Issue #74: a Test run, carried through so its SSE updates keep the Gallery's "Test" marker. */
+  isTest: boolean;
 }
 
 export interface RunUpload {
@@ -106,6 +112,8 @@ export class DispatchQueue {
         nodeTypes: generations.nodeTypes,
         tries: generations.tries,
         submittedAt: generations.submittedAt,
+        isTest: generations.isTest,
+        pinnedBackendId: generations.pinnedBackendId,
       })
       .from(generations)
       .where(eq(generations.state, "queued"))
@@ -343,6 +351,7 @@ export class DispatchQueue {
       builtPrompt: row.generation.builtPrompt as Workflow,
       outputNodes: row.mode.outputNodes as ResolvedOutputNode[],
       maxRunTimeMinutes: row.model.maxRunTimeMinutes,
+      isTest: row.generation.isTest,
       uploads: uploadRows.map((upload) => ({
         id: upload.id,
         extension: upload.extension ?? "",

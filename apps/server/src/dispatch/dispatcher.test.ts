@@ -38,6 +38,8 @@ function fakeGeneration(
     nodeTypes: ["KSampler"],
     tries: 0,
     submittedAt: new Date("2026-01-01T00:00:00Z"),
+    isTest: false,
+    pinnedBackendId: null,
     ...overrides,
   };
 }
@@ -55,7 +57,7 @@ interface Setup {
   attachedByModel?: Map<string, BackendRecord[]>;
 }
 
-function buildPlan(setup: Setup) {
+function buildPlan(setup: Setup, testsOnly = false) {
   const reachability = setup.reachability ?? new Map();
   const nodeTypes = setup.nodeTypes ?? new Map();
   const deps: Partial<DispatcherDeps> = {
@@ -88,7 +90,7 @@ function buildPlan(setup: Setup) {
   };
   const dispatcher = new Dispatcher(deps as DispatcherDeps);
   // biome-ignore lint/suspicious/noExplicitAny: reaching into the private matching algorithm under test
-  return (dispatcher as any).buildPlan() as Promise<
+  return (dispatcher as any).buildPlan(testsOnly) as Promise<
     { generation: QueuedGeneration; backend: BackendRecord }[]
   >;
 }
@@ -326,18 +328,15 @@ describe("Dispatcher Pause gating (issue #59)", () => {
   test("claimBatch claims nothing while Paused, even with a free Backend", async () => {
     const generation = fakeGeneration();
     const backend = fakeBackend();
-    let listQueuedCalls = 0;
 
     const deps: Partial<DispatcherDeps> = {
       clock: new FakeClock(),
       isPaused: async () => true,
       queue: {
-        listQueued: async () => {
-          listQueuedCalls += 1;
-          return [generation];
-        },
+        listQueued: async () => [generation],
         activeCountsByUser: async () => new Map(),
         busyBackendIds: async () => new Set(),
+        pendingCancelBackendIds: async () => new Set(),
       } as unknown as DispatcherDeps["queue"],
       backendRepository: {
         list: async () => [backend],
@@ -361,8 +360,41 @@ describe("Dispatcher Pause gating (issue #59)", () => {
     // biome-ignore lint/suspicious/noExplicitAny: reaching into the private claimBatch() under test
     const claimed = await (dispatcher as any).claimBatch();
     expect(claimed).toEqual([]);
-    // Refused before even building a plan: not just "claimed nothing".
-    expect(listQueuedCalls).toBe(0);
+  });
+
+  test("buildPlan(testsOnly) keeps a Test but drops a real Submission (issue #74's AC)", async () => {
+    const real = fakeGeneration({ id: "gen-real", isTest: false });
+    const testGen = fakeGeneration({
+      id: "gen-test",
+      isTest: true,
+      pinnedBackendId: "backend-1",
+    });
+    const backend = fakeBackend();
+
+    const everyGenPlan = await buildPlan(
+      { queued: [real, testGen], backends: [backend] },
+      false,
+    );
+    expect(everyGenPlan).toHaveLength(1);
+
+    const pausedPlan = await buildPlan(
+      { queued: [real, testGen], backends: [backend] },
+      true,
+    );
+    expect(pausedPlan).toEqual([{ generation: testGen, backend }]);
+  });
+
+  test("buildPlan only matches a Test to its own pinned Backend, not Any", async () => {
+    const pinned = fakeBackend({ id: "backend-pinned" });
+    const other = fakeBackend({ id: "backend-other" });
+    const testGen = fakeGeneration({ pinnedBackendId: pinned.id });
+
+    const plan = await buildPlan({
+      queued: [testGen],
+      backends: [other, pinned],
+      attachedByModel: new Map([[testGen.modelId, [other, pinned]]]),
+    });
+    expect(plan).toEqual([{ generation: testGen, backend: pinned }]);
   });
 
   test("the 15-minute no-usable-Backend wait freezes while Paused and resumes counting after", async () => {

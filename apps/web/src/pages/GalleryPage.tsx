@@ -70,6 +70,8 @@ interface GenerationSummary {
   error: string | null;
   submittedAt: string;
   assets: AssetSummary[];
+  /** Issue #74: a test run from the Model editor, marked in the Gallery. */
+  isTest: boolean;
 }
 
 interface GallerySubmission {
@@ -144,6 +146,7 @@ function GenerationCard({
         onClick={() => onOpen(generation.id)}
         aria-label={`Open Generation ${generation.id}`}
       />
+      {generation.isTest && <span className="gallery-card-test">Test</span>}
       {generation.state === "succeeded" && mainAsset ? (
         <>
           {thumb ? (
@@ -703,6 +706,18 @@ const GALLERY_STYLE = `
   font-size: 0.75rem;
   padding: 0.1rem 0.4rem;
   border-radius: 0.5rem;
+}
+.gallery-card-test {
+  position: absolute;
+  top: 0.25rem;
+  left: 0.25rem;
+  background: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  padding: 0.1rem 0.4rem;
+  border-radius: 0.5rem;
+  z-index: 1;
 }
 .gallery-card-state {
   display: flex;

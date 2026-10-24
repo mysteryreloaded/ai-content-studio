@@ -1,5 +1,5 @@
 {
-  "id": "e284cba6-beab-4edc-abfe-53043e91b413",
+  "id": "faaea236-b7de-426c-bf77-3d9e162c8a1d",
   "prevId": "0fcc9544-4b75-4e92-b64f-70a2497890e7",
   "version": "7",
   "dialect": "postgresql",
@@ -416,6 +416,19 @@
           "notNull": true,
           "default": "'queued'"
         },
+        "is_test": {
+          "name": "is_test",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "pinned_backend_id": {
+          "name": "pinned_backend_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "built_prompt": {
           "name": "built_prompt",
           "type": "jsonb",
@@ -457,18 +470,6 @@
         },
         "started_at": {
           "name": "started_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "ended_at": {
-          "name": "ended_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "deleted_at": {
-          "name": "deleted_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
@@ -613,6 +614,15 @@
           "tableFrom": "generations",
           "tableTo": "backends",
           "columnsFrom": ["backend_id"],
+          "columnsTo": ["id"],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "generations_pinned_backend_id_backends_id_fk": {
+          "name": "generations_pinned_backend_id_backends_id_fk",
+          "tableFrom": "generations",
+          "tableTo": "backends",
+          "columnsFrom": ["pinned_backend_id"],
           "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
@@ -811,6 +821,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'[]'::jsonb"
+        },
+        "is_test": {
+          "name": "is_test",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "created_at": {
           "name": "created_at",

@@ -445,4 +445,48 @@ describe("ModelRepository", () => {
       expect(await repository.hasEnabledNonVideoModel()).toBe(true);
     });
   });
+
+  describe("createTestRevision (issue #74 CEO review)", () => {
+    test("two Tests of the same Model at once don't race on the same revisionNumber", async () => {
+      const repository = await repo();
+      const { record } = await repository.createFromWorkflow(
+        "LTX 2.5",
+        VALID_WORKFLOW,
+        SYSTEM,
+      );
+      const mode = {
+        name: "Default",
+        description: "",
+        outputNodes: [
+          { nodeId: "2", classType: "KSampler", title: null, kind: null },
+        ],
+        inputSettings: [],
+      };
+
+      // Before the fix, concurrent calls all read the same `min()` and
+      // raced to insert the same testRevisionNumber, 500ing on
+      // model_revisions_model_number_unique; locking the Model's row
+      // serializes them instead. 8 at once reproduces the race
+      // reliably (2 at once sometimes happens to interleave safely).
+      const results = await Promise.all(
+        Array.from({ length: 8 }, () =>
+          repository.createTestRevision(record.id, [], mode),
+        ),
+      );
+
+      expect(new Set(results.map((r) => r.revisionId)).size).toBe(8);
+      const { db } = await testDb;
+      const rows = await db
+        .select()
+        .from(modelRevisions)
+        .where(eq(modelRevisions.modelId, record.id));
+      const testRevisionNumbers = rows
+        .filter((row) => row.isTest)
+        .map((row) => row.revisionNumber);
+      expect(new Set(testRevisionNumbers).size).toBe(8);
+      expect(testRevisionNumbers.sort((x, y) => x - y)).toEqual([
+        -8, -7, -6, -5, -4, -3, -2, -1,
+      ]);
+    });
+  });
 });

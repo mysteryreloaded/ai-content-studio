@@ -14,6 +14,7 @@ import type {
   CapsStatus,
   GenerationInputSetting,
   InputDefinition,
+  WorkbenchInput,
 } from "@ai-content-studio/shared";
 import {
   type MouseEvent as ReactMouseEvent,
@@ -37,93 +38,31 @@ import {
 import { usePauseNotice } from "../usePauseNotice.js";
 import { useSession } from "../useSession.js";
 
-interface WorkbenchInputOption {
-  id: string;
-  label: string;
-}
-
-type WorkbenchInput = {
-  id: string;
-  group: "describe" | "settings";
-  label: string;
-  help: string;
-  required: boolean;
-  placeholder: string | number | boolean | null;
-} & (
-  | {
-      kind: "text";
-      multiline: boolean;
-      maxLength: number;
-      default: string;
-    }
-  | {
-      kind: "number";
-      numberMode: "integer" | "decimal";
-      min: number;
-      max: number;
-      step: number;
-      default: number | null;
-    }
-  | {
-      kind: "select";
-      options: WorkbenchInputOption[];
-      default: string | null;
-    }
-  | {
-      kind: "image_upload";
-      maxSizeMb: number;
-      maxLongSide: number | null;
-    }
-  | {
-      kind: "video_upload";
-      maxSizeMb: number;
-      maxLongSide: number | null;
-      minDurationMs: number;
-      maxDurationMs: number;
-      trimmable: boolean;
-    }
-  | {
-      kind: "audio_upload";
-      maxSizeMb: number;
-      minDurationMs: number;
-      maxDurationMs: number;
-      trimmable: boolean;
-    }
-  | {
-      kind: "seed";
-      max: number | null;
-    }
-  | {
-      kind: "points";
-      /** The Video Upload Input (issue #52) whose first frame this picks on. */
-      videoInputId: string;
-      /** A shown Number or Select Input (if any) bound to the same field as the crop/scale target width, watched live instead of `defaultWidth`. */
-      widthInputId: string | null;
-      heightInputId: string | null;
-      /** When `widthInputId` names a Select Input, that option id's own value for this field (issue #52 CEO review round 2: its own value isn't the field's number). */
-      widthOptionValues: Record<string, number> | null;
-      heightOptionValues: Record<string, number> | null;
-      defaultWidth: number | null;
-      defaultHeight: number | null;
-    }
-);
-
 type ModeMenuGroup = "prompt" | "images" | "audio" | "video";
 
-type ImageUploadInput = Extract<WorkbenchInput, { kind: "image_upload" }>;
-type VideoUploadInput = Extract<WorkbenchInput, { kind: "video_upload" }>;
-type AudioUploadInput = Extract<WorkbenchInput, { kind: "audio_upload" }>;
-type MediaUploadInput = VideoUploadInput | AudioUploadInput;
-type PointsInput = Extract<WorkbenchInput, { kind: "points" }>;
+export type ImageUploadInput = Extract<
+  WorkbenchInput,
+  { kind: "image_upload" }
+>;
+export type VideoUploadInput = Extract<
+  WorkbenchInput,
+  { kind: "video_upload" }
+>;
+export type AudioUploadInput = Extract<
+  WorkbenchInput,
+  { kind: "audio_upload" }
+>;
+export type MediaUploadInput = VideoUploadInput | AudioUploadInput;
+export type PointsInput = Extract<WorkbenchInput, { kind: "points" }>;
 
-const UPLOAD_KINDS = new Set<WorkbenchInput["kind"]>([
+export const UPLOAD_KINDS = new Set<WorkbenchInput["kind"]>([
   "image_upload",
   "video_upload",
   "audio_upload",
 ]);
 
 /** One Upload Input's file (issues #50, #51): uploading, uploaded, or refused. A video/audio one also carries its playable/trim facts. */
-type UploadState =
+export type UploadState =
   | { status: "uploading"; name: string; progress: number }
   | {
       status: "complete";
@@ -398,7 +337,7 @@ async function readDimensions(
 }
 
 /** The browser's own issue with `file` for `input`'s kind, before any byte is sent (issues #50, #51). */
-async function issueFor(
+export async function issueFor(
   input: ImageUploadInput | MediaUploadInput,
   file: File,
   maxUploadMb: number | null,
@@ -1824,7 +1763,7 @@ function InputGroups({
 }
 
 /** The Workbench's Image Upload Inputs (issue #50), always required: pick a file, watch it upload, see its thumbnail. */
-function YourFiles({
+export function YourFiles({
   inputs,
   uploads,
   issuesByInputId,
@@ -1906,7 +1845,7 @@ function formatSeconds(ms: number): string {
 }
 
 /** The Workbench's Video/Audio Upload Inputs (issue #51): pick a file, watch it upload, then optionally trim it on a local player. */
-function YourMedia({
+export function YourMedia({
   inputs,
   uploads,
   trimRangeByInputId,
@@ -2080,7 +2019,7 @@ function resolveTargetSize(
 const POINT_HIT_RADIUS = 0.03;
 
 /** The Workbench's Points Inputs (issue #52): click the first frame of the trimmed video, inside the outlined crop, to pick 1-10 points. */
-function PointsPickers({
+export function PointsPickers({
   inputs,
   allInputs,
   uploads,
@@ -2372,7 +2311,7 @@ interface InputFieldProps {
 }
 
 /** One Input's field: a blank, optional Input shows the Workflow's own value as its placeholder (issue #46). */
-function InputField({ input, value, onChange, issue }: InputFieldProps) {
+export function InputField({ input, value, onChange, issue }: InputFieldProps) {
   const placeholder =
     input.placeholder === null ? undefined : String(input.placeholder);
   const helpId = input.help ? `input-help-${input.id}` : undefined;

@@ -16,9 +16,11 @@ function initials(name: string): string {
 function DeleteAccount({
   email,
   deleteAccount,
+  onDeleted,
 }: {
   email: string;
   deleteAccount: (email: string) => Promise<DeleteAccountResult>;
+  onDeleted: () => void;
 }) {
   const [typedEmail, setTypedEmail] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -29,8 +31,11 @@ function DeleteAccount({
     setError(null);
     setDeleting(true);
     const result = await deleteAccount(typedEmail);
+    if (result.ok) {
+      onDeleted();
+      return;
+    }
     setDeleting(false);
-    if (result.ok) return;
     setError(
       result.error === "email_mismatch"
         ? "That email doesn't match your account."
@@ -70,9 +75,12 @@ function DeleteAccount({
 export function AccountPage() {
   const { session, signOut, deleteAccount } = useSession();
   const [pictureFailed, setPictureFailed] = useState(false);
+  const [deleted, setDeleted] = useState(false);
 
   if (session.status === "loading") return null;
-  if (session.status === "signed-out") return <Navigate to="/" replace />;
+  if (deleted || session.status === "signed-out") {
+    return <Navigate to="/" replace />;
+  }
 
   const { user } = session;
 
@@ -98,7 +106,11 @@ export function AccountPage() {
           Sign out
         </button>
         {user.role !== "admin" && (
-          <DeleteAccount email={user.email} deleteAccount={deleteAccount} />
+          <DeleteAccount
+            email={user.email}
+            deleteAccount={deleteAccount}
+            onDeleted={() => setDeleted(true)}
+          />
         )}
       </main>
       <Footer />

@@ -29,6 +29,7 @@ const FIXTURES = path.join(import.meta.dir, "fixtures");
 const C2PA_SIGNER = {
   certPath: path.join(FIXTURES, "c2pa", "es256_certs.pem"),
   keyPath: path.join(FIXTURES, "c2pa", "es256_private.key"),
+  alg: "es256" as const,
 };
 const C2PA_INFO = {
   modelName: "LTX 2.5",

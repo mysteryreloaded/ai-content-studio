@@ -5,6 +5,8 @@
 // Asset keeping only its existing "AI-generated" tag (video's comment
 // tag from issue #45) rather than failing the Generation.
 
+import { createPrivateKey } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -38,9 +40,13 @@ export function c2paSupportsFormat(filename: string): boolean {
   return SUPPORTED_EXTENSIONS.has(path.extname(filename).toLowerCase());
 }
 
+/** c2patool's `alg` values this app can derive a key's type into (docs/server-env.md#c2pa_key_path). */
+export type C2paAlg = "es256" | "es384" | "es512" | "ps256" | "ed25519";
+
 export interface C2paSignerConfig {
   certPath: string;
   keyPath: string;
+  alg: C2paAlg;
   timestampUrl?: string;
 }
 
@@ -48,6 +54,76 @@ export interface C2paManifestInfo {
   modelName: string;
   siteTitle: string;
   generationId: string;
+}
+
+function describeError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Works out c2patool's `alg` from the private key's own type, since
+ * c2patool silently falls back to `es256` when a manifest omits it —
+ * which would sign nothing and warn on every Asset for an Operator
+ * using an RSA, P-384/P-521 or Ed25519 certificate. Throws when the key
+ * can't be read or its type isn't one c2patool signs with.
+ */
+export function resolveC2paAlg(keyPem: string): C2paAlg {
+  let key: ReturnType<typeof createPrivateKey>;
+  try {
+    key = createPrivateKey(keyPem);
+  } catch (err) {
+    throw new Error(
+      `C2PA key is not a readable PEM private key: ${describeError(err)}`,
+    );
+  }
+
+  if (key.asymmetricKeyType === "ec") {
+    const curve = key.asymmetricKeyDetails?.namedCurve;
+    if (curve === "prime256v1") return "es256";
+    if (curve === "secp384r1") return "es384";
+    if (curve === "secp521r1") return "es512";
+    throw new Error(
+      `C2PA key: unsupported EC curve "${curve}" (c2patool needs prime256v1, secp384r1 or secp521r1)`,
+    );
+  }
+  if (key.asymmetricKeyType === "rsa" || key.asymmetricKeyType === "rsa-pss") {
+    return "ps256";
+  }
+  if (key.asymmetricKeyType === "ed25519") return "ed25519";
+
+  throw new Error(
+    `C2PA key: unsupported key type "${key.asymmetricKeyType}" (c2patool needs EC, RSA or Ed25519)`,
+  );
+}
+
+/**
+ * Resolves and validates the Operator's C2PA cert/key config once at
+ * startup (issue #75's QA fix): paths are made absolute, since
+ * c2patool resolves a manifest's relative `sign_cert`/`private_key`
+ * against the manifest file's own folder (the Asset's storage dir),
+ * not the process's cwd; and the key's `alg` is worked out up front so
+ * a bad key fails loudly at boot instead of warning on every Asset.
+ */
+export function loadC2paSignerConfig(
+  certPath: string,
+  keyPath: string,
+  timestampUrl: string | undefined,
+): C2paSignerConfig {
+  const resolvedKeyPath = path.resolve(keyPath);
+  let keyPem: string;
+  try {
+    keyPem = readFileSync(resolvedKeyPath, "utf-8");
+  } catch (err) {
+    throw new Error(
+      `C2PA_KEY_PATH "${resolvedKeyPath}" could not be read: ${describeError(err)}`,
+    );
+  }
+  return {
+    certPath: path.resolve(certPath),
+    keyPath: resolvedKeyPath,
+    alg: resolveC2paAlg(keyPem),
+    timestampUrl,
+  };
 }
 
 /**
@@ -67,6 +143,7 @@ export function buildManifest(
 ): Record<string, unknown> {
   return {
     title: info.siteTitle,
+    alg: signer.alg,
     sign_cert: signer.certPath,
     private_key: signer.keyPath,
     ...(signer.timestampUrl ? { ta_url: signer.timestampUrl } : {}),

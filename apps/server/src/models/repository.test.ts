@@ -398,4 +398,51 @@ describe("ModelRepository", () => {
       );
     });
   });
+
+  describe("hasEnabledNonVideoModel (issue #65)", () => {
+    const IMAGE_WORKFLOW = {
+      "1": { class_type: "LoadImage", inputs: { image: "a.png" } },
+      "2": { class_type: "SaveImage", inputs: { images: ["1", 0] } },
+    };
+    const VIDEO_WORKFLOW = {
+      "1": { class_type: "LoadImage", inputs: { image: "a.png" } },
+      "2": { class_type: "SaveVideo", inputs: { video: ["1", 0] } },
+    };
+
+    async function enableWithOutput(
+      repository: ModelRepository,
+      workflow: Record<string, unknown>,
+      outputNodeId: string,
+    ) {
+      const { record } = await repository.createFromWorkflow(
+        "M",
+        workflow as never,
+        SYSTEM,
+      );
+      const { record: afterModes } = await repository.updateModes(
+        record.id,
+        [{ name: "Default", description: "", outputNodeIds: [outputNodeId] }],
+        record.version,
+        SYSTEM,
+      );
+      await repository.setState(
+        record.id,
+        "enabled",
+        afterModes.version,
+        SYSTEM,
+      );
+    }
+
+    test("false when every enabled Model's main output is video", async () => {
+      const repository = await repo();
+      await enableWithOutput(repository, VIDEO_WORKFLOW, "2");
+      expect(await repository.hasEnabledNonVideoModel()).toBe(false);
+    });
+
+    test("true once an enabled Model's main output is image or audio", async () => {
+      const repository = await repo();
+      await enableWithOutput(repository, IMAGE_WORKFLOW, "2");
+      expect(await repository.hasEnabledNonVideoModel()).toBe(true);
+    });
+  });
 });

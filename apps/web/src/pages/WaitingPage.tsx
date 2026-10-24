@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Navigate } from "react-router-dom";
+import { Footer } from "../Footer.js";
 import { useSession } from "../useSession.js";
 
 function contactHref(contact: string): string {
@@ -27,17 +28,20 @@ export function WaitingPage() {
   if (session.user.status !== "pending") return <Navigate to="/" replace />;
 
   return (
-    <main>
-      <h1>Waiting for approval</h1>
-      <p>An Admin needs to approve your account before you can use it.</p>
-      {contact && (
-        <p>
-          Questions or reports: <a href={contactHref(contact)}>{contact}</a>
-        </p>
-      )}
-      <button type="button" onClick={() => void signOut()}>
-        Sign out
-      </button>
-    </main>
+    <>
+      <main>
+        <h1>Waiting for approval</h1>
+        <p>An Admin needs to approve your account before you can use it.</p>
+        {contact && (
+          <p>
+            Questions or reports: <a href={contactHref(contact)}>{contact}</a>
+          </p>
+        )}
+        <button type="button" onClick={() => void signOut()}>
+          Sign out
+        </button>
+      </main>
+      <Footer />
+    </>
   );
 }

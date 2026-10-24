@@ -1,5 +1,5 @@
 {
-  "id": "ccedba68-936e-4b65-8297-40511a74e115",
+  "id": "ab376db8-a187-4b21-9c80-57a3a4f068f0",
   "prevId": "0e0ae2ac-6c45-4cd5-8eb0-6cd19e3e86da",
   "version": "7",
   "dialect": "postgresql",
@@ -723,13 +723,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "inputs": {
-          "name": "inputs",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -1293,6 +1286,33 @@
           "primaryKey": false,
           "notNull": true,
           "default": 1
+        },
+        "privacy_body": {
+          "name": "privacy_body",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "''"
+        },
+        "privacy_updated_at": {
+          "name": "privacy_updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "privacy_revision": {
+          "name": "privacy_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "footer_links": {
+          "name": "footer_links",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
         },
         "created_at": {
           "name": "created_at",

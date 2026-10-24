@@ -6,6 +6,7 @@ import {
 import type { InputDefinition } from "@ai-content-studio/shared";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, useParams } from "react-router-dom";
+import { Footer } from "../Footer.js";
 import { useSession } from "../useSession.js";
 
 interface WorkbenchInputOption {
@@ -699,9 +700,12 @@ export function WorkbenchPage() {
   if (session.status === "signed-out") return <Navigate to="/" replace />;
   if (notFound) {
     return (
-      <main>
-        <p role="alert">Model not found.</p>
-      </main>
+      <>
+        <main>
+          <p role="alert">Model not found.</p>
+        </main>
+        <Footer />
+      </>
     );
   }
   if (!model) return <p>Loading…</p>;
@@ -732,138 +736,141 @@ export function WorkbenchPage() {
   }
 
   return (
-    <main className="workbench">
-      <style>{WORKBENCH_STYLE}</style>
+    <>
+      <main className="workbench">
+        <style>{WORKBENCH_STYLE}</style>
 
-      <header className="workbench-header">
-        <h1>{model.name}</h1>
-        {model.description && <p>{model.description}</p>}
-        {model.attribution && <p>{model.attribution}</p>}
-        {model.terms && (
-          <p>
-            <button
-              type="button"
-              onClick={() => setTermsDialog({ blocking: false, error: null })}
-            >
-              Model terms
-            </button>
-          </p>
+        <header className="workbench-header">
+          <h1>{model.name}</h1>
+          {model.description && <p>{model.description}</p>}
+          {model.attribution && <p>{model.attribution}</p>}
+          {model.terms && (
+            <p>
+              <button
+                type="button"
+                onClick={() => setTermsDialog({ blocking: false, error: null })}
+              >
+                Model terms
+              </button>
+            </p>
+          )}
+        </header>
+
+        {termsDialog && model.terms && (
+          <ModelTermsDialog
+            modelName={model.name}
+            terms={model.terms}
+            blocking={termsDialog.blocking}
+            accepting={accepting}
+            error={termsDialog.error}
+            onAccept={() => void handleAcceptTerms()}
+            onClose={() => setTermsDialog(null)}
+          />
         )}
-      </header>
 
-      {termsDialog && model.terms && (
-        <ModelTermsDialog
-          modelName={model.name}
-          terms={model.terms}
-          blocking={termsDialog.blocking}
-          accepting={accepting}
-          error={termsDialog.error}
-          onAccept={() => void handleAcceptTerms()}
-          onClose={() => setTermsDialog(null)}
-        />
-      )}
+        {selectedSubmission && (
+          <GenerationDetailDialog
+            detail={{ submission: selectedSubmission, model }}
+            onClose={() => setSelectedSubmission(null)}
+          />
+        )}
 
-      {selectedSubmission && (
-        <GenerationDetailDialog
-          detail={{ submission: selectedSubmission, model }}
-          onClose={() => setSelectedSubmission(null)}
-        />
-      )}
-
-      <div className="workbench-layout">
-        <section className="workbench-form">
-          {model.modes.length <= 1 ? (
-            <h2>{model.modes[0]?.name ?? "Default"}</h2>
-          ) : (
-            <fieldset>
-              <legend>Mode</legend>
-              {model.modes.map((mode) => (
-                <label key={mode.id} style={{ display: "block" }}>
-                  <input
-                    type="radio"
-                    name="mode"
-                    value={mode.id}
-                    checked={selectedModeId === mode.id}
-                    onChange={() => selectMode(mode)}
-                  />
-                  {mode.name}
-                </label>
-              ))}
-            </fieldset>
-          )}
-
-          {selectedMode && (
-            <InputGroups
-              mode={selectedMode}
-              values={values}
-              setValues={(update) => {
-                setValues((current) => {
-                  const next = update(current);
-                  const changedIds = Object.keys(next).filter(
-                    (id) => next[id] !== current[id],
-                  );
-                  if (changedIds.length > 0) {
-                    setIssuesByInputId((issues) => {
-                      const remaining = { ...issues };
-                      for (const id of changedIds) delete remaining[id];
-                      return remaining;
-                    });
-                  }
-                  return next;
-                });
-              }}
-              issuesByInputId={displayedIssuesByInputId}
-            />
-          )}
-
-          {submitState.status === "error" && (
-            <p role="alert">{submitState.message}</p>
-          )}
-        </section>
-
-        <aside className="workbench-submissions" aria-label="Submissions">
-          <h2>Submissions</h2>
-          {submissions.length === 0 && <p>No Submissions yet.</p>}
-          <ul>
-            {submissions.map((submission) => (
-              <li key={submission.submissionId}>
-                <button
-                  type="button"
-                  onClick={() => setSelectedSubmission(submission)}
-                >
-                  <strong>{submission.modeName}</strong>{" "}
-                  <time dateTime={submission.submittedAt}>
-                    {new Date(submission.submittedAt).toLocaleString()}
-                  </time>
-                </button>
-                <ul>
-                  {submission.generations.map((generation) => (
-                    <GenerationCard
-                      key={generation.id}
-                      generation={generation}
-                      progress={progressById.get(generation.id)}
+        <div className="workbench-layout">
+          <section className="workbench-form">
+            {model.modes.length <= 1 ? (
+              <h2>{model.modes[0]?.name ?? "Default"}</h2>
+            ) : (
+              <fieldset>
+                <legend>Mode</legend>
+                {model.modes.map((mode) => (
+                  <label key={mode.id} style={{ display: "block" }}>
+                    <input
+                      type="radio"
+                      name="mode"
+                      value={mode.id}
+                      checked={selectedModeId === mode.id}
+                      onChange={() => selectMode(mode)}
                     />
-                  ))}
-                </ul>
-              </li>
-            ))}
-          </ul>
-        </aside>
-      </div>
+                    {mode.name}
+                  </label>
+                ))}
+              </fieldset>
+            )}
 
-      <footer className="workbench-generate-bar">
-        {activeCount > 0 && (
-          <span className="workbench-chip">{activeCount} under way</span>
-        )}
-        <button
-          type="button"
-          onClick={handleGenerate}
-          disabled={!selectedModeId || submitState.status === "submitting"}
-        >
-          Generate
-        </button>
-      </footer>
-    </main>
+            {selectedMode && (
+              <InputGroups
+                mode={selectedMode}
+                values={values}
+                setValues={(update) => {
+                  setValues((current) => {
+                    const next = update(current);
+                    const changedIds = Object.keys(next).filter(
+                      (id) => next[id] !== current[id],
+                    );
+                    if (changedIds.length > 0) {
+                      setIssuesByInputId((issues) => {
+                        const remaining = { ...issues };
+                        for (const id of changedIds) delete remaining[id];
+                        return remaining;
+                      });
+                    }
+                    return next;
+                  });
+                }}
+                issuesByInputId={displayedIssuesByInputId}
+              />
+            )}
+
+            {submitState.status === "error" && (
+              <p role="alert">{submitState.message}</p>
+            )}
+          </section>
+
+          <aside className="workbench-submissions" aria-label="Submissions">
+            <h2>Submissions</h2>
+            {submissions.length === 0 && <p>No Submissions yet.</p>}
+            <ul>
+              {submissions.map((submission) => (
+                <li key={submission.submissionId}>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedSubmission(submission)}
+                  >
+                    <strong>{submission.modeName}</strong>{" "}
+                    <time dateTime={submission.submittedAt}>
+                      {new Date(submission.submittedAt).toLocaleString()}
+                    </time>
+                  </button>
+                  <ul>
+                    {submission.generations.map((generation) => (
+                      <GenerationCard
+                        key={generation.id}
+                        generation={generation}
+                        progress={progressById.get(generation.id)}
+                      />
+                    ))}
+                  </ul>
+                </li>
+              ))}
+            </ul>
+          </aside>
+        </div>
+
+        <footer className="workbench-generate-bar">
+          {activeCount > 0 && (
+            <span className="workbench-chip">{activeCount} under way</span>
+          )}
+          <button
+            type="button"
+            onClick={handleGenerate}
+            disabled={!selectedModeId || submitState.status === "submitting"}
+          >
+            Generate
+          </button>
+        </footer>
+      </main>
+      <Footer />
+    </>
   );
 }
 

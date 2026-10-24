@@ -76,8 +76,12 @@ _Avoid_: output, result, media
 A user's own view of all their Generations across every Model, under way or ended, shown by Submission with their Assets. A Model page shows only that Model's latest few.
 _Avoid_: history, library
 
+**Tombstone**:
+What is left of a Generation once a user deletes it (or its Submission): the owner, Model, Mode, state and times, kept after its Assets, posters and Uploads used only there are gone, so it still counts toward the daily Cap.
+_Avoid_: soft delete, trash
+
 **Cap**:
-A per-user limit on Generations: the daily cap limits how many a user submits in a rolling 24 hours, the concurrent cap how many they have under way at once. Each comes from the Site settings unless an Admin overrides it for that user.
+A per-user limit on Generations, checked all-or-nothing when a Submission is made, inside the transaction that locks the user's row: the daily Cap counts Generations submitted in the rolling 24 hours, excluding ones that failed or were cancelled before running but including Tombstones; the concurrent Cap counts Generations queued through saving. Each defaults from the Site settings (20 a day, 4 at once) unless an Admin's override on the user (0–1,000; 0 blocks generating) replaces it.
 _Avoid_: quota, credits, limit (Upload limits are a different thing)
 
 **Notification**:

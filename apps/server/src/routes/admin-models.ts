@@ -110,6 +110,23 @@ const inputDefinitionSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     ...inputBaseSchema,
+    kind: z.literal("video_upload"),
+    maxSizeMb: z.number(),
+    maxLongSide: z.number().nullable(),
+    minDurationMs: z.number(),
+    maxDurationMs: z.number(),
+    trimmable: z.boolean(),
+  }),
+  z.object({
+    ...inputBaseSchema,
+    kind: z.literal("audio_upload"),
+    maxSizeMb: z.number(),
+    minDurationMs: z.number(),
+    maxDurationMs: z.number(),
+    trimmable: z.boolean(),
+  }),
+  z.object({
+    ...inputBaseSchema,
     kind: z.literal("select"),
     options: z.array(
       z.object({

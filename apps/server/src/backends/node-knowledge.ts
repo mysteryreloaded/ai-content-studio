@@ -63,10 +63,18 @@ function parseFieldSpecs(
         }
         if (!parsed) continue;
         // Issue #50: ComfyUI marks an image loader's file field
-        // `{"image_upload": true}` (e.g. LoadImage.image).
-        if ((extra as { image_upload?: unknown } | undefined)?.image_upload) {
-          parsed.imageUpload = true;
-        }
+        // `{"image_upload": true}` (e.g. LoadImage.image). Issue #51
+        // does the same for video/audio (`video_upload`/`audio_upload`).
+        const flags = extra as
+          | {
+              image_upload?: unknown;
+              video_upload?: unknown;
+              audio_upload?: unknown;
+            }
+          | undefined;
+        if (flags?.image_upload) parsed.imageUpload = true;
+        if (flags?.video_upload) parsed.videoUpload = true;
+        if (flags?.audio_upload) parsed.audioUpload = true;
         fields[field] = parsed;
       }
     }

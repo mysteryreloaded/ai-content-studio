@@ -4,9 +4,18 @@
 import { and, eq, inArray } from "drizzle-orm";
 import type { Database } from "../db/client.js";
 import { uploads } from "../db/schema.js";
-import type { ImageProbeFacts } from "./probe.js";
+import type {
+  AudioProbeFacts,
+  ImageProbeFacts,
+  VideoProbeFacts,
+} from "./probe.js";
 
 export type UploadStatus = "uploading" | "complete" | "failed";
+
+export type UploadProbeFacts =
+  | ImageProbeFacts
+  | VideoProbeFacts
+  | AudioProbeFacts;
 
 export interface UploadRecord {
   id: string;
@@ -25,7 +34,12 @@ export interface UploadRecord {
   contentType: string | null;
   width: number | null;
   height: number | null;
-  probe: ImageProbeFacts | null;
+  durationMs: number | null;
+  fps: number | null;
+  probe: UploadProbeFacts | null;
+  trimmedFromId: string | null;
+  trimStartMs: number | null;
+  trimEndMs: number | null;
   error: string | null;
   createdAt: Date;
   completedAt: Date | null;
@@ -34,7 +48,7 @@ export interface UploadRecord {
 type UploadRow = typeof uploads.$inferSelect;
 
 function toRecord(row: UploadRow): UploadRecord {
-  return { ...row, probe: (row.probe as ImageProbeFacts | null) ?? null };
+  return { ...row, probe: (row.probe as UploadProbeFacts | null) ?? null };
 }
 
 export interface CreateUploadInput {
@@ -53,11 +67,42 @@ export interface CompleteUploadInput {
   kind: string;
   extension: string;
   contentType: string;
-  width: number;
-  height: number;
-  probe: ImageProbeFacts;
-  thumbnailKey: string;
+  width: number | null;
+  height: number | null;
+  durationMs: number | null;
+  fps: number | null;
+  probe: UploadProbeFacts;
+  thumbnailKey: string | null;
   completedAt: Date;
+}
+
+/**
+ * A new Upload made by trimming another one (issue #51): already
+ * `complete`, with its own probe facts, inserted in one row rather than
+ * created then completed.
+ */
+export interface CreateTrimmedUploadInput {
+  id: string;
+  userId: string;
+  originalName: string;
+  declaredType: string;
+  size: number;
+  modelId: string | null;
+  inputId: string | null;
+  storageKey: string;
+  kind: string;
+  extension: string;
+  contentType: string;
+  width: number | null;
+  height: number | null;
+  durationMs: number | null;
+  fps: number | null;
+  probe: UploadProbeFacts;
+  thumbnailKey: string | null;
+  trimmedFromId: string;
+  trimStartMs: number;
+  trimEndMs: number;
+  createdAt: Date;
 }
 
 export class UploadsRepository {
@@ -128,5 +173,20 @@ export class UploadsRepository {
       .update(uploads)
       .set({ status: "failed", error })
       .where(eq(uploads.id, id));
+  }
+
+  /** Inserts a trimmed Upload (issue #51), already `complete`. */
+  async createTrimmed(input: CreateTrimmedUploadInput): Promise<UploadRecord> {
+    const [row] = await this.db
+      .insert(uploads)
+      .values({
+        ...input,
+        status: "complete",
+        receivedBytes: input.size,
+        completedAt: input.createdAt,
+      })
+      .returning();
+    if (!row) throw new Error("insert returned no row");
+    return toRecord(row);
   }
 }

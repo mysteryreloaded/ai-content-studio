@@ -141,4 +141,24 @@ describe("NodeKnowledge", () => {
       fake.stop();
     }
   });
+
+  test("fieldSpecsFor keeps a loader field's video_upload/audio_upload flag (issue #51)", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const knowledge = new NodeKnowledge(noCredsRepo, new FakeClock());
+      const specs = await knowledge.fieldSpecsFor(record(fake.url));
+      expect(specs?.get("LoadVideoCustom")?.video).toEqual({
+        type: "COMBO",
+        options: ["example.mp4"],
+        videoUpload: true,
+      });
+      expect(specs?.get("LoadAudioCustom")?.audio).toEqual({
+        type: "COMBO",
+        options: ["example.wav"],
+        audioUpload: true,
+      });
+    } finally {
+      fake.stop();
+    }
+  });
 });

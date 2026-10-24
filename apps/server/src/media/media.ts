@@ -9,8 +9,12 @@
 import { cpus } from "node:os";
 import {
   type ProbeResult,
+  WRONG_AUDIO_KIND,
   WRONG_KIND,
+  WRONG_VIDEO_KIND,
+  parseAudioProbeOutput,
   parseProbeOutput,
+  parseVideoProbeOutput,
 } from "../uploads/probe.js";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -27,30 +31,49 @@ export class MediaCommandError extends Error {
   }
 }
 
-/** Bounds how many ffmpeg/ffprobe processes run at once; callers past the bound wait their turn. */
+/**
+ * Bounds how many ffmpeg/ffprobe processes run at once; callers past the
+ * bound wait their turn. `acquire(timeoutMs)` bounds that wait too, so a
+ * caller with its own deadline (e.g. a trim's ~90s cap) doesn't sit in
+ * the queue forever: a request still waiting when its timer fires is
+ * pulled out of the queue and its `acquire()` rejects, never granted a
+ * slot later.
+ */
 class Semaphore {
   private active = 0;
-  private readonly queue: Array<() => void> = [];
+  private readonly queue: Array<(release: () => void) => void> = [];
 
   constructor(private readonly max: number) {}
 
-  async acquire(): Promise<() => void> {
+  async acquire(timeoutMs?: number): Promise<() => void> {
     if (this.active < this.max) {
       this.active++;
       return () => this.release();
     }
-    return new Promise((resolve) => {
-      this.queue.push(() => {
-        this.active++;
-        resolve(() => this.release());
-      });
+    return new Promise((resolve, reject) => {
+      const entry = (release: () => void) => {
+        if (timer !== undefined) clearTimeout(timer);
+        resolve(release);
+      };
+      this.queue.push(entry);
+      const timer =
+        timeoutMs === undefined
+          ? undefined
+          : setTimeout(() => {
+              const idx = this.queue.indexOf(entry);
+              if (idx !== -1) this.queue.splice(idx, 1);
+              reject(new Error("semaphore wait timed out"));
+            }, timeoutMs);
     });
   }
 
   private release(): void {
     this.active--;
     const next = this.queue.shift();
-    if (next) next();
+    if (next) {
+      this.active++;
+      next(() => this.release());
+    }
   }
 }
 
@@ -121,10 +144,27 @@ export class MediaRunner {
     this.threads = Math.max(1, Math.floor(cpus().length / bounded));
   }
 
-  private async run(cmd: readonly string[]): Promise<string> {
-    const release = await this.semaphore.acquire();
+  /**
+   * `timeoutMs` bounds the whole call, the semaphore wait included (not
+   * just the spawned process): a caller racing its own deadline, like a
+   * trim's ~90s cap, can pass down what's left of it so queueing for a
+   * busy runner counts against that cap instead of getting a fresh
+   * budget once a slot frees up.
+   */
+  private async run(
+    cmd: readonly string[],
+    timeoutMs = this.timeoutMs,
+  ): Promise<string> {
+    const waitStarted = Date.now();
+    let release: () => void;
     try {
-      return await spawnBounded(cmd, this.timeoutMs);
+      release = await this.semaphore.acquire(timeoutMs);
+    } catch {
+      throw new MediaTimeoutError(cmd[0] ?? "ffmpeg");
+    }
+    try {
+      const remaining = Math.max(0, timeoutMs - (Date.now() - waitStarted));
+      return await spawnBounded(cmd, remaining);
     } finally {
       release();
     }
@@ -278,6 +318,196 @@ export class MediaRunner {
       "webp",
       outputPath,
     ]);
+  }
+
+  /**
+   * Probes an Upload video (issue #51): a wrong codec, a misnamed
+   * container, or any other ffprobe failure comes back as
+   * `{ ok: false }`, the same as {@link probeImage}. A timeout rethrows
+   * `MediaTimeoutError` instead, so a caller (like a trim's own
+   * deadline) can tell "ffprobe took too long" apart from "this isn't a
+   * video ffprobe could make sense of" rather than the former being
+   * misreported as the latter.
+   */
+  async probeVideoUpload(
+    filePath: string,
+    extension: string,
+    timeoutMs?: number,
+  ): Promise<ProbeResult> {
+    let stdout: string;
+    try {
+      stdout = await this.run(
+        [
+          "ffprobe",
+          "-v",
+          "error",
+          "-print_format",
+          "json",
+          "-show_streams",
+          "-show_format",
+          filePath,
+        ],
+        timeoutMs,
+      );
+    } catch (err) {
+      if (err instanceof MediaTimeoutError) throw err;
+      return { ok: false, reason: WRONG_VIDEO_KIND };
+    }
+    try {
+      return parseVideoProbeOutput(stdout, extension);
+    } catch {
+      return { ok: false, reason: WRONG_VIDEO_KIND };
+    }
+  }
+
+  /** Probes an Upload audio clip (issue #51); same `MediaTimeoutError` rethrow as {@link probeVideoUpload}. */
+  async probeAudioUpload(
+    filePath: string,
+    extension: string,
+    timeoutMs?: number,
+  ): Promise<ProbeResult> {
+    let stdout: string;
+    try {
+      stdout = await this.run(
+        [
+          "ffprobe",
+          "-v",
+          "error",
+          "-print_format",
+          "json",
+          "-show_streams",
+          "-show_format",
+          filePath,
+        ],
+        timeoutMs,
+      );
+    } catch (err) {
+      if (err instanceof MediaTimeoutError) throw err;
+      return { ok: false, reason: WRONG_AUDIO_KIND };
+    }
+    try {
+      return parseAudioProbeOutput(stdout, extension);
+    } catch {
+      return { ok: false, reason: WRONG_AUDIO_KIND };
+    }
+  }
+
+  /**
+   * A video icon: the frame at `atMs` (default 0), scaled the same as
+   * {@link makeThumbnail} (issue #51).
+   */
+  async makeVideoThumbnail(
+    inputPath: string,
+    outputPath: string,
+    atMs = 0,
+    timeoutMs?: number,
+  ): Promise<void> {
+    await this.run(
+      [
+        "ffmpeg",
+        "-v",
+        "error",
+        "-y",
+        "-ss",
+        (atMs / 1000).toString(),
+        "-i",
+        inputPath,
+        "-threads",
+        String(this.threads),
+        "-vf",
+        "scale=160:160:force_original_aspect_ratio=decrease",
+        "-frames:v",
+        "1",
+        "-c:v",
+        "libwebp",
+        "-f",
+        "webp",
+        outputPath,
+      ],
+      timeoutMs,
+    );
+  }
+
+  /**
+   * A frame-accurate trim of `[startMs, endMs)`, re-encoded to H.264/AAC
+   * MP4 at the source's own size and fps (issue #51's AC). `-ss` before
+   * `-i` seeks fast but to the nearest keyframe; re-encoding (not `-c
+   * copy`) after it, with `-ss` placed again right after `-i`, makes the
+   * cut land exactly on `startMs`. Bounded by `timeoutMs` (default this
+   * runner's own), covering the Workbench's ~90s cap on one trim request.
+   */
+  async trimVideo(
+    input: string,
+    output: string,
+    startMs: number,
+    endMs: number,
+    fps: number,
+    timeoutMs?: number,
+  ): Promise<void> {
+    await this.run(
+      [
+        "ffmpeg",
+        "-y",
+        "-ss",
+        (startMs / 1000).toString(),
+        "-i",
+        input,
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a:0?",
+        "-t",
+        ((endMs - startMs) / 1000).toString(),
+        "-threads",
+        String(this.threads),
+        "-r",
+        String(fps),
+        "-c:v",
+        "libx264",
+        "-c:a",
+        "aac",
+        "-movflags",
+        "+faststart",
+        "-f",
+        "mp4",
+        output,
+      ],
+      timeoutMs,
+    );
+  }
+
+  /**
+   * A frame-accurate trim of `[startMs, endMs)` of an audio clip,
+   * re-encoded to AAC (issue #51's AC: the kept range, re-encoded).
+   */
+  async trimAudio(
+    input: string,
+    output: string,
+    startMs: number,
+    endMs: number,
+    timeoutMs?: number,
+  ): Promise<void> {
+    await this.run(
+      [
+        "ffmpeg",
+        "-y",
+        "-ss",
+        (startMs / 1000).toString(),
+        "-i",
+        input,
+        "-vn",
+        "-t",
+        ((endMs - startMs) / 1000).toString(),
+        "-threads",
+        String(this.threads),
+        "-c:a",
+        "aac",
+        "-f",
+        "ipod",
+        output,
+      ],
+      timeoutMs,
+    );
   }
 
   /** Runs `c2patool` to sign `assetPath` per `manifestPath`, writing to `outputPath` (issue #75). Shares this runner's semaphore and timeout with ffmpeg/ffprobe. */

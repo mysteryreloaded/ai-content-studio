@@ -10,6 +10,7 @@ import type {
   AssetsRepository,
 } from "../generations/assets-repository.js";
 import { downloadFileName } from "../generations/download-name.js";
+import { parseRange } from "../http/range.js";
 import type { Storage } from "../storage/storage.js";
 
 const UUID_RE =
@@ -19,32 +20,6 @@ function idParam(c: Context<AppEnv>): string {
   const id = c.req.param("id");
   if (!id) throw new Error("id param missing");
   return id;
-}
-
-/** Parses a single-range `Range: bytes=start-end` header; anything else (absent, multi-range, unsatisfiable) is ignored, falling back to the whole file. */
-function parseRange(
-  header: string | undefined,
-  size: number,
-): { start: number; end: number } | null {
-  if (!header) return null;
-  const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
-  if (!match) return null;
-  const [, startStr, endStr] = match;
-  if (startStr === "" && endStr === "") return null;
-
-  let start: number;
-  let end: number;
-  if (startStr === "") {
-    const suffixLength = Number(endStr);
-    start = Math.max(0, size - suffixLength);
-    end = size - 1;
-  } else {
-    start = Number(startStr);
-    end = endStr === "" ? size - 1 : Number(endStr);
-  }
-  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
-  if (start < 0 || end >= size || start > end) return null;
-  return { start, end };
 }
 
 /** `/api/assets/:id`'s owner check, shared by the Asset itself and its `/poster` and `/thumb` (issue #45). */

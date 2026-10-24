@@ -93,8 +93,8 @@ describe("MediaRunner", () => {
     const media = new MediaRunner(2);
     const probe = await media.probeImage(IMAGE);
     expect(probe.ok).toBe(true);
-    if (!probe.ok) throw new Error("expected ok");
-    expect(probe.kind).toBe("image");
+    if (!probe.ok || probe.kind !== "image")
+      throw new Error("expected an image");
     expect(probe.facts.width).toBe(32);
     expect(probe.facts.height).toBe(32);
 

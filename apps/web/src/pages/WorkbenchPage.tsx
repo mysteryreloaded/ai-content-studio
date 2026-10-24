@@ -11,7 +11,11 @@ import { Link, Navigate, useParams } from "react-router-dom";
 import { Footer } from "../Footer.js";
 import {
   httpUploadApi,
+  pickAudioIssue,
   pickIssue,
+  pickVideoIssue,
+  readMediaDuration,
+  trimUpload,
   uploadResumable,
 } from "../lib/chunkedUpload.js";
 import { usePauseNotice } from "../usePauseNotice.js";
@@ -55,6 +59,21 @@ type WorkbenchInput = {
       maxLongSide: number | null;
     }
   | {
+      kind: "video_upload";
+      maxSizeMb: number;
+      maxLongSide: number | null;
+      minDurationMs: number;
+      maxDurationMs: number;
+      trimmable: boolean;
+    }
+  | {
+      kind: "audio_upload";
+      maxSizeMb: number;
+      minDurationMs: number;
+      maxDurationMs: number;
+      trimmable: boolean;
+    }
+  | {
       kind: "seed";
       max: number | null;
     }
@@ -63,11 +82,26 @@ type WorkbenchInput = {
 type ModeMenuGroup = "prompt" | "images" | "audio" | "video";
 
 type ImageUploadInput = Extract<WorkbenchInput, { kind: "image_upload" }>;
+type VideoUploadInput = Extract<WorkbenchInput, { kind: "video_upload" }>;
+type AudioUploadInput = Extract<WorkbenchInput, { kind: "audio_upload" }>;
+type MediaUploadInput = VideoUploadInput | AudioUploadInput;
 
-/** One Image Upload Input's file (issue #50): uploading, uploaded, or refused. */
+const UPLOAD_KINDS = new Set<WorkbenchInput["kind"]>([
+  "image_upload",
+  "video_upload",
+  "audio_upload",
+]);
+
+/** One Upload Input's file (issues #50, #51): uploading, uploaded, or refused. A video/audio one also carries its playable/trim facts. */
 type UploadState =
   | { status: "uploading"; name: string; progress: number }
-  | { status: "complete"; name: string; uploadId: string }
+  | {
+      status: "complete";
+      name: string;
+      uploadId: string;
+      durationMs: number | null;
+      browserPlayable: boolean | null;
+    }
   | { status: "error"; name: string; message: string };
 
 interface WorkbenchMode {
@@ -120,6 +154,8 @@ function initialValuesFor(mode: WorkbenchMode): Record<string, string> {
     }
     values[input.id] =
       input.kind === "image_upload" ||
+      input.kind === "video_upload" ||
+      input.kind === "audio_upload" ||
       input.default === null ||
       input.default === undefined
         ? ""
@@ -148,7 +184,11 @@ function valueParsesForInput(input: WorkbenchInput, raw: string): boolean {
       n <= (input.max ?? Number.POSITIVE_INFINITY)
     );
   }
-  if (input.kind === "image_upload") {
+  if (
+    input.kind === "image_upload" ||
+    input.kind === "video_upload" ||
+    input.kind === "audio_upload"
+  ) {
     // An Upload id's own completeness/ownership can only be checked
     // server-side; carrying it across a reload is best-effort here.
     return true;
@@ -220,6 +260,27 @@ function toInputDefinition(input: WorkbenchInput): InputDefinition {
       maxLongSide: input.maxLongSide,
     };
   }
+  if (input.kind === "video_upload") {
+    return {
+      ...base,
+      kind: "video_upload",
+      maxSizeMb: input.maxSizeMb,
+      maxLongSide: input.maxLongSide,
+      minDurationMs: input.minDurationMs,
+      maxDurationMs: input.maxDurationMs,
+      trimmable: input.trimmable,
+    };
+  }
+  if (input.kind === "audio_upload") {
+    return {
+      ...base,
+      kind: "audio_upload",
+      maxSizeMb: input.maxSizeMb,
+      minDurationMs: input.minDurationMs,
+      maxDurationMs: input.maxDurationMs,
+      trimmable: input.trimmable,
+    };
+  }
   if (input.kind === "number") {
     return {
       ...base,
@@ -289,6 +350,23 @@ async function readDimensions(
   } catch {
     return null;
   }
+}
+
+/** The browser's own issue with `file` for `input`'s kind, before any byte is sent (issues #50, #51). */
+async function issueFor(
+  input: ImageUploadInput | MediaUploadInput,
+  file: File,
+  maxUploadMb: number | null,
+): Promise<string | null> {
+  if (input.kind === "image_upload") {
+    return pickIssue(file, input, maxUploadMb, await readDimensions(file));
+  }
+  if (input.kind === "video_upload") {
+    const facts = await readMediaDuration(file, "video");
+    return pickVideoIssue(file, input, maxUploadMb, facts ?? undefined);
+  }
+  const facts = await readMediaDuration(file, "audio");
+  return pickAudioIssue(file, input, maxUploadMb, facts?.durationMs ?? null);
 }
 
 interface ModelTerms {
@@ -402,6 +480,8 @@ type SubmitState =
   | { status: "idle" }
   /** Issue #50: Generate was pressed while Uploads were still running. */
   | { status: "waiting" }
+  /** Issue #51: one trim, covering every Generation in the Submission, runs before it's built. */
+  | { status: "trimming" }
   | { status: "submitting" }
   | { status: "error"; message: string };
 
@@ -701,6 +781,13 @@ export function WorkbenchPage() {
     new Map<string, { promise: Promise<void>; controller: AbortController }>(),
   );
   const waitRef = useRef<{ cancelled: boolean } | null>(null);
+  // Issue #51: the trim range picked on a Video/Audio Upload's local
+  // player, by Input id; [0, durationMs] (the whole clip, no trim) until
+  // the user drags it. One trim per Input covers every Generation in the
+  // Submission, run once at Generate (not on every drag).
+  const [trimRangeByInputId, setTrimRangeByInputId] = useState<
+    Record<string, { startMs: number; endMs: number }>
+  >({});
   const maxUploadMb =
     session.status === "signed-in" ? (session.user.maxUploadMb ?? null) : null;
 
@@ -718,6 +805,7 @@ export function WorkbenchPage() {
     }
     runningUploadsRef.current.clear();
     setUploads({});
+    setTrimRangeByInputId({});
     setCount(1);
   }, []);
 
@@ -728,7 +816,7 @@ export function WorkbenchPage() {
     if (!model || !selectedMode) return {};
     const issues = liveIssuesFor(model.revision, selectedMode, values);
     for (const input of selectedMode.inputs) {
-      if (input.kind === "image_upload") delete issues[input.id];
+      if (UPLOAD_KINDS.has(input.kind)) delete issues[input.id];
     }
     return issues;
   }, [model, selectedMode, values]);
@@ -745,19 +833,18 @@ export function WorkbenchPage() {
   valuesRef.current = values;
 
   const startUpload = useCallback(
-    async (input: ImageUploadInput, file: File) => {
+    async (input: ImageUploadInput | MediaUploadInput, file: File) => {
       const current = modelRef.current;
       if (!current) return;
       runningUploadsRef.current.get(input.id)?.controller.abort();
       runningUploadsRef.current.delete(input.id);
       setValues((v) => ({ ...v, [input.id]: "" }));
+      setTrimRangeByInputId((ranges) => {
+        const { [input.id]: _, ...rest } = ranges;
+        return rest;
+      });
 
-      const issue = pickIssue(
-        file,
-        input,
-        maxUploadMb,
-        await readDimensions(file),
-      );
+      const issue = await issueFor(input, file, maxUploadMb);
       if (issue) {
         setUploads((u) => ({
           ...u,
@@ -800,8 +887,16 @@ export function WorkbenchPage() {
               status: "complete",
               name: file.name,
               uploadId: done.id,
+              durationMs: done.durationMs,
+              browserPlayable: done.browserPlayable,
             },
           }));
+          if (done.durationMs !== null) {
+            setTrimRangeByInputId((ranges) => ({
+              ...ranges,
+              [input.id]: { startMs: 0, endMs: done.durationMs as number },
+            }));
+          }
         })
         .catch((err: unknown) => {
           if (controller.signal.aborted) return;
@@ -948,7 +1043,7 @@ export function WorkbenchPage() {
     const current = modelRef.current;
     const mode = current?.modes.find((m) => m.id === selectedModeId);
     if (!current || !mode) return;
-    const values = valuesRef.current;
+    let values = valuesRef.current;
 
     const issues = liveIssuesFor(current.revision, mode, values);
     if (Object.keys(issues).length > 0) {
@@ -958,6 +1053,76 @@ export function WorkbenchPage() {
         message: "Check the highlighted fields.",
       });
       return;
+    }
+
+    // Issue #51's AC: one trim, covering every Generation this Submission
+    // creates, run here (not on every drag of the range) and only for a
+    // range that actually cuts something.
+    const mediaInputs = mode.inputs.filter(
+      (input): input is MediaUploadInput =>
+        input.kind === "video_upload" || input.kind === "audio_upload",
+    );
+    const toTrim = mediaInputs.filter((input) => {
+      const upload = uploads[input.id];
+      const range = trimRangeByInputId[input.id];
+      return (
+        upload?.status === "complete" &&
+        upload.durationMs !== null &&
+        range &&
+        (range.startMs > 0 || range.endMs < upload.durationMs)
+      );
+    });
+    // CEO review round 6: a Video/Audio Input not being trimmed this time
+    // (its range was set back to the whole clip after an earlier trimmed
+    // Generate) must submit its own Upload id, not whatever trimmed id
+    // `values[id]` still holds from that earlier Generate.
+    const toTrimIds = new Set(toTrim.map((input) => input.id));
+    const untrimmedUpdates = Object.fromEntries(
+      mediaInputs
+        .filter((input) => !toTrimIds.has(input.id))
+        .map((input): readonly [string, string] | null => {
+          const upload = uploads[input.id];
+          return upload?.status === "complete"
+            ? [input.id, upload.uploadId]
+            : null;
+        })
+        .filter((entry): entry is readonly [string, string] => entry !== null),
+    );
+    if (Object.keys(untrimmedUpdates).length > 0) {
+      values = { ...values, ...untrimmedUpdates };
+      valuesRef.current = values;
+      setValues((v) => ({ ...v, ...untrimmedUpdates }));
+    }
+
+    if (toTrim.length > 0) {
+      setSubmitState({ status: "trimming" });
+      try {
+        const trimmed = await Promise.all(
+          toTrim.map(async (input) => {
+            const upload = uploads[input.id];
+            const range = trimRangeByInputId[input.id];
+            if (upload?.status !== "complete" || !range) return null;
+            const result = await trimUpload(
+              upload.uploadId,
+              range.startMs,
+              range.endMs,
+            );
+            return [input.id, result.id] as const;
+          }),
+        );
+        const updates = Object.fromEntries(
+          trimmed.filter((t): t is readonly [string, string] => t !== null),
+        );
+        values = { ...values, ...updates };
+        valuesRef.current = values;
+        setValues((v) => ({ ...v, ...updates }));
+      } catch (err) {
+        setSubmitState({
+          status: "error",
+          message: err instanceof Error ? err.message : "couldn't be trimmed",
+        });
+        return;
+      }
     }
 
     setSubmitState({ status: "submitting" });
@@ -1089,7 +1254,7 @@ export function WorkbenchPage() {
     } catch {
       setSubmitState({ status: "error", message: "could not submit" });
     }
-  }, [selectedModeId, count, refreshCaps]);
+  }, [selectedModeId, count, uploads, trimRangeByInputId, refreshCaps]);
 
   const cancelWaiting = useCallback(() => {
     if (waitRef.current) waitRef.current.cancelled = true;
@@ -1242,6 +1407,26 @@ export function WorkbenchPage() {
             )}
 
             {selectedMode && (
+              <YourMedia
+                inputs={selectedMode.inputs.filter(
+                  (input): input is MediaUploadInput =>
+                    input.kind === "video_upload" ||
+                    input.kind === "audio_upload",
+                )}
+                uploads={uploads}
+                trimRangeByInputId={trimRangeByInputId}
+                onTrimRangeChange={(inputId, range) =>
+                  setTrimRangeByInputId((ranges) => ({
+                    ...ranges,
+                    [inputId]: range,
+                  }))
+                }
+                issuesByInputId={displayedIssuesByInputId}
+                onPick={(input, file) => void startUpload(input, file)}
+              />
+            )}
+
+            {selectedMode && (
               <InputGroups
                 mode={selectedMode}
                 values={values}
@@ -1361,6 +1546,8 @@ export function WorkbenchPage() {
                 Don't start
               </button>
             </>
+          ) : submitState.status === "trimming" ? (
+            <output>Trimming your video or audio…</output>
           ) : (
             <>
               {paused && pauseNoticeText && (
@@ -1416,7 +1603,7 @@ function InputGroups({
     <>
       {(["describe", "settings"] as const).map((group) => {
         const inputs = mode.inputs.filter(
-          (input) => input.group === group && input.kind !== "image_upload",
+          (input) => input.group === group && !UPLOAD_KINDS.has(input.kind),
         );
         if (inputs.length === 0) return null;
         return (
@@ -1500,6 +1687,160 @@ function YourFiles({
                 />{" "}
                 {upload.name}
               </p>
+            )}
+            {issue && (
+              <p id={issueId} role="alert">
+                {issue}
+              </p>
+            )}
+          </div>
+        );
+      })}
+    </fieldset>
+  );
+}
+
+const VIDEO_ACCEPT = ".mp4,.mov,.webm,.mkv";
+const AUDIO_ACCEPT = ".wav,.mp3,.flac,.ogg,.opus,.m4a,.aac";
+
+function formatSeconds(ms: number): string {
+  return (ms / 1000).toFixed(1);
+}
+
+/** The Workbench's Video/Audio Upload Inputs (issue #51): pick a file, watch it upload, then optionally trim it on a local player. */
+function YourMedia({
+  inputs,
+  uploads,
+  trimRangeByInputId,
+  onTrimRangeChange,
+  issuesByInputId,
+  onPick,
+}: {
+  inputs: MediaUploadInput[];
+  uploads: Record<string, UploadState>;
+  trimRangeByInputId: Record<string, { startMs: number; endMs: number }>;
+  onTrimRangeChange: (
+    inputId: string,
+    range: { startMs: number; endMs: number },
+  ) => void;
+  issuesByInputId: Record<string, string>;
+  onPick: (input: MediaUploadInput, file: File) => void;
+}) {
+  if (inputs.length === 0) return null;
+  return (
+    <fieldset>
+      <legend>Your media</legend>
+      {inputs.map((input) => {
+        const upload = uploads[input.id];
+        const issue =
+          upload?.status === "error"
+            ? upload.message
+            : upload?.status === "uploading"
+              ? undefined
+              : issuesByInputId[input.id];
+        const issueId = issue ? `input-issue-${input.id}` : undefined;
+        const isVideo = input.kind === "video_upload";
+        const range = trimRangeByInputId[input.id];
+        const canTrim =
+          input.trimmable &&
+          upload?.status === "complete" &&
+          upload.durationMs !== null &&
+          upload.browserPlayable !== false;
+        return (
+          <div key={input.id}>
+            <label htmlFor={`input-${input.id}`}>{input.label}</label>
+            {input.help && <p>{input.help}</p>}
+            <input
+              id={`input-${input.id}`}
+              type="file"
+              accept={isVideo ? VIDEO_ACCEPT : AUDIO_ACCEPT}
+              required
+              aria-describedby={issueId}
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) onPick(input, file);
+              }}
+            />
+            <p>
+              {isVideo
+                ? "MP4, MOV, WebM or MKV"
+                : "WAV, MP3, FLAC, OGG/Opus or M4A/AAC"}
+              , up to {input.maxSizeMb} MB, {formatSeconds(input.minDurationMs)}
+              –{formatSeconds(input.maxDurationMs)}s
+              {isVideo &&
+                (input as VideoUploadInput).maxLongSide !== null &&
+                `, at most ${(input as VideoUploadInput).maxLongSide} px on its long side`}
+              .
+            </p>
+            {upload?.status === "uploading" && (
+              <progress
+                aria-label={`Uploading ${upload.name}`}
+                max={1}
+                value={upload.progress}
+              />
+            )}
+            {upload?.status === "complete" && (
+              <div>
+                <p>{upload.name}</p>
+                {upload.browserPlayable === false ? (
+                  <p>
+                    This browser can't preview this file, so it's used as
+                    uploaded, untrimmed.
+                  </p>
+                ) : isVideo ? (
+                  // biome-ignore lint/a11y/useMediaCaption: a user's own upload has no captions to offer.
+                  <video
+                    controls
+                    src={`/api/uploads/${upload.uploadId}`}
+                    className="workbench-thumb"
+                  />
+                ) : (
+                  // biome-ignore lint/a11y/useMediaCaption: a user's own upload has no captions to offer.
+                  <audio controls src={`/api/uploads/${upload.uploadId}`} />
+                )}
+                {canTrim && range && (
+                  <div>
+                    <label htmlFor={`input-trim-start-${input.id}`}>
+                      Start (s)
+                    </label>
+                    <input
+                      id={`input-trim-start-${input.id}`}
+                      type="number"
+                      min={0}
+                      max={formatSeconds(range.endMs)}
+                      step={0.1}
+                      value={formatSeconds(range.startMs)}
+                      onChange={(event) => {
+                        const startMs = Math.round(
+                          Number(event.target.value) * 1000,
+                        );
+                        if (Number.isFinite(startMs)) {
+                          onTrimRangeChange(input.id, { ...range, startMs });
+                        }
+                      }}
+                    />
+                    <label htmlFor={`input-trim-end-${input.id}`}>
+                      End (s)
+                    </label>
+                    <input
+                      id={`input-trim-end-${input.id}`}
+                      type="number"
+                      min={formatSeconds(range.startMs)}
+                      max={formatSeconds(upload.durationMs ?? 0)}
+                      step={0.1}
+                      value={formatSeconds(range.endMs)}
+                      onChange={(event) => {
+                        const endMs = Math.round(
+                          Number(event.target.value) * 1000,
+                        );
+                        if (Number.isFinite(endMs)) {
+                          onTrimRangeChange(input.id, { ...range, endMs });
+                        }
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
             )}
             {issue && (
               <p id={issueId} role="alert">

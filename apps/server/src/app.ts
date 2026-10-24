@@ -31,6 +31,7 @@ import { loadC2paSignerConfig } from "./media/c2pa.js";
 import { MediaRunner } from "./media/media.js";
 import { ModelBackendsRepository } from "./models/model-backends.js";
 import { ModelRepository } from "./models/repository.js";
+import { hasFreeDisk } from "./problems/disk.js";
 import { ProblemsMonitor } from "./problems/monitor.js";
 import { ProblemsRegistry } from "./problems/problems.js";
 import { adminAuditRoute } from "./routes/admin-audit.js";
@@ -50,7 +51,10 @@ import { privacyRoute } from "./routes/privacy.js";
 import { siteSettingsRoute } from "./routes/site-settings.js";
 import { statusRoute } from "./routes/status.js";
 import { termsRoute } from "./routes/terms.js";
+import { uploadsRoute } from "./routes/uploads.js";
 import { createLocalStorage } from "./storage/storage.js";
+import { UploadsRepository } from "./uploads/repository.js";
+import { UploadsService } from "./uploads/service.js";
 
 /** Tracks package.json's own version by hand; bump it alongside a release. */
 const APP_VERSION = "0.0.0";
@@ -105,6 +109,8 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
   app.use("/api/*", sessionMiddleware(deps.db, deps.clock));
 
   const storage = createLocalStorage(deps.env.DATA_DIR);
+  const diskHasRoom = () =>
+    hasFreeDisk(deps.env.DATA_DIR, deps.env.MIN_FREE_DISK_GB);
 
   // The dispatcher is created after BackendsService (which needs a wake
   // callback as soon as a Backend becomes reachable), so this ref is set
@@ -164,6 +170,7 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
   const generationsRepository = new GenerationsRepository(deps.db);
   const generationEvents = new GenerationEvents();
   const assetsRepository = new AssetsRepository(deps.db);
+  const uploadsRepository = new UploadsRepository(deps.db);
   const dispatchQueue = new DispatchQueue(deps.db);
   const media = new MediaRunner(deps.env.FFMPEG_CONCURRENCY);
   const c2pa =
@@ -209,6 +216,8 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
         getBlockedWords: () => getBlockedWords(deps.db),
         getSiteCaps: () => getSiteCaps(deps.db),
         onGenerationQueued: dispatcher.wake,
+        uploadsRepository,
+        hasFreeDisk: diskHasRoom,
       },
       routes,
     ),
@@ -224,6 +233,23 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
     ),
   );
   app.route("/api/assets", assetsRoute(assetsRepository, storage, routes));
+  const uploadsService = new UploadsService({
+    repository: uploadsRepository,
+    storage,
+    clock: deps.clock,
+    maxUploadMb: deps.env.MAX_UPLOAD_MB,
+    hasFreeDisk: diskHasRoom,
+    hintLimits: async (modelId, inputId) => {
+      const detail = await modelRepository.get(modelId);
+      const input = detail?.inputs.find((i) => i.id === inputId);
+      return input?.kind === "image_upload" ? input : null;
+    },
+    media,
+  });
+  app.route(
+    "/api/uploads",
+    uploadsRoute(uploadsService, uploadsRepository, storage, routes),
+  );
   app.route("/api/admin", adminRoute(routes));
   app.route(
     "/api/admin/site-settings",
@@ -252,6 +278,7 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
       backendsService,
       generationsRepository,
       routes,
+      deps.env.MAX_UPLOAD_MB,
     ),
   );
   app.route("/api/admin/audit", adminAuditRoute(deps.db, routes));

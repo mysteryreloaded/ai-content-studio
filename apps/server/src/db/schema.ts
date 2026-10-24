@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  bigint,
   boolean,
   doublePrecision,
   index,
@@ -495,6 +496,8 @@ export const generations = pgTable(
     state: generationState("state").notNull().default("queued"),
     builtPrompt: jsonb("built_prompt").notNull(),
     nodeTypes: text("node_types").array().notNull(),
+    /** Issue #50: the Uploads its prompt names, sent to the claimed Backend before the prompt is queued. */
+    uploadIds: uuid("upload_ids").array().notNull().default(sql`'{}'::uuid[]`),
     tries: integer("tries").notNull().default(0),
     error: text("error"),
     startedAt: timestamp("started_at", { withTimezone: true }),
@@ -567,6 +570,57 @@ export const assets = pgTable(
       table.comfyuiFilename,
     ),
   ],
+);
+
+/**
+ * An Upload's state (issue #50): `uploading` while chunks arrive,
+ * `complete` once ffprobe accepted it, `failed` when it was refused at
+ * complete (its bytes are deleted then).
+ */
+export const uploadStatus = pgEnum("upload_status", [
+  "uploading",
+  "complete",
+  "failed",
+]);
+
+/**
+ * A file a user supplies as an Input value (issue #50), received in
+ * chunks. `receivedBytes` is the server's offset a resumed upload
+ * continues from. `modelId`/`inputId` are only the hint given at create
+ * (which Input's limits to check at complete); submit checks the Input
+ * actually used. `kind`, `extension`, `width`/`height` and `probe` (the
+ * ffprobe facts kept) are set at complete. `createdAt` is written from
+ * the clock (ADR 0006): the cleanup of unused Uploads compares it.
+ */
+export const uploads = pgTable(
+  "uploads",
+  {
+    id: uuid("id").primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    status: uploadStatus("status").notNull().default("uploading"),
+    originalName: text("original_name").notNull(),
+    declaredType: text("declared_type").notNull(),
+    size: bigint("size", { mode: "number" }).notNull(),
+    receivedBytes: bigint("received_bytes", { mode: "number" })
+      .notNull()
+      .default(0),
+    modelId: uuid("model_id"),
+    inputId: text("input_id"),
+    storageKey: text("storage_key").notNull(),
+    thumbnailKey: text("thumbnail_key"),
+    kind: text("kind"),
+    extension: text("extension"),
+    contentType: text("content_type"),
+    width: integer("width"),
+    height: integer("height"),
+    probe: jsonb("probe"),
+    error: text("error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (table) => [index("uploads_user_id_idx").on(table.userId)],
 );
 
 /**

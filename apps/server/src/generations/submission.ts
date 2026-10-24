@@ -3,14 +3,19 @@
 // Backend exists for the Mode, then freezes the built prompt.
 
 import {
+  type ImageUploadInputDefinition,
+  type InputDefinition,
+  type InputIssue,
   buildPrompt,
   computeModePath,
   findBlockedWord,
+  imageUploadLimitIssue,
   isSeedInput,
   parseInputValues,
   randomSeedBase,
   relevantInputs,
   seedBoundFor,
+  uploadFileName,
   validateSeedRange,
 } from "@ai-content-studio/shared";
 import type { Clock } from "@ai-content-studio/shared";
@@ -23,6 +28,8 @@ import {
   type ModelRepository,
   activeModelTermsVersion,
 } from "../models/repository.js";
+import type { UploadsRepository } from "../uploads/repository.js";
+import { STORAGE_FULL_MESSAGE } from "../uploads/service.js";
 import { ConcurrentCapExceeded, DailyCapExceeded } from "./caps.js";
 import type { GenerationEvents } from "./events.js";
 import {
@@ -78,6 +85,13 @@ export class InvalidInputValues extends Error {
   }
 }
 
+/** An Upload Input's value isn't the caller's own, complete image Upload, or breaks the Input's limits (400 `invalid`, issue #50). */
+export class InvalidUploads extends Error {
+  constructor(public readonly issues: InputIssue[]) {
+    super("invalid");
+  }
+}
+
 /** The submitted count isn't 1-4 (400 `invalid_count`, issue #47). */
 export class InvalidCount extends Error {
   constructor() {
@@ -97,6 +111,13 @@ export class BlockedWordSubmitted extends Error {
 
 /** This Submission would put the user over their daily or concurrent Cap (409, issue #53): refused whole. */
 export { ConcurrentCapExceeded, DailyCapExceeded };
+
+/** `DATA_DIR`'s disk is under MIN_FREE_DISK_GB (507 `storage_full`, issue #50). */
+export class SubmissionStorageFull extends Error {
+  constructor() {
+    super(STORAGE_FULL_MESSAGE);
+  }
+}
 
 export interface SubmitGenerationParams {
   slug: string;
@@ -124,6 +145,58 @@ export interface SubmissionDeps {
   getSiteCaps: () => Promise<{ dailyCap: number; concurrentCap: number }>;
   /** Wakes the dispatcher (issue #44): a fresh queued Generation may be dispatchable right away. */
   onGenerationQueued?: () => void;
+  uploadsRepository: UploadsRepository;
+  /** False while `DATA_DIR`'s disk is under MIN_FREE_DISK_GB (issue #50). */
+  hasFreeDisk: () => Promise<boolean>;
+}
+
+/**
+ * Resolves each Image Upload Input's value (an Upload id) to that
+ * Upload's Backend file name (issue #50), refusing one that isn't the
+ * caller's own, complete image, or that breaks the Input's limits.
+ */
+async function resolveUploadValues(
+  inputs: readonly InputDefinition[],
+  values: Record<string, string | number | undefined>,
+  userId: string,
+  deps: SubmissionDeps,
+): Promise<{
+  values: Record<string, string | number | undefined>;
+  uploadIds: string[];
+}> {
+  const uploadInputs = inputs.filter(
+    (input): input is ImageUploadInputDefinition =>
+      input.kind === "image_upload",
+  );
+  if (uploadInputs.length === 0) return { values, uploadIds: [] };
+
+  const ids = uploadInputs
+    .map((input) => values[input.id])
+    .filter((id): id is string => typeof id === "string");
+  const byId = new Map(
+    (await deps.uploadsRepository.listByIds(ids)).map((u) => [u.id, u]),
+  );
+
+  const resolved = { ...values };
+  const issues: InputIssue[] = [];
+  for (const input of uploadInputs) {
+    const upload = byId.get(String(values[input.id]));
+    const refuse = (message: string) =>
+      issues.push({ path: input.id, code: "upload", message });
+    if (!upload || upload.userId !== userId) {
+      refuse("that Upload wasn't found");
+    } else if (upload.status !== "complete" || !upload.extension) {
+      refuse("that Upload hasn't finished");
+    } else if (upload.kind !== "image") {
+      refuse("that Upload isn't an image");
+    } else {
+      const issue = imageUploadLimitIssue(upload, input);
+      if (issue) refuse(`that file ${issue}`);
+      else resolved[input.id] = uploadFileName(upload.id, upload.extension);
+    }
+  }
+  if (issues.length > 0) throw new InvalidUploads(issues);
+  return { values: resolved, uploadIds: [...new Set(ids)] };
 }
 
 /** Whether at least one attached, reachable Backend has every node type a Mode's Path needs. */
@@ -179,6 +252,8 @@ export async function submitGeneration(
 
   const mode = detail.modes.find((m) => m.id === params.modeId);
   if (!mode) throw new ModeNotFound();
+
+  if (!(await deps.hasFreeDisk())) throw new SubmissionStorageFull();
 
   const outputNodeIds = mode.outputNodes.map((node) => node.nodeId);
   const usable = await hasUsableBackend(detail, outputNodeIds, deps);
@@ -237,6 +312,13 @@ export async function submitGeneration(
     }
   }
 
+  const { values: resolvedValues, uploadIds } = await resolveUploadValues(
+    relevant,
+    parsedValues.data as Record<string, string | number | undefined>,
+    params.userId,
+    deps,
+  );
+
   let baseSeed: number | null = null;
   if (seedInput) {
     const bound = seedBoundFor(seedInput);
@@ -257,9 +339,7 @@ export async function submitGeneration(
   const creations: CreateGenerationInput[] = [];
   for (let i = 0; i < count; i++) {
     const generationId = crypto.randomUUID();
-    const values = {
-      ...(parsedValues.data as Record<string, string | number | undefined>),
-    };
+    const values = { ...resolvedValues };
     if (seedInput && baseSeed !== null) {
       values[seedInput.id] = baseSeed + i;
     }
@@ -280,6 +360,7 @@ export async function submitGeneration(
       submissionId,
       builtPrompt: prompt,
       nodeTypes,
+      uploadIds,
       submittedAt,
     });
   }

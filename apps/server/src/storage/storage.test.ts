@@ -35,4 +35,15 @@ describe("local-disk storage", () => {
       storage.write("../escape", new Uint8Array()),
     ).rejects.toThrow();
   });
+
+  test("writeAt appends at an offset, dropping anything past it (issue #50)", async () => {
+    const storage = createLocalStorage(await rootPromise);
+    const enc = new TextEncoder();
+    await storage.writeAt("uploads/u1/original", 0, enc.encode("abcXYZ"));
+    // A resumed chunk at offset 3 replaces the partial "XYZ" tail.
+    await storage.writeAt("uploads/u1/original", 3, enc.encode("def"));
+    await storage.writeAt("uploads/u1/original", 6, enc.encode("gh"));
+    const read = await storage.read("uploads/u1/original");
+    expect(read.toString()).toBe("abcdefgh");
+  });
 });

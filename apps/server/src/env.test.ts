@@ -17,6 +17,7 @@ describe("loadEnv", () => {
     expect(env.PORT).toBe(3000);
     expect(env.LOG_LEVEL).toBe("info");
     expect(env.ADMIN_EMAILS).toEqual(["admin@example.com"]);
+    expect(env.MAX_UPLOAD_MB).toBe(500);
   });
 
   test("lowercases and splits ADMIN_EMAILS", () => {

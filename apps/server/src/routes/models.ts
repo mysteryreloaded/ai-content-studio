@@ -20,6 +20,7 @@ import {
   InvalidCount,
   InvalidInputValues,
   InvalidSeed,
+  InvalidUploads,
   ModeNotFound,
   ModelChanged,
   ModelDisabled,
@@ -27,6 +28,7 @@ import {
   ModelTermsRequired,
   NoBackend,
   type SubmissionDeps,
+  SubmissionStorageFull,
   submitGeneration,
 } from "../generations/submission.js";
 import {
@@ -70,6 +72,15 @@ function toWorkbenchInput(input: InputDefinition, workflow: Workflow) {
       multiline: input.multiline,
       maxLength: input.maxLength,
       default: input.default,
+    };
+  }
+  if (input.kind === "image_upload") {
+    return {
+      ...base,
+      placeholder: null,
+      kind: "image_upload" as const,
+      maxSizeMb: input.maxSizeMb,
+      maxLongSide: input.maxLongSide,
     };
   }
   if (input.kind === "number") {
@@ -309,6 +320,12 @@ export function modelsRoute(
         }
         if (err instanceof NoBackend) {
           return c.json({ error: "no_backend", message: err.message }, 400);
+        }
+        if (err instanceof InvalidUploads) {
+          return c.json({ error: "invalid", issues: err.issues }, 400);
+        }
+        if (err instanceof SubmissionStorageFull) {
+          return c.json({ error: "storage_full", message: err.message }, 507);
         }
         if (err instanceof InvalidInputValues) {
           return c.json(

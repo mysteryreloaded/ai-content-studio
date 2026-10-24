@@ -87,3 +87,21 @@ Backend credential undecryptable — re-enter them after a rotation.
 `true` or `false`. When `false`, the studio never contacts any Backend
 (no health polling) and Admins see a banner saying so. Defaults to
 `true`.
+
+## `status_token`
+
+### `STATUS_TOKEN`
+
+A bearer token the Operator's outside monitor sends as
+`Authorization: Bearer <token>` to call `GET /api/status` without an
+Admin session (issue #70). Optional; while unset, `/api/status` can only
+be called with an Admin session.
+
+## `min_free_disk_gb`
+
+### `MIN_FREE_DISK_GB`
+
+The floor, in GB, the retention jobs (issue #69) try to keep free on
+`DATA_DIR`'s disk. The Overview's `disk_low` Problem fires once free
+space drops below twice this value, so an Admin has warning before
+retention's own floor is hit. Defaults to `10`.

@@ -11,7 +11,8 @@ export type AccessLevel =
   | "signed-in"
   | "active"
   | "admin"
-  | "status-token";
+  | "status-token"
+  | "admin-or-status-token";
 
 export interface RouteEntry {
   method: string;
@@ -57,6 +58,19 @@ export function requireAccess(access: AccessLevel): Handler<AppEnv> {
       const expected = process.env.STATUS_TOKEN;
       const header = c.req.header("authorization");
       if (!expected || header !== `Bearer ${expected}`) {
+        return c.json({ error: "forbidden" }, 403);
+      }
+      return next();
+    }
+
+    if (access === "admin-or-status-token") {
+      const expected = process.env.STATUS_TOKEN;
+      const header = c.req.header("authorization");
+      if (expected && header === `Bearer ${expected}`) return next();
+
+      const session = c.get("session");
+      if (!session) return c.json({ error: "unauthorized" }, 401);
+      if (session.user.status !== "active" || session.user.role !== "admin") {
         return c.json({ error: "forbidden" }, 403);
       }
       return next();

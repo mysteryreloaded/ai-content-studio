@@ -373,7 +373,15 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
     ),
   );
   app.route("/api/status", statusRoute(problemsRegistry, routes));
-  app.route("/api/privacy", privacyRoute(deps.db, APP_VERSION, routes));
+  app.route(
+    "/api/privacy",
+    privacyRoute(
+      deps.db,
+      APP_VERSION,
+      deps.env.ASSET_RETENTION_DAYS ?? null,
+      routes,
+    ),
+  );
 
   if (deps.env.OIDC_ISSUER) {
     const issuerUrl = new URL(deps.env.OIDC_ISSUER);

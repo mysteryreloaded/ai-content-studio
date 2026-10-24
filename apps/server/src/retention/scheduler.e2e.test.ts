@@ -5,7 +5,7 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { startFakeComfyUi } from "@ai-content-studio/fake-comfyui";
 import { FakeClock, type Workflow } from "@ai-content-studio/shared";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import type postgres from "postgres";
 import { createApp } from "../app.js";
 import { createLogEntryWriter } from "../backends/log-entries.js";
@@ -297,6 +297,79 @@ describe("retention sweep (issue #69)", () => {
         .from(assets)
         .where(eq(assets.generationId, freshGenerationId));
       expect(remainingAssets.length).toBe(1);
+
+      backendsService.stop();
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("prunes a backlog spanning more than one batch", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const { app, backendsService } = await build();
+      const { db } = await testDb;
+      const { headers: adminHeaders } = await headersFor("admin");
+      const { userId } = await headersFor("user");
+      const model = await buildEnabledModel(app, adminHeaders, fake.url);
+      const [revision] = await db
+        .select({ id: modelRevisions.id })
+        .from(modelRevisions)
+        .where(eq(modelRevisions.modelId, model.modelId));
+      if (!revision) throw new Error("model has no revision");
+
+      const now = clock.now();
+      const oldCreatedAt = new Date(now.getTime() - 40 * DAY_MS);
+      // One more Generation than a single prune batch (apps/server/src/
+      // generations/repository.ts' PRUNE_BATCH_SIZE), inserted directly
+      // rather than through a real Submission per row: this exercises
+      // pruneOldAssets' own batching loop, not the dispatch path.
+      const COUNT = 501;
+      const generationIds = Array.from({ length: COUNT }, () =>
+        crypto.randomUUID(),
+      );
+      await db.insert(generations).values(
+        generationIds.map((id) => ({
+          id,
+          modelId: model.modelId,
+          revisionId: revision.id,
+          modeId: model.modeId,
+          userId,
+          submissionId: crypto.randomUUID(),
+          state: "succeeded" as const,
+          builtPrompt: {},
+          nodeTypes: [],
+          uploadIds: [],
+          queuedAt: now,
+          submittedAt: now,
+          endedAt: now,
+        })),
+      );
+      await db.insert(assets).values(
+        generationIds.map((id) => ({
+          generationId: id,
+          nodeId: "3",
+          sortOrder: 0,
+          kind: "image",
+          comfyuiFilename: "old.png",
+          contentType: "image/png",
+          size: 10,
+          storageKey: `assets/${id}/old.png`,
+          createdAt: oldCreatedAt,
+        })),
+      );
+
+      const generationsRepository = new GenerationsRepository(db);
+      const cutoff = new Date(now.getTime() - 30 * DAY_MS);
+      const keys = await generationsRepository.pruneOldAssets(cutoff, now);
+      expect(keys.assets.length).toBe(COUNT);
+
+      const remaining = await db
+        .select()
+        .from(generations)
+        .where(inArray(generations.id, generationIds));
+      expect(remaining.length).toBe(COUNT);
+      expect(remaining.every((row) => row.deletedAt !== null)).toBe(true);
 
       backendsService.stop();
     } finally {

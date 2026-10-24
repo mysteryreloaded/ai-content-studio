@@ -104,13 +104,14 @@ be called with an Admin session.
 
 ### `MIN_FREE_DISK_GB`
 
-The floor, in GB, the retention jobs (issue #69) try to keep free on
-`DATA_DIR`'s disk. The Overview's `disk_low` Problem fires once free
-space drops below twice this value, so an Admin has warning before
-retention's own floor is hit. Below this floor, the studio also refuses
-new Upload chunks and new Submissions with "storage is full, try later"
-(issue #50); saving a running Generation's Assets ignores it. Defaults
-to `10`.
+The floor, in GB, below which the studio refuses new Upload chunks and
+new Submissions with "storage is full, try later" (issue #50); saving a
+running Generation's Assets ignores it. The Overview's `disk_low`
+Problem fires once free space on `DATA_DIR`'s disk drops below twice
+this value, so an Admin has warning before that floor is hit. The
+retention jobs (issue #69) run on their own time-based schedule and
+don't target this floor, though tidying away old Assets, Uploads and
+Log entries does free the space they used. Defaults to `10`.
 
 ## `max_upload_mb`
 

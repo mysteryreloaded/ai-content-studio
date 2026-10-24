@@ -60,6 +60,9 @@ const ENDED_STATES: readonly GenerationState[] = [
   "cancelled",
 ];
 
+/** Issue #69: how many Generations {@link GenerationsRepository.pruneOldAssets} tombstones per `inArray`, well under Postgres' bound-parameter limit. */
+const PRUNE_BATCH_SIZE = 500;
+
 export interface AssetSummary {
   id: string;
   nodeId: string;
@@ -960,16 +963,37 @@ export class GenerationsRepository {
    * Generation with an Asset older than `cutoff` into a Tombstone, the
    * same mechanism (and the same storage keys handed back to the
    * caller) as a user's own delete.
+   *
+   * Runs in batches, oldest Asset first, rather than one `finishDelete`
+   * across every matching id: a large backlog (e.g. retention turned on
+   * long after launch) can exceed Postgres' bound-parameter limit in a
+   * single `inArray`, which would otherwise fail this sweep every hour
+   * forever.
    */
   async pruneOldAssets(cutoff: Date, now: Date): Promise<DeletedStorageKeys> {
-    const rows = await this.db
-      .selectDistinct({ id: generations.id })
-      .from(assets)
-      .innerJoin(generations, eq(generations.id, assets.generationId))
-      .where(and(isNull(generations.deletedAt), lt(assets.createdAt, cutoff)));
-    const ids = rows.map((row) => row.id);
-    if (ids.length === 0) return { assets: [], uploads: [] };
-    return this.finishDelete(ids, now);
+    const result: DeletedStorageKeys = { assets: [], uploads: [] };
+    while (true) {
+      const rows = await this.db
+        .select({
+          id: generations.id,
+          oldestAssetAt: sql<Date>`min(${assets.createdAt})`,
+        })
+        .from(assets)
+        .innerJoin(generations, eq(generations.id, assets.generationId))
+        .where(and(isNull(generations.deletedAt), lt(assets.createdAt, cutoff)))
+        .groupBy(generations.id)
+        .orderBy(sql`min(${assets.createdAt})`)
+        .limit(PRUNE_BATCH_SIZE);
+      if (rows.length === 0) break;
+      const batch = await this.finishDelete(
+        rows.map((row) => row.id),
+        now,
+      );
+      result.assets.push(...batch.assets);
+      result.uploads.push(...batch.uploads);
+      if (rows.length < PRUNE_BATCH_SIZE) break;
+    }
+    return result;
   }
 
   /**

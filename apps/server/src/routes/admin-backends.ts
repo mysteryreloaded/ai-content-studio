@@ -193,6 +193,40 @@ export function adminBackendsRoute(
     app,
     routes,
     basePath,
+    "patch",
+    "/:id/draining",
+    "admin",
+    async (c) => {
+      const id = idParam(c);
+      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+
+      const body = await readJsonBody(c);
+      if (body === null) return c.json({ error: "invalid JSON body" }, 400);
+
+      const versionResult = versionSchema.safeParse(body.version);
+      if (!versionResult.success)
+        return c.json({ error: "version is required" }, 400);
+      const draining = Boolean(body.draining);
+
+      try {
+        const record = await repository.setDraining(
+          id,
+          draining,
+          versionResult.data,
+          adminActorFrom(c),
+        );
+        if (!draining) onBackendEnabled?.();
+        return c.json(record);
+      } catch (err) {
+        return handleError(c, err);
+      }
+    },
+  );
+
+  guardedRoute(
+    app,
+    routes,
+    basePath,
     "get",
     "/:id/history",
     "admin",

@@ -72,8 +72,10 @@ export interface ScriptedJob {
   stepIntervalMs?: number;
   /** Output files per output node id, kept only when `type` is `"output"`. */
   outputs?: Record<string, JobOutput>;
-  /** Scripts the job to fail once its steps run out, instead of completing. */
+  /** Scripts the job to fail once its steps run out, with ComfyUI's own `execution_error` shape (issue #55), instead of completing. */
   fail?: string;
+  /** Scripts `/prompt` to reject this `promptId` outright (issue #55): any other rejection, or a 413, instead of running it at all. */
+  reject?: { status: number; error?: string };
 }
 
 interface JobState {
@@ -92,9 +94,13 @@ type WsData = { clientId: string };
 /** Starts a fake ComfyUI server. `setUnreachable` toggles it failing every request. */
 export function startFakeComfyUi(opts: FakeComfyUiOptions) {
   let unreachable = false;
+  let unreachableTimer: ReturnType<typeof setTimeout> | null = null;
   const scripts = new Map<string, ScriptedJob>();
   const jobs = new Map<string, JobState>();
-  const sockets = new Map<string, Set<{ send(data: string): void }>>();
+  const sockets = new Map<
+    string,
+    Set<{ send(data: string): void; close(): void }>
+  >();
   const inputFiles = new Map<string, InputFile>();
   let uploadCount = 0;
 
@@ -133,15 +139,18 @@ export function startFakeComfyUi(opts: FakeComfyUiOptions) {
     });
   }
 
-  /** Every node type the submitted prompt uses must be known, like ComfyUI's own `/prompt` validation. */
-  function validatePrompt(
-    prompt: unknown,
-  ): { ok: true } | { ok: false; nodeErrors: Record<string, string[]> } {
+  /** Every node type the submitted prompt uses must be known, like ComfyUI's own `/prompt` validation. A missing node type (issue #55) is distinguished by `type: "missing_node"`, so the studio knows to retry elsewhere instead of failing outright. */
+  function validatePrompt(prompt: unknown):
+    | { ok: true }
+    | {
+        ok: false;
+        nodeErrors: Record<string, { type: string; message: string }>;
+      } {
     if (!prompt || typeof prompt !== "object") {
       return { ok: false, nodeErrors: {} };
     }
     const fixture = objectInfoFixture as Record<string, unknown>;
-    const nodeErrors: Record<string, string[]> = {};
+    const nodeErrors: Record<string, { type: string; message: string }> = {};
     for (const [nodeId, node] of Object.entries(
       prompt as Record<string, unknown>,
     )) {
@@ -150,7 +159,10 @@ export function startFakeComfyUi(opts: FakeComfyUiOptions) {
           ? (node as { class_type?: unknown }).class_type
           : undefined;
       if (typeof classType !== "string" || !(classType in fixture)) {
-        nodeErrors[nodeId] = [`unknown node type ${String(classType)}`];
+        nodeErrors[nodeId] = {
+          type: "missing_node",
+          message: `unknown node type ${String(classType)}`,
+        };
       }
     }
     if (Object.keys(nodeErrors).length > 0) return { ok: false, nodeErrors };
@@ -174,7 +186,17 @@ export function startFakeComfyUi(opts: FakeComfyUiOptions) {
         req.method === "POST"
       ) {
         return req.json().then((body: unknown) => {
-          unreachable = Boolean((body as { down?: boolean }).down);
+          const { down, forMs } = body as { down?: boolean; forMs?: number };
+          if (unreachableTimer) clearTimeout(unreachableTimer);
+          unreachableTimer = null;
+          unreachable = Boolean(down);
+          /** An "unreachable spell" (issue #55): comes back on its own after `forMs`, instead of the test having to flip it back itself. */
+          if (unreachable && forMs) {
+            unreachableTimer = setTimeout(() => {
+              unreachable = false;
+              unreachableTimer = null;
+            }, forMs);
+          }
           return new Response(null, { status: 204 });
         });
       }
@@ -185,6 +207,50 @@ export function startFakeComfyUi(opts: FakeComfyUiOptions) {
             promptId: string;
           };
           scripts.set(promptId, script);
+          return new Response(null, { status: 204 });
+        });
+      }
+
+      /** Simulates ComfyUI's process restarting: forgets every in-flight job, so `/api/jobs/:id` 404s the way it would for a job the server never ran (issue #55's AC). */
+      if (url.pathname === "/__control__/restart" && req.method === "POST") {
+        for (const job of jobs.values()) {
+          if (job.timer) clearInterval(job.timer);
+        }
+        jobs.clear();
+        scripts.clear();
+        for (const set of sockets.values()) {
+          for (const ws of set) ws.close();
+        }
+        sockets.clear();
+        return new Response(null, { status: 204 });
+      }
+
+      /** Drops every open `/ws` connection without closing the server itself (issue #55's AC). */
+      if (url.pathname === "/__control__/drop-ws" && req.method === "POST") {
+        for (const set of sockets.values()) {
+          for (const ws of set) ws.close();
+        }
+        return new Response(null, { status: 204 });
+      }
+
+      if (url.pathname === "/interrupt" && req.method === "POST") {
+        if (unreachable)
+          return new Response("down for testing", { status: 503 });
+        if (!isAuthorized(req, opts))
+          return new Response("unauthorized", { status: 401 });
+        return req.json().then((body: unknown) => {
+          const { prompt_id } = body as { prompt_id?: string };
+          const job = prompt_id ? jobs.get(prompt_id) : undefined;
+          if (job && job.status === "running") {
+            if (job.timer) clearInterval(job.timer);
+            job.timer = null;
+            job.status = "failed";
+            job.error = "interrupted";
+            sendTo(job.clientId, {
+              type: "status",
+              data: { prompt_id, status: "failed", error: job.error },
+            });
+          }
           return new Response(null, { status: 204 });
         });
       }
@@ -216,6 +282,17 @@ export function startFakeComfyUi(opts: FakeComfyUiOptions) {
             prompt_id?: string;
             client_id?: string;
           };
+          const promptId = prompt_id ?? crypto.randomUUID();
+
+          const rejectScript = scripts.get(promptId)?.reject;
+          if (rejectScript) {
+            scripts.delete(promptId);
+            return Response.json(
+              { error: rejectScript.error ?? "rejected" },
+              { status: rejectScript.status },
+            );
+          }
+
           const validation = validatePrompt(prompt);
           if (!validation.ok) {
             return Response.json(
@@ -224,7 +301,6 @@ export function startFakeComfyUi(opts: FakeComfyUiOptions) {
             );
           }
 
-          const promptId = prompt_id ?? crypto.randomUUID();
           const script = scripts.get(promptId) ?? {};
           scripts.delete(promptId);
           const totalSteps = script.steps ?? 1;
@@ -342,10 +418,19 @@ export function startFakeComfyUi(opts: FakeComfyUiOptions) {
 
   return {
     url: `http://localhost:${server.port}`,
-    setUnreachable(down: boolean) {
+    /** `forMs` scripts an "unreachable spell" (issue #55) that lifts on its own, instead of the caller flipping it back. */
+    setUnreachable(down: boolean, forMs?: number) {
+      if (unreachableTimer) clearTimeout(unreachableTimer);
+      unreachableTimer = null;
       unreachable = down;
+      if (down && forMs) {
+        unreachableTimer = setTimeout(() => {
+          unreachable = false;
+          unreachableTimer = null;
+        }, forMs);
+      }
     },
-    /** Scripts the job that will submit under `promptId` to succeed after N steps with canned outputs, or to fail. */
+    /** Scripts the job that will submit under `promptId` to succeed after N steps with canned outputs, to fail with `execution_error`, or (via `reject`) to be rejected outright (issue #55). */
     script(promptId: string, job: ScriptedJob) {
       scripts.set(promptId, job);
     },
@@ -366,7 +451,26 @@ export function startFakeComfyUi(opts: FakeComfyUiOptions) {
     get uploadCount() {
       return uploadCount;
     },
+    /** Drops every open `/ws` connection without closing the server itself (issue #55's AC). */
+    dropWs() {
+      for (const set of sockets.values()) {
+        for (const ws of set) ws.close();
+      }
+    },
+    /** Simulates ComfyUI's process restarting: forgets every in-flight job and script (issue #55's AC). */
+    restart() {
+      for (const job of jobs.values()) {
+        if (job.timer) clearInterval(job.timer);
+      }
+      jobs.clear();
+      scripts.clear();
+      for (const set of sockets.values()) {
+        for (const ws of set) ws.close();
+      }
+      sockets.clear();
+    },
     stop() {
+      if (unreachableTimer) clearTimeout(unreachableTimer);
       for (const job of jobs.values()) {
         if (job.timer) clearInterval(job.timer);
       }

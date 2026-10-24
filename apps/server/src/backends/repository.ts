@@ -37,6 +37,8 @@ export interface BackendRecord {
   headerName: string | null;
   /** Issue #44: an Admin's own on/off switch; the dispatcher skips a disabled Backend even while it's reachable. */
   enabled: boolean;
+  /** Issue #55: an Admin's own "finish what you have, take nothing new" switch; unlike `enabled`, a draining Backend keeps its in-flight try. */
+  draining: boolean;
   version: number;
   deletedAt: Date | null;
   createdAt: Date;
@@ -56,6 +58,7 @@ export function toRecord(row: Row): BackendRecord {
     auth: row.authKind,
     headerName: row.headerName,
     enabled: row.enabled,
+    draining: row.draining,
     version: row.version,
     deletedAt: row.deletedAt,
     createdAt: row.createdAt,
@@ -368,6 +371,45 @@ export class BackendRepository {
         id,
         { enabled: before.enabled },
         { enabled: row.enabled },
+      );
+
+      return toRecord(row);
+    });
+  }
+
+  /** Toggles a Backend's drain switch (issue #55): draining takes no new Generations but keeps its in-flight try. */
+  async setDraining(
+    id: string,
+    draining: boolean,
+    expectedVersion: number,
+    actor: AuditActor,
+  ): Promise<BackendRecord> {
+    return await this.db.transaction(async (tx) => {
+      const [before] = await tx
+        .select()
+        .from(backends)
+        .where(and(eq(backends.id, id), isNull(backends.deletedAt)));
+      if (!before) throw new NotFound();
+
+      const [row] = await tx
+        .update(backends)
+        .set({
+          draining,
+          version: before.version + 1,
+          updatedAt: this.clock.now(),
+        })
+        .where(and(eq(backends.id, id), eq(backends.version, expectedVersion)))
+        .returning();
+      if (!row) throw new StaleVersion();
+
+      await writeBackendAuditEntry(
+        tx,
+        this.clock,
+        actor,
+        "update",
+        id,
+        { draining: before.draining },
+        { draining: row.draining },
       );
 
       return toRecord(row);

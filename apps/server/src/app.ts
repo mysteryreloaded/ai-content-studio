@@ -19,6 +19,7 @@ import {
 import type { Database } from "./db/client.js";
 import { Dispatcher } from "./dispatch/dispatcher.js";
 import { DispatchQueue } from "./dispatch/queue.js";
+import { recoverInFlightGenerations } from "./dispatch/recovery.js";
 import type { Env } from "./env.js";
 import { logUnhandledError } from "./error-logging.js";
 import { AssetsRepository } from "./generations/assets-repository.js";
@@ -77,6 +78,8 @@ export interface CreatedApp {
   problemsMonitor: ProblemsMonitor;
   /** Dispatches queued Generations to free Backends (issue #44): call `start()` after boot, `stop()` on shutdown. */
   dispatcher: Dispatcher;
+  /** Boot recovery (issue #55): reattaches every Generation left `starting`/`running`/`saving` from a previous process. Call once, before `dispatcher.start()`. */
+  recover: () => Promise<void>;
 }
 
 /** One Hono app answering the API and serving the built SPA from one origin. */
@@ -332,5 +335,12 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
   app.use("*", serveStatic({ root: deps.webDistDir }));
   app.use("*", serveBrandedIndex);
 
-  return { app, routes, backendsService, problemsMonitor, dispatcher };
+  return {
+    app,
+    routes,
+    backendsService,
+    problemsMonitor,
+    dispatcher,
+    recover: () => dispatcher.recover(),
+  };
 }

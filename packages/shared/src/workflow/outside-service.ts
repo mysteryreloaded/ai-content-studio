@@ -9,7 +9,14 @@ export const OUTSIDE_SERVICE_NODE_CLASSES: readonly string[] = [
   "GemmaAPITextEncode",
 ];
 
-/** The node field each outside-service class holds its key in. */
+/**
+ * The node field each outside-service class holds its key in.
+ *
+ * `GemmaAPITextEncode` isn't a published ComfyUI node yet — no node pack or
+ * docs.comfy.org page defines it or an `api_key` input to confirm against.
+ * `"api_key"` here is this project's own placeholder name, to be corrected
+ * against the real node's `inputs` the moment it's integrated.
+ */
 const KEY_FIELD_BY_CLASS: Record<string, string> = {
   GemmaAPITextEncode: "api_key",
 };

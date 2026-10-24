@@ -51,7 +51,7 @@ jobs:
         run: bun run --filter @ai-content-studio/server env:check
 
       - name: Test
-        run: bun test
+        run: bun test --isolate
 
       - name: Build web
         run: bun run build

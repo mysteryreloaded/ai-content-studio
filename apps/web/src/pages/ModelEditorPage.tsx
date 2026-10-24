@@ -1,5 +1,5 @@
-import { type FormEvent, useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { type FormEvent, useEffect, useRef, useState } from "react";
+import { useBlocker, useNavigate, useParams } from "react-router-dom";
 
 interface ModelNode {
   id: string;
@@ -36,6 +36,11 @@ interface DetailsForm {
   maxRunTimeMinutes: number;
 }
 
+interface ErrorPayload {
+  error?: string;
+  errors?: { field: string; message: string }[];
+}
+
 function detailsFrom(detail: ModelDetail): DetailsForm {
   return {
     name: detail.model.name,
@@ -54,6 +59,15 @@ function sameDetails(a: DetailsForm, b: DetailsForm): boolean {
   );
 }
 
+/** The message for a failed save: field errors, then the server's own `error` (a stale version, a taken name/slug, ...), else a fallback. */
+async function messageFrom(res: Response, fallback: string): Promise<string> {
+  const payload: ErrorPayload = await res.json().catch(() => ({}));
+  const issues = payload.errors
+    ?.map((e) => `${e.field}: ${e.message}`)
+    .join(", ");
+  return issues ?? payload.error ?? fallback;
+}
+
 /** The Model editor: Details, and the Workflow's nodes with a filter (issue #40). */
 export function ModelEditorPage() {
   const { id } = useParams<{ id: string }>();
@@ -64,7 +78,14 @@ export function ModelEditorPage() {
   const [form, setForm] = useState<DetailsForm | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [nodeFilter, setNodeFilter] = useState("");
+  // Set right before navigating away after a successful delete: `dirty`
+  // is still computed from this render's (pre-setForm(null)) state when
+  // the blocker runs, since state updates haven't flushed yet, so without
+  // this it would ask "Discard unsaved changes?" a second time right
+  // after the Admin already confirmed the delete itself.
+  const bypassBlockerRef = useRef(false);
 
   function load() {
     if (!id) return;
@@ -97,8 +118,22 @@ export function ModelEditorPage() {
     return () => window.removeEventListener("beforeunload", handler);
   }, [dirty]);
 
+  // Catches every in-app navigation away from the editor while dirty: the
+  // "Back to Models" button, AdminShell's nav links, and the browser's
+  // own Back/Forward (issue #40 follow-up: beforeunload alone misses all
+  // three since they never unload the page).
+  useBlocker(({ currentLocation, nextLocation }) => {
+    if (
+      bypassBlockerRef.current ||
+      !dirty ||
+      currentLocation.pathname === nextLocation.pathname
+    ) {
+      return false;
+    }
+    return !window.confirm("Discard unsaved changes?");
+  });
+
   function goBack() {
-    if (dirty && !window.confirm("Discard unsaved changes?")) return;
     navigate("/admin/models");
   }
 
@@ -115,23 +150,8 @@ export function ModelEditorPage() {
         body: JSON.stringify({ ...form, version: detail.model.version }),
       });
 
-      if (res.status === 409) {
-        setSaveError("changed by someone else, reload");
-        return;
-      }
       if (!res.ok) {
-        const payload = await res
-          .json()
-          .catch(() => ({ error: "save failed" }));
-        const issues = Array.isArray(payload.errors)
-          ? payload.errors
-              .map(
-                (e: { field: string; message: string }) =>
-                  `${e.field}: ${e.message}`,
-              )
-              .join(", ")
-          : null;
-        setSaveError(issues ?? payload.error ?? "save failed");
+        setSaveError(await messageFrom(res, "save failed"));
         return;
       }
 
@@ -139,6 +159,26 @@ export function ModelEditorPage() {
     } finally {
       setSaving(false);
     }
+  }
+
+  async function handleDelete() {
+    if (!detail) return;
+    if (!window.confirm("Delete this Model?")) return;
+    setDeleteError(null);
+
+    const res = await fetch(
+      `/api/admin/models/${detail.model.id}?version=${detail.model.version}`,
+      { method: "DELETE" },
+    );
+
+    if (!res.ok) {
+      setDeleteError(await messageFrom(res, "delete failed"));
+      return;
+    }
+
+    // The Model is gone; there's nothing left to discard a confirm over.
+    bypassBlockerRef.current = true;
+    navigate("/admin/models");
   }
 
   if (loadError) return <p role="alert">{loadError}</p>;
@@ -253,6 +293,11 @@ export function ModelEditorPage() {
           </tbody>
         </table>
       </section>
+
+      <button type="button" onClick={() => void handleDelete()}>
+        Delete
+      </button>
+      {deleteError && <p role="alert">{deleteError}</p>}
     </section>
   );
 }

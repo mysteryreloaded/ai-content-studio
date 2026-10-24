@@ -44,6 +44,8 @@ describe("Site settings store", () => {
       title: "My Studio",
       landingText: "Welcome!",
       accent: "violet",
+      signUpMode: "approval",
+      contact: "",
       logo: { bytes: logoBytes, contentType: "image/png" },
     });
 
@@ -80,6 +82,8 @@ describe("Site settings store", () => {
       title: "Someone else's edit",
       landingText: "",
       accent: "teal",
+      signUpMode: "approval",
+      contact: "",
     });
 
     expect(result).toEqual({ ok: false, reason: "stale" });
@@ -242,6 +246,8 @@ describe("Site settings and Site terms have independent concurrency locks", () =
       title: "Renamed Studio",
       landingText: "",
       accent: "teal",
+      signUpMode: "approval",
+      contact: "",
     });
     expect(brandingResult.ok).toBe(true);
 
@@ -270,6 +276,8 @@ describe("Site settings and Site terms have independent concurrency locks", () =
       title: "Renamed Again",
       landingText: "",
       accent: "teal",
+      signUpMode: "approval",
+      contact: "",
     });
     expect(brandingResult.ok).toBe(true);
   });

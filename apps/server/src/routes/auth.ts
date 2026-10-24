@@ -16,6 +16,7 @@ import {
   deleteSession,
 } from "../auth/session.js";
 import { upsertUserFromGoogle } from "../auth/users.js";
+import { getSiteSettings } from "../branding/site-settings-store.js";
 import type { Database } from "../db/client.js";
 import type { Env } from "../env.js";
 
@@ -118,11 +119,13 @@ export function authRoute(
         return c.redirect(`/?auth_error=${result.reason}`);
       }
 
+      const settings = await getSiteSettings(deps.db);
       const user = await upsertUserFromGoogle(
         deps.db,
         deps.clock,
         result.identity,
         deps.env.ADMIN_EMAILS,
+        settings.signUpMode,
       );
 
       const { cookieValue, expiresAt } = await createSession(

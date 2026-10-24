@@ -30,6 +30,7 @@ export function siteSettingsRoute(
         title: settings.title,
         landingText: settings.landingText,
         accent: settings.accent,
+        contact: settings.contact,
         hasLogo: settings.logo !== null,
         hasBackground: settings.background !== null,
       });

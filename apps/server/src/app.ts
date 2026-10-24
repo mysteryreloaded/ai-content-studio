@@ -20,6 +20,7 @@ import type { Logger } from "./logger.js";
 import { ModelRepository } from "./models/repository.js";
 import { ProblemsMonitor } from "./problems/monitor.js";
 import { ProblemsRegistry } from "./problems/problems.js";
+import { adminAuditRoute } from "./routes/admin-audit.js";
 import { adminBackendsRoute } from "./routes/admin-backends.js";
 import { adminLogsRoute } from "./routes/admin-logs.js";
 import { adminModelsRoute } from "./routes/admin-models.js";
@@ -146,6 +147,7 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
     "/api/admin/models",
     adminModelsRoute(deps.db, modelRepository, routes),
   );
+  app.route("/api/admin/audit", adminAuditRoute(deps.db, routes));
   app.route(
     "/api/admin/overview",
     adminOverviewRoute(

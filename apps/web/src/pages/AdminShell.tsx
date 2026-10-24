@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, Navigate, Route, Routes } from "react-router-dom";
 import { useSession } from "../useSession.js";
+import { AuditPage } from "./AuditPage.js";
 import { BackendsPage } from "./BackendsPage.js";
 import { LogsPage } from "./LogsPage.js";
 import { ModelEditorPage } from "./ModelEditorPage.js";
@@ -63,6 +64,7 @@ export function AdminShell() {
         <Link to="/admin/settings">Settings</Link>
         <Link to="/admin/models">Models</Link>
         <Link to="/admin/logs">Logs{errorCount ? ` (${errorCount})` : ""}</Link>
+        <Link to="/admin/audit">Audit</Link>
       </nav>
 
       <Routes>
@@ -79,6 +81,7 @@ export function AdminShell() {
         <Route path="models" element={<ModelsPage />} />
         <Route path="models/:id" element={<ModelEditorPage />} />
         <Route path="logs" element={<LogsPage />} />
+        <Route path="audit" element={<AuditPage />} />
       </Routes>
     </main>
   );

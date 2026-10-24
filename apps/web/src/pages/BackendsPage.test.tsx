@@ -1,24 +1,27 @@
-// A DOM is registered only for this file's run (not a global preload),
-// since bun test runs every file in one process and other files (the
-// server's) must keep Bun's own fetch/Response untouched. It must be
-// registered before @testing-library/react is imported, since that
-// module binds its `screen` helper to `document.body` at import time.
-import { afterAll, afterEach, describe, expect, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-
-await GlobalRegistrator.register();
+// See ../test/happy-dom-setup.ts for why this is registered once, here,
+// before @testing-library/react is imported, and never unregistered.
+import { afterEach, describe, expect, test } from "bun:test";
+import { BUN_FETCH } from "../test/happy-dom-setup.js";
 
 const { cleanup, render, screen, waitFor } = await import(
   "@testing-library/react"
 );
+const { MemoryRouter } = await import("react-router-dom");
 const { BackendsPage } = await import("./BackendsPage.js");
+
+function renderPage() {
+  return render(
+    <MemoryRouter>
+      <BackendsPage />
+    </MemoryRouter>,
+  );
+}
 
 afterEach(() => {
   cleanup();
-});
-
-afterAll(async () => {
-  await GlobalRegistrator.unregister();
+  // A mocked fetch must never leak into the next test, in this file or
+  // another's — bun test runs every file in one process.
+  globalThis.fetch = BUN_FETCH;
 });
 
 const BACKEND = {
@@ -63,7 +66,7 @@ describe("BackendsPage", () => {
       Response.json({ backends: [BACKEND], disabledBanner: null }),
     );
 
-    render(<BackendsPage />);
+    renderPage();
 
     expect(await screen.findByText("GPU 1")).toBeTruthy();
     expect(screen.getByText("reachable")).toBeTruthy();
@@ -92,7 +95,7 @@ describe("BackendsPage", () => {
       }),
     );
 
-    render(<BackendsPage />);
+    renderPage();
 
     await screen.findByText("Unknown one");
     expect(screen.getByText("unknown")).toBeTruthy();
@@ -116,7 +119,7 @@ describe("BackendsPage", () => {
       }),
     );
 
-    render(<BackendsPage />);
+    renderPage();
 
     expect(await screen.findByText("re-enter credentials")).toBeTruthy();
   });
@@ -129,20 +132,22 @@ describe("BackendsPage", () => {
       }),
     );
 
-    render(<BackendsPage />);
+    renderPage();
 
     expect(await screen.findByText("Backend contact is disabled")).toBeTruthy();
   });
 
-  test("links to the Backend's history endpoint", async () => {
+  test("links to the Audit page, filtered to this Backend", async () => {
     mockFetch(() =>
       Response.json({ backends: [BACKEND], disabledBanner: null }),
     );
 
-    render(<BackendsPage />);
+    renderPage();
 
     const link = (await screen.findByText("History")) as HTMLAnchorElement;
-    expect(link.getAttribute("href")).toBe("/api/admin/backends/b1/history");
+    expect(link.getAttribute("href")).toBe(
+      "/admin/audit?targetType=backend&targetId=b1",
+    );
   });
 
   test("adding a Backend posts the form and reloads the list", async () => {
@@ -156,7 +161,7 @@ describe("BackendsPage", () => {
     });
 
     const { default: userEvent } = await import("@testing-library/user-event");
-    render(<BackendsPage />);
+    renderPage();
 
     await screen.findByText("Add Backend");
     await userEvent.click(screen.getByText("Add Backend"));
@@ -184,7 +189,7 @@ describe("BackendsPage", () => {
       throw new Error(`unexpected ${call.method}`);
     });
 
-    render(<BackendsPage />);
+    renderPage();
 
     await screen.findByText("GPU 1");
     const { default: userEvent } = await import("@testing-library/user-event");
@@ -210,7 +215,7 @@ describe("BackendsPage", () => {
       );
     });
 
-    render(<BackendsPage />);
+    renderPage();
 
     await screen.findByText("GPU 1");
     const { default: userEvent } = await import("@testing-library/user-event");
@@ -230,7 +235,7 @@ describe("BackendsPage", () => {
       throw new Error(`unexpected ${call.method}`);
     });
 
-    render(<BackendsPage />);
+    renderPage();
 
     await screen.findByText("GPU 1");
     const { default: userEvent } = await import("@testing-library/user-event");

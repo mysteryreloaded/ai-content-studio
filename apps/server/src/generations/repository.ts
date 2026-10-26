@@ -1364,6 +1364,22 @@ export class GenerationsRepository {
   }
 
   /**
+   * Ops-only path (issue #77's `check-storage --fix`): tombstones
+   * Generations whose Asset files are missing from disk, regardless of
+   * owner or state — unlike `deleteGeneration`/`deleteSubmission`, which
+   * only a Generation's own user can trigger on an ended one. The files
+   * are already gone, so `deleteStorageFor` (generations/deletion.ts)
+   * is still safe to run on the keys returned here — it's a no-op for
+   * anything not actually on disk.
+   */
+  async tombstoneGenerationsWithMissingAssets(
+    ids: readonly string[],
+    now: Date,
+  ): Promise<DeletedStorageKeys> {
+    return this.finishDelete(ids, now);
+  }
+
+  /**
    * Deletes one ended Generation (issue #57's AC), into a Tombstone:
    * `null` when it's missing, not this user's, already deleted, or
    * still under way (nothing to delete yet — cancel it first).

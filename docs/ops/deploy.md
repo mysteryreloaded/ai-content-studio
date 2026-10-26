@@ -3,6 +3,10 @@
 How an Operator runs the app itself — the `studio` container, its
 Postgres and HTTPS in front of it. For turning a GPU machine into a
 Backend, see [backend-kit.md](backend-kit.md); that's a separate host.
+For daily backups, restore and the quarterly restore drill, see
+[backup.md](backup.md) — `ops/studio/upgrade.sh`'s own backup step
+below is a one-off safety net for an upgrade, not a substitute for
+that.
 
 ## The default path: one Compose file, one `.env`
 

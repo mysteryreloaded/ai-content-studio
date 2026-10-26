@@ -1,0 +1,12 @@
+[Unit]
+Description=AI Content Studio: daily encrypted backup
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# Edit this path to wherever docker-compose.yml, .env and backup.env
+# live on this host (ops/backup/backup.sh finds that directory itself
+# from its own path, two levels up — keep the relative layout from the
+# repo: ops/backup/backup.sh next to ops/backup/backup.service).
+ExecStart=/opt/ai-content-studio/ops/backup/backup.sh

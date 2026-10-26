@@ -20,9 +20,11 @@ that.
    from its own. Easiest: clone the repo at the release tag you're
    deploying and work from there instead of copying files individually.
 3. Copy `.env.example` to `.env` and fill it in: `STUDIO_VERSION` (a
-   released version, from the
-   [package's GHCR page](https://github.com/mysteryreloaded/ai-content-studio/pkgs/container/ai-content-studio) —
-   never `latest`), `DOMAIN`, `PUBLIC_URL`, the Google OAuth credentials,
+   released version — the images are published at
+   `ghcr.io/mysteryreloaded/ai-content-studio`, and the package page on
+   the [repository](https://github.com/mysteryreloaded/ai-content-studio)
+   lists them; never `latest`), `DOMAIN`, `PUBLIC_URL`, the Google OAuth
+   credentials,
    `ADMIN_EMAILS`, and a `SECRET_KEY` from `openssl rand -base64 32`. See
    [server-env.md](../server-env.md) for what each one does, and change
    `POSTGRES_PASSWORD` before the first start.
@@ -34,11 +36,16 @@ that.
 5. Point `DOMAIN`'s DNS `A`/`AAAA` record at the host, if you haven't
    already — Caddy needs it resolvable to issue the certificate.
 
-The image is multi-arch (`linux/amd64`, `linux/arm64`). Pushing a
-`vX.Y.Z` tag runs `.github/workflows/release.yml`, which builds and
-pushes `ghcr.io/mysteryreloaded/ai-content-studio:X.Y.Z` (and `:latest`,
-for browsing the package page only — pin `STUDIO_VERSION` to the numbered
-tag, never to `latest`).
+The image is multi-arch (`linux/amd64`, `linux/arm64`). A release is cut
+in two steps, described in [releasing.md](releasing.md): a maintainer
+first tags a **candidate** (`vX.Y.Z-rc.N`), which runs the full gate
+(including an upgrade check and native boots) and pushes
+`ghcr.io/mysteryreloaded/ai-content-studio:X.Y.Z-rc.N`; once the release
+issue's checklist is ticked, the maintainer tags **`vX.Y.Z`**, which
+re-tags that candidate's digest as `X.Y.Z` (and `:latest`, for browsing
+the package page only) without rebuilding — the final image is the exact
+digest the gate already ran. Pin `STUDIO_VERSION` to the numbered tag,
+never to `latest`.
 
 ## Upgrading
 
@@ -51,6 +58,12 @@ tag, never to `latest`).
    new release first.
 3. **Up**: `docker compose up -d` — `studio` runs migrations under its
    lock before serving, same as any other start.
+
+Each published release passed an **upgrade check** before its final tag
+was cut ([releasing.md](releasing.md)): its image booted on a database
+and `/data` seeded by the previous release and came up healthy, migrated
+and with `check-storage` clean. The backup in step 1 is still the safety
+net — the check proves the path is sound, it does not replace the backup.
 
 Keep a few backups around and copy them off the host; the script only
 writes them locally.

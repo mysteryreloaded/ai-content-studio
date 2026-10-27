@@ -68,15 +68,18 @@ if [ -z "$digest" ] || [ -z "$ctype" ]; then
   exit 1
 fi
 
+# The registry's manifest endpoint only stores on PUT (the CNCF Distribution
+# spec's "PUT /v2/<name>/manifests/<reference>"); POST is for blob uploads
+# and the registry answers it with 405 UNSUPPORTED.
 for newtag in "$tag" latest; do
-  curl -fsSL -X POST \
+  curl -fsSL -X PUT \
     -H "Authorization: Bearer $GITHUB_TOKEN" \
     -H "Accept: $accept" \
     -H "Content-Type: $ctype" \
     --data-binary @"$tmp/manifest" \
-    -D "$tmp/post-$newtag.headers" \
+    -D "$tmp/put-$newtag.headers" \
     "$api/manifests/$newtag" > /dev/null
-  newdigest=$(grep -i '^docker-content-digest:' "$tmp/post-$newtag.headers" | tr -d '\r' | awk '{print $2}')
+  newdigest=$(grep -i '^docker-content-digest:' "$tmp/put-$newtag.headers" | tr -d '\r' | awk '{print $2}')
   if [ "$newdigest" != "$digest" ]; then
     echo "retag-final: $name:$newtag points at $newdigest, not the candidate's $digest" >&2
     exit 1

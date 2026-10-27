@@ -13,11 +13,16 @@ in [the consent screen](consent.md).
 ## How versioning works
 
 The terms body carries a **version number** the Studio maintains for
-you:
+you. A non-blank body always starts at, or bumps to, a *new* number: a
+number is never reused, and re-introducing terms after a blank must
+never silently satisfy an old acceptance.
 
-- The **first time** you save a non-blank body, it becomes version 1.
-- If you **blank** the body, the number is kept, not reset; a later
-  re-save keeps the same number.
+- The **first time** you save a non-blank body, it becomes **version 1**.
+- If you **blank** the body, the gate turns off (no terms are required)
+  but the number is **kept**, not reset. The next non-blank save
+  **re-introduces** the terms: the version is **bumped** to a new number
+  and **every user's acceptance is cleared**, so each user is asked to
+  accept the re-introduced terms again.
 - If the body is already non-blank and you tick **"Ask everyone to
   accept again"** when you save, the version is **bumped** and
   **every user's acceptance is cleared** — on their next visit to a

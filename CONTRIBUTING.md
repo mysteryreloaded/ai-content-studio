@@ -45,7 +45,7 @@ holds the launch Models' exported Workflow files.
 ## Day-to-day
 
 ```sh
-npm install            # bun install; one lockfile for the whole workspace
+bun install            # one lockfile (bun.lock) for the whole workspace
 docker compose up -d postgres   # the only external service the tests need
 bun run dev            # server + web together (mock Google issuer on localhost)
 ```

@@ -182,6 +182,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Workflow files (actionlint)
+        # Mount the whole repo: actionlint needs the git project for
+        # context. Any workflow file that does not parse or lint clean
+        # fails the build, so a bad `if:` (or the like) cannot ship.
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint
+
       - name: ShellCheck
         run: >-
           shellcheck
@@ -328,6 +335,11 @@ jobs:
 
       - name: Find the previous final release
         id: previous
+        env:
+          # The checkout's origin is the fork on a fork pull request;
+          # the base repo's tags are the only ones that matter (public,
+          # no token needed).
+          REMOTE: "https://github.com/${{ github.repository }}"
         run: |
           previous=$(./scripts/previous-release.sh)
           if [ -z "$previous" ]; then

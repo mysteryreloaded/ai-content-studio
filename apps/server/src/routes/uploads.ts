@@ -3,10 +3,11 @@
 // anyone else. Uploads carry on during a Pause, so these are `active`.
 
 import { Hono } from "hono";
-import type { Context } from "hono";
+import type { Context, MiddlewareHandler } from "hono";
 import { z } from "zod";
-import { type RouteEntry, guardedRoute } from "../auth/access.js";
+import { type RouteEntry, guard } from "../auth/access.js";
 import type { AppEnv } from "../auth/app-env.js";
+import { validate } from "../auth/validate.js";
 import { parseRange } from "../http/range.js";
 import type { Storage } from "../storage/storage.js";
 import type { UploadsRepository } from "../uploads/repository.js";
@@ -41,10 +42,50 @@ const createSchema = z.object({
   inputId: z.string().max(100).nullish(),
 });
 
+/**
+ * The `validate` middleware has already consumed the body (hono caches its
+ * raw text in `c.req.bodyCache`), so re-parse that cached text exactly the
+ * way the previous `c.req.json().catch(() => null)` + `safeParse` did —
+ * `null` when it doesn't parse — keeping the 400 body byte-for-byte the
+ * same for both the "malformed" and the "invalid" reason.
+ */
+async function invalidJsonBody(
+  c: Context<AppEnv>,
+  schema: typeof createSchema | typeof trimSchema,
+): Promise<Response> {
+  let body: unknown;
+  try {
+    body = JSON.parse(await c.req.text());
+  } catch {
+    body = null;
+  }
+  const parsed = schema.safeParse(body);
+  if (parsed.success) {
+    // Unreachable: `validate` only calls this after the same schema already
+    // failed on the same body — keep the 400's shape regardless.
+    return c.json({ error: "invalid input", issues: [] }, 400);
+  }
+  return c.json({ error: "invalid input", issues: parsed.error.issues }, 400);
+}
+
 function idParam(c: Context<AppEnv>): string {
   const id = c.req.param("id");
   if (!id) throw new Error("id param missing");
   return id;
+}
+
+/**
+ * `/:id/trim`'s id check as a middleware, because it must run before the
+ * JSON validation: a non-UUID id is a 404, never the 400 a bodyless or
+ * malformed body would otherwise produce — the same order the converted
+ * handler had, where the id was checked before the body was parsed.
+ */
+function checkIdParam(): MiddlewareHandler<AppEnv> {
+  return async (c, next) => {
+    const id = c.req.param("id");
+    if (!id || !UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+    await next();
+  };
 }
 
 /** `attachment; filename=...` with an RFC 5987 UTF-8 fallback, so the original name survives any characters. */
@@ -58,8 +99,7 @@ export function uploadsRoute(
   repository: UploadsRepository,
   storage: Storage,
   routes: RouteEntry[],
-): Hono<AppEnv> {
-  const app = new Hono<AppEnv>();
+) {
   const basePath = "/api/uploads";
 
   function handleError(c: Context<AppEnv>, err: unknown) {
@@ -89,150 +129,6 @@ export function uploadsRoute(
     throw err;
   }
 
-  guardedRoute(app, routes, basePath, "post", "/", "active", async (c) => {
-    const session = c.get("session");
-    if (!session) return c.json({ error: "unauthorized" }, 401);
-
-    const body = await c.req.json().catch(() => null);
-    const parsed = createSchema.safeParse(body);
-    if (!parsed.success) {
-      return c.json(
-        { error: "invalid input", issues: parsed.error.issues },
-        400,
-      );
-    }
-
-    try {
-      const upload = await service.create(session.user.id, {
-        name: parsed.data.name,
-        size: parsed.data.size,
-        type: parsed.data.type,
-        modelId: parsed.data.modelId ?? null,
-        inputId: parsed.data.inputId ?? null,
-      });
-      return c.json({ upload: toUploadSummary(upload) }, 201);
-    } catch (err) {
-      return handleError(c, err);
-    }
-  });
-
-  guardedRoute(
-    app,
-    routes,
-    basePath,
-    "get",
-    "/:id/status",
-    "active",
-    async (c) => {
-      const session = c.get("session");
-      if (!session) return c.json({ error: "unauthorized" }, 401);
-      const id = idParam(c);
-      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
-      try {
-        const upload = await service.ownUpload(session.user.id, id);
-        return c.json({ upload: toUploadSummary(upload) });
-      } catch (err) {
-        return handleError(c, err);
-      }
-    },
-  );
-
-  guardedRoute(
-    app,
-    routes,
-    basePath,
-    "put",
-    "/:id/chunk",
-    "active",
-    async (c) => {
-      const session = c.get("session");
-      if (!session) return c.json({ error: "unauthorized" }, 401);
-      const id = idParam(c);
-      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
-
-      const offset = Number(c.req.query("offset"));
-      if (!Number.isSafeInteger(offset) || offset < 0) {
-        return c.json({ error: "invalid", message: "offset is required" }, 400);
-      }
-      const declaredLength = Number(c.req.header("content-length"));
-      if (Number.isFinite(declaredLength) && declaredLength > CHUNK_BYTES) {
-        return c.json(
-          {
-            error: "invalid",
-            message: `a chunk is at most ${CHUNK_BYTES} bytes`,
-          },
-          413,
-        );
-      }
-
-      try {
-        const bytes = new Uint8Array(await c.req.arrayBuffer());
-        const next = await service.putChunk(session.user.id, id, offset, bytes);
-        return c.json({ offset: next });
-      } catch (err) {
-        return handleError(c, err);
-      }
-    },
-  );
-
-  guardedRoute(
-    app,
-    routes,
-    basePath,
-    "post",
-    "/:id/complete",
-    "active",
-    async (c) => {
-      const session = c.get("session");
-      if (!session) return c.json({ error: "unauthorized" }, 401);
-      const id = idParam(c);
-      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
-      try {
-        const upload = await service.complete(session.user.id, id);
-        return c.json({ upload: toUploadSummary(upload) });
-      } catch (err) {
-        return handleError(c, err);
-      }
-    },
-  );
-
-  /** Trims a complete video or audio Upload to a new one, "trimmed from" it (issue #51's AC). */
-  guardedRoute(
-    app,
-    routes,
-    basePath,
-    "post",
-    "/:id/trim",
-    "active",
-    async (c) => {
-      const session = c.get("session");
-      if (!session) return c.json({ error: "unauthorized" }, 401);
-      const id = idParam(c);
-      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
-
-      const body = await c.req.json().catch(() => null);
-      const parsed = trimSchema.safeParse(body);
-      if (!parsed.success) {
-        return c.json(
-          { error: "invalid input", issues: parsed.error.issues },
-          400,
-        );
-      }
-
-      try {
-        const upload = await service.trim(
-          session.user.id,
-          id,
-          parsed.data.startMs,
-          parsed.data.endMs,
-        );
-        return c.json({ upload: toUploadSummary(upload) }, 201);
-      } catch (err) {
-        return handleError(c, err);
-      }
-    },
-  );
-
   /** A complete Upload the caller owns, or any one for an Admin; null (404) otherwise. A removed Upload 404s for anyone but an Admin (issue #68's AC). */
   async function viewable(c: Context<AppEnv>) {
     const session = c.get("session");
@@ -250,46 +146,177 @@ export function uploadsRoute(
     return upload;
   }
 
-  guardedRoute(app, routes, basePath, "get", "/:id", "active", async (c) => {
-    const upload = await viewable(c);
-    if (!upload) return c.json({ error: "not found" }, 404);
+  return (
+    new Hono<AppEnv>()
+      .post(
+        "/",
+        guard(routes, basePath, "post", "/", "active"),
+        validate("json", createSchema, (c) => invalidJsonBody(c, createSchema)),
+        async (c) => {
+          const session = c.get("session");
+          if (!session) return c.json({ error: "unauthorized" }, 401);
 
-    const size = upload.size;
-    c.header("Accept-Ranges", "bytes");
-    c.header("Content-Type", upload.contentType ?? "application/octet-stream");
-    c.header("Content-Disposition", contentDisposition(upload.originalName));
-    c.header("Cache-Control", "private, max-age=31536000, immutable");
+          const body = c.req.valid("json");
+          try {
+            const upload = await service.create(session.user.id, {
+              name: body.name,
+              size: body.size,
+              type: body.type,
+              modelId: body.modelId ?? null,
+              inputId: body.inputId ?? null,
+            });
+            return c.json({ upload: toUploadSummary(upload) }, 201);
+          } catch (err) {
+            return handleError(c, err);
+          }
+        },
+      )
+      .get(
+        "/:id/status",
+        guard(routes, basePath, "get", "/:id/status", "active"),
+        async (c) => {
+          const session = c.get("session");
+          if (!session) return c.json({ error: "unauthorized" }, 401);
+          const id = idParam(c);
+          if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+          try {
+            const upload = await service.ownUpload(session.user.id, id);
+            return c.json({ upload: toUploadSummary(upload) });
+          } catch (err) {
+            return handleError(c, err);
+          }
+        },
+      )
+      .put(
+        "/:id/chunk",
+        guard(routes, basePath, "put", "/:id/chunk", "active"),
+        async (c) => {
+          const session = c.get("session");
+          if (!session) return c.json({ error: "unauthorized" }, 401);
+          const id = idParam(c);
+          if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
 
-    const file = Bun.file(storage.absolutePath(upload.storageKey));
-    const range = parseRange(c.req.header("range"), size);
-    if (!range) {
-      c.header("Content-Length", String(size));
-      return c.body(file.stream(), 200);
-    }
+          const offset = Number(c.req.query("offset"));
+          if (!Number.isSafeInteger(offset) || offset < 0) {
+            return c.json(
+              { error: "invalid", message: "offset is required" },
+              400,
+            );
+          }
+          const declaredLength = Number(c.req.header("content-length"));
+          if (Number.isFinite(declaredLength) && declaredLength > CHUNK_BYTES) {
+            return c.json(
+              {
+                error: "invalid",
+                message: `a chunk is at most ${CHUNK_BYTES} bytes`,
+              },
+              413,
+            );
+          }
 
-    c.header("Content-Range", `bytes ${range.start}-${range.end}/${size}`);
-    c.header("Content-Length", String(range.end - range.start + 1));
-    return c.body(file.slice(range.start, range.end + 1).stream(), 206);
-  });
+          try {
+            const bytes = new Uint8Array(await c.req.arrayBuffer());
+            const next = await service.putChunk(
+              session.user.id,
+              id,
+              offset,
+              bytes,
+            );
+            return c.json({ offset: next });
+          } catch (err) {
+            return handleError(c, err);
+          }
+        },
+      )
+      .post(
+        "/:id/complete",
+        guard(routes, basePath, "post", "/:id/complete", "active"),
+        async (c) => {
+          const session = c.get("session");
+          if (!session) return c.json({ error: "unauthorized" }, 401);
+          const id = idParam(c);
+          if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+          try {
+            const upload = await service.complete(session.user.id, id);
+            return c.json({ upload: toUploadSummary(upload) });
+          } catch (err) {
+            return handleError(c, err);
+          }
+        },
+      )
+      /** Trims a complete video or audio Upload to a new one, "trimmed from" it (issue #51's AC). */
+      .post(
+        "/:id/trim",
+        guard(routes, basePath, "post", "/:id/trim", "active"),
+        checkIdParam(),
+        validate("json", trimSchema, (c) => invalidJsonBody(c, trimSchema)),
+        async (c) => {
+          const session = c.get("session");
+          if (!session) return c.json({ error: "unauthorized" }, 401);
+          const id = idParam(c);
+          if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
 
-  guardedRoute(
-    app,
-    routes,
-    basePath,
-    "get",
-    "/:id/thumb",
-    "active",
-    async (c) => {
-      const upload = await viewable(c);
-      if (!upload?.thumbnailKey) return c.json({ error: "not found" }, 404);
+          const body = c.req.valid("json");
+          try {
+            const upload = await service.trim(
+              session.user.id,
+              id,
+              body.startMs,
+              body.endMs,
+            );
+            return c.json({ upload: toUploadSummary(upload) }, 201);
+          } catch (err) {
+            return handleError(c, err);
+          }
+        },
+      )
+      .get(
+        "/:id",
+        guard(routes, basePath, "get", "/:id", "active"),
+        async (c) => {
+          const upload = await viewable(c);
+          if (!upload) return c.json({ error: "not found" }, 404);
 
-      c.header("Content-Type", "image/webp");
-      c.header("Cache-Control", "private, max-age=31536000, immutable");
-      return c.body(
-        Bun.file(storage.absolutePath(upload.thumbnailKey)).stream(),
-      );
-    },
+          const size = upload.size;
+          c.header("Accept-Ranges", "bytes");
+          c.header(
+            "Content-Type",
+            upload.contentType ?? "application/octet-stream",
+          );
+          c.header(
+            "Content-Disposition",
+            contentDisposition(upload.originalName),
+          );
+          c.header("Cache-Control", "private, max-age=31536000, immutable");
+
+          const file = Bun.file(storage.absolutePath(upload.storageKey));
+          const range = parseRange(c.req.header("range"), size);
+          if (!range) {
+            c.header("Content-Length", String(size));
+            return c.body(file.stream(), 200);
+          }
+
+          c.header(
+            "Content-Range",
+            `bytes ${range.start}-${range.end}/${size}`,
+          );
+          c.header("Content-Length", String(range.end - range.start + 1));
+          return c.body(file.slice(range.start, range.end + 1).stream(), 206);
+        },
+      )
+      .get(
+        "/:id/thumb",
+        guard(routes, basePath, "get", "/:id/thumb", "active"),
+        async (c) => {
+          const upload = await viewable(c);
+          if (!upload?.thumbnailKey) return c.json({ error: "not found" }, 404);
+
+          c.header("Content-Type", "image/webp");
+          c.header("Cache-Control", "private, max-age=31536000, immutable");
+          return c.body(
+            Bun.file(storage.absolutePath(upload.thumbnailKey)).stream(),
+          );
+        },
+      )
   );
-
-  return app;
 }

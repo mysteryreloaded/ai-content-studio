@@ -78,22 +78,6 @@ export interface AppDeps {
   webDistDir: string;
 }
 
-export interface CreatedApp {
-  app: Hono<AppEnv>;
-  /** Every route registered, with its access level (ADR 0003)'s guard test. */
-  routes: RouteEntry[];
-  /** Backend health monitoring (issue #39): call `start()` after boot, `stop()` on shutdown. */
-  backendsService: BackendsService;
-  /** Problems detection (issue #70): call `start()` after boot, `stop()` on shutdown. */
-  problemsMonitor: ProblemsMonitor;
-  /** Dispatches queued Generations to free Backends (issue #44): call `start()` after boot, `stop()` on shutdown. */
-  dispatcher: Dispatcher;
-  /** The retention sweep (issue #69): call `start()` after boot, `stop()` on shutdown. */
-  retentionScheduler: RetentionScheduler;
-  /** Boot recovery (issue #55): reattaches every Generation left `starting`/`running`/`saving` from a previous process. Call once, before `dispatcher.start()`. */
-  recover: () => Promise<void>;
-}
-
 /** One Hono app answering the API and serving the built SPA from one origin. */
 export async function createApp(deps: AppDeps) {
   const app = new Hono<AppEnv>();

@@ -304,8 +304,10 @@ jobs:
   # The upgrade check (issue #82's AC), run against the exact artifact
   # `publish` just pushed: the latest final release is booted with a fresh
   # Postgres and /data, seeded through its own API, stopped, and the
-  # candidate boots on the same database and /data. Skips itself when no
-  # final release exists below this version (so: always for v1.0.0).
+  # candidate boots on the same database and /data. v1.0.0 skips itself
+  # (there is nothing to upgrade *from*); any later candidate without a
+  # final release below it fails the gate, so a skipped check can never
+  # masquerade as a passed one.
   upgrade:
     needs: [meta, publish]
     runs-on: ubuntu-latest
@@ -330,10 +332,20 @@ jobs:
 
       - name: Find the previous final release
         id: previous
+        env:
+          # A tag push on a fork would otherwise list the fork's tags; the
+          # base repo's tags are the only ones that matter (public, no
+          # token needed).
+          REMOTE: "https://github.com/${{ github.repository }}"
         run: |
           previous=$(./scripts/previous-release.sh ${{ needs.meta.outputs.version }})
           if [ -z "$previous" ]; then
-            echo "No final release below ${{ needs.meta.outputs.version }} yet; skipping the upgrade check (docs/ops/releasing.md)."
+            if [ "${{ needs.meta.outputs.version }}" = "1.0.0" ]; then
+              echo "No final release below 1.0.0 (the first release); skipping the upgrade check (docs/ops/releasing.md)."
+            else
+              echo "::error::No final release below ${{ needs.meta.outputs.version }}, and this is not 1.0.0: the upgrade check may not be skipped (docs/ops/releasing.md)."
+              exit 1
+            fi
           else
             echo "previous=$previous" >> "$GITHUB_OUTPUT"
           fi

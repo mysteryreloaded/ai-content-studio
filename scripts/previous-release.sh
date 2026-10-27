@@ -11,16 +11,24 @@
 #   scripts/previous-release.sh 1.2.0    # for a v1.2.0-rc.N candidate
 #   scripts/previous-release.sh          # for a pull request
 #
-# Reads the tags from the public GitHub REST API (no token needed for a
-# public repo); override the repo with GITHUB_REPOSITORY.
+# Reads the tags from the checkout's git remote: git ls-remote --tags
+# $REMOTE, where REMOTE defaults to origin (a URL works too; the
+# workflows set it to the base repo, whose tags a fork's origin does not
+# have; no token is needed for a public repo). It has no fallback: a git
+# failure (offline, a bad remote, a rate limit) fails this script,
+# because a silent "no previous release" would skip the upgrade check
+# (docs/ops/releasing.md).
 set -euo pipefail
 
-repo=${GITHUB_REPOSITORY:-mysteryreloaded/ai-content-studio}
+# A git failure must fail the script, not masquerade as "no final
+# release": an upgrade check skipped that way never ran.
+refs=$(git ls-remote --tags "${REMOTE:-origin}")
 
-# Final releases only: `vX.Y.Z`, never a `-rc.N` candidate.
+# Final releases only: `vX.Y.Z`, never a `-rc.N` candidate. The peeled
+# refs (`...^{}`) fall out of the shape match; a grep that finds nothing
+# is the legitimate "no final release yet" case, not an error.
 tags=$(
-  curl -fsSL "https://api.github.com/repos/$repo/tags?per_page=100" \
-    | jq -r '.[].name // empty' \
+  sed 's/^[0-9a-f]*\trefs\/tags\///' <<<"$refs" \
     | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true
 )
 

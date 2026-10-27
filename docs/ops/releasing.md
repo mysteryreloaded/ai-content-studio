@@ -12,20 +12,24 @@ and upgrades a published version.
    `vX.Y.Z-rc.N` (the first candidate of a version is `-rc.1`). The release
    workflow runs the entire gate — everything a PR runs, plus the three
    path-triggered jobs unconditionally, plus native amd64/arm64 boots of the
-   built image — and, when a previous final release exists, the
-   [upgrade check](#the-upgrade-check). It then pushes the multi-arch image
-   as `ghcr.io/mysteryreloaded/ai-content-studio:X.Y.Z-rc.N`.
+   built image — and the [upgrade check](#the-upgrade-check), which only
+   v1.0.0 skips (any later candidate without a final release below it fails
+   the gate, so the check can never be silently skipped). It then pushes
+   the multi-arch image as
+   `ghcr.io/mysteryreloaded/ai-content-studio:X.Y.Z-rc.N`.
 2. **Tick the Release issue.** Open one from the
    [Release issue template](https://github.com/mysteryreloaded/ai-content-studio/new/choose)
    and work through its GPU checklist on the 2×3090 test Backend
    ([the checklist](#the-manual-gpu-checklist), kept there in full). A
    failure means a new `rc.N+1` — fix on `main`, re-cut, re-tick.
 3. **Cut the final.** When the Release issue is fully ticked, tag
-   `vX.Y.Z`. The release workflow re-tags the latest
-   `X.Y.Z-rc.N`'s digest as `X.Y.Z` and `latest` — same image, same digest,
-   no rebuild. If the latest candidate is not the one you checked,
-   re-cut it as a higher `rc.N` first so the highest number is the passing
-   one.
+   `vX.Y.Z`. The release workflow first verifies that the candidate's own
+   gate ran green — the upgrade check and the native boots run *after* the
+   image is pushed, so a pushed image alone is not a passing candidate —
+   and then re-tags the latest `X.Y.Z-rc.N`'s digest as `X.Y.Z` and
+   `latest`: same image, same digest, no rebuild. If the latest candidate
+   is not the one you checked, re-cut it as a higher `rc.N` first so the
+   highest number is the passing one.
 
 A **patch** release runs the reduced checklist (one Mode per launch Model
 plus whatever changed); a **minor or major** runs every box. The checklist
@@ -40,8 +44,9 @@ A candidate tag runs, in parallel:
   checks (migrations vs schema, `.env.example` vs the env schema, Compose
   config, ShellCheck, doc links), `bun test` and the Vite build — the same
   checks a PR runs on `main`.
-- **The upgrade check** (below; skipped when no earlier final release
-  exists, so always for v1.0.0).
+- **The upgrade check** (below; only v1.0.0 skips it — any later candidate
+  without a final release below it fails the gate instead, so the check can
+  never be silently skipped).
 - **The backup round-trip**: the same job the path trigger runs in CI — a
   canary row survives a dropped database and a wiped `/data`, and
   `check-storage` is clean afterwards.
@@ -60,8 +65,10 @@ run, which has no such budget.
 ## The upgrade check
 
 `scripts/upgrade-check.sh` is the automated half of "an upgrade never
-breaks what was already installed" (skipped for v1.0.0 — there is nothing
-to upgrade *from*). Given a previous release image and a candidate image,
+breaks what was already installed". A v1.0.0 candidate skips it — there is
+nothing to upgrade *from* — and any later candidate without a final
+release below it fails the gate instead, so the check can never be
+silently skipped. Given a previous release image and a candidate image,
 it:
 
 1. starts the **previous** release with a fresh Postgres and a fresh

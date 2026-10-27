@@ -1,6 +1,6 @@
 import type { Clock, Timer } from "@ai-content-studio/shared";
 import { type Context, Hono } from "hono";
-import { type RouteEntry, guardedRoute } from "../auth/access.js";
+import { type RouteEntry, guard } from "../auth/access.js";
 import type { AppEnv } from "../auth/app-env.js";
 import type { NoticeEvents } from "../branding/notice-events.js";
 import {
@@ -33,135 +33,113 @@ export function siteSettingsRoute(
   noticeEvents: NoticeEvents,
   clock: Clock,
   routes: RouteEntry[] = [],
-): Hono<AppEnv> {
-  const app = new Hono<AppEnv>();
+) {
+  const basePath = "/api/site-settings";
 
-  guardedRoute(
-    app,
-    routes,
-    "/api/site-settings",
-    "get",
-    "/",
-    "public",
-    async (c) => {
-      const settings = await getSiteSettings(db);
-      return c.json({
-        title: settings.title,
-        landingText: settings.landingText,
-        accent: settings.accent,
-        signUpMode: settings.signUpMode,
-        contact: settings.contact,
-        hasLogo: settings.logo !== null,
-        hasBackground: settings.background !== null,
-        hasTerms: activeTermsVersion(settings) !== null,
-        footerLinks: settings.footerLinks,
-        hasNonVideoEnabledModel:
-          await modelRepository.hasEnabledNonVideoModel(),
-      });
-    },
-  );
+  return (
+    new Hono<AppEnv>()
+      .get("/", guard(routes, basePath, "get", "/", "public"), async (c) => {
+        const settings = await getSiteSettings(db);
+        return c.json({
+          title: settings.title,
+          landingText: settings.landingText,
+          accent: settings.accent,
+          signUpMode: settings.signUpMode,
+          contact: settings.contact,
+          hasLogo: settings.logo !== null,
+          hasBackground: settings.background !== null,
+          hasTerms: activeTermsVersion(settings) !== null,
+          footerLinks: settings.footerLinks,
+          hasNonVideoEnabledModel:
+            await modelRepository.hasEnabledNonVideoModel(),
+        });
+      })
+      // `/api/site-settings/notice-stream`: the Notice/Pause banner
+      // (issue #59), public so it reaches signed-out visitors too.
+      // Mirrors `routes/generations.ts`'s SSE pattern, but with one
+      // shared, unkeyed audience instead of one per user.
+      .get(
+        "/notice-stream",
+        guard(routes, basePath, "get", "/notice-stream", "public"),
+        async (c) => {
+          c.header("Content-Type", "text/event-stream");
+          c.header("Cache-Control", "no-cache");
+          c.header("Connection", "keep-alive");
+          c.header("X-Accel-Buffering", "no");
 
-  // `/api/site-settings/notice-stream`: the Notice/Pause banner (issue
-  // #59), public so it reaches signed-out visitors too. Mirrors
-  // `routes/generations.ts`'s SSE pattern, but with one shared, unkeyed
-  // audience instead of one per user.
-  guardedRoute(
-    app,
-    routes,
-    "/api/site-settings",
-    "get",
-    "/notice-stream",
-    "public",
-    async (c) => {
-      c.header("Content-Type", "text/event-stream");
-      c.header("Cache-Control", "no-cache");
-      c.header("Connection", "keep-alive");
-      c.header("X-Accel-Buffering", "no");
+          const encoder = new TextEncoder();
+          let heartbeatTimer: Timer | null = null;
+          let unsubscribe: (() => void) | null = null;
 
-      const encoder = new TextEncoder();
-      let heartbeatTimer: Timer | null = null;
-      let unsubscribe: (() => void) | null = null;
+          const body = new ReadableStream({
+            async start(controller) {
+              const send = (event: string, data: unknown) => {
+                try {
+                  controller.enqueue(encoder.encode(sseEvent(event, data)));
+                } catch {
+                  cleanup();
+                }
+              };
 
-      const body = new ReadableStream({
-        async start(controller) {
-          const send = (event: string, data: unknown) => {
-            try {
-              controller.enqueue(encoder.encode(sseEvent(event, data)));
-            } catch {
-              cleanup();
-            }
-          };
+              // Subscribes before reading the snapshot (mirrors
+              // `routes/generations.ts`): a change published in between is
+              // buffered here instead of landing in the gap between the two.
+              let bufferingBeforeSnapshot = true;
+              let latestBuffered: unknown = null;
+              unsubscribe = noticeEvents.subscribe((snapshot) => {
+                if (bufferingBeforeSnapshot) {
+                  latestBuffered = snapshot;
+                  return;
+                }
+                send("notice", snapshot);
+              });
 
-          // Subscribes before reading the snapshot (mirrors
-          // `routes/generations.ts`): a change published in between is
-          // buffered here instead of landing in the gap between the two.
-          let bufferingBeforeSnapshot = true;
-          let latestBuffered: unknown = null;
-          unsubscribe = noticeEvents.subscribe((snapshot) => {
-            if (bufferingBeforeSnapshot) {
-              latestBuffered = snapshot;
-              return;
-            }
-            send("notice", snapshot);
+              send("notice", await getPauseNotice(db));
+              bufferingBeforeSnapshot = false;
+              if (latestBuffered) send("notice", latestBuffered);
+
+              const scheduleHeartbeat = () => {
+                heartbeatTimer = clock.setTimeout(() => {
+                  try {
+                    controller.enqueue(encoder.encode(": heartbeat\n\n"));
+                    scheduleHeartbeat();
+                  } catch {
+                    cleanup();
+                  }
+                }, HEARTBEAT_INTERVAL_MS);
+              };
+              scheduleHeartbeat();
+
+              const server = c.env as BunServerEnv | undefined;
+              server?.timeout?.(c.req.raw, 0);
+
+              function cleanup() {
+                unsubscribe?.();
+                if (heartbeatTimer !== null) clock.clearTimeout(heartbeatTimer);
+              }
+
+              c.req.raw.signal.addEventListener("abort", cleanup);
+            },
+            cancel() {
+              unsubscribe?.();
+              if (heartbeatTimer !== null) clock.clearTimeout(heartbeatTimer);
+            },
           });
 
-          send("notice", await getPauseNotice(db));
-          bufferingBeforeSnapshot = false;
-          if (latestBuffered) send("notice", latestBuffered);
-
-          const scheduleHeartbeat = () => {
-            heartbeatTimer = clock.setTimeout(() => {
-              try {
-                controller.enqueue(encoder.encode(": heartbeat\n\n"));
-                scheduleHeartbeat();
-              } catch {
-                cleanup();
-              }
-            }, HEARTBEAT_INTERVAL_MS);
-          };
-          scheduleHeartbeat();
-
-          const server = c.env as BunServerEnv | undefined;
-          server?.timeout?.(c.req.raw, 0);
-
-          function cleanup() {
-            unsubscribe?.();
-            if (heartbeatTimer !== null) clock.clearTimeout(heartbeatTimer);
-          }
-
-          c.req.raw.signal.addEventListener("abort", cleanup);
+          return c.body(body);
         },
-        cancel() {
-          unsubscribe?.();
-          if (heartbeatTimer !== null) clock.clearTimeout(heartbeatTimer);
-        },
-      });
-
-      return c.body(body);
-    },
+      )
+      .get(
+        "/logo",
+        guard(routes, basePath, "get", "/logo", "public"),
+        async (c) => serveImage(c, db, storage, "logo"),
+      )
+      .get(
+        "/background",
+        guard(routes, basePath, "get", "/background", "public"),
+        async (c) => serveImage(c, db, storage, "background"),
+      )
   );
-
-  guardedRoute(
-    app,
-    routes,
-    "/api/site-settings",
-    "get",
-    "/logo",
-    "public",
-    async (c) => serveImage(c, db, storage, "logo"),
-  );
-
-  guardedRoute(
-    app,
-    routes,
-    "/api/site-settings",
-    "get",
-    "/background",
-    "public",
-    async (c) => serveImage(c, db, storage, "background"),
-  );
-
-  return app;
 }
 
 async function serveImage(

@@ -78,24 +78,8 @@ export interface AppDeps {
   webDistDir: string;
 }
 
-export interface CreatedApp {
-  app: Hono<AppEnv>;
-  /** Every route registered, with its access level (ADR 0003)'s guard test. */
-  routes: RouteEntry[];
-  /** Backend health monitoring (issue #39): call `start()` after boot, `stop()` on shutdown. */
-  backendsService: BackendsService;
-  /** Problems detection (issue #70): call `start()` after boot, `stop()` on shutdown. */
-  problemsMonitor: ProblemsMonitor;
-  /** Dispatches queued Generations to free Backends (issue #44): call `start()` after boot, `stop()` on shutdown. */
-  dispatcher: Dispatcher;
-  /** The retention sweep (issue #69): call `start()` after boot, `stop()` on shutdown. */
-  retentionScheduler: RetentionScheduler;
-  /** Boot recovery (issue #55): reattaches every Generation left `starting`/`running`/`saving` from a previous process. Call once, before `dispatcher.start()`. */
-  recover: () => Promise<void>;
-}
-
 /** One Hono app answering the API and serving the built SPA from one origin. */
-export async function createApp(deps: AppDeps): Promise<CreatedApp> {
+export async function createApp(deps: AppDeps) {
   const app = new Hono<AppEnv>();
   const routes: RouteEntry[] = [];
   const bootTime = deps.clock.now();
@@ -164,25 +148,9 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
     return c.json({ error: "internal error" }, 500);
   });
 
-  app.route("/healthz", healthRoute(deps.sql, deps.clock, routes));
   const modelRepository = new ModelRepository(deps.db, deps.clock);
   const noticeEvents = new NoticeEvents();
   const isPaused = async () => (await getPauseNotice(deps.db)).paused;
-  app.route(
-    "/api/site-settings",
-    siteSettingsRoute(
-      deps.db,
-      storage,
-      modelRepository,
-      noticeEvents,
-      deps.clock,
-      routes,
-    ),
-  );
-  app.route(
-    "/api/auth",
-    authRoute({ db: deps.db, clock: deps.clock, env: deps.env }, routes),
-  );
   const modelBackendsRepository = new ModelBackendsRepository(
     deps.db,
     deps.clock,
@@ -235,40 +203,6 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
     logRetentionDays: deps.env.LOG_RETENTION_DAYS,
   });
 
-  app.route(
-    "/api/models",
-    modelsRoute(
-      modelRepository,
-      generationsRepository,
-      {
-        modelRepository,
-        modelBackendsRepository,
-        backendsService,
-        generationsRepository,
-        generationEvents,
-        clock: deps.clock,
-        logWriter,
-        getBlockedWords: () => getBlockedWords(deps.db),
-        isPaused,
-        getSiteCaps: () => getSiteCaps(deps.db),
-        onGenerationQueued: dispatcher.wake,
-        uploadsRepository,
-        hasFreeDisk: diskHasRoom,
-      },
-      routes,
-    ),
-  );
-  app.route(
-    "/api/generations",
-    generationsRoute(
-      deps.db,
-      generationsRepository,
-      generationEvents,
-      deps.clock,
-      storage,
-      routes,
-    ),
-  );
   const cancellationDeps = {
     queue: dispatchQueue,
     generationsRepository,
@@ -276,32 +210,6 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
     wakeDispatcher: dispatcher.wake,
     clock: deps.clock,
   };
-  app.route(
-    "/api/submissions",
-    submissionsRoute(
-      cancellationDeps,
-      generationsRepository,
-      storage,
-      deps.clock,
-      routes,
-    ),
-  );
-  app.route(
-    "/api/auth",
-    accountRoute(
-      {
-        db: deps.db,
-        clock: deps.clock,
-        generationsRepository,
-        uploadsRepository,
-        cancellationDeps,
-        storage,
-      },
-      routes,
-    ),
-  );
-  app.route("/api/assets", assetsRoute(assetsRepository, storage, routes));
-  app.route("/api/gallery", galleryRoute(generationsRepository, routes));
   const uploadsService = new UploadsService({
     repository: uploadsRepository,
     storage,
@@ -323,138 +231,224 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
     },
     media,
   });
-  app.route(
-    "/api/uploads",
-    uploadsRoute(uploadsService, uploadsRepository, storage, routes),
-  );
-  app.route("/api/admin", adminRoute(routes));
-  app.route(
-    "/api/admin/site-settings",
-    adminSiteSettingsRoute(
-      deps.db,
-      deps.clock,
-      storage,
-      noticeEvents,
-      () => wakeDispatcher(),
-      routes,
-    ),
-  );
-  app.route(
-    "/api/admin/backends",
-    adminBackendsRoute(
-      deps.db,
-      deps.clock,
-      backendRepository,
-      backendsService,
-      generationsRepository,
-      routes,
-      dispatcher.wake,
-    ),
-  );
-  app.route("/api/admin/logs", adminLogsRoute(deps.db, deps.clock, routes));
-  app.route("/api/terms", termsRoute(deps.db, deps.clock, routes));
-  app.route(
-    "/api/admin/models",
-    adminModelsRoute(
-      deps.db,
-      modelRepository,
-      modelBackendsRepository,
-      backendsService,
-      generationsRepository,
-      routes,
-      deps.env.MAX_UPLOAD_MB,
-      {
-        generationEvents,
-        clock: deps.clock,
-        uploadsRepository,
-        hasFreeDisk: diskHasRoom,
-        wakeDispatcher: dispatcher.wake,
-      },
-    ),
-  );
-  app.route("/api/admin/audit", adminAuditRoute(deps.db, routes));
-  app.route(
-    "/api/admin/generations",
-    adminGenerationsRoute(
-      deps.db,
-      generationsRepository,
-      {
-        queue: dispatchQueue,
-        generationsRepository,
-        generationEvents,
-        storage,
-        wakeDispatcher: dispatcher.wake,
-        clock: deps.clock,
-      },
-      routes,
-    ),
-  );
-  app.route(
-    "/api/admin/uploads",
-    adminUploadsRoute(
-      uploadsRepository,
-      {
-        uploadsRepository,
-        generationsRepository,
-        queue: dispatchQueue,
-        generationEvents,
-        storage,
-        clock: deps.clock,
-      },
-      routes,
-    ),
-  );
-  app.route(
-    "/api/admin/users",
-    adminUsersRoute(
-      deps.db,
-      deps.clock,
-      deps.env.ADMIN_EMAILS,
-      { db: deps.db, generationsRepository, cancellationDeps },
-      {
-        db: deps.db,
-        clock: deps.clock,
-        generationsRepository,
-        uploadsRepository,
-        cancellationDeps,
-        storage,
-      },
-      routes,
-    ),
-  );
-  app.route(
-    "/api/admin/blocked-accounts",
-    adminBlockedAccountsRoute(deps.db, deps.clock, routes),
-  );
-  app.route(
-    "/api/admin/overview",
-    adminOverviewRoute(
-      deps.db,
-      deps.clock,
-      problemsRegistry,
-      backendRepository,
-      backendsService,
-      deps.env.DATA_DIR,
-      deps.env.MIN_FREE_DISK_GB,
-      APP_VERSION,
-      bootTime,
-      routes,
-    ),
-  );
-  app.route("/api/status", statusRoute(problemsRegistry, routes));
-  app.route(
-    "/api/privacy",
-    privacyRoute(
-      deps.db,
-      APP_VERSION,
-      deps.env.ASSET_RETENTION_DAYS ?? null,
-      routes,
-    ),
-  );
 
+  // Every route module is mounted in one chained expression (its full
+  // schema is what `AppType` below, and thus the typed `hc` client, is
+  // built from). Sub-apps that still carry a `: Hono<AppEnv>` return
+  // annotation erase their schema in the chain; they convert in a follow-up.
+  const apiPart = app
+    .route("/healthz", healthRoute(deps.sql, deps.clock, routes))
+    .route(
+      "/api/site-settings",
+      siteSettingsRoute(
+        deps.db,
+        storage,
+        modelRepository,
+        noticeEvents,
+        deps.clock,
+        routes,
+      ),
+    )
+    .route(
+      "/api/auth",
+      authRoute({ db: deps.db, clock: deps.clock, env: deps.env }, routes),
+    )
+    .route(
+      "/api/models",
+      modelsRoute(
+        modelRepository,
+        generationsRepository,
+        {
+          modelRepository,
+          modelBackendsRepository,
+          backendsService,
+          generationsRepository,
+          generationEvents,
+          clock: deps.clock,
+          logWriter,
+          getBlockedWords: () => getBlockedWords(deps.db),
+          isPaused,
+          getSiteCaps: () => getSiteCaps(deps.db),
+          onGenerationQueued: dispatcher.wake,
+          uploadsRepository,
+          hasFreeDisk: diskHasRoom,
+        },
+        routes,
+      ),
+    )
+    .route(
+      "/api/generations",
+      generationsRoute(
+        deps.db,
+        generationsRepository,
+        generationEvents,
+        deps.clock,
+        storage,
+        routes,
+      ),
+    )
+    .route(
+      "/api/submissions",
+      submissionsRoute(
+        cancellationDeps,
+        generationsRepository,
+        storage,
+        deps.clock,
+        routes,
+      ),
+    )
+    .route(
+      "/api/auth",
+      accountRoute(
+        {
+          db: deps.db,
+          clock: deps.clock,
+          generationsRepository,
+          uploadsRepository,
+          cancellationDeps,
+          storage,
+        },
+        routes,
+      ),
+    )
+    .route("/api/assets", assetsRoute(assetsRepository, storage, routes))
+    .route("/api/gallery", galleryRoute(generationsRepository, routes));
+  const apiPart2 = apiPart
+    .route(
+      "/api/uploads",
+      uploadsRoute(uploadsService, uploadsRepository, storage, routes),
+    )
+    .route("/api/admin", adminRoute(routes))
+    .route(
+      "/api/admin/site-settings",
+      adminSiteSettingsRoute(
+        deps.db,
+        deps.clock,
+        storage,
+        noticeEvents,
+        () => wakeDispatcher(),
+        routes,
+      ),
+    );
+  const api = apiPart2
+    .route(
+      "/api/admin/backends",
+      adminBackendsRoute(
+        deps.db,
+        deps.clock,
+        backendRepository,
+        backendsService,
+        generationsRepository,
+        routes,
+        dispatcher.wake,
+      ),
+    )
+    .route("/api/admin/logs", adminLogsRoute(deps.db, deps.clock, routes))
+    .route("/api/terms", termsRoute(deps.db, deps.clock, routes))
+    .route(
+      "/api/admin/models",
+      adminModelsRoute(
+        deps.db,
+        modelRepository,
+        modelBackendsRepository,
+        backendsService,
+        generationsRepository,
+        routes,
+        deps.env.MAX_UPLOAD_MB,
+        {
+          generationEvents,
+          clock: deps.clock,
+          uploadsRepository,
+          hasFreeDisk: diskHasRoom,
+          wakeDispatcher: dispatcher.wake,
+        },
+      ),
+    )
+    .route("/api/admin/audit", adminAuditRoute(deps.db, routes))
+    .route(
+      "/api/admin/generations",
+      adminGenerationsRoute(
+        deps.db,
+        generationsRepository,
+        {
+          queue: dispatchQueue,
+          generationsRepository,
+          generationEvents,
+          storage,
+          wakeDispatcher: dispatcher.wake,
+          clock: deps.clock,
+        },
+        routes,
+      ),
+    )
+    .route(
+      "/api/admin/uploads",
+      adminUploadsRoute(
+        uploadsRepository,
+        {
+          uploadsRepository,
+          generationsRepository,
+          queue: dispatchQueue,
+          generationEvents,
+          storage,
+          clock: deps.clock,
+        },
+        routes,
+      ),
+    )
+    .route(
+      "/api/admin/users",
+      adminUsersRoute(
+        deps.db,
+        deps.clock,
+        deps.env.ADMIN_EMAILS,
+        { db: deps.db, generationsRepository, cancellationDeps },
+        {
+          db: deps.db,
+          clock: deps.clock,
+          generationsRepository,
+          uploadsRepository,
+          cancellationDeps,
+          storage,
+        },
+        routes,
+      ),
+    )
+    .route(
+      "/api/admin/blocked-accounts",
+      adminBlockedAccountsRoute(deps.db, deps.clock, routes),
+    )
+    .route(
+      "/api/admin/overview",
+      adminOverviewRoute(
+        deps.db,
+        deps.clock,
+        problemsRegistry,
+        backendRepository,
+        backendsService,
+        deps.env.DATA_DIR,
+        deps.env.MIN_FREE_DISK_GB,
+        APP_VERSION,
+        bootTime,
+        routes,
+      ),
+    )
+    .route("/api/status", statusRoute(problemsRegistry, routes))
+    .route(
+      "/api/privacy",
+      privacyRoute(
+        deps.db,
+        APP_VERSION,
+        deps.env.ASSET_RETENTION_DAYS ?? null,
+        routes,
+      ),
+    );
+
+  // The mock OIDC issuer's path comes from the env at boot, so it stays
+  // outside the statically typed chain above.
   if (deps.env.OIDC_ISSUER) {
     const issuerUrl = new URL(deps.env.OIDC_ISSUER);
-    app.route(
+    api.route(
       issuerUrl.pathname,
       await createMockOidcIssuer(deps.env.OIDC_ISSUER),
     );
@@ -472,7 +466,7 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
   // `index.html` itself always needs the accent/favicon injected, so it
   // must never be served as a plain static file (hono/bun's serveStatic
   // resolves a directory path like "/" to it automatically).
-  app.use("*", async (c, next) => {
+  api.use("*", async (c, next) => {
     if (c.req.path === "/" || c.req.path === "/index.html") {
       return serveBrandedIndex(c);
     }
@@ -483,11 +477,12 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
   // SPA fallback must join `root` and `path` itself, not take a
   // pre-joined absolute path (hono/bun's serveStatic re-joins `path`
   // against `root`, which breaks for an absolute `path`).
-  app.use("*", serveStatic({ root: deps.webDistDir }));
-  app.use("*", serveBrandedIndex);
+  api.use("*", serveStatic({ root: deps.webDistDir }));
+  api.use("*", serveBrandedIndex);
 
   return {
     app,
+    api,
     routes,
     backendsService,
     problemsMonitor,
@@ -496,3 +491,10 @@ export async function createApp(deps: AppDeps): Promise<CreatedApp> {
     recover: () => dispatcher.recover(),
   };
 }
+
+/**
+ * The full typed route schema of the app composed by `createApp`.
+ * This is the public contract of the typed `hc` client (see
+ * `app-type.test.ts` and the `./app-type` package export).
+ */
+export type AppType = Awaited<ReturnType<typeof createApp>>["api"];

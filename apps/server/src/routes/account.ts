@@ -5,7 +5,7 @@
 
 import { Hono } from "hono";
 import { deleteCookie } from "hono/cookie";
-import { type RouteEntry, guardedRoute } from "../auth/access.js";
+import { type RouteEntry, guard } from "../auth/access.js";
 import {
   type AccountDeletionDeps,
   deleteOwnAccount,
@@ -13,20 +13,12 @@ import {
 import type { AppEnv } from "../auth/app-env.js";
 import { SESSION_COOKIE_NAME } from "../auth/session.js";
 
-export function accountRoute(
-  deps: AccountDeletionDeps,
-  routes: RouteEntry[],
-): Hono<AppEnv> {
-  const app = new Hono<AppEnv>();
+export function accountRoute(deps: AccountDeletionDeps, routes: RouteEntry[]) {
   const basePath = "/api/auth";
 
-  guardedRoute(
-    app,
-    routes,
-    basePath,
-    "delete",
+  return new Hono<AppEnv>().delete(
     "/account",
-    "signed-in",
+    guard(routes, basePath, "delete", "/account", "signed-in"),
     async (c) => {
       const session = c.get("session");
       if (!session) return c.json({ error: "unauthorized" }, 401);
@@ -49,6 +41,4 @@ export function accountRoute(
       return c.json({ ok: true });
     },
   );
-
-  return app;
 }

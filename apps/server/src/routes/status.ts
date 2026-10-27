@@ -2,23 +2,14 @@
 // (issue #70). 200 while nothing is wrong, 503 listing every Problem.
 
 import { Hono } from "hono";
-import { type RouteEntry, guardedRoute } from "../auth/access.js";
+import { type RouteEntry, guard } from "../auth/access.js";
 import type { AppEnv } from "../auth/app-env.js";
 import type { ProblemsRegistry } from "../problems/problems.js";
 
-export function statusRoute(
-  registry: ProblemsRegistry,
-  routes: RouteEntry[],
-): Hono<AppEnv> {
-  const app = new Hono<AppEnv>();
-
-  guardedRoute(
-    app,
-    routes,
-    "/api/status",
-    "get",
+export function statusRoute(registry: ProblemsRegistry, routes: RouteEntry[]) {
+  return new Hono<AppEnv>().get(
     "/",
-    "admin-or-status-token",
+    guard(routes, "/api/status", "get", "/", "admin-or-status-token"),
     (c) => {
       const problems = registry.list().map((problem) => ({
         code: problem.code,
@@ -31,6 +22,4 @@ export function statusRoute(
       return c.json({ status: "problems", problems }, 503);
     },
   );
-
-  return app;
 }

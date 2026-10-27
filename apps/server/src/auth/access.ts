@@ -35,9 +35,31 @@ export interface RouteEntry {
 type HonoMethod = "get" | "post" | "put" | "delete" | "patch";
 
 /**
+ * Chainable access guard for the chained route style (issue #164):
+ * records `method`/`path` under `basePath` in `routes` and returns the
+ * `requireAccess(access)` middleware, so a route can be registered as
+ * `app.get(path, guard(routes, basePath, "get", path, access), handler)`.
+ * The registry write happens once, at the `guard(...)` call site, which
+ * is what the guard test (see access-matrix.test.ts) asserts.
+ */
+export function guard(
+  routes: RouteEntry[],
+  basePath: string,
+  method: HonoMethod,
+  path: string,
+  access: AccessLevel,
+): Handler<AppEnv> {
+  const fullPath = joinPaths(basePath, path);
+  routes.push({ method: method.toUpperCase(), path: fullPath, access });
+  return requireAccess(access);
+}
+
+/**
  * Registers one route on `app` under `basePath` and records it in
  * `routes`, so a guard test (see access-matrix.test.ts) can assert every
- * route declares an access level and enforces it.
+ * route declares an access level and enforces it. Built on top of
+ * `guard`; route files converted to the chained style (issue #164) call
+ * `guard` directly, and a later issue deletes this.
  */
 export function guardedRoute(
   app: Hono<AppEnv>,
@@ -48,9 +70,7 @@ export function guardedRoute(
   access: AccessLevel,
   ...handlers: Handler<AppEnv>[]
 ): void {
-  const fullPath = joinPaths(basePath, path);
-  routes.push({ method: method.toUpperCase(), path: fullPath, access });
-  app[method](path, requireAccess(access), ...handlers);
+  app[method](path, guard(routes, basePath, method, path, access), ...handlers);
 }
 
 /** Constant-time comparison of a bearer header against `Bearer $expected`, so a wrong token can't be guessed byte-by-byte via timing. */

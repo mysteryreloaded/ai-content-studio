@@ -3,6 +3,9 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "exports": {
+    "./app-type": "./src/app-type.ts"
+  },
   "scripts": {
     "dev": "bun run --watch src/index.ts",
     "start": "bun run src/index.ts",
@@ -14,6 +17,7 @@
   },
   "dependencies": {
     "@ai-content-studio/shared": "workspace:*",
+    "@hono/zod-validator": "^0.9.1",
     "drizzle-orm": "0.45.4",
     "hono": "^4.13.13",
     "jose": "^6.2.13",

@@ -5,7 +5,7 @@
 import type { Clock } from "@ai-content-studio/shared";
 import { and, eq, gte, sql } from "drizzle-orm";
 import { Hono } from "hono";
-import { type RouteEntry, guardedRoute } from "../auth/access.js";
+import { type RouteEntry, guard } from "../auth/access.js";
 import type { AppEnv } from "../auth/app-env.js";
 import type { BackendRepository } from "../backends/repository.js";
 import type { BackendsService } from "../backends/service.js";
@@ -27,46 +27,47 @@ export function adminOverviewRoute(
   appVersion: string,
   bootTime: Date,
   routes: RouteEntry[],
-): Hono<AppEnv> {
-  const app = new Hono<AppEnv>();
+) {
   const basePath = "/api/admin/overview";
 
-  guardedRoute(app, routes, basePath, "get", "/", "admin", async (c) => {
-    const [backendList, errors24h, freeDiskGb] = await Promise.all([
-      backendRepository.list(),
-      countErrors24h(db, clock),
-      diskFreeGbOrNull(dataDir),
-    ]);
+  return new Hono<AppEnv>().get(
+    "/",
+    guard(routes, basePath, "get", "/", "admin"),
+    async (c) => {
+      const [backendList, errors24h, freeDiskGb] = await Promise.all([
+        backendRepository.list(),
+        countErrors24h(db, clock),
+        diskFreeGbOrNull(dataDir),
+      ]);
 
-    const problems = registry.list().map((problem) => ({
-      code: problem.code,
-      message: problem.message,
-      target: problem.target,
-      since: problem.since.toISOString(),
-    }));
+      const problems = registry.list().map((problem) => ({
+        code: problem.code,
+        message: problem.message,
+        target: problem.target,
+        since: problem.since.toISOString(),
+      }));
 
-    const backends = backendList.map((backend) => ({
-      id: backend.id,
-      name: backend.name,
-      health: backendsService.healthFor(backend.id),
-      unreachableSince:
-        backendsService.unreachableSince(backend.id)?.toISOString() ?? null,
-    }));
+      const backends = backendList.map((backend) => ({
+        id: backend.id,
+        name: backend.name,
+        health: backendsService.healthFor(backend.id),
+        unreachableSince:
+          backendsService.unreachableSince(backend.id)?.toISOString() ?? null,
+      }));
 
-    return c.json({
-      problems,
-      backends,
-      disabledBanner: backendsService.disabledBanner,
-      disk: { freeGb: freeDiskGb, minFreeDiskGb },
-      errors24h,
-      version: appVersion,
-      uptimeSeconds: Math.floor(
-        (clock.now().getTime() - bootTime.getTime()) / 1000,
-      ),
-    });
-  });
-
-  return app;
+      return c.json({
+        problems,
+        backends,
+        disabledBanner: backendsService.disabledBanner,
+        disk: { freeGb: freeDiskGb, minFreeDiskGb },
+        errors24h,
+        version: appVersion,
+        uptimeSeconds: Math.floor(
+          (clock.now().getTime() - bootTime.getTime()) / 1000,
+        ),
+      });
+    },
+  );
 }
 
 async function countErrors24h(db: Database, clock: Clock): Promise<number> {

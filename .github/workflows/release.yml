@@ -1,4 +1,11 @@
-name: Release
+# The final release (issue #82): re-tags the latest passing release
+# candidate's digest (the vX.Y.Z-rc.N with the highest N, the one its
+# Release issue was checked off against) as vX.Y.Z and `latest` through
+# the registry's manifest API. It never builds — the final tag points at
+# the exact digest the candidate gate already ran. Candidate tags
+# (vX.Y.Z-rc.N) match this trigger too but skip the job; their own gate
+# is .github/workflows/release-rc.yml. See docs/ops/releasing.md.
+name: Final release
 
 on:
   push:
@@ -6,37 +13,23 @@ on:
       - "v*.*.*"
 
 jobs:
-  publish:
+  retag:
+    if: ${{ !contains(github.ref_name, '-rc.') }}
     runs-on: ubuntu-latest
 
     permissions:
       contents: read
       packages: write
+      # The script checks that the candidate's own gate (release-rc.yml)
+      # ran green before re-tagging; the run lookup needs actions: read.
+      actions: read
 
     steps:
       - uses: actions/checkout@v5
 
-      - name: Strip leading "v" from the tag
-        id: version
-        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-      - uses: docker/setup-qemu-action@v3
-
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: |
-            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.value }}
-            ghcr.io/${{ github.repository }}:latest
+      - name: Re-tag the passing candidate's digest (no build)
+        env:
+          TAG: ${{ github.ref_name }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/retag-final.sh

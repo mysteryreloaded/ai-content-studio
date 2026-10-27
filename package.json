@@ -8,7 +8,8 @@
     "test": "bun test --isolate",
     "lint": "biome check .",
     "typecheck": "tsc -b",
-    "db:check": "bun run --filter @ai-content-studio/server db:check"
+    "db:check": "bun run --filter @ai-content-studio/server db:check",
+    "doc:check": "bun run scripts/check-doc-links.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",

@@ -1,0 +1,98 @@
+name: Release
+description: >-
+  A release candidate or final release of the studio. Cut the tag, watch the
+  gate, tick the GPU checklist, then (for a final) tag the passing candidate's
+  digest. See docs/ops/releasing.md.
+title: "Release v"
+labels: [release]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "The version this release is for, e.g. `1.0.0`."
+      placeholder: "1.0.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: release-type
+    attributes:
+      label: Release type
+      description: >-
+        A **candidate** (`vX.Y.Z-rc.N`) is what the gate runs against; a
+        **final** (`vX.Y.Z`) re-tags a passing candidate's digest.
+      options:
+        - "Candidate (`X.Y.Z-rc.N`)"
+        - "Final (`X.Y.Z`)"
+      default: 0
+    validations:
+      required: true
+  - type: dropdown
+    id: checklist
+    attributes:
+      label: GPU checklist
+      options:
+        - "Full (minor / major — every launch Mode plus the edge cases)"
+        - "Reduced (patch — one Mode per launch Model plus the change)"
+      default: 0
+    validations:
+      required: true
+  - type: markdown
+    attributes:
+      value: |
+        ## The gate
+
+        - [ ] The tag's CI run is green: the full gate, the upgrade check
+          (skipped for v1.0.0), the backup round-trip, the real-ComfyUI
+          contract run and the native amd64/arm64 boots (candidates only).
+        - [ ] The image is on GHCR at
+          `ghcr.io/mysteryreloaded/ai-content-studio:<version>` (or
+          `<version>-rc.<n>` for a candidate).
+
+        For a **final** release: tick every box below, then tag
+        `v<version>` — the release workflow re-tags the passing candidate's
+        digest as `<version>` and `latest` without rebuilding.
+
+        ## Manual GPU checklist
+
+        Run on the 2×3090 test Backend (both GPUs), against the candidate
+        image, with real sample Uploads (a clip with sound and one person,
+        plus a character image). A failure on any box sends the release back
+        to a new `rc.N` — fix, re-cut, re-tick.
+
+        **Minor / major release — every launch Mode with its shipped
+        defaults, one by one:**
+
+        - [ ] LTX 2.5 · Text to Video
+        - [ ] LTX 2.5 · Audio to Video
+        - [ ] LTX 2.5 · Image to Video
+        - [ ] LTX 2.5 · First/Last Frame
+        - [ ] LTX 2.5 · Lipsync
+        - [ ] LTX 2.5 · First/Last Frame Lipsync
+        - [ ] LTX 2.5 · First–Middle–Last, your audio
+        - [ ] LTX 2.5 · First–Middle–Last, generated audio
+        - [ ] LTX 2.5 · Style Transfer
+        - [ ] LTX 2.5 · Reference sheet
+        - [ ] LTX 2.5 · Outpaint
+        - [ ] Wan 2.2 · Character replace
+
+        **And the edge cases:**
+
+        - [ ] A cancel mid-run (the Generation reports cancelled; the
+              Backend frees)
+        - [ ] A ComfyUI restart mid-run: the try is lost and retried on the
+              other Backend, then succeeds
+        - [ ] Both Backends busy at once: a queued Generation waits and
+              starts when a Backend frees
+        - [ ] A finished Asset's "AI-generated with …" tag and its C2PA
+              manifest (verify with a C2PA reader)
+        - [ ] A keyboard-only pass: sign in, pick a Mode, submit, watch the
+              card, open the detail dialog, download — without a mouse
+        - [ ] One Notification from a hidden tab when a Submission ends
+
+        **Patch release — the reduced subset:**
+
+        - [ ] One Mode per launch Model (LTX 2.5 and Wan 2.2) with its
+              shipped defaults
+        - [ ] What this patch changed: _list the change(s) and what was
+              run to cover them_

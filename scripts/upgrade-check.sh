@@ -20,8 +20,15 @@
 #   CANDIDATE_IMAGE=ghcr.io/mysteryreloaded/ai-content-studio:1.1.0-rc.1 \
 #   ./scripts/upgrade-check.sh
 #
+# The studio container is always published on host port 3000: the server
+# listens on 3000 inside the container, and the mock OIDC issuer is
+# mounted on that server's own loopback, so the host-side seed and the
+# in-container server reach it at the one address they share —
+# http://localhost:3000 — which only holds while the published port is
+# 3000. CI runs on a clean runner where 3000 is free; running this locally
+# next to a dev studio on 3000, stop that first.
+#
 # Environment (all optional except the two images):
-#   STUDIO_PORT    host port the studio container is published on (3000)
 #   POSTGRES_IMAGE the Postgres image (postgres:17)
 #   FAKE_IMAGE     image that runs the in-repo fake ComfyUI
 #                  (oven/bun:1.4.4-slim, matching the Dockerfile)
@@ -38,7 +45,6 @@ if [ -z "${PREVIOUS_IMAGE:-}" ] || [ -z "${CANDIDATE_IMAGE:-}" ]; then
   exit 2
 fi
 
-STUDIO_PORT=${STUDIO_PORT:-3000}
 POSTGRES_IMAGE=${POSTGRES_IMAGE:-postgres:17}
 FAKE_IMAGE=${FAKE_IMAGE:-oven/bun:1.4.4-slim}
 FAKE_DIR=${FAKE_DIR:-apps/fake-comfyui}
@@ -81,7 +87,7 @@ wait_health() {
   local name=$1
   local _
   for _ in $(seq 1 180); do
-    if curl -sf "http://localhost:$STUDIO_PORT/healthz" >/dev/null; then
+    if curl -sf "http://localhost:3000/healthz" >/dev/null; then
       return 0
     fi
     sleep 1
@@ -127,12 +133,15 @@ docker exec "$FAKE" bun -e '
 
 # Everything both boots share. The fake's name is the Backend's address as
 # seen from inside the studio container, so the seed points the Backend at
-# it and the later candidate boot keeps resolving the same name.
+# it and the later candidate boot keeps resolving the same name. (The mock
+# OIDC issuer is mounted on the studio server itself, so PUBLIC_URL and
+# OIDC_ISSUER are the server's own loopback, 3000 both inside the container
+# and on the host — see the note in the header.)
 studio_env=(
   -e "DATABASE_URL=postgres://postgres:postgres@$PG:5432/ai_content_studio"
   -e "PORT=3000"
-  -e "PUBLIC_URL=http://localhost:$STUDIO_PORT"
-  -e "OIDC_ISSUER=http://localhost:$STUDIO_PORT/mock-auth"
+  -e "PUBLIC_URL=http://localhost:3000"
+  -e "OIDC_ISSUER=http://localhost:3000/mock-auth"
   -e "GOOGLE_CLIENT_ID=upgrade-check"
   -e "GOOGLE_CLIENT_SECRET=upgrade-check"
   -e "ADMIN_EMAILS=admin@example.com"
@@ -142,14 +151,14 @@ studio_env=(
 
 echo "upgrade-check: boot the previous release: $PREVIOUS_IMAGE"
 docker run -d --name "$STUDIO" --network "$NET" \
-  -p "$STUDIO_PORT:3000" \
+  -p 3000:3000 \
   -v "$DATA_VOL":/data \
   "${studio_env[@]}" \
   "$PREVIOUS_IMAGE" >/dev/null
 wait_health "$STUDIO"
 
 echo "upgrade-check: seed the previous release through its own API"
-SEED_BASE_URL="http://localhost:$STUDIO_PORT" \
+SEED_BASE_URL="http://localhost:3000" \
   SEED_ADMIN_EMAIL=admin@example.com \
   SEED_BACKEND_URL="http://$FAKE:8188" \
   bun run scripts/seed.ts
@@ -157,7 +166,7 @@ SEED_BASE_URL="http://localhost:$STUDIO_PORT" \
 echo "upgrade-check: stop the previous release, boot the candidate on the same database and /data"
 docker rm -f "$STUDIO" >/dev/null
 docker run -d --name "$STUDIO" --network "$NET" \
-  -p "$STUDIO_PORT:3000" \
+  -p 3000:3000 \
   -v "$DATA_VOL":/data \
   "${studio_env[@]}" \
   "$CANDIDATE_IMAGE" >/dev/null

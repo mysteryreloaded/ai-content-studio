@@ -75,7 +75,8 @@ it:
    the same `/data`.
 3. checks that the candidate is **healthy** (`/healthz` 200 — migrations
    ran at boot, or the container is down), **migrated** (the database's
-   `drizzle_migrations` rows match the candidate's migration files) and
+   `drizzle.__drizzle_migrations` rows match the candidate's migration
+   files — the table the pinned drizzle-orm version uses by default) and
    that **`check-storage`** reports nothing left to fix.
 
 It runs path-triggered in a PR (when the image, the migrations, the env

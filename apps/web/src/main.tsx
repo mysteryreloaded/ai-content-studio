@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { Outlet, RouterProvider, createBrowserRouter } from "react-router-dom";
+import "./index.css";
 import { LandingPage } from "./LandingPage.js";
 import { NoticeBanner } from "./NoticeBanner.js";
 import { RequireActive } from "./RequireActive.js";

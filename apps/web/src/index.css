@@ -1,0 +1,223 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+/*
+ * Fonts are bundled with the build (issue #165 / #33): nothing loads a font
+ * from another origin. IBM Plex Sans for UI (400/500/600), IBM Plex Sans
+ * Condensed for headings (600) and IBM Plex Mono for monospace (400).
+ */
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-sans/600.css";
+@import "@fontsource/ibm-plex-sans-condensed/600.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+
+/*
+ * Dark mode follows the existing System/Light/Dark switch (issue #65/#31),
+ * the same rule as the server's accent-html.ts: an explicit
+ * data-theme="dark" on <html> always wins, data-theme="light" always wins,
+ * and with no data-theme the OS preference decides. Keeping it in a
+ * @custom-variant makes Tailwind's `dark:` match the tokens and the accent
+ * the server injects below.
+ */
+@custom-variant dark (
+  &:is([data-theme=dark], [data-theme=dark] *),
+  @media (prefers-color-scheme: dark) {
+    &:is(:root:not([data-theme=light]), :root:not([data-theme=light]) *)
+  }
+);
+
+/*
+ * Design tokens. The `--color-*` entries wire Tailwind utilities onto the
+ * prototype's raw tokens (defined in `:root` / the dark blocks below). The
+ * brand accent is deliberately NOT defined here: the server injects
+ * `--accent` / `--on-accent` from the Admin's choice
+ * (packages/shared/src/branding/accent.ts), and `--primary` / `--ring` map
+ * straight to it so every component follows the selected accent. `accent-soft`
+ * is derived from that same accent rather than adding a second palette.
+ */
+@theme inline {
+  --font-sans: var(--font-ui);
+  --font-heading: var(--font-head);
+  --font-mono: var(--font-monospace);
+
+  --color-background: var(--bg);
+  --color-foreground: var(--fg);
+  --color-card: var(--panel);
+  --color-card-foreground: var(--fg);
+  --color-popover: var(--panel);
+  --color-popover-foreground: var(--fg);
+  --color-primary: var(--accent);
+  --color-primary-foreground: var(--on-accent);
+  --color-secondary: var(--sunk);
+  --color-secondary-foreground: var(--fg);
+  --color-muted: var(--sunk);
+  --color-muted-foreground: var(--muted);
+  --color-accent: var(--sunk);
+  --color-accent-foreground: var(--fg);
+  --color-destructive: var(--err);
+  --color-destructive-foreground: var(--panel);
+  --color-border: var(--line);
+  --color-input: var(--line-strong);
+  --color-ring: var(--accent);
+
+  --color-accent-soft: var(--accent-soft);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-err: var(--err);
+  --color-err-soft: var(--err-soft);
+  --color-info: var(--info);
+  --color-media: var(--media);
+
+  --color-chart-1: var(--accent);
+  --color-chart-2: var(--info);
+  --color-chart-3: var(--ok);
+  --color-chart-4: var(--warn);
+  --color-chart-5: var(--muted);
+
+  --color-sidebar: var(--panel);
+  --color-sidebar-foreground: var(--fg);
+  --color-sidebar-primary: var(--accent);
+  --color-sidebar-primary-foreground: var(--on-accent);
+  --color-sidebar-accent: var(--sunk);
+  --color-sidebar-accent-foreground: var(--fg);
+  --color-sidebar-border: var(--line);
+  --color-sidebar-ring: var(--accent);
+
+  /* 6px is the default; larger surfaces step up (10px for modals/drop
+     zones) and pills are fully rounded. */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 6px;
+  --radius-xl: 8px;
+  --radius-2xl: 10px;
+  --radius-3xl: 12px;
+  --radius-4xl: 14px;
+}
+
+/*
+ * Raw tokens. Light is the default. The brand `--accent` / `--on-accent` are
+ * supplied by the server (accent-html.ts) and are never redefined here; the
+ * derived `--accent-soft` follows them. `--radius` (8px) is the shadcn
+ * convention the Toaster's `--border-radius` reads; it is the same value
+ * the `rounded-xl` token maps to for popovers, cards and toasts.
+ */
+:root {
+  color-scheme: light dark;
+
+  --radius: 8px;
+  --bg: #f4f6f5;
+  --panel: #ffffff;
+  --sunk: #edf1ef;
+  --line: #d9e0dc;
+  --line-strong: #b9c4be;
+  --fg: #15201b;
+  --muted: #5a6962;
+  --faint: #8a9892;
+  --ok: #1d7f47;
+  --ok-soft: #e0f3e7;
+  --warn: #8f5c00;
+  --warn-soft: #fbf0d9;
+  --err: #b9352a;
+  --err-soft: #fbe6e3;
+  --info: #2f5f9e;
+  --media: #0f1513;
+  --media-fg: #e9efec;
+  --shadow: 0 1px 2px rgb(20 32 27 / 0.06), 0 8px 24px rgb(20 32 27 / 0.08);
+
+  --accent-soft: color-mix(in srgb, var(--accent) 16%, var(--panel));
+
+  --font-ui: "IBM Plex Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-head: "IBM Plex Sans Condensed", "IBM Plex Sans", "Arial Narrow", system-ui, sans-serif;
+  --font-monospace: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+
+/* OS dark, unless the visitor pinned "light" in the footer. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme=light]) {
+    --bg: #101513;
+    --panel: #171e1b;
+    --sunk: #0d1210;
+    --line: #27322d;
+    --line-strong: #3a4842;
+    --fg: #e4ebe7;
+    --muted: #9aaaa2;
+    --faint: #6f7e77;
+    --ok: #63d394;
+    --ok-soft: #12301f;
+    --warn: #f0b955;
+    --warn-soft: #33270f;
+    --err: #ff8577;
+    --err-soft: #3a1a17;
+    --info: #8db8f0;
+    --media: #070a09;
+    --media-fg: #e4ebe7;
+    --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px rgb(0 0 0 / 0.35);
+    color-scheme: dark;
+  }
+}
+
+/* Pinned "dark" always wins, regardless of the OS. */
+:root[data-theme=dark] {
+  --bg: #101513;
+  --panel: #171e1b;
+  --sunk: #0d1210;
+  --line: #27322d;
+  --line-strong: #3a4842;
+  --fg: #e4ebe7;
+  --muted: #9aaaa2;
+  --faint: #6f7e77;
+  --ok: #63d394;
+  --ok-soft: #12301f;
+  --warn: #f0b955;
+  --warn-soft: #33270f;
+  --err: #ff8577;
+  --err-soft: #3a1a17;
+  --info: #8db8f0;
+  --media: #070a09;
+  --media-fg: #e4ebe7;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px rgb(0 0 0 / 0.35);
+  color-scheme: dark;
+}
+
+/* Base element styles, mirroring the prototype's global rules. */
+@layer base {
+  html {
+    font-family: var(--font-ui);
+  }
+  body {
+    background-color: var(--bg);
+    color: var(--fg);
+    font-size: 14px;
+    line-height: 1.45;
+  }
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-family: var(--font-head);
+    font-weight: 600;
+    letter-spacing: 0.005em;
+  }
+  h1 {
+    font-size: 22px;
+    line-height: 1.2;
+  }
+  h2 {
+    font-size: 18px;
+    line-height: 1.25;
+  }
+  h3 {
+    font-size: 15px;
+  }
+  h4 {
+    font-size: 13px;
+  }
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+}

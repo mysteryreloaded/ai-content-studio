@@ -1,0 +1,495 @@
+# The release candidate gate (issue #82): a vX.Y.Z-rc.N tag runs the entire
+# gate a pull request runs — plus the three path-triggered jobs
+# unconditionally, plus native amd64/arm64 boots of the built image — and
+# pushes the multi-arch image as X.Y.Z-rc.N. A final release never rebuilds:
+# .github/workflows/release.yml re-tags a passing candidate's digest.
+# See docs/ops/releasing.md.
+name: Release candidate
+
+on:
+  push:
+    tags:
+      - "v*.*.*-rc.*"
+
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      rc: ${{ steps.version.outputs.rc }}
+    steps:
+      - name: Validate the tag (vX.Y.Z-rc.N)
+        id: version
+        env:
+          ARM64_RUNNER: ${{ vars.ARM64_RUNNER }}
+        run: |
+          tag=${GITHUB_REF_NAME#v}
+          if [[ ! "$tag" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-rc\.([0-9]+)$ ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME is not a release candidate vX.Y.Z-rc.N"
+            exit 1
+          fi
+          echo "version=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+          echo "rc=${BASH_REMATCH[2]}" >> "$GITHUB_OUTPUT"
+          if [ -z "$ARM64_RUNNER" ]; then
+            echo "::warning::No ARM64_RUNNER repository variable is set, so the arm64 boot is skipped; the amd64 boot still gates this release. Register a runner and set the variable (docs/ops/releasing.md, Notes)."
+          fi
+
+  # The full PR gate, minus the image build that `publish` does as
+  # multi-arch (a broken image build fails `publish`, so the build is
+  # still gated — just not duplicated for a single architecture).
+  gate:
+    needs: meta
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ai_content_studio
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 15
+
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/ai_content_studio
+      TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
+
+      # ffmpeg for the Upload tests (issue #50) and c2patool for the C2PA
+      # tests (issue #75), pinned to the same version/checksum as the
+      # Dockerfile's `c2patool` stage.
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - name: Install c2patool (C2PA signing, issue #75)
+        run: |
+          curl -fsSL -o /tmp/c2patool.tar.gz \
+            "https://github.com/contentauth/c2pa-rs/releases/download/c2patool-v0.27.22/c2patool-v0.27.22-x86_64-unknown-linux-gnu.tar.gz"
+          echo "6f138ad53da1a62f1cd6ee71c60727efa27d13b811f4c0ea8c2a8528968b358b  /tmp/c2patool.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/c2patool.tar.gz -C /tmp
+          sudo install -m 0755 /tmp/c2patool/c2patool /usr/local/bin/c2patool
+
+      - name: Install dependencies (frozen)
+        run: bun install --frozen-lockfile
+
+      - name: Lint (Biome)
+        run: bun run lint
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Migrations match schema
+        run: bun run db:check
+
+      - name: Env schema matches .env.example
+        run: bun run --filter @ai-content-studio/server env:check
+
+      - name: Doc links (issue #82)
+        run: bun run doc:check
+
+      - name: ShellCheck
+        run: >-
+          shellcheck
+          ops/studio/upgrade.sh
+          ops/backup/backup.sh
+          ops/backup/restore.sh
+          scripts/upgrade-check.sh
+          scripts/previous-release.sh
+          scripts/retag-final.sh
+
+      - name: Validate Caddyfile
+        run: |
+          docker run --rm -e DOMAIN=example.com \
+            -v "$PWD/ops/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            caddy:2.10-alpine caddy validate --config /etc/caddy/Caddyfile
+
+      - name: Compose config is valid
+        run: |
+          sed -e 's/^STUDIO_VERSION=$/STUDIO_VERSION=test/' \
+              -e 's/^DOMAIN=$/DOMAIN=example.com/' \
+              .env.example > .env
+          docker compose config --quiet
+
+      - name: Test
+        run: bun test --isolate
+
+      - name: Build web
+        run: bun run build
+
+  # The same suite a path-triggered PR run performs (issue #79's AC):
+  # against a real, pinned, CPU-only ComfyUI — unconditional here, since a
+  # candidate is whatever ships next.
+  comfyui-contract:
+    needs: meta
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies (frozen)
+        run: bun install --frozen-lockfile
+
+      - name: Install a pinned, CPU-only ComfyUI
+        run: |
+          git clone --depth 1 --branch v0.26.2 \
+            https://github.com/comfyanonymous/ComfyUI.git /tmp/comfyui
+          python3 -m venv /tmp/comfyui/venv
+          /tmp/comfyui/venv/bin/pip install --upgrade pip
+          /tmp/comfyui/venv/bin/pip install torch torchvision torchaudio \
+            --index-url https://download.pytorch.org/whl/cpu
+          /tmp/comfyui/venv/bin/pip install -r /tmp/comfyui/requirements.txt
+          # TestSleep and ComfySwitchNode (this suite's own weightless
+          # Workflows, issue #79's AC) are ComfyUI's own test-only nodes,
+          # not shipped by default — install them as a custom node pack
+          # the same way any other one is installed.
+          cp -r /tmp/comfyui/tests/execution/testing_nodes/testing-pack \
+            /tmp/comfyui/custom_nodes/testing-pack
+
+      - name: Start ComfyUI (CPU-only)
+        run: |
+          nohup /tmp/comfyui/venv/bin/python /tmp/comfyui/main.py \
+            --cpu --listen 127.0.0.1 --port 8189 \
+            > /tmp/comfyui.log 2>&1 &
+          for _ in $(seq 1 60); do
+            curl -sf http://127.0.0.1:8189/system_stats > /dev/null && exit 0
+            sleep 2
+          done
+          echo "ComfyUI never came up:"; cat /tmp/comfyui.log; exit 1
+
+      - name: Run the comfyui contract suite against it
+        env:
+          COMFYUI_CONTRACT_URL: "http://127.0.0.1:8189"
+        run: bun test apps/server/src/comfyui/contract.e2e.test.ts
+
+      - name: ComfyUI's own log (only on failure, for debugging)
+        if: failure()
+        run: cat /tmp/comfyui.log
+
+  # The same job a path-triggered PR run performs (issue #77's AC) —
+  # unconditional here: a candidate's backup path is part of what ships.
+  backup-roundtrip:
+    needs: meta
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image (loaded locally, tagged as the compose file expects)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: ghcr.io/mysteryreloaded/ai-content-studio:test
+
+      - name: Configure .env and backup.env
+        run: |
+          sed -e 's/^STUDIO_VERSION=$/STUDIO_VERSION=test/' \
+              -e 's/^DOMAIN=$/DOMAIN=example.com/' \
+              -e 's#^PUBLIC_URL=$#PUBLIC_URL=http://localhost:3000#' \
+              -e 's/^GOOGLE_CLIENT_ID=$/GOOGLE_CLIENT_ID=test-client/' \
+              -e 's/^GOOGLE_CLIENT_SECRET=$/GOOGLE_CLIENT_SECRET=test-secret/' \
+              -e 's/^ADMIN_EMAILS=$/ADMIN_EMAILS=admin@example.com/' \
+              -e 's#^SECRET_KEY=$#SECRET_KEY=4FRG13w9RuN5CeV10Lzfxl78MY+AJRJtGuKrBdYzgCY=#' \
+              .env.example > .env
+          mkdir -p restic-repo
+          {
+            echo "RESTIC_REPOSITORY=/restic-repo"
+            echo "RESTIC_PASSWORD=test-password"
+          } > backup.env
+
+      - name: Start the stack
+        run: docker compose up -d --wait studio postgres
+
+      - name: Seed a canary row
+        run: |
+          docker compose exec -T postgres psql -U postgres -d ai_content_studio \
+            -c "CREATE TABLE canary (v text); INSERT INTO canary VALUES ('round-trip');"
+
+      - name: Initialize the restic repository
+        run: docker compose --profile backup run --rm backup init
+
+      - name: Back up
+        run: ./ops/backup/backup.sh
+
+      - name: Back up again, to check both snapshots share one host
+        run: ./ops/backup/backup.sh
+
+      - name: Snapshots share a single host
+        run: |
+          hosts=$(docker compose --profile backup run --rm backup snapshots --json \
+            | jq -r '.[].hostname' | sort -u)
+          echo "$hosts"
+          [ "$(echo "$hosts" | wc -l)" -eq 1 ]
+
+      - name: Simulate disaster (drop the database, wipe /data)
+        run: |
+          docker compose exec -T postgres psql -U postgres -d ai_content_studio \
+            -c "DROP TABLE canary;"
+          docker compose exec -T studio find /data -mindepth 1 -delete
+
+      - name: Restore
+        run: ./ops/backup/restore.sh
+
+      - name: Canary row survived
+        run: |
+          docker compose exec -T postgres psql -U postgres -d ai_content_studio -tAc \
+            "SELECT v FROM canary;" | grep -qx "round-trip"
+
+      - name: check-storage reports nothing left to fix
+        run: |
+          docker compose exec -T studio \
+            bun run apps/server/src/storage/check-storage.ts
+
+      - name: Logs (only on failure, for debugging)
+        if: failure()
+        run: docker compose logs
+
+  # The multi-arch build is the release's own "Docker build" gate step:
+  # both architectures must build and push before anything depends on
+  # them.
+  publish:
+    needs: [meta, gate, comfyui-contract, backup-roundtrip]
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push the candidate
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ needs.meta.outputs.version }}-rc.${{ needs.meta.outputs.rc }}
+
+  # The upgrade check (issue #82's AC), run against the exact artifact
+  # `publish` just pushed: the latest final release is booted with a fresh
+  # Postgres and /data, seeded through its own API, stopped, and the
+  # candidate boots on the same database and /data. Skips itself when no
+  # final release exists below this version (so: always for v1.0.0).
+  upgrade:
+    needs: [meta, publish]
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Find the previous final release
+        id: previous
+        run: |
+          previous=$(./scripts/previous-release.sh ${{ needs.meta.outputs.version }})
+          if [ -z "$previous" ]; then
+            echo "No final release below ${{ needs.meta.outputs.version }} yet; skipping the upgrade check (docs/ops/releasing.md)."
+          else
+            echo "previous=$previous" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pull the previous release and the candidate (linux/amd64)
+        if: steps.previous.outputs.previous != ''
+        run: |
+          docker pull --platform linux/amd64 \
+            ghcr.io/${{ github.repository }}:${{ steps.previous.outputs.previous }}
+          docker pull --platform linux/amd64 \
+            ghcr.io/${{ github.repository }}:${{ needs.meta.outputs.version }}-rc.${{ needs.meta.outputs.rc }}
+
+      - name: Upgrade check
+        if: steps.previous.outputs.previous != ''
+        env:
+          PREVIOUS_IMAGE: ghcr.io/${{ github.repository }}:${{ steps.previous.outputs.previous }}
+          CANDIDATE_IMAGE: ghcr.io/${{ github.repository }}:${{ needs.meta.outputs.version }}-rc.${{ needs.meta.outputs.rc }}
+        run: ./scripts/upgrade-check.sh
+
+  # Native boots of the built image (issue #82's AC): on an
+  # architecture-matching runner the container must reach a healthy
+  # /healthz against a fresh Postgres and a fresh /data. GitHub's hosted
+  # runners are amd64-only, so the arm64 boot runs on a self-hosted runner
+  # (the ARM64_RUNNER repository variable) and skips itself until one is
+  # registered.
+  boot-amd64:
+    needs: [meta, publish]
+    runs-on: ubuntu-latest
+
+    permissions:
+      packages: read
+
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull the candidate (native architecture)
+        run: |
+          docker pull \
+            ghcr.io/${{ github.repository }}:${{ needs.meta.outputs.version }}-rc.${{ needs.meta.outputs.rc }}
+
+      - name: Boot it against a fresh Postgres and /data
+        run: |
+          net=uc-boot-net
+          trap '
+            docker rm -f uc-boot-studio uc-boot-postgres >/dev/null 2>&1 || true
+            docker network rm "$net" >/dev/null 2>&1 || true
+            docker volume rm uc-boot-data uc-boot-pg >/dev/null 2>&1 || true
+          ' EXIT
+          docker network create --driver bridge "$net" >/dev/null
+          docker run -d --name uc-boot-postgres --network "$net" \
+            -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
+            -e POSTGRES_DB=ai_content_studio \
+            -v uc-boot-pg:/var/lib/postgresql/data \
+            postgres:17 >/dev/null
+          for _ in $(seq 1 120); do
+            if docker exec uc-boot-postgres pg_isready -U postgres >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          docker run -d --name uc-boot-studio --network "$net" -p 3000:3000 \
+            -v uc-boot-data:/data \
+            -e DATABASE_URL=postgres://postgres:postgres@uc-boot-postgres:5432/ai_content_studio \
+            -e PORT=3000 \
+            -e PUBLIC_URL=http://localhost:3000 \
+            -e GOOGLE_CLIENT_ID=boot-check \
+            -e GOOGLE_CLIENT_SECRET=boot-check \
+            -e ADMIN_EMAILS=admin@example.com \
+            -e SECRET_KEY=4FRG13w9RuN5CeV10Lzfxl78MY+AJRJtGuKrBdYzgCY= \
+            ghcr.io/${{ github.repository }}:${{ needs.meta.outputs.version }}-rc.${{ needs.meta.outputs.rc }} >/dev/null
+          ok=0
+          for _ in $(seq 1 180); do
+            if curl -sf http://localhost:3000/healthz >/dev/null; then
+              ok=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ok" != "1" ]; then
+            echo "boot: the image never became healthy:" >&2
+            docker logs uc-boot-studio 2>&1 | tail -n 60 >&2
+            exit 1
+          fi
+          echo "boot: healthy /healthz (migrations ran at boot):"
+          curl -sf http://localhost:3000/healthz
+          echo
+
+  boot-arm64:
+    if: vars.ARM64_RUNNER != ''
+    needs: [meta, publish]
+    runs-on: ${{ vars.ARM64_RUNNER }}
+
+    permissions:
+      packages: read
+
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull the candidate (native architecture)
+        run: |
+          docker pull \
+            ghcr.io/${{ github.repository }}:${{ needs.meta.outputs.version }}-rc.${{ needs.meta.outputs.rc }}
+
+      - name: Boot it against a fresh Postgres and /data
+        run: |
+          net=uc-boot-net
+          trap '
+            docker rm -f uc-boot-studio uc-boot-postgres >/dev/null 2>&1 || true
+            docker network rm "$net" >/dev/null 2>&1 || true
+            docker volume rm uc-boot-data uc-boot-pg >/dev/null 2>&1 || true
+          ' EXIT
+          docker network create --driver bridge "$net" >/dev/null
+          docker run -d --name uc-boot-postgres --network "$net" \
+            -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
+            -e POSTGRES_DB=ai_content_studio \
+            -v uc-boot-pg:/var/lib/postgresql/data \
+            postgres:17 >/dev/null
+          for _ in $(seq 1 120); do
+            if docker exec uc-boot-postgres pg_isready -U postgres >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          docker run -d --name uc-boot-studio --network "$net" -p 3000:3000 \
+            -v uc-boot-data:/data \
+            -e DATABASE_URL=postgres://postgres:postgres@uc-boot-postgres:5432/ai_content_studio \
+            -e PORT=3000 \
+            -e PUBLIC_URL=http://localhost:3000 \
+            -e GOOGLE_CLIENT_ID=boot-check \
+            -e GOOGLE_CLIENT_SECRET=boot-check \
+            -e ADMIN_EMAILS=admin@example.com \
+            -e SECRET_KEY=4FRG13w9RuN5CeV10Lzfxl78MY+AJRJtGuKrBdYzgCY= \
+            ghcr.io/${{ github.repository }}:${{ needs.meta.outputs.version }}-rc.${{ needs.meta.outputs.rc }} >/dev/null
+          ok=0
+          for _ in $(seq 1 180); do
+            if curl -sf http://localhost:3000/healthz >/dev/null; then
+              ok=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ok" != "1" ]; then
+            echo "boot: the image never became healthy:" >&2
+            docker logs uc-boot-studio 2>&1 | tail -n 60 >&2
+            exit 1
+          fi
+          echo "boot: healthy /healthz (migrations ran at boot):"
+          curl -sf http://localhost:3000/healthz
+          echo

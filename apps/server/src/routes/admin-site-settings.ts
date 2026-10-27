@@ -117,9 +117,20 @@ async function onInvalidSiteFields(
     return c.json({ error: "invalid JSON body" }, 400);
   }
 
-  // The gate only calls back with "invalid" for a body that parsed, and
-  // Hono caches the parse, so re-reading is safe.
-  const body = (await c.req.json()) as Record<string, unknown> | null;
+  // Hono's validator only reads the body for a JSON Content-Type; for a
+  // no or non-JSON Content-Type it validates value={} without touching
+  // it, so "invalid" can reach us with an empty or non-JSON body left
+  // unread. The re-read then throws a SyntaxError the gate's catch does
+  // not convert (it only turns a thrown HTTPException(400) into
+  // "malformed"), which would fall through to the app's onError — 500
+  // "internal error". The pre-conversion try/catch around c.req.json()
+  // answered these bodies 400 "invalid JSON body"; so does this one.
+  let body: Record<string, unknown> | null;
+  try {
+    body = (await c.req.json()) as Record<string, unknown> | null;
+  } catch {
+    return c.json({ error: "invalid JSON body" }, 400);
+  }
 
   const revisionResult = versionSchema.safeParse(body?.revision);
   if (!revisionResult.success) {

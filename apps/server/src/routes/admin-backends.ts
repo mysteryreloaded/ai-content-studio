@@ -72,13 +72,24 @@ async function onInvalidBackendBody(
   reason: ValidateReason,
   checkVersion: boolean,
 ): Promise<Response> {
-  // The "malformed" branch cannot re-read the body (the parse threw);
-  // `null` stands in for it, and for a JSON `null` body — both answered
-  // 400 "invalid JSON body" before the conversion.
-  const body =
-    reason === "malformed"
-      ? null
-      : ((await c.req.json()) as Record<string, unknown> | null);
+  // `null` stands in for a "malformed" body (the validator's parse threw,
+  // so there is nothing to re-read), a JSON `null` body, and a body the
+  // gate never read: Hono's validator only reads for a JSON
+  // Content-Type, so a no or non-JSON Content-Type reaches here with the
+  // body still unread, and the re-read throws a SyntaxError the gate's
+  // catch does not convert (500 "internal error" on the way out). The
+  // pre-conversion readJsonBody's catch answered all of these the same
+  // way — 400 "invalid JSON body".
+  let body: Record<string, unknown> | null;
+  if (reason === "malformed") {
+    body = null;
+  } else {
+    try {
+      body = (await c.req.json()) as Record<string, unknown> | null;
+    } catch {
+      body = null;
+    }
+  }
   if (body === null) {
     return c.json({ error: "invalid JSON body" }, 400);
   }

@@ -30,6 +30,25 @@ type _PostTakesJson = Expect<
     : false
 >;
 
+// The app-level handler mirrors app.ts's onError: every unhandled
+// error — including the `HTTPException(400)` hono's validator throws for
+// a body that cannot be parsed — would become a 500 "internal error".
+// `route` is mounted into it, so the tests below hit the route through
+// the same app the real one has.
+const app = new Hono<AppEnv>();
+app.onError(async (_err, c) => c.json({ error: "internal error" }, 500));
+app.route("/", route);
+
+// Pins the `ValidateReason` contract: a body that cannot be parsed is
+// "malformed", a parsed body that fails the schema is "invalid".
+const reasonRoute = new Hono<AppEnv>().post(
+  "/",
+  validate("json", z.object({ name: z.string() }), (c, reason) =>
+    c.json({ reason }, 400),
+  ),
+  (c) => c.json({ name: c.req.valid("json").name }),
+);
+
 describe("auth/validate (issue #164)", () => {
   test("a bad body answers with the route's own 400 response", async () => {
     const res = await route.request("/", {
@@ -49,5 +68,33 @@ describe("auth/validate (issue #164)", () => {
     });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ name: "alice" });
+  });
+
+  test("a malformed (unparseable) JSON body answers the route's own 400, not the app's 500", async () => {
+    const res = await app.request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: '{"name":',
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "bad_body" });
+  });
+
+  test("onInvalid is told apart a malformed body from an invalid one", async () => {
+    const malformed = await reasonRoute.request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: '{"name":',
+    });
+    expect(malformed.status).toBe(400);
+    expect(await malformed.json()).toEqual({ reason: "malformed" });
+
+    const invalid = await reasonRoute.request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: 42 }),
+    });
+    expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toEqual({ reason: "invalid" });
   });
 });

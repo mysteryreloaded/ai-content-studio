@@ -6,10 +6,16 @@
 # digest the candidate gate already ran, which is what makes "a final
 # release never rebuilds" true (docs/ops/releasing.md).
 #
-#   TAG=1.0.0 GITHUB_TOKEN=... ./scripts/retag-final.sh
+#   TAG=1.0.0 GITHUB_ACTOR=you GITHUB_TOKEN=... ./scripts/retag-final.sh
 #
-# In CI both are set by the workflow (GITHUB_REF_NAME supplies the tag).
-# GITHUB_REPOSITORY defaults to this repo.
+# In CI all three are set by the workflow (GITHUB_REF_NAME supplies the
+# tag). GITHUB_REPOSITORY defaults to this repo.
+#
+# Against a non-GHCR registry (a local registry:2 in a test) set REGISTRY
+# (http://localhost:5050) and GITHUB_REPOSITORY to its repo name; an
+# optional REGISTRY_TOKEN supplies a bearer. The GHCR token exchange and
+# the gate-run check below are GHCR-only, so an overridden registry needs
+# no GitHub at all.
 set -euo pipefail
 
 tag=${TAG:-${GITHUB_REF_NAME:-}}
@@ -22,40 +28,94 @@ if [[ ! "$tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "retag-final: TAG $tag is not X.Y.Z (a final release, not a candidate)" >&2
   exit 2
 fi
-if [ -z "${GITHUB_TOKEN:-}" ]; then
-  echo "retag-final: GITHUB_TOKEN is required" >&2
-  exit 2
-fi
 
-registry=ghcr.io
+registry=${REGISTRY:-https://ghcr.io}
 name=${GITHUB_REPOSITORY:-mysteryreloaded/ai-content-studio}
 name=$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')
 api="$registry/v2/$name"
 accept="application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json"
 
+# The manifest API wants a Bearer token. For GHCR that is an *exchanged*
+# registry token, not the raw GITHUB_TOKEN: the registry's token endpoint
+# trades GITHUB_ACTOR:GITHUB_TOKEN for one (the same exchange docker
+# login performs). An overridden registry either supplies its own bearer
+# or needs none.
+token=""
+if [ "$registry" = "https://ghcr.io" ]; then
+  if [ -z "${GITHUB_TOKEN:-}" ]; then
+    echo "retag-final: GITHUB_TOKEN is required (with GITHUB_ACTOR) to exchange a GHCR registry token" >&2
+    exit 2
+  fi
+  if [ -z "${GITHUB_ACTOR:-}" ]; then
+    echo "retag-final: GITHUB_ACTOR is required to exchange a GHCR registry token" >&2
+    exit 2
+  fi
+  token=$(
+    curl -fsSL -G -u "$GITHUB_ACTOR:$GITHUB_TOKEN" \
+      "$registry/token" \
+      --data-urlencode "service=ghcr.io" \
+      --data-urlencode "scope=repository:$name:pull,push" \
+      | jq -r '.token // empty'
+  )
+  if [ -z "$token" ]; then
+    echo "retag-final: the GHCR token exchange returned no token" >&2
+    exit 1
+  fi
+elif [ -n "${REGISTRY_TOKEN:-}" ]; then
+  token=$REGISTRY_TOKEN
+fi
+
+auth=()
+if [ -n "$token" ]; then
+  auth=(-H "Authorization: Bearer $token")
+fi
+
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 echo "retag-final: tags on $name:"
-tags=$(curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" "$api/tags/list")
+tags=$(curl -fsSL "${auth[@]}" "$api/tags/list")
 jq -r '.tags[] // empty' <<<"$tags"
 
+# The -rc.N tags of exactly this version: the pattern is anchored, so a
+# 1.0.0 final can never pick up 11.0.0's candidates.
 candidate=$(
   jq -r '.tags[] // empty' <<<"$tags" \
-    | grep -F -- "${tag}-rc." \
-    | grep -E '^[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$' \
+    | grep -E -- "^${tag//./\\.}-rc\.[0-9]+$" \
     | sort -t. -k4 -n \
-    | tail -n 1
+    | tail -n 1 \
+    || true
 )
 if [ -z "$candidate" ]; then
-  echo "retag-final: no $tag-rc.N image is published on GHCR." >&2
+  echo "retag-final: no $tag-rc.N image is published on the registry." >&2
   echo "Cut the candidate tag (v$tag-rc.N) and let its gate pass first, then re-tag (docs/ops/releasing.md)." >&2
   exit 1
 fi
 echo "retag-final: the passing candidate is $candidate"
 
+# A pushed image is not a passing candidate: the candidate gate's upgrade
+# check and native boots run AFTER `publish` pushes the image, so a green
+# push says nothing about them. Before re-tagging, require a successful
+# run of the candidate's own gate (GHCR only — an overridden registry is a
+# test and has no gate run to check).
+if [ "$registry" = "https://ghcr.io" ]; then
+  if ! command -v gh >/dev/null 2>&1; then
+    echo "retag-final: the gh CLI is required to check the candidate's gate run (preinstalled on GitHub runners)" >&2
+    exit 2
+  fi
+  runs=$(
+    gh api "repos/$name/actions/workflows/release-rc.yml/runs?branch=v$tag-$candidate&status=success"
+  )
+  if [ "$(jq -r '.total_count // 0' <<<"$runs")" -eq 0 ]; then
+    echo "retag-final: v$tag-$candidate has no successful release-rc.yml run yet." >&2
+    echo "Wait for its gate to finish (the upgrade check and the boots run after the push), then re-tag (docs/ops/releasing.md)." >&2
+    exit 1
+  fi
+  echo "retag-final: v$tag-$candidate's release-rc.yml run is green"
+fi
+
 curl -fsSL \
-  -H "Authorization: Bearer $GITHUB_TOKEN" \
+  "${auth[@]}" \
   -H "Accept: $accept" \
   -D "$tmp/headers" \
   -o "$tmp/manifest" \
@@ -68,12 +128,12 @@ if [ -z "$digest" ] || [ -z "$ctype" ]; then
   exit 1
 fi
 
-# The registry's manifest endpoint only stores on PUT (the CNCF Distribution
-# spec's "PUT /v2/<name>/manifests/<reference>"); POST is for blob uploads
-# and the registry answers it with 405 UNSUPPORTED.
+# The registry's manifest endpoint only stores on PUT (the CNCF
+# Distribution spec's "PUT /v2/<name>/manifests/<reference>"); POST is for
+# blob uploads and the registry answers it with 405 UNSUPPORTED.
 for newtag in "$tag" latest; do
   curl -fsSL -X PUT \
-    -H "Authorization: Bearer $GITHUB_TOKEN" \
+    "${auth[@]}" \
     -H "Accept: $accept" \
     -H "Content-Type: $ctype" \
     --data-binary @"$tmp/manifest" \

@@ -14,12 +14,15 @@ on:
 
 jobs:
   retag:
-    if: !contains(github.ref_name, '-rc.')
+    if: ${{ !contains(github.ref_name, '-rc.') }}
     runs-on: ubuntu-latest
 
     permissions:
       contents: read
       packages: write
+      # The script checks that the candidate's own gate (release-rc.yml)
+      # ran green before re-tagging; the run lookup needs actions: read.
+      actions: read
 
     steps:
       - uses: actions/checkout@v5
@@ -27,5 +30,6 @@ jobs:
       - name: Re-tag the passing candidate's digest (no build)
         env:
           TAG: ${{ github.ref_name }}
+          GITHUB_ACTOR: ${{ github.actor }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./scripts/retag-final.sh

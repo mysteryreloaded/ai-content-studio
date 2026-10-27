@@ -6,7 +6,13 @@ Backend, see [backend-kit.md](backend-kit.md); that's a separate host.
 For daily backups, restore and the quarterly restore drill, see
 [backup.md](backup.md) — `ops/studio/upgrade.sh`'s own backup step
 below is a one-off safety net for an upgrade, not a substitute for
-that.
+that. The other operator docs live beside this one: [GPU Backends](backend-kit.md),
+[Backups](backup.md), [Monitoring](monitoring.md),
+[Building a Model](model-building.md), [the consent
+screen](consent.md), [Site terms](site-terms.md),
+[Privacy](privacy.md) and [Releasing](releasing.md) — plus
+[Model licenses and AI rules](../licensing.md) and the reference for
+every environment variable in [server-env.md](../server-env.md).
 
 ## The default path: one Compose file, one `.env`
 
@@ -46,6 +52,45 @@ re-tags that candidate's digest as `X.Y.Z` (and `:latest`, for browsing
 the package page only) without rebuilding — the final image is the exact
 digest the gate already ran. Pin `STUDIO_VERSION` to the numbered tag,
 never to `latest`.
+
+## Google OAuth client
+
+The Studio signs users in with their own Google accounts over OpenID
+Connect. The one thing you have to create yourself is an OAuth client,
+in the [Google Cloud console](https://console.cloud.google.com):
+
+1. **APIs & Services → Credentials → Create credentials → OAuth
+   client ID**, application type **Web application**.
+2. Under **Authorized origins**, add your `PUBLIC_URL`'s origin (e.g.
+   `https://studio.example.com`).
+3. Under **Authorized redirect URIs**, add
+   `<PUBLIC_URL>/api/auth/google/callback` exactly — e.g.
+   `https://studio.example.com/api/auth/google/callback`. The Studio
+   always redirects to this URL.
+4. Copy the **Client ID** and **Client secret** into `.env` as
+   `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` (see
+   [server-env.md](../server-env.md) for the full list).
+
+The details the Studio needs from Google:
+
+- it calls the standard issuer `https://accounts.google.com` with the
+  scopes `openid email profile` — nothing else to request;
+- the sign-in is PKCE (S256) with the client secret held
+  server-side, so no extra configuration is needed;
+- **unverified email addresses are refused**: the ID token's
+  `email_verified` must be true or the sign-in fails, so a Google
+  account with an unverified address simply can't get in;
+- **the redirect URI is pinned to `PUBLIC_URL`'s origin.** If you ever
+  change `PUBLIC_URL` (say, moving to a new domain), add the new
+  `<new PUBLIC_URL>/api/auth/google/callback` to the same client
+  *before* the switch — an origin Google doesn't recognize fails the
+  sign-in with an error from Google's side, not yours.
+
+For local development the repo ships a mock issuer: point
+`OIDC_ISSUER` at `http://localhost:3000/mock-oidc` (the checked-in
+dev `.env` does) — the mock is only served when `PUBLIC_URL` is
+`localhost` or `127.0.0.1`, so it can't be confused with a real
+deployment. No Google client is needed to try the Studio locally.
 
 ## Upgrading
 

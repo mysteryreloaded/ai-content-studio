@@ -992,6 +992,7 @@ describe("Reliable dispatch (issue #55)", () => {
       await recoverInFlightGenerations({
         queue,
         assetsRepository,
+        generationsRepository,
         storage,
         backendRepository,
         backendsService,

@@ -11,8 +11,34 @@
     "enabled": true,
     "indentStyle": "space"
   },
+  "overrides": [
+    {
+      "include": ["apps/web/src/components/ui/*.tsx"],
+      "organizeImports": { "enabled": false },
+      "javascript": {
+        "formatter": { "semicolons": "asNeeded", "quoteStyle": "double" }
+      },
+      "linter": {
+        "rules": {
+          "style": { "useImportType": "off" }
+        }
+      }
+    },
+    {
+      "include": ["apps/web/src/components/ui/*.test.tsx"],
+      "organizeImports": { "enabled": true },
+      "javascript": {
+        "formatter": { "semicolons": "always" }
+      },
+      "linter": {
+        "rules": {
+          "style": { "useImportType": "off" }
+        }
+      }
+    }
+  ],
   "files": {
-    "ignore": ["workflows/**", "**/dist/**"]
+    "ignore": ["workflows/**", "**/dist/**", "apps/web/src/index.css"]
   },
   "vcs": {
     "enabled": true,

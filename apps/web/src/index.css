@@ -54,6 +54,7 @@
   --color-secondary-foreground: var(--fg);
   --color-muted: var(--sunk);
   --color-muted-foreground: var(--muted);
+  --color-faint: var(--faint);
   --color-accent: var(--sunk);
   --color-accent-foreground: var(--fg);
   --color-destructive: var(--err);
@@ -96,6 +97,12 @@
   --radius-2xl: 10px;
   --radius-3xl: 12px;
   --radius-4xl: 14px;
+
+  /* The prototype's single elevation — `--shadow` (redefined per mode in
+     the raw-token blocks below) — backs every floating surface: `shadow-md`
+     for popovers, dropdowns and select menus, `shadow-lg` for the sheet. */
+  --shadow-md: var(--shadow);
+  --shadow-lg: var(--shadow);
 }
 
 /*

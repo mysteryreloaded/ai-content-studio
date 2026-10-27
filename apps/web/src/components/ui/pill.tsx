@@ -12,7 +12,10 @@ const pillVariants = cva(
   {
     variants: {
       tone: {
-        neutral: "bg-sunk text-muted",
+        // The prototype's `.pill`: the `--color-muted` token (var(--sunk)) is
+        // the fill and `--color-muted-foreground` (var(--muted)) the text, so
+        // the default tone has a visible fill and readable text in both modes.
+        neutral: "bg-muted text-muted-foreground",
         // The accent tone is tinted with the Admin's brand accent, so it uses
         // `--accent-soft` for the fill and the primary (accent) colour for the
         // text rather than the neutral hover `--accent`.

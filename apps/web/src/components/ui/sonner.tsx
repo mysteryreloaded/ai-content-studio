@@ -26,11 +26,14 @@ const Toaster = ({ ...props }: ToasterProps) => {
         error: <OctagonXIcon className="size-4" />,
         loading: <Loader2Icon className="size-4 animate-spin" />,
       }}
+      // The toaster's CSS hooks resolve against the prototype's raw tokens
+      // (the shadcn `--popover`/`--border` names only exist as `--color-*`
+      // theme entries, not as custom properties).
       style={
         {
-          "--normal-bg": "var(--popover)",
-          "--normal-text": "var(--popover-foreground)",
-          "--normal-border": "var(--border)",
+          "--normal-bg": "var(--panel)",
+          "--normal-text": "var(--fg)",
+          "--normal-border": "var(--line)",
           "--border-radius": "var(--radius)",
         } as React.CSSProperties
       }

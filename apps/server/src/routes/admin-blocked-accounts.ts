@@ -7,7 +7,7 @@ import { desc, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { adminActorFrom } from "../audit/actor.js";
 import { recordAuditEntry } from "../audit/audit.js";
-import { type RouteEntry, guardedRoute } from "../auth/access.js";
+import { type RouteEntry, guard } from "../auth/access.js";
 import type { AppEnv } from "../auth/app-env.js";
 import type { Database } from "../db/client.js";
 import { blockedAccounts } from "../db/schema.js";
@@ -24,52 +24,53 @@ export function adminBlockedAccountsRoute(
   db: Database,
   clock: Clock,
   routes: RouteEntry[],
-): Hono<AppEnv> {
-  const app = new Hono<AppEnv>();
+) {
   const basePath = "/api/admin/blocked-accounts";
 
-  guardedRoute(app, routes, basePath, "get", "/", "admin", async (c) => {
-    const rows = await db
-      .select({
-        id: blockedAccounts.id,
-        userId: blockedAccounts.userId,
-        disabledAt: blockedAccounts.disabledAt,
-        reason: blockedAccounts.reason,
-        createdAt: blockedAccounts.createdAt,
-      })
-      .from(blockedAccounts)
-      .orderBy(desc(blockedAccounts.createdAt));
-    return c.json({ blockedAccounts: rows });
-  });
-
-  guardedRoute(app, routes, basePath, "delete", "/:id", "admin", async (c) => {
-    const id = c.req.param("id");
-    if (!isUuid(id)) return c.json({ error: "not found" }, 404);
-
-    const result = await db.transaction(async (tx) => {
-      const [row] = await tx
-        .select()
+  return new Hono<AppEnv>()
+    .get("/", guard(routes, basePath, "get", "/", "admin"), async (c) => {
+      const rows = await db
+        .select({
+          id: blockedAccounts.id,
+          userId: blockedAccounts.userId,
+          disabledAt: blockedAccounts.disabledAt,
+          reason: blockedAccounts.reason,
+          createdAt: blockedAccounts.createdAt,
+        })
         .from(blockedAccounts)
-        .where(eq(blockedAccounts.id, id));
-      if (!row) return { ok: false as const };
+        .orderBy(desc(blockedAccounts.createdAt));
+      return c.json({ blockedAccounts: rows });
+    })
+    .delete(
+      "/:id",
+      guard(routes, basePath, "delete", "/:id", "admin"),
+      async (c) => {
+        const id = c.req.param("id");
+        if (!isUuid(id)) return c.json({ error: "not found" }, 404);
 
-      await tx.delete(blockedAccounts).where(eq(blockedAccounts.id, id));
+        const result = await db.transaction(async (tx) => {
+          const [row] = await tx
+            .select()
+            .from(blockedAccounts)
+            .where(eq(blockedAccounts.id, id));
+          if (!row) return { ok: false as const };
 
-      await recordAuditEntry(tx, clock, {
-        actor: adminActorFrom(c),
-        targetType: "blocked-account",
-        targetId: id,
-        action: "unblock",
-        before: { reason: row.reason },
-        after: null,
-      });
+          await tx.delete(blockedAccounts).where(eq(blockedAccounts.id, id));
 
-      return { ok: true as const };
-    });
+          await recordAuditEntry(tx, clock, {
+            actor: adminActorFrom(c),
+            targetType: "blocked-account",
+            targetId: id,
+            action: "unblock",
+            before: { reason: row.reason },
+            after: null,
+          });
 
-    if (!result.ok) return c.json({ error: "not found" }, 404);
-    return c.json({ ok: true });
-  });
+          return { ok: true as const };
+        });
 
-  return app;
+        if (!result.ok) return c.json({ error: "not found" }, 404);
+        return c.json({ ok: true });
+      },
+    );
 }

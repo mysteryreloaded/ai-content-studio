@@ -17,7 +17,7 @@ import { z } from "zod";
 import { adminActorFrom } from "../audit/actor.js";
 import { type RouteEntry, guard } from "../auth/access.js";
 import type { AppEnv } from "../auth/app-env.js";
-import { validate, type ValidateReason } from "../auth/validate.js";
+import { type ValidateReason, validate } from "../auth/validate.js";
 import type { NoticeEvents } from "../branding/notice-events.js";
 import {
   type SiteSettingsUpdateImage,
@@ -148,96 +148,85 @@ export function adminSiteSettingsRoute(
   const basePath = "/api/admin/site-settings";
 
   return new Hono<AppEnv>()
-    .get(
-      "/",
-      guard(routes, basePath, "get", "/", "admin"),
-      async (c) => {
-        const settings = await getSiteSettings(db);
-        return c.json(settings);
-      },
-    )
-    .put(
-      "/",
-      guard(routes, basePath, "put", "/", "admin"),
-      async (c) => {
-        let body: Record<string, unknown>;
-        try {
-          body = await c.req.parseBody();
-        } catch {
-          return c.json({ error: "invalid form data" }, 400);
-        }
+    .get("/", guard(routes, basePath, "get", "/", "admin"), async (c) => {
+      const settings = await getSiteSettings(db);
+      return c.json(settings);
+    })
+    .put("/", guard(routes, basePath, "put", "/", "admin"), async (c) => {
+      let body: Record<string, unknown>;
+      try {
+        body = await c.req.parseBody();
+      } catch {
+        return c.json({ error: "invalid form data" }, 400);
+      }
 
-        const versionResult = versionSchema.safeParse(body.version);
-        if (!versionResult.success) {
-          return c.json({ error: "version is required" }, 400);
-        }
+      const versionResult = versionSchema.safeParse(body.version);
+      if (!versionResult.success) {
+        return c.json({ error: "version is required" }, 400);
+      }
 
-        const fieldsResult = siteSettingsFieldsSchema.safeParse({
-          title: body.title,
-          landingText: body.landingText,
-          accent: body.accent,
-          signUpMode: body.signUpMode,
-          contact: body.contact,
-          footerLinks: parseFooterLinks(body.footerLinks),
-        });
-        if (!fieldsResult.success) {
-          return c.json(
-            { error: "invalid site settings", issues: fieldsResult.error.issues },
-            400,
-          );
-        }
-
-        let logo: SiteSettingsUpdateImage | undefined;
-        let background: SiteSettingsUpdateImage | undefined;
-        try {
-          logo = await readImageField(body.logo, "logo");
-          background = await readImageField(body.background, "background");
-        } catch (error) {
-          return c.json(
-            { error: error instanceof Error ? error.message : "invalid image" },
-            400,
-          );
-        }
-
-        const result = await updateSiteSettings(
-          db,
-          clock,
-          storage,
-          adminActorFrom(c),
-          {
-            version: versionResult.data,
-            title: fieldsResult.data.title,
-            landingText: fieldsResult.data.landingText,
-            accent: fieldsResult.data.accent,
-            signUpMode: fieldsResult.data.signUpMode,
-            contact: fieldsResult.data.contact,
-            footerLinks: fieldsResult.data.footerLinks,
-            logo,
-            background,
-          },
+      const fieldsResult = siteSettingsFieldsSchema.safeParse({
+        title: body.title,
+        landingText: body.landingText,
+        accent: body.accent,
+        signUpMode: body.signUpMode,
+        contact: body.contact,
+        footerLinks: parseFooterLinks(body.footerLinks),
+      });
+      if (!fieldsResult.success) {
+        return c.json(
+          { error: "invalid site settings", issues: fieldsResult.error.issues },
+          400,
         );
+      }
 
-        if (!result.ok) {
-          return c.json({ error: "changed by someone else, reload" }, 409);
-        }
+      let logo: SiteSettingsUpdateImage | undefined;
+      let background: SiteSettingsUpdateImage | undefined;
+      try {
+        logo = await readImageField(body.logo, "logo");
+        background = await readImageField(body.background, "background");
+      } catch (error) {
+        return c.json(
+          { error: error instanceof Error ? error.message : "invalid image" },
+          400,
+        );
+      }
 
-        return c.json(result.settings);
-      },
-    )
+      const result = await updateSiteSettings(
+        db,
+        clock,
+        storage,
+        adminActorFrom(c),
+        {
+          version: versionResult.data,
+          title: fieldsResult.data.title,
+          landingText: fieldsResult.data.landingText,
+          accent: fieldsResult.data.accent,
+          signUpMode: fieldsResult.data.signUpMode,
+          contact: fieldsResult.data.contact,
+          footerLinks: fieldsResult.data.footerLinks,
+          logo,
+          background,
+        },
+      );
+
+      if (!result.ok) {
+        return c.json({ error: "changed by someone else, reload" }, 409);
+      }
+
+      return c.json(result.settings);
+    })
     .put(
       "/terms",
       guard(routes, basePath, "put", "/terms", "admin"),
-      validate(
-        "json",
-        siteTermsSchema,
-        (c, reason) =>
-          onInvalidSiteFields(
-            c,
-            reason,
-            siteTermsFieldsSchema,
-            (body) => ({ body: body?.body, askAgain: body?.askAgain }),
-            "invalid site terms",
-          ),
+      validate("json", siteTermsSchema, (c, reason) =>
+        onInvalidSiteFields(
+          c,
+          reason,
+          siteTermsFieldsSchema,
+          (body) => ({ body: body?.body, askAgain: body?.askAgain }),
+          "invalid site terms",
+        ),
       ),
       async (c) => {
         const { revision, body, askAgain } = c.req.valid("json");
@@ -258,17 +247,14 @@ export function adminSiteSettingsRoute(
     .put(
       "/privacy",
       guard(routes, basePath, "put", "/privacy", "admin"),
-      validate(
-        "json",
-        sitePrivacySchema,
-        (c, reason) =>
-          onInvalidSiteFields(
-            c,
-            reason,
-            sitePrivacyFieldsSchema,
-            (body) => ({ body: body?.body }),
-            "invalid privacy policy",
-          ),
+      validate("json", sitePrivacySchema, (c, reason) =>
+        onInvalidSiteFields(
+          c,
+          reason,
+          sitePrivacyFieldsSchema,
+          (body) => ({ body: body?.body }),
+          "invalid privacy policy",
+        ),
       ),
       async (c) => {
         const { revision, body } = c.req.valid("json");
@@ -288,17 +274,14 @@ export function adminSiteSettingsRoute(
     .put(
       "/blocked-words",
       guard(routes, basePath, "put", "/blocked-words", "admin"),
-      validate(
-        "json",
-        siteBlockedWordsSchema,
-        (c, reason) =>
-          onInvalidSiteFields(
-            c,
-            reason,
-            siteBlockedWordsFieldsSchema,
-            (body) => ({ text: body?.text }),
-            "invalid blocked words",
-          ),
+      validate("json", siteBlockedWordsSchema, (c, reason) =>
+        onInvalidSiteFields(
+          c,
+          reason,
+          siteBlockedWordsFieldsSchema,
+          (body) => ({ text: body?.text }),
+          "invalid blocked words",
+        ),
       ),
       async (c) => {
         const { revision, text } = c.req.valid("json");
@@ -332,17 +315,14 @@ export function adminSiteSettingsRoute(
     .put(
       "/notice",
       guard(routes, basePath, "put", "/notice", "admin"),
-      validate(
-        "json",
-        siteNoticeSchema,
-        (c, reason) =>
-          onInvalidSiteFields(
-            c,
-            reason,
-            siteNoticeFieldsSchema,
-            (body) => ({ text: body?.text }),
-            "invalid notice",
-          ),
+      validate("json", siteNoticeSchema, (c, reason) =>
+        onInvalidSiteFields(
+          c,
+          reason,
+          siteNoticeFieldsSchema,
+          (body) => ({ text: body?.text }),
+          "invalid notice",
+        ),
       ),
       async (c) => {
         const { revision, text } = c.req.valid("json");
@@ -366,20 +346,17 @@ export function adminSiteSettingsRoute(
     .put(
       "/caps",
       guard(routes, basePath, "put", "/caps", "admin"),
-      validate(
-        "json",
-        siteCapsSchema,
-        (c, reason) =>
-          onInvalidSiteFields(
-            c,
-            reason,
-            siteCapsFieldsSchema,
-            (body) => ({
-              dailyCap: body?.dailyCap,
-              concurrentCap: body?.concurrentCap,
-            }),
-            "invalid caps",
-          ),
+      validate("json", siteCapsSchema, (c, reason) =>
+        onInvalidSiteFields(
+          c,
+          reason,
+          siteCapsFieldsSchema,
+          (body) => ({
+            dailyCap: body?.dailyCap,
+            concurrentCap: body?.concurrentCap,
+          }),
+          "invalid caps",
+        ),
       ),
       async (c) => {
         const { revision, dailyCap, concurrentCap } = c.req.valid("json");

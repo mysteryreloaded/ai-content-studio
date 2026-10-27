@@ -13,9 +13,10 @@
 #
 # Against a non-GHCR registry (a local registry:2 in a test) set REGISTRY
 # (http://localhost:5050) and GITHUB_REPOSITORY to its repo name; an
-# optional REGISTRY_TOKEN supplies a bearer. The GHCR token exchange and
-# the gate-run check below are GHCR-only, so an overridden registry needs
-# no GitHub at all.
+# optional REGISTRY_TOKEN supplies a bearer. The GHCR token exchange is
+# GHCR-only, so an overridden registry needs no GitHub at all; the
+# gate-run check is on by default for GHCR and off otherwise, and
+# CHECK_GATE_RUN=1/0 overrides it either way.
 set -euo pipefail
 
 tag=${TAG:-${GITHUB_REF_NAME:-}}
@@ -96,22 +97,34 @@ echo "retag-final: the passing candidate is $candidate"
 # A pushed image is not a passing candidate: the candidate gate's upgrade
 # check and native boots run AFTER `publish` pushes the image, so a green
 # push says nothing about them. Before re-tagging, require a successful
-# run of the candidate's own gate (GHCR only — an overridden registry is a
-# test and has no gate run to check).
-if [ "$registry" = "https://ghcr.io" ]; then
+# run of the candidate's own gate. On by default for GHCR, off by default
+# for an overridden registry (a test has no gate run to check);
+# CHECK_GATE_RUN=1/0 overrides either way.
+if [ -z "${CHECK_GATE_RUN:-}" ]; then
+  if [ "$registry" = "https://ghcr.io" ]; then
+    check_gate_run=1
+  else
+    check_gate_run=0
+  fi
+else
+  check_gate_run=$CHECK_GATE_RUN
+fi
+if [ "$check_gate_run" = "1" ]; then
   if ! command -v gh >/dev/null 2>&1; then
     echo "retag-final: the gh CLI is required to check the candidate's gate run (preinstalled on GitHub runners)" >&2
     exit 2
   fi
+  # $candidate is the full candidate version (X.Y.Z-rc.N); its tag is
+  # v$candidate, which is the branch the release-rc.yml gate ran on.
   runs=$(
-    gh api "repos/$name/actions/workflows/release-rc.yml/runs?branch=v$tag-$candidate&status=success"
+    gh api "repos/$name/actions/workflows/release-rc.yml/runs?branch=v$candidate&status=success"
   )
   if [ "$(jq -r '.total_count // 0' <<<"$runs")" -eq 0 ]; then
-    echo "retag-final: v$tag-$candidate has no successful release-rc.yml run yet." >&2
+    echo "retag-final: v$candidate has no successful release-rc.yml run yet." >&2
     echo "Wait for its gate to finish (the upgrade check and the boots run after the push), then re-tag (docs/ops/releasing.md)." >&2
     exit 1
   fi
-  echo "retag-final: v$tag-$candidate's release-rc.yml run is green"
+  echo "retag-final: v$candidate's release-rc.yml run is green"
 fi
 
 curl -fsSL \

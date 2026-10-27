@@ -8,10 +8,12 @@ in the Inputs; the Studio routes the Generation to one of the Backends
 you've attached to the Model.
 
 Everything happens on one page: **Models**, then the Model's editor.
-The editor has sections down the left — *Details*, *Revisions*,
-*Workflow*, *Backends*, *Modes*, *Test*, *Terms* and *Inputs* — and a
-*Checks* rail on the right ending in the **Enable** / **Disable**
-button.
+The editor opens with a header row — the Model's state, its current
+revision, links to its **History** and **Export**, and the
+**Enable** / **Disable** button — followed by a **Checks** section
+listing its live errors and warnings, and the stacked sections
+*Revisions*, *Details*, *Backends*, *Modes*, *Terms and attribution*,
+*Inputs* and *Workflow*.
 
 ## Creating a Model
 
@@ -41,50 +43,75 @@ that runs longer than it is killed.
 **Backends** — the ComfyUI servers this Model may run on. At least one
 attached Backend is required before the Model can be enabled. Attach
 several and the Studio picks, per Generation, one that can actually run
-the Model's graph.
+that Mode's Path.
 
 **Inputs** — the named parameters a user fills in. Each Input has a
 label (1–60 characters, unique within the Model), a type — text,
 number, select, seed, or a media upload — and a **target**: the node and
 input in the Workflow it feeds. A *select* Input carries 2–50 options
-(exactly 2 makes it a toggle); a *seed* Input is a single INT field; a
-media upload's size limit may not exceed your server's
+(exactly 2 makes it a toggle); a *seed* Input binds exactly one INT
+field (at most one per Model) — left blank in a form, the Studio
+draws a random seed for the user, while its **maximum** (capped at the
+largest exact JavaScript integer) bounds the draw, so the only thing
+enabling requires of it is that the maximum be set; a media upload's
+size limit may not exceed your server's
 `MAX_UPLOAD_MB`. Inputs are grouped into *describe* (what the user
 sees) and *settings* (advanced).
 
-**Modes** — saved presets: a name (1–60), a fixed **path** (which node in
-the Workflow starts the generation) and fixed values for some of the
-Inputs. A user who picks a Mode gets its fixed values pre-filled and can
+**Modes** — saved presets: a name (1–60), a description, the **output
+nodes** that produce its Assets (the first one is the main Asset), and
+fixed values for some of the Inputs. A Mode's **Path** is derived
+from its output nodes: those nodes plus every node they depend on,
+found by following links upstream ([ADR-0001](../adr/0001-modes-run-only-their-path.md)) —
+for each Generation the Studio sends a Backend only that Path, not
+the whole graph, and the editor shows the Path's size for each Mode.
+A user who picks a Mode gets its fixed values pre-filled and can
 still change anything not locked. At least one Mode is required to
 enable.
 
+There is no separate Test section: each Mode carries its own
+**Test** / **Close test** button, which opens a test panel inline
+under that Mode. The panel runs the Mode as it stands in the editor
+right now — saved or not — with the Workbench's own upload and points
+pickers, against **Any** of the attached Backends or one chosen by
+name. A test runs on an unnumbered revision that never becomes
+current and writes no Audit entry; it bypasses Pause, a disabled
+Model's own refusal, the concurrency caps, and Model terms, but is
+refused while the Mode itself has an error. A running test streams
+progress exactly like a real Generation and can be **Cancel**led. The
+**Last 5 tests** list under the Modes section keeps the five most
+recent runs (persisted server-side, so they're there when you come
+back), each with its Mode, its state, and a **View** link to its
+first Asset when it succeeded. Use tests to check a change before you
+save it.
+
 **Workflow** — the ComfyUI graph itself. Uploading a new version of the
-workflow file stores it as a new revision (see Revisions). For the Model
-to run, every node type in the graph must be installed on at least one
+workflow file stores it as a new revision (see Revisions). For a Mode
+to run, every node type in its **Path** — the output nodes it names
+plus their upstream dependencies — must be installed on at least one
 attached Backend.
 
 **Revisions** — the numbered history of the Workflow graph. The current
 revision is the one in use; earlier revisions can be restored.
 
-**Test** — run the Model's current, **unsaved** state on one of its
-attached Backends. Test runs work on disabled Models, don't count
-against the Model's concurrency caps, can be cancelled, and stream
-progress exactly like a real Generation; the last five are kept
-server-side for comparison. Use them to check a change before you save
-it.
-
-**Terms** — the Model's own consent: a terms body (up to 50,000
-characters), a **License URL** (an http(s) link, up to 2,000
-characters, or blank) and an **attribution** line (up to 120 characters)
-that is stamped into finished Assets and shown where the Model is. An
-"Ask everyone to accept again" checkbox is explained in
+**Terms and attribution** — the Model's own consent: a terms body (up
+to 50,000 characters, in Markdown, with a live preview), a **License
+URL** (an http(s) link, up to 2,000 characters, or blank) and an
+**attribution** line (up to 120 characters) that is stamped into
+finished Assets and shown where the Model is. Saving records a new
+terms version; the section's "Ask everyone to accept again" checkbox
+and the user-facing dialog are explained in
 [the consent screen](consent.md).
 
-**Checks** — the right-hand rail runs the enablement check live as you
-edit. **Errors** block enabling; **warnings** never do. The rail ends
-in the **Enable** / **Disable** button. When the Model is already
-enabled and your current edits have introduced an error, the button
-reads **Save and disable** — you can't keep a broken Model live by
+**Checks** — the section under the header runs the Model's checks
+live as you edit and lists each issue as **Error: …** or
+**Warning: …**. Errors block the **Enable** button at the top of the
+page (a disabled Model with errors can't be enabled); warnings never
+do. When the Model is already enabled and your unsaved edits have
+introduced an error, the **Save Modes** and **Save Inputs** buttons
+read **Save and disable** — and "Replace Workflow" reads
+**Replace Workflow and disable** — so the only way to save a broken
+Model is to take it down with it; you can't keep one live by
 accident.
 
 ## What "enable" requires
@@ -92,20 +119,25 @@ accident.
 The enable check passes only when all of these hold:
 
 - the Model has at least one Mode and at least one attached Backend;
-- every Mode has a fixed path;
-- every Mode's path can run on at least one attached Backend — every
-  class type in the graph is installed there;
-- every seed Input is an INT field with a maximum set, no default
-  value, and required;
-- every media-upload loader on a path is fed by a **shown** (not hidden)
-  Input, or by a fixed bare filename that appears in the options of
-  every enabled Backend;
-- a video upload in particular is fed by a node that declares the
-  `video_upload` capability (the ComfyUI-VideoSuite `VHS_LoadVideo`
-  node does).
+- every seed Input has a **maximum** set — otherwise
+  `Seed Input "…" needs a max before enabling` (a blank field is fine:
+  the Studio draws a random seed);
+- for every Mode, the output nodes it names are still in the current
+  Workflow — otherwise `Mode "…" names an output node no longer in
+  the Workflow`;
+- every Mode's Path — its output nodes plus their upstream
+  dependencies — can run on at least one *reachable* attached
+  Backend, i.e. every node type in the Path is installed there —
+  otherwise `Mode "…" isn't runnable on any attached Backend (missing
+  node types)`;
+- every Upload loader on a Mode's Path — any field a Backend flags as
+  an image, video, or audio upload, and always the `video` field of
+  the ComfyUI-VideoSuite `VHS_LoadVideo`/`VHS_LoadVideoFFmpeg` nodes —
+  is fed by a **shown** (not hidden) Input, or holds a fixed bare
+  filename that appears in the choices of every enabled Backend.
 
-When the check fails, the Checks rail lists each failure with the node
-or Input it concerns, so you can fix them one at a time.
+When the check fails, the Checks section lists each failure with the
+node or Input it concerns, so you can fix them one at a time.
 
 ## Export and import
 

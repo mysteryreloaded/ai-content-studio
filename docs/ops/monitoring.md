@@ -112,10 +112,9 @@ The Problem codes the monitor raises today are exactly these three:
 | `disk_low` | free space on the data volume is below `2 × MIN_FREE_DISK_GB`. |
 
 The Problem type defines four more codes — `model_without_backend`,
-`backend_failing`, `job_failed` and `generating_paused` — that need
-Models, Generations and Pause, none of which exist in this build, so
-nothing raises them yet. They already have a place in `/api/status` and
-the Overview, in case the monitor learns to raise them.
+`backend_failing`, `job_failed` and `generating_paused` — that the
+monitor doesn't raise yet; all four already have a place in
+`/api/status` and the Overview, in case it learns to.
 
 The registry is in-memory and self-clearing: a Problem clears the next
 time the monitor re-checks and the condition has ended. There is no TTL
@@ -127,19 +126,22 @@ The admin UI's **Overview** page (top of the admin left rail) polls
 `/api/admin/overview` every 10 seconds and shows the same data as
 `/api/status`, plus:
 
-- **Problems** — every open Problem, same shape as the endpoint.
-- **Backends** — for each attached Backend: its name, reachability,
-  ComfyUI version, total and free VRAM, and — when the Backend's
-  credentials are rejected (401/403) — a credentials error.
-- **Disk** — free gigabytes against your `MIN_FREE_DISK_GB`.
-- **Errors (24h)** — the count of `error`-level Log entries recorded in
-  the last 24 hours, with a link into the Logs page.
-- **Version and uptime** — the Studio's release version and how long
-  this server process has been running.
+- **Problems** — every open Problem, or "No Problems."
+- **Backends** — a table with one row per attached Backend: its name,
+  a state (`idle`, `unknown`, or `unreachable since <time>` — with
+  "(awaiting credentials)" when its credentials are rejected 401/403),
+  its ComfyUI version, and its free and total VRAM in GB.
+- **Studio** — free gigabytes on the data volume (flagged "(low,
+  floor is <2 × `MIN_FREE_DISK_GB`>)" when it drops under twice the
+  floor), the count of `error`-level log entries from the last 24
+  hours, the Studio's release version, and how long this server
+  process has been running.
 
-When a Model is currently disabled (for example because its Backend
-went away), a banner at the top of the page says so and names the
-Model.
+There is no per-Model banner on this page. The only banner it shows
+is at the top, when `BACKENDS_ENABLED=false`: "Backend contact is
+disabled (BACKENDS_ENABLED=false): health checks are paused." — the
+monitor is off, so the Problems list and the Backends' reachability
+stop updating until you re-enable Backend contact.
 
 ## Backup pings
 

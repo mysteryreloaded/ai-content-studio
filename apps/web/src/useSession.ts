@@ -65,14 +65,15 @@ export function useSession(): {
         ? { status: "signed-out" }
         : { status: "signed-in", user: data };
 
-  // `undefined` first, so the hook shows its "loading" state while the
-  // refetch is in flight, like the pre-Query implementation did.
+  // `resetQueries` (not `setQueryData` + `invalidateQueries`) because
+  // TanStack v5 treats `setQueryData(key, undefined)` as a no-op — the
+  // stale session would stay in the cache, so a `RequireTermsAccepted`
+  // gate remounted right after `TermsPage` accepts would read the old
+  // `termsAcceptedVersion` and bounce the user back to `/terms`
+  // (issue #183 QA round 1). The reset leaves the hook in its "loading"
+  // state until the refetch lands, like the pre-Query implementation did.
   const refresh = () => {
-    queryClient.setQueryData<SessionUser | null | undefined>(
-      SESSION_KEY,
-      undefined,
-    );
-    void queryClient.invalidateQueries({ queryKey: SESSION_KEY });
+    void queryClient.resetQueries({ queryKey: SESSION_KEY });
   };
 
   // Browsers set Sec-Fetch-Site themselves for a same-origin fetch, so

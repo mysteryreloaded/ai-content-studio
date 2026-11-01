@@ -1,0 +1,74 @@
+import { test } from "bun:test";
+import { hc } from "hono/client";
+import type { AppType } from "./app.js";
+
+// Type-only test (issue #168): the admin Models routes converted to the
+// chained style (issue #164) expose their JSON bodies and `:id` params to
+// the typed `hc` client. `hc` performs its fetch the moment a method is
+// called, so nothing below is ever *invoked* at runtime: only the
+// type-level assertions are checked, by `bun run typecheck`.
+const client = hc<AppType>("http://x");
+
+// The gate schemas' `version`/`revision` are `z.coerce.number()`, whose
+// *input* type is `unknown`, so a wrong value for one of them is not a
+// type error. The `@ts-expect-error` cases below target the real field
+// types instead (and, for the version-only routes, the exact
+// `{ version }` shape, which `disable` is not part of).
+async function typedCalls() {
+  // Model create: POST / takes the create schema (`name` plus the raw
+  // workflow).
+  await client.api.admin.models.$post({
+    json: { name: "m", workflow: {} },
+  });
+
+  // Inputs update: PUT /:id/inputs takes the inputs schema (`version`
+  // plus the whole Inputs list, and optionally `disable`).
+  await client.api.admin.models[":id"].inputs.$put({
+    param: { id: "u" },
+    json: { version: 1, inputs: [] },
+  });
+
+  // Modes update: PUT /:id/modes takes the modes schema.
+  await client.api.admin.models[":id"].modes.$put({
+    param: { id: "u" },
+    json: { version: 1, modes: [] },
+  });
+
+  // Enable: POST /:id/enable's gate body is exactly `{ version }`.
+  await client.api.admin.models[":id"].enable.$post({
+    param: { id: "u" },
+    json: { version: 1 },
+  });
+
+  // Wrong field types are type errors: the client knows each body's shape.
+  await client.api.admin.models.$post({
+    // @ts-expect-error `name` must be a string
+    json: { name: 42, workflow: {} },
+  });
+  await client.api.admin.models[":id"].inputs.$put({
+    param: { id: "u" },
+    // @ts-expect-error `disable` must be a boolean
+    json: { version: 1, inputs: [], disable: "yes" },
+  });
+  await client.api.admin.models[":id"].modes.$put({
+    param: { id: "u" },
+    // @ts-expect-error `disable` must be a boolean
+    json: { version: 1, modes: [], disable: "yes" },
+  });
+  await client.api.admin.models[":id"].enable.$post({
+    param: { id: "u" },
+    // @ts-expect-error the gate body is exactly `{ version }`
+    json: { version: 1, disable: true },
+  });
+  await client.api.admin.models[":id"].enable.$post({
+    param: { id: "u" },
+    // @ts-expect-error the body must be an object
+    json: "not an object",
+  });
+}
+
+void typedCalls;
+
+test("hc<AppType> types the admin Models routes", () => {
+  // Runtime side is intentionally empty: every assertion above is a type.
+});

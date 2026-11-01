@@ -21,11 +21,12 @@ import type {
 } from "@ai-content-studio/shared";
 import { and, desc, eq } from "drizzle-orm";
 import { Hono } from "hono";
-import type { Context } from "hono";
+import type { Context, MiddlewareHandler } from "hono";
 import { z } from "zod";
 import { adminActorFrom } from "../audit/actor.js";
-import { type RouteEntry, guardedRoute } from "../auth/access.js";
+import { type RouteEntry, guard } from "../auth/access.js";
 import type { AppEnv } from "../auth/app-env.js";
+import { type ValidateReason, validate } from "../auth/validate.js";
 import type { BackendsService } from "../backends/service.js";
 import type { Database } from "../db/client.js";
 import { auditEntries } from "../db/schema.js";
@@ -100,8 +101,35 @@ const detailsSchema = z.object({
 
 const versionSchema = z.coerce.number().int().min(1);
 
+/** A revision number from the path: a positive integer. */
+const revisionNumberSchema = z.coerce.number().int().min(1);
+
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * PUT /:id's wire body is `version` plus the shared Details fields
+ * (issue #168); built from `detailsSchema`'s shape so the field
+ * semantics stay in one place and the typed `hc` client (see
+ * `app-type.admin-models.test.ts`) matches the real body.
+ */
+const detailsUpdateSchema = z.object({
+  version: versionSchema,
+  ...detailsSchema.shape,
+});
+
+/** Same for PUT /:id/terms: `revision` plus the shared terms fields. */
+const modelTermsUpdateSchema = z.object({
+  revision: versionSchema,
+  ...modelTermsFieldsSchema.shape,
+});
+
+/**
+ * The wire body of enable/disable/restore is `version`; restore's
+ * `disable` is not schema-validated (the handler only checks `=== true`),
+ * so the gate leaves it out and the handler re-reads it.
+ */
+const versionOnlySchema = z.object({ version: versionSchema });
 
 /** One Mode's setting for one Input (issue #48): hidden, optional, required, or fixed to a value. */
 const modeInputSettingSchema = z.object({
@@ -298,6 +326,87 @@ async function readJsonBody(
   }
 }
 
+/**
+ * A non-UUID `:id` answers 404 before the body gate runs: the
+ * pre-conversion routes checked the id first (issue #168).
+ */
+const requireUuidId: MiddlewareHandler<AppEnv> = async (c, next) => {
+  const id = c.req.param("id");
+  if (!id || !UUID_RE.test(id)) {
+    return c.json({ error: "not found" }, 404);
+  }
+  return next();
+};
+
+/**
+ * The shared `onInvalid` of the gated routes (issue #168): it re-runs
+ * the exact checks the routes used before the conversion, in the exact
+ * same order — unreadable or `null` body, then (where the route has
+ * one) `version`/`revision`, then the shared body schema — so every 400
+ * body stays byte-for-byte what it answered before the conversion.
+ */
+async function onInvalidModelBody(
+  c: Context<AppEnv>,
+  reason: ValidateReason,
+  versionGate: { field: "version" | "revision"; error: string } | null,
+  fieldsSchema: z.ZodType | null,
+  includeIssues: boolean,
+): Promise<Response> {
+  // `null` stands in for a "malformed" body (the validator's parse threw,
+  // so there is nothing to re-read), a JSON `null` body, and a body the
+  // gate never read: Hono's validator only reads for a JSON
+  // Content-Type, so a no or non-JSON Content-Type reaches here with the
+  // body still unread, and the re-read throws a SyntaxError the gate's
+  // catch does not convert (500 "internal error" on the way out). The
+  // pre-conversion readJsonBody's catch answered all of these the same
+  // way — 400 "invalid JSON body".
+  let body: Record<string, unknown> | null;
+  if (reason === "malformed") {
+    body = null;
+  } else {
+    try {
+      body = (await c.req.json()) as Record<string, unknown> | null;
+    } catch {
+      body = null;
+    }
+  }
+  if (body === null) {
+    return c.json({ error: "invalid JSON body" }, 400);
+  }
+
+  if (versionGate) {
+    const versionResult = versionSchema.safeParse(body[versionGate.field]);
+    if (!versionResult.success) {
+      return c.json({ error: versionGate.error }, 400);
+    }
+  }
+
+  if (fieldsSchema) {
+    const parsed = fieldsSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json(
+        includeIssues
+          ? { error: "invalid input", issues: parsed.error.issues }
+          : { error: "invalid input" },
+        400,
+      );
+    }
+  }
+
+  // The gate only rejects a body one of the checks above rejects.
+  if (fieldsSchema) {
+    return c.json(
+      includeIssues
+        ? { error: "invalid input", issues: [] }
+        : { error: "invalid input" },
+      400,
+    );
+  }
+  // A version-only body: its only stage is the version check, so the
+  // fallback mirrors that stage's 400.
+  return c.json({ error: versionGate?.error }, 400);
+}
+
 export function adminModelsRoute(
   db: Database,
   repository: ModelRepository,
@@ -315,665 +424,498 @@ export function adminModelsRoute(
     hasFreeDisk: () => Promise<boolean>;
     wakeDispatcher: () => void;
   },
-): Hono<AppEnv> {
-  const app = new Hono<AppEnv>();
+) {
   const basePath = "/api/admin/models";
 
-  guardedRoute(app, routes, basePath, "get", "/", "admin", async (c) => {
-    const list = await repository.list();
-    return c.json({ models: list });
-  });
+  return (
+    new Hono<AppEnv>()
+      .get("/", guard(routes, basePath, "get", "/", "admin"), async (c) => {
+        const list = await repository.list();
+        return c.json({ models: list });
+      })
+      .post(
+        "/",
+        guard(routes, basePath, "post", "/", "admin"),
+        validate("json", createSchema, (c, reason) =>
+          onInvalidModelBody(c, reason, null, createSchema, true),
+        ),
+        async (c) => {
+          const { name, workflow } = c.req.valid("json");
 
-  guardedRoute(app, routes, basePath, "post", "/", "admin", async (c) => {
-    const body = await readJsonBody(c);
-    if (body === null) return c.json({ error: "invalid JSON body" }, 400);
-
-    const parsed = createSchema.safeParse(body);
-    if (!parsed.success)
-      return c.json(
-        { error: "invalid input", issues: parsed.error.issues },
-        400,
-      );
-
-    try {
-      const { record, outsideServiceNotes } =
-        await repository.createFromWorkflow(
-          parsed.data.name,
-          parsed.data.workflow,
-          adminActorFrom(c),
-        );
-      return c.json({ model: record, outsideServiceNotes }, 201);
-    } catch (err) {
-      return handleError(c, err);
-    }
-  });
-
-  // Issue #73: imports a Model moved from another studio as one exported
-  // JSON file, always landing as a fresh, disabled Model at revision 1.
-  guardedRoute(app, routes, basePath, "post", "/import", "admin", async (c) => {
-    const body = await readJsonBody(c);
-    if (body === null) return c.json({ error: "invalid JSON body" }, 400);
-
-    const parsed = modelExportSchema.safeParse(body);
-    if (!parsed.success)
-      return c.json(
-        { error: "invalid input", issues: parsed.error.issues },
-        400,
-      );
-
-    try {
-      const { record, outsideServiceNotes } = await repository.importModel(
-        parsed.data as ModelExport,
-        adminActorFrom(c),
-      );
-      return c.json({ model: record, outsideServiceNotes }, 201);
-    } catch (err) {
-      return handleError(c, err);
-    }
-  });
-
-  guardedRoute(app, routes, basePath, "get", "/:id", "admin", async (c) => {
-    const id = idParam(c);
-    if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
-
-    const detail = await repository.get(id);
-    if (!detail) return c.json({ error: "not found" }, 404);
-    return c.json(detail);
-  });
-
-  guardedRoute(app, routes, basePath, "put", "/:id", "admin", async (c) => {
-    const id = idParam(c);
-    if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
-
-    const body = await readJsonBody(c);
-    if (body === null) return c.json({ error: "invalid JSON body" }, 400);
-
-    const versionResult = versionSchema.safeParse(body.version);
-    if (!versionResult.success)
-      return c.json({ error: "version is required" }, 400);
-
-    const parsed = detailsSchema.safeParse(body);
-    if (!parsed.success)
-      return c.json(
-        { error: "invalid input", issues: parsed.error.issues },
-        400,
-      );
-
-    try {
-      const record = await repository.updateDetails(
-        id,
-        parsed.data,
-        versionResult.data,
-        adminActorFrom(c),
-      );
-      return c.json(record);
-    } catch (err) {
-      return handleError(c, err);
-    }
-  });
-
-  guardedRoute(
-    app,
-    routes,
-    basePath,
-    "put",
-    "/:id/terms",
-    "admin",
-    async (c) => {
-      const id = idParam(c);
-      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
-
-      const body = await readJsonBody(c);
-      if (body === null) return c.json({ error: "invalid JSON body" }, 400);
-
-      const revisionResult = versionSchema.safeParse(body.revision);
-      if (!revisionResult.success)
-        return c.json({ error: "revision is required" }, 400);
-
-      const fieldsResult = modelTermsFieldsSchema.safeParse(body);
-      if (!fieldsResult.success)
-        return c.json(
-          { error: "invalid input", issues: fieldsResult.error.issues },
-          400,
-        );
-
-      try {
-        const record = await repository.updateTerms(
-          id,
-          fieldsResult.data,
-          revisionResult.data,
-          adminActorFrom(c),
-        );
-        return c.json(record);
-      } catch (err) {
-        return handleError(c, err);
-      }
-    },
-  );
-
-  guardedRoute(app, routes, basePath, "delete", "/:id", "admin", async (c) => {
-    const id = idParam(c);
-    if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
-
-    const versionResult = versionSchema.safeParse(c.req.query("version"));
-    if (!versionResult.success)
-      return c.json({ error: "version is required" }, 400);
-
-    if (await generationsRepository.hasUnfinishedForModel(id)) {
-      return c.json({ error: "has unfinished Generations" }, 409);
-    }
-
-    try {
-      await repository.softDelete(id, versionResult.data, adminActorFrom(c));
-      return c.body(null, 204);
-    } catch (err) {
-      return handleError(c, err);
-    }
-  });
-
-  for (const direction of ["up", "down"] as const) {
-    guardedRoute(
-      app,
-      routes,
-      basePath,
-      "post",
-      `/:id/move-${direction}`,
-      "admin",
-      async (c) => {
-        const id = idParam(c);
-        if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
-
-        try {
-          await repository.reorder(id, direction, adminActorFrom(c));
-        } catch (err) {
-          return handleError(c, err);
-        }
-        return c.json({ models: await repository.list() });
-      },
-    );
-  }
-
-  guardedRoute(
-    app,
-    routes,
-    basePath,
-    "get",
-    "/:id/backends",
-    "admin",
-    async (c) => {
-      const id = idParam(c);
-      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
-
-      const detail = await repository.get(id);
-      if (!detail) return c.json({ error: "not found" }, 404);
-
-      const classTypes = [
-        ...new Set(detail.nodes.map((node) => node.classType)),
-      ];
-      const attached = await modelBackends.listForModel(id);
-
-      const backends = await Promise.all(
-        attached.map(async (backend) => {
-          const nodeTypes = await backendsService.nodeTypesFor(backend);
-          if (nodeTypes === null) {
-            return {
-              backend,
-              reachable: false,
-              missingNodeTypes: null,
-              note: "unreachable; can't check for missing node types",
-            };
+          try {
+            const { record, outsideServiceNotes } =
+              await repository.createFromWorkflow(
+                name,
+                workflow,
+                adminActorFrom(c),
+              );
+            return c.json({ model: record, outsideServiceNotes }, 201);
+          } catch (err) {
+            return handleError(c, err);
           }
-          return {
-            backend,
-            reachable: true,
-            missingNodeTypes: classTypes.filter((ct) => !nodeTypes.has(ct)),
-            note: null,
-          };
-        }),
-      );
+        },
+      )
 
-      return c.json({ backends });
-    },
-  );
+      // Issue #73: imports a Model moved from another studio as one exported
+      // JSON file, always landing as a fresh, disabled Model at revision 1.
+      .post(
+        "/import",
+        guard(routes, basePath, "post", "/import", "admin"),
+        async (c) => {
+          const body = await readJsonBody(c);
+          if (body === null) return c.json({ error: "invalid JSON body" }, 400);
 
-  guardedRoute(
-    app,
-    routes,
-    basePath,
-    "get",
-    "/:id/object-info",
-    "admin",
-    async (c) => {
-      const id = idParam(c);
-      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+          const parsed = modelExportSchema.safeParse(body);
+          if (!parsed.success)
+            return c.json(
+              { error: "invalid input", issues: parsed.error.issues },
+              400,
+            );
 
-      const attached = await modelBackends.listForModel(id);
-      const backends = await buildObjectInfo(attached, backendsService);
-      return c.json({ backends });
-    },
-  );
-
-  guardedRoute(
-    app,
-    routes,
-    basePath,
-    "post",
-    "/:id/backends",
-    "admin",
-    async (c) => {
-      const id = idParam(c);
-      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
-
-      const body = await readJsonBody(c);
-      if (body === null) return c.json({ error: "invalid JSON body" }, 400);
-
-      const parsed = attachBackendSchema.safeParse(body);
-      if (!parsed.success) return c.json({ error: "invalid input" }, 400);
-      if (!UUID_RE.test(parsed.data.backendId))
-        return c.json({ error: "not found" }, 404);
-
-      try {
-        await modelBackends.attach(
-          id,
-          parsed.data.backendId,
-          adminActorFrom(c),
-        );
-      } catch (err) {
-        return handleError(c, err);
-      }
-      return c.body(null, 204);
-    },
-  );
-
-  guardedRoute(
-    app,
-    routes,
-    basePath,
-    "delete",
-    "/:id/backends/:backendId",
-    "admin",
-    async (c) => {
-      const id = idParam(c);
-      const backendId = c.req.param("backendId");
-      if (!backendId) throw new Error("backendId param missing");
-      if (!UUID_RE.test(id) || !UUID_RE.test(backendId))
-        return c.json({ error: "not found" }, 404);
-
-      try {
-        await modelBackends.detach(id, backendId, adminActorFrom(c));
-      } catch (err) {
-        return handleError(c, err);
-      }
-      return c.body(null, 204);
-    },
-  );
-
-  guardedRoute(
-    app,
-    routes,
-    basePath,
-    "put",
-    "/:id/modes",
-    "admin",
-    async (c) => {
-      const id = idParam(c);
-      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
-
-      const body = await readJsonBody(c);
-      if (body === null) return c.json({ error: "invalid JSON body" }, 400);
-
-      const parsed = modesSchema.safeParse(body);
-      if (!parsed.success)
-        return c.json(
-          { error: "invalid input", issues: parsed.error.issues },
-          400,
-        );
-
-      const detail = await repository.get(id);
-      if (!detail) return c.json({ error: "not found" }, 404);
-
-      // Issue #49: an enabled Model with errors can only be saved by
-      // disabling it in the same request.
-      if (detail.model.state === "enabled" && !parsed.data.disable) {
-        const attached = await modelBackends.listForModel(id);
-        const objectInfo = toCheckModelBackends(
-          await buildObjectInfo(attached, backendsService),
-        );
-        const issues = checkModel(
-          {
-            workflow: detail.workflow,
-            inputs: detail.inputs,
-            modes: parsed.data.modes.map((mode, index) => ({
-              id: String(index),
-              name: mode.name,
-              outputNodeIds: mode.outputNodeIds,
-              inputSettings: mode.inputSettings,
-            })) satisfies CheckModelMode[],
-          },
-          objectInfo,
-        );
-        if (hasBlockingErrors(issues)) {
-          return c.json(
-            {
-              error: "has errors; disable this Model to save it anyway",
-              reasons: issues
-                .filter((issue) => issue.severity === "error")
-                .map((issue) => issue.message),
-            },
-            400,
-          );
-        }
-      }
-
-      try {
-        const result = await repository.updateModes(
-          id,
-          parsed.data.modes as ModeInput[],
-          parsed.data.version,
-          adminActorFrom(c),
-        );
-        if (parsed.data.disable) {
-          const record = await repository.setState(
-            id,
-            "disabled",
-            result.record.version,
-            adminActorFrom(c),
-          );
-          return c.json({ ...result, record });
-        }
-        return c.json(result);
-      } catch (err) {
-        return handleError(c, err);
-      }
-    },
-  );
-
-  guardedRoute(
-    app,
-    routes,
-    basePath,
-    "put",
-    "/:id/inputs",
-    "admin",
-    async (c) => {
-      const id = idParam(c);
-      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
-
-      const body = await readJsonBody(c);
-      if (body === null) return c.json({ error: "invalid JSON body" }, 400);
-
-      const parsed = inputsSchema.safeParse(body);
-      if (!parsed.success)
-        return c.json(
-          { error: "invalid input", issues: parsed.error.issues },
-          400,
-        );
-
-      const detail = await repository.get(id);
-      if (!detail) return c.json({ error: "not found" }, 404);
-
-      try {
-        const attached = await modelBackends.listForModel(id);
-        const specsByBackend = await Promise.all(
-          attached.map((backend) => backendsService.fieldSpecsFor(backend)),
-        );
-        const fieldSpecs = new Map<string, Record<string, ComfyFieldSpec>>();
-        for (const specs of specsByBackend) {
-          if (!specs) continue;
-          for (const [classType, fields] of specs) {
-            fieldSpecs.set(classType, {
-              ...fieldSpecs.get(classType),
-              ...fields,
-            });
+          try {
+            const { record, outsideServiceNotes } =
+              await repository.importModel(
+                parsed.data as ModelExport,
+                adminActorFrom(c),
+              );
+            return c.json({ model: record, outsideServiceNotes }, 201);
+          } catch (err) {
+            return handleError(c, err);
           }
-        }
+        },
+      )
+      .get(
+        "/:id",
+        guard(routes, basePath, "get", "/:id", "admin"),
+        async (c) => {
+          const id = idParam(c);
+          if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
 
-        // Issue #49: an enabled Model with errors can only be saved by
-        // disabling it in the same request. Carries each Mode's Input
-        // settings forward the same way `updateInputs` itself does, so
-        // this precheck matches what actually gets saved.
-        if (detail.model.state === "enabled" && !parsed.data.disable) {
+          const detail = await repository.get(id);
+          if (!detail) return c.json({ error: "not found" }, 404);
+          return c.json(detail);
+        },
+      )
+      .put(
+        "/:id",
+        guard(routes, basePath, "put", "/:id", "admin"),
+        requireUuidId,
+        validate("json", detailsUpdateSchema, (c, reason) =>
+          onInvalidModelBody(
+            c,
+            reason,
+            { field: "version", error: "version is required" },
+            detailsSchema,
+            true,
+          ),
+        ),
+        async (c) => {
+          const id = idParam(c);
+          if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+
+          const { version, name, slug, description, maxRunTimeMinutes } =
+            c.req.valid("json");
+
+          try {
+            const record = await repository.updateDetails(
+              id,
+              { name, slug, description, maxRunTimeMinutes },
+              version,
+              adminActorFrom(c),
+            );
+            return c.json(record);
+          } catch (err) {
+            return handleError(c, err);
+          }
+        },
+      )
+      .put(
+        "/:id/terms",
+        guard(routes, basePath, "put", "/:id/terms", "admin"),
+        requireUuidId,
+        validate("json", modelTermsUpdateSchema, (c, reason) =>
+          onInvalidModelBody(
+            c,
+            reason,
+            { field: "revision", error: "revision is required" },
+            modelTermsFieldsSchema,
+            true,
+          ),
+        ),
+        async (c) => {
+          const id = idParam(c);
+          if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+
+          const { revision, termsBody, licenseUrl, attribution, askAgain } =
+            c.req.valid("json");
+
+          try {
+            const record = await repository.updateTerms(
+              id,
+              { termsBody, licenseUrl, attribution, askAgain },
+              revision,
+              adminActorFrom(c),
+            );
+            return c.json(record);
+          } catch (err) {
+            return handleError(c, err);
+          }
+        },
+      )
+      .delete(
+        "/:id",
+        guard(routes, basePath, "delete", "/:id", "admin"),
+        async (c) => {
+          const id = idParam(c);
+          if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+
+          const versionResult = versionSchema.safeParse(c.req.query("version"));
+          if (!versionResult.success)
+            return c.json({ error: "version is required" }, 400);
+
+          if (await generationsRepository.hasUnfinishedForModel(id)) {
+            return c.json({ error: "has unfinished Generations" }, 409);
+          }
+
+          try {
+            await repository.softDelete(
+              id,
+              versionResult.data,
+              adminActorFrom(c),
+            );
+            return c.body(null, 204);
+          } catch (err) {
+            return handleError(c, err);
+          }
+        },
+      )
+      .post(
+        "/:id/move-up",
+        guard(routes, basePath, "post", "/:id/move-up", "admin"),
+        async (c) => {
+          const id = idParam(c);
+          if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+
+          try {
+            await repository.reorder(id, "up", adminActorFrom(c));
+          } catch (err) {
+            return handleError(c, err);
+          }
+          return c.json({ models: await repository.list() });
+        },
+      )
+      .post(
+        "/:id/move-down",
+        guard(routes, basePath, "post", "/:id/move-down", "admin"),
+        async (c) => {
+          const id = idParam(c);
+          if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+
+          try {
+            await repository.reorder(id, "down", adminActorFrom(c));
+          } catch (err) {
+            return handleError(c, err);
+          }
+          return c.json({ models: await repository.list() });
+        },
+      )
+      .get(
+        "/:id/backends",
+        guard(routes, basePath, "get", "/:id/backends", "admin"),
+        async (c) => {
+          const id = idParam(c);
+          if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+
+          const detail = await repository.get(id);
+          if (!detail) return c.json({ error: "not found" }, 404);
+
+          const classTypes = [
+            ...new Set(detail.nodes.map((node) => node.classType)),
+          ];
+          const attached = await modelBackends.listForModel(id);
+
+          const backends = await Promise.all(
+            attached.map(async (backend) => {
+              const nodeTypes = await backendsService.nodeTypesFor(backend);
+              if (nodeTypes === null) {
+                return {
+                  backend,
+                  reachable: false,
+                  missingNodeTypes: null,
+                  note: "unreachable; can't check for missing node types",
+                };
+              }
+              return {
+                backend,
+                reachable: true,
+                missingNodeTypes: classTypes.filter((ct) => !nodeTypes.has(ct)),
+                note: null,
+              };
+            }),
+          );
+
+          return c.json({ backends });
+        },
+      )
+      .get(
+        "/:id/object-info",
+        guard(routes, basePath, "get", "/:id/object-info", "admin"),
+        async (c) => {
+          const id = idParam(c);
+          if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+
+          const attached = await modelBackends.listForModel(id);
+          const backends = await buildObjectInfo(attached, backendsService);
+          return c.json({ backends });
+        },
+      )
+      .post(
+        "/:id/backends",
+        guard(routes, basePath, "post", "/:id/backends", "admin"),
+        requireUuidId,
+        validate("json", attachBackendSchema, (c, reason) =>
+          onInvalidModelBody(c, reason, null, attachBackendSchema, false),
+        ),
+        async (c) => {
+          const id = idParam(c);
+          if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+
+          const { backendId } = c.req.valid("json");
+          if (!UUID_RE.test(backendId))
+            return c.json({ error: "not found" }, 404);
+
+          try {
+            await modelBackends.attach(id, backendId, adminActorFrom(c));
+          } catch (err) {
+            return handleError(c, err);
+          }
+          return c.body(null, 204);
+        },
+      )
+      .delete(
+        "/:id/backends/:backendId",
+        guard(routes, basePath, "delete", "/:id/backends/:backendId", "admin"),
+        async (c) => {
+          const id = idParam(c);
+          const backendId = c.req.param("backendId");
+          if (!backendId) throw new Error("backendId param missing");
+          if (!UUID_RE.test(id) || !UUID_RE.test(backendId))
+            return c.json({ error: "not found" }, 404);
+
+          try {
+            await modelBackends.detach(id, backendId, adminActorFrom(c));
+          } catch (err) {
+            return handleError(c, err);
+          }
+          return c.body(null, 204);
+        },
+      )
+      .put(
+        "/:id/modes",
+        guard(routes, basePath, "put", "/:id/modes", "admin"),
+        requireUuidId,
+        validate("json", modesSchema, (c, reason) =>
+          onInvalidModelBody(c, reason, null, modesSchema, true),
+        ),
+        async (c) => {
+          const id = idParam(c);
+          if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+
+          const { version, modes, disable } = c.req.valid("json");
+
+          const detail = await repository.get(id);
+          if (!detail) return c.json({ error: "not found" }, 404);
+
+          // Issue #49: an enabled Model with errors can only be saved by
+          // disabling it in the same request.
+          if (detail.model.state === "enabled" && !disable) {
+            const attached = await modelBackends.listForModel(id);
+            const objectInfo = toCheckModelBackends(
+              await buildObjectInfo(attached, backendsService),
+            );
+            const issues = checkModel(
+              {
+                workflow: detail.workflow,
+                inputs: detail.inputs,
+                modes: modes.map((mode, index) => ({
+                  id: String(index),
+                  name: mode.name,
+                  outputNodeIds: mode.outputNodeIds,
+                  inputSettings: mode.inputSettings,
+                })) satisfies CheckModelMode[],
+              },
+              objectInfo,
+            );
+            if (hasBlockingErrors(issues)) {
+              return c.json(
+                {
+                  error: "has errors; disable this Model to save it anyway",
+                  reasons: issues
+                    .filter((issue) => issue.severity === "error")
+                    .map((issue) => issue.message),
+                },
+                400,
+              );
+            }
+          }
+
+          try {
+            const result = await repository.updateModes(
+              id,
+              modes as ModeInput[],
+              version,
+              adminActorFrom(c),
+            );
+            if (disable) {
+              const record = await repository.setState(
+                id,
+                "disabled",
+                result.record.version,
+                adminActorFrom(c),
+              );
+              return c.json({ ...result, record });
+            }
+            return c.json(result);
+          } catch (err) {
+            return handleError(c, err);
+          }
+        },
+      )
+      .put(
+        "/:id/inputs",
+        guard(routes, basePath, "put", "/:id/inputs", "admin"),
+        requireUuidId,
+        validate("json", inputsSchema, (c, reason) =>
+          onInvalidModelBody(c, reason, null, inputsSchema, true),
+        ),
+        async (c) => {
+          const id = idParam(c);
+          if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+
+          const { version, inputs, disable } = c.req.valid("json");
+
+          const detail = await repository.get(id);
+          if (!detail) return c.json({ error: "not found" }, 404);
+
+          try {
+            const attached = await modelBackends.listForModel(id);
+            const specsByBackend = await Promise.all(
+              attached.map((backend) => backendsService.fieldSpecsFor(backend)),
+            );
+            const fieldSpecs = new Map<
+              string,
+              Record<string, ComfyFieldSpec>
+            >();
+            for (const specs of specsByBackend) {
+              if (!specs) continue;
+              for (const [classType, fields] of specs) {
+                fieldSpecs.set(classType, {
+                  ...fieldSpecs.get(classType),
+                  ...fields,
+                });
+              }
+            }
+
+            // Issue #49: an enabled Model with errors can only be saved by
+            // disabling it in the same request. Carries each Mode's Input
+            // settings forward the same way `updateInputs` itself does, so
+            // this precheck matches what actually gets saved.
+            if (detail.model.state === "enabled" && !disable) {
+              const objectInfo = toCheckModelBackends(
+                await buildObjectInfo(attached, backendsService),
+              );
+              const issues = checkModel(
+                {
+                  workflow: detail.workflow,
+                  inputs: inputs as InputDefinition[],
+                  modes: detail.modes.map((mode) => ({
+                    id: mode.id,
+                    name: mode.name,
+                    ...checkModelOutputNodes(mode),
+                    inputSettings: reviseModeInputSettings(
+                      mode.inputSettings,
+                      inputs as InputDefinition[],
+                    ),
+                  })) satisfies CheckModelMode[],
+                },
+                objectInfo,
+              );
+              if (hasBlockingErrors(issues)) {
+                return c.json(
+                  {
+                    error: "has errors; disable this Model to save it anyway",
+                    reasons: issues
+                      .filter((issue) => issue.severity === "error")
+                      .map((issue) => issue.message),
+                  },
+                  400,
+                );
+              }
+            }
+
+            const result = await repository.updateInputs(
+              id,
+              inputs as InputDefinition[],
+              version,
+              adminActorFrom(c),
+              fieldSpecs,
+              maxUploadMb,
+            );
+            if (disable) {
+              const record = await repository.setState(
+                id,
+                "disabled",
+                result.record.version,
+                adminActorFrom(c),
+              );
+              return c.json({ ...result, record });
+            }
+            return c.json(result);
+          } catch (err) {
+            return handleError(c, err);
+          }
+        },
+      )
+      .post(
+        "/:id/enable",
+        guard(routes, basePath, "post", "/:id/enable", "admin"),
+        requireUuidId,
+        validate("json", versionOnlySchema, (c, reason) =>
+          onInvalidModelBody(
+            c,
+            reason,
+            { field: "version", error: "version is required" },
+            null,
+            false,
+          ),
+        ),
+        async (c) => {
+          const id = idParam(c);
+          if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+
+          const { version } = c.req.valid("json");
+
+          const detail = await repository.get(id);
+          if (!detail) return c.json({ error: "not found" }, 404);
+
+          const attached = await modelBackends.listForModel(id);
+          const readiness = await checkEnableReadiness(
+            detail,
+            attached,
+            backendsService,
+          );
+
+          // Issue #49: checkModel's errors block enabling too, not just
+          // saving an already-enabled Model — otherwise the API (or a stale
+          // tab) could enable a Model checkModel itself calls broken.
           const objectInfo = toCheckModelBackends(
             await buildObjectInfo(attached, backendsService),
           );
           const issues = checkModel(
             {
               workflow: detail.workflow,
-              inputs: parsed.data.inputs as InputDefinition[],
+              inputs: detail.inputs,
               modes: detail.modes.map((mode) => ({
-                id: mode.id,
-                name: mode.name,
-                ...checkModelOutputNodes(mode),
-                inputSettings: reviseModeInputSettings(
-                  mode.inputSettings,
-                  parsed.data.inputs as InputDefinition[],
-                ),
-              })) satisfies CheckModelMode[],
-            },
-            objectInfo,
-          );
-          if (hasBlockingErrors(issues)) {
-            return c.json(
-              {
-                error: "has errors; disable this Model to save it anyway",
-                reasons: issues
-                  .filter((issue) => issue.severity === "error")
-                  .map((issue) => issue.message),
-              },
-              400,
-            );
-          }
-        }
-
-        const result = await repository.updateInputs(
-          id,
-          parsed.data.inputs as InputDefinition[],
-          parsed.data.version,
-          adminActorFrom(c),
-          fieldSpecs,
-          maxUploadMb,
-        );
-        if (parsed.data.disable) {
-          const record = await repository.setState(
-            id,
-            "disabled",
-            result.record.version,
-            adminActorFrom(c),
-          );
-          return c.json({ ...result, record });
-        }
-        return c.json(result);
-      } catch (err) {
-        return handleError(c, err);
-      }
-    },
-  );
-
-  guardedRoute(
-    app,
-    routes,
-    basePath,
-    "post",
-    "/:id/enable",
-    "admin",
-    async (c) => {
-      const id = idParam(c);
-      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
-
-      const body = await readJsonBody(c);
-      if (body === null) return c.json({ error: "invalid JSON body" }, 400);
-      const versionResult = versionSchema.safeParse(body.version);
-      if (!versionResult.success)
-        return c.json({ error: "version is required" }, 400);
-
-      const detail = await repository.get(id);
-      if (!detail) return c.json({ error: "not found" }, 404);
-
-      const attached = await modelBackends.listForModel(id);
-      const readiness = await checkEnableReadiness(
-        detail,
-        attached,
-        backendsService,
-      );
-
-      // Issue #49: checkModel's errors block enabling too, not just
-      // saving an already-enabled Model — otherwise the API (or a stale
-      // tab) could enable a Model checkModel itself calls broken.
-      const objectInfo = toCheckModelBackends(
-        await buildObjectInfo(attached, backendsService),
-      );
-      const issues = checkModel(
-        {
-          workflow: detail.workflow,
-          inputs: detail.inputs,
-          modes: detail.modes.map((mode) => ({
-            id: mode.id,
-            name: mode.name,
-            ...checkModelOutputNodes(mode),
-            inputSettings: mode.inputSettings,
-          })) satisfies CheckModelMode[],
-        },
-        objectInfo,
-      );
-      const checkModelReasons = issues
-        .filter((issue) => issue.severity === "error")
-        .map((issue) => issue.message);
-
-      const reasons = [...readiness.reasons, ...checkModelReasons];
-      if (reasons.length > 0) {
-        return c.json({ error: "not ready", reasons }, 400);
-      }
-
-      try {
-        const record = await repository.setState(
-          id,
-          "enabled",
-          versionResult.data,
-          adminActorFrom(c),
-        );
-        return c.json(record);
-      } catch (err) {
-        return handleError(c, err);
-      }
-    },
-  );
-
-  guardedRoute(
-    app,
-    routes,
-    basePath,
-    "post",
-    "/:id/disable",
-    "admin",
-    async (c) => {
-      const id = idParam(c);
-      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
-
-      const body = await readJsonBody(c);
-      if (body === null) return c.json({ error: "invalid JSON body" }, 400);
-      const versionResult = versionSchema.safeParse(body.version);
-      if (!versionResult.success)
-        return c.json({ error: "version is required" }, 400);
-
-      try {
-        const record = await repository.setState(
-          id,
-          "disabled",
-          versionResult.data,
-          adminActorFrom(c),
-        );
-        return c.json(record);
-      } catch (err) {
-        return handleError(c, err);
-      }
-    },
-  );
-
-  guardedRoute(
-    app,
-    routes,
-    basePath,
-    "put",
-    "/:id/workflow",
-    "admin",
-    async (c) => {
-      const id = idParam(c);
-      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
-
-      const body = await readJsonBody(c);
-      if (body === null) return c.json({ error: "invalid JSON body" }, 400);
-
-      const versionResult = versionSchema.safeParse(body.version);
-      if (!versionResult.success)
-        return c.json({ error: "version is required" }, 400);
-
-      const rebindResult = z
-        .array(rebindEntrySchema)
-        .optional()
-        .safeParse(body.rebind);
-      if (!rebindResult.success) return c.json({ error: "invalid input" }, 400);
-      const rebind = rebindResult.data;
-
-      const disable = body.disable === true;
-
-      const detail = await repository.get(id);
-      if (!detail) return c.json({ error: "not found" }, 404);
-
-      const attached = await modelBackends.listForModel(id);
-      const specsByBackend = await Promise.all(
-        attached.map((backend) => backendsService.fieldSpecsFor(backend)),
-      );
-      const fieldSpecs = new Map<string, Record<string, ComfyFieldSpec>>();
-      for (const specs of specsByBackend) {
-        if (!specs) continue;
-        for (const [classType, fields] of specs) {
-          fieldSpecs.set(classType, {
-            ...fieldSpecs.get(classType),
-            ...fields,
-          });
-        }
-      }
-
-      // Issue #71: re-uploading the Workflow keeps every Mode's output
-      // nodes and every Input's bindings exactly as they were, by node
-      // id; this is the same "errors block saving an enabled Model"
-      // gate the Modes/Inputs routes run, checked against the proposed
-      // new Workflow before it's persisted. A `rebind` (CEO review) is
-      // previewed here with the exact same `applyRebind` the repository
-      // uses for the real save, so a rebind that fixes everything
-      // doesn't need "disable" too, and the two can't disagree on what
-      // a rebind actually touched (round-3 CEO review).
-      if (detail.model.state === "enabled" && !disable) {
-        const parsed = parseApiFormatWorkflow(body.workflow);
-        if (parsed.ok) {
-          const objectInfo = toCheckModelBackends(
-            await buildObjectInfo(attached, backendsService),
-          );
-          const rebound =
-            rebind && rebind.length > 0
-              ? applyRebind(
-                  parsed.workflow,
-                  detail.modes,
-                  detail.inputs,
-                  rebind,
-                  fieldSpecs,
-                  maxUploadMb,
-                )
-              : { modes: detail.modes, inputs: detail.inputs, errors: [] };
-          if (rebound.errors.length > 0) {
-            return c.json(
-              {
-                error: "has errors; disable this Model to save it anyway",
-                reasons: rebound.errors.map((e) => e.message),
-              },
-              400,
-            );
-          }
-          const issues = checkModel(
-            {
-              workflow: parsed.workflow,
-              inputs: rebound.inputs,
-              modes: rebound.modes.map((mode) => ({
                 id: mode.id,
                 name: mode.name,
                 ...checkModelOutputNodes(mode),
@@ -982,352 +924,513 @@ export function adminModelsRoute(
             },
             objectInfo,
           );
-          if (hasBlockingErrors(issues)) {
-            return c.json(
-              {
-                error: "has errors; disable this Model to save it anyway",
-                reasons: issues
-                  .filter((issue) => issue.severity === "error")
-                  .map((issue) => issue.message),
-              },
-              400,
-            );
-          }
-        }
-        // An invalid Workflow falls through to `uploadWorkflow` below,
-        // which reports the real parse/validation error.
-      }
-
-      try {
-        const result = await repository.uploadWorkflow(
-          id,
-          body.workflow,
-          versionResult.data,
-          adminActorFrom(c),
-          rebind,
-          fieldSpecs,
-          maxUploadMb,
-        );
-        if (disable) {
-          const record = await repository.setState(
-            id,
-            "disabled",
-            result.record.version,
-            adminActorFrom(c),
-          );
-          return c.json({ ...result, record });
-        }
-        return c.json(result);
-      } catch (err) {
-        return handleError(c, err);
-      }
-    },
-  );
-
-  guardedRoute(
-    app,
-    routes,
-    basePath,
-    "get",
-    "/:id/revisions",
-    "admin",
-    async (c) => {
-      const id = idParam(c);
-      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
-
-      const revisions = await repository.listRevisions(id);
-      return c.json({ revisions });
-    },
-  );
-
-  // Issue #73: from the editor header, exporting the current revision.
-  guardedRoute(
-    app,
-    routes,
-    basePath,
-    "get",
-    "/:id/export",
-    "admin",
-    async (c) => {
-      const id = idParam(c);
-      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
-
-      const file = await repository.exportRevision(id);
-      if (!file) return c.json({ error: "not found" }, 404);
-      return exportResponse(file);
-    },
-  );
-
-  // Issue #73: from the Revisions section, exporting one specific revision.
-  guardedRoute(
-    app,
-    routes,
-    basePath,
-    "get",
-    "/:id/revisions/:number/export",
-    "admin",
-    async (c) => {
-      const id = idParam(c);
-      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
-
-      const numberResult = z.coerce
-        .number()
-        .int()
-        .min(1)
-        .safeParse(c.req.param("number"));
-      if (!numberResult.success) return c.json({ error: "not found" }, 404);
-
-      const file = await repository.exportRevision(id, numberResult.data);
-      if (!file) return c.json({ error: "not found" }, 404);
-      return exportResponse(file);
-    },
-  );
-
-  guardedRoute(
-    app,
-    routes,
-    basePath,
-    "post",
-    "/:id/revisions/:number/restore",
-    "admin",
-    async (c) => {
-      const id = idParam(c);
-      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
-
-      const numberResult = z.coerce
-        .number()
-        .int()
-        .min(1)
-        .safeParse(c.req.param("number"));
-      if (!numberResult.success) return c.json({ error: "not found" }, 404);
-
-      const body = await readJsonBody(c);
-      if (body === null) return c.json({ error: "invalid JSON body" }, 400);
-
-      const versionResult = versionSchema.safeParse(body.version);
-      if (!versionResult.success)
-        return c.json({ error: "version is required" }, 400);
-
-      const disable = body.disable === true;
-
-      const detail = await repository.get(id);
-      if (!detail) return c.json({ error: "not found" }, 404);
-
-      const target = await repository.getRevisionDetail(id, numberResult.data);
-      if (!target) return c.json({ error: "not found" }, 404);
-
-      // Issue #71: "Restore inserts a copy through the same checks" —
-      // the restored state is run through the same enabled-Model gate a
-      // normal Modes/Inputs save is, offering "Restore and disable"
-      // when it still has errors (e.g. a Backend attached since that
-      // old revision was current no longer covers it). A restored Seed
-      // Input with no max is refused the same way `updateInputs` refuses
-      // one (ADR 0007): checkModel itself doesn't carry that rule.
-      if (detail.model.state === "enabled" && !disable) {
-        const seedReasons = target.inputs
-          .filter((def) => def.kind === "seed" && def.max === null)
-          .map(
-            (def) =>
-              `Seed Input "${def.label}" needs a max while the Model is enabled`,
-          );
-
-        const attached = await modelBackends.listForModel(id);
-        const objectInfo = toCheckModelBackends(
-          await buildObjectInfo(attached, backendsService),
-        );
-        const issues = checkModel(
-          {
-            workflow: target.workflow,
-            inputs: target.inputs,
-            modes: target.modes.map((mode) => ({
-              id: mode.id,
-              name: mode.name,
-              ...checkModelOutputNodes(mode),
-              inputSettings: mode.inputSettings,
-            })) satisfies CheckModelMode[],
-          },
-          objectInfo,
-        );
-        const reasons = [
-          ...seedReasons,
-          ...issues
+          const checkModelReasons = issues
             .filter((issue) => issue.severity === "error")
-            .map((issue) => issue.message),
-        ];
-        if (reasons.length > 0) {
-          return c.json(
-            {
-              error:
-                "has errors; restore and disable this Model to save it anyway",
-              reasons,
-            },
-            400,
-          );
-        }
-      }
+            .map((issue) => issue.message);
 
-      try {
-        const result = await repository.restoreRevision(
-          id,
-          numberResult.data,
-          versionResult.data,
-          adminActorFrom(c),
-        );
-        if (disable) {
-          const record = await repository.setState(
-            id,
-            "disabled",
-            result.record.version,
-            adminActorFrom(c),
-          );
-          return c.json({ ...result, record });
-        }
-        return c.json(result);
-      } catch (err) {
-        return handleError(c, err);
-      }
-    },
-  );
+          const reasons = [...readiness.reasons, ...checkModelReasons];
+          if (reasons.length > 0) {
+            return c.json({ error: "not ready", reasons }, 400);
+          }
 
-  guardedRoute(
-    app,
-    routes,
-    basePath,
-    "get",
-    "/:id/history",
-    "admin",
-    async (c) => {
-      const id = idParam(c);
-      if (!UUID_RE.test(id)) return c.json({ entries: [] });
-
-      const entries = await db
-        .select()
-        .from(auditEntries)
-        .where(
-          and(
-            eq(auditEntries.targetType, "model"),
-            eq(auditEntries.targetId, id),
+          try {
+            const record = await repository.setState(
+              id,
+              "enabled",
+              version,
+              adminActorFrom(c),
+            );
+            return c.json(record);
+          } catch (err) {
+            return handleError(c, err);
+          }
+        },
+      )
+      .post(
+        "/:id/disable",
+        guard(routes, basePath, "post", "/:id/disable", "admin"),
+        requireUuidId,
+        validate("json", versionOnlySchema, (c, reason) =>
+          onInvalidModelBody(
+            c,
+            reason,
+            { field: "version", error: "version is required" },
+            null,
+            false,
           ),
-        )
-        .orderBy(desc(auditEntries.createdAt));
-      return c.json({ entries });
-    },
-  );
+        ),
+        async (c) => {
+          const id = idParam(c);
+          if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
 
-  // Issue #74: runs one Generation of the editor's own unsaved draft
-  // Mode and Inputs, on an unnumbered revision that never becomes
-  // current. Bypasses Pause, a disabled Model, Caps and Model terms;
-  // still blocked while the Mode has a `checkModel` error.
-  guardedRoute(
-    app,
-    routes,
-    basePath,
-    "post",
-    "/:id/test",
-    "admin",
-    async (c) => {
-      const id = idParam(c);
-      if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
-      if (!testDeps) return c.json({ error: "not available" }, 501);
+          const { version } = c.req.valid("json");
 
-      const session = c.get("session");
-      if (!session) return c.json({ error: "unauthorized" }, 401);
+          try {
+            const record = await repository.setState(
+              id,
+              "disabled",
+              version,
+              adminActorFrom(c),
+            );
+            return c.json(record);
+          } catch (err) {
+            return handleError(c, err);
+          }
+        },
+      )
+      .put(
+        "/:id/workflow",
+        guard(routes, basePath, "put", "/:id/workflow", "admin"),
+        async (c) => {
+          const id = idParam(c);
+          if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
 
-      const body = await readJsonBody(c);
-      if (body === null) return c.json({ error: "invalid JSON body" }, 400);
+          const body = await readJsonBody(c);
+          if (body === null) return c.json({ error: "invalid JSON body" }, 400);
 
-      const parsed = testSchema.safeParse(body);
-      if (!parsed.success) {
-        return c.json(
-          { error: "invalid input", issues: parsed.error.issues },
-          400,
-        );
-      }
+          const versionResult = versionSchema.safeParse(body.version);
+          if (!versionResult.success)
+            return c.json({ error: "version is required" }, 400);
 
-      try {
-        const { generation, prompt } = await submitTestGeneration(
-          {
-            modelId: id,
-            userId: session.user.id,
-            mode: parsed.data.mode,
-            inputs: parsed.data.inputs as InputDefinition[],
-            values: parsed.data.values,
-            backendId: parsed.data.backendId,
-          },
-          {
-            modelRepository: repository,
-            modelBackendsRepository: modelBackends,
-            backendsService,
-            generationsRepository,
-            generationEvents: testDeps.generationEvents,
-            clock: testDeps.clock,
-            uploadsRepository: testDeps.uploadsRepository,
-            hasFreeDisk: testDeps.hasFreeDisk,
-            onGenerationQueued: testDeps.wakeDispatcher,
-          },
-        );
-        return c.json({ generation, prompt }, 201);
-      } catch (err) {
-        if (err instanceof TestModelNotFound) {
-          return c.json({ error: "not found" }, 404);
-        }
-        if (err instanceof TestModeHasErrors) {
-          return c.json(
-            { error: "mode_has_errors", reasons: err.reasons },
-            400,
+          const rebindResult = z
+            .array(rebindEntrySchema)
+            .optional()
+            .safeParse(body.rebind);
+          if (!rebindResult.success)
+            return c.json({ error: "invalid input" }, 400);
+          const rebind = rebindResult.data;
+
+          const disable = body.disable === true;
+
+          const detail = await repository.get(id);
+          if (!detail) return c.json({ error: "not found" }, 404);
+
+          const attached = await modelBackends.listForModel(id);
+          const specsByBackend = await Promise.all(
+            attached.map((backend) => backendsService.fieldSpecsFor(backend)),
           );
-        }
-        if (err instanceof TestBackendNotAttached) {
-          return c.json({ error: err.message }, 400);
-        }
-        if (err instanceof TestNoBackend) {
-          return c.json({ error: "no_backend", message: err.message }, 400);
-        }
-        if (err instanceof TestSubmissionStorageFull) {
-          return c.json({ error: "storage_full", message: err.message }, 507);
-        }
-        if (err instanceof InvalidUploads) {
-          return c.json({ error: "invalid", issues: err.issues }, 400);
-        }
-        if (err instanceof InvalidInputValues) {
-          return c.json(
-            { error: "invalid", issues: toInputIssues(err.zodError) },
-            400,
+          const fieldSpecs = new Map<string, Record<string, ComfyFieldSpec>>();
+          for (const specs of specsByBackend) {
+            if (!specs) continue;
+            for (const [classType, fields] of specs) {
+              fieldSpecs.set(classType, {
+                ...fieldSpecs.get(classType),
+                ...fields,
+              });
+            }
+          }
+
+          // Issue #71: re-uploading the Workflow keeps every Mode's output
+          // nodes and every Input's bindings exactly as they were, by node
+          // id; this is the same "errors block saving an enabled Model"
+          // gate the Modes/Inputs routes run, checked against the proposed
+          // new Workflow before it's persisted. A `rebind` (CEO review) is
+          // previewed here with the exact same `applyRebind` the repository
+          // uses for the real save, so a rebind that fixes everything
+          // doesn't need "disable" too, and the two can't disagree on what
+          // a rebind actually touched (round-3 CEO review).
+          if (detail.model.state === "enabled" && !disable) {
+            const parsed = parseApiFormatWorkflow(body.workflow);
+            if (parsed.ok) {
+              const objectInfo = toCheckModelBackends(
+                await buildObjectInfo(attached, backendsService),
+              );
+              const rebound =
+                rebind && rebind.length > 0
+                  ? applyRebind(
+                      parsed.workflow,
+                      detail.modes,
+                      detail.inputs,
+                      rebind,
+                      fieldSpecs,
+                      maxUploadMb,
+                    )
+                  : { modes: detail.modes, inputs: detail.inputs, errors: [] };
+              if (rebound.errors.length > 0) {
+                return c.json(
+                  {
+                    error: "has errors; disable this Model to save it anyway",
+                    reasons: rebound.errors.map((e) => e.message),
+                  },
+                  400,
+                );
+              }
+              const issues = checkModel(
+                {
+                  workflow: parsed.workflow,
+                  inputs: rebound.inputs,
+                  modes: rebound.modes.map((mode) => ({
+                    id: mode.id,
+                    name: mode.name,
+                    ...checkModelOutputNodes(mode),
+                    inputSettings: mode.inputSettings,
+                  })) satisfies CheckModelMode[],
+                },
+                objectInfo,
+              );
+              if (hasBlockingErrors(issues)) {
+                return c.json(
+                  {
+                    error: "has errors; disable this Model to save it anyway",
+                    reasons: issues
+                      .filter((issue) => issue.severity === "error")
+                      .map((issue) => issue.message),
+                  },
+                  400,
+                );
+              }
+            }
+            // An invalid Workflow falls through to `uploadWorkflow` below,
+            // which reports the real parse/validation error.
+          }
+
+          try {
+            const result = await repository.uploadWorkflow(
+              id,
+              body.workflow,
+              versionResult.data,
+              adminActorFrom(c),
+              rebind,
+              fieldSpecs,
+              maxUploadMb,
+            );
+            if (disable) {
+              const record = await repository.setState(
+                id,
+                "disabled",
+                result.record.version,
+                adminActorFrom(c),
+              );
+              return c.json({ ...result, record });
+            }
+            return c.json(result);
+          } catch (err) {
+            return handleError(c, err);
+          }
+        },
+      )
+      .get(
+        "/:id/revisions",
+        guard(routes, basePath, "get", "/:id/revisions", "admin"),
+        async (c) => {
+          const id = idParam(c);
+          if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+
+          const revisions = await repository.listRevisions(id);
+          return c.json({ revisions });
+        },
+      )
+
+      // Issue #73: from the editor header, exporting the current revision.
+      .get(
+        "/:id/export",
+        guard(routes, basePath, "get", "/:id/export", "admin"),
+        async (c) => {
+          const id = idParam(c);
+          if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+
+          const file = await repository.exportRevision(id);
+          if (!file) return c.json({ error: "not found" }, 404);
+          return exportResponse(file);
+        },
+      )
+
+      // Issue #73: from the Revisions section, exporting one specific revision.
+      .get(
+        "/:id/revisions/:number/export",
+        guard(
+          routes,
+          basePath,
+          "get",
+          "/:id/revisions/:number/export",
+          "admin",
+        ),
+        async (c) => {
+          const id = idParam(c);
+          if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+
+          const numberResult = revisionNumberSchema.safeParse(
+            c.req.param("number"),
           );
-        }
-        if (err instanceof InvalidSeed) {
-          return c.json({ error: "invalid_seed", message: err.message }, 400);
-        }
-        return handleError(c, err);
-      }
-    },
+          if (!numberResult.success) return c.json({ error: "not found" }, 404);
+
+          const file = await repository.exportRevision(id, numberResult.data);
+          if (!file) return c.json({ error: "not found" }, 404);
+          return exportResponse(file);
+        },
+      )
+      .post(
+        "/:id/revisions/:number/restore",
+        guard(
+          routes,
+          basePath,
+          "post",
+          "/:id/revisions/:number/restore",
+          "admin",
+        ),
+        // The id and revision-number checks run before the body gate: the
+        // pre-conversion route checked them first (issue #168).
+        async (c, next) => {
+          const id = c.req.param("id");
+          if (!id || !UUID_RE.test(id)) {
+            return c.json({ error: "not found" }, 404);
+          }
+          const numberResult = revisionNumberSchema.safeParse(
+            c.req.param("number"),
+          );
+          if (!numberResult.success) {
+            return c.json({ error: "not found" }, 404);
+          }
+          return next();
+        },
+        validate("json", versionOnlySchema, (c, reason) =>
+          onInvalidModelBody(
+            c,
+            reason,
+            { field: "version", error: "version is required" },
+            null,
+            false,
+          ),
+        ),
+        async (c) => {
+          const id = idParam(c);
+          if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+
+          const numberResult = revisionNumberSchema.safeParse(
+            c.req.param("number"),
+          );
+          if (!numberResult.success) return c.json({ error: "not found" }, 404);
+
+          const { version } = c.req.valid("json");
+
+          // `disable` is not part of the gate: the pre-conversion route only
+          // checked `body.disable === true`, never a schema.
+          const body = await readJsonBody(c);
+          const disable = body?.disable === true;
+
+          const detail = await repository.get(id);
+          if (!detail) return c.json({ error: "not found" }, 404);
+
+          const target = await repository.getRevisionDetail(
+            id,
+            numberResult.data,
+          );
+          if (!target) return c.json({ error: "not found" }, 404);
+
+          // Issue #71: "Restore inserts a copy through the same checks" —
+          // the restored state is run through the same enabled-Model gate a
+          // normal Modes/Inputs save is, offering "Restore and disable"
+          // when it still has errors (e.g. a Backend attached since that
+          // old revision was current no longer covers it). A restored Seed
+          // Input with no max is refused the same way `updateInputs` refuses
+          // one (ADR 0007): checkModel itself doesn't carry that rule.
+          if (detail.model.state === "enabled" && !disable) {
+            const seedReasons = target.inputs
+              .filter((def) => def.kind === "seed" && def.max === null)
+              .map(
+                (def) =>
+                  `Seed Input "${def.label}" needs a max while the Model is enabled`,
+              );
+
+            const attached = await modelBackends.listForModel(id);
+            const objectInfo = toCheckModelBackends(
+              await buildObjectInfo(attached, backendsService),
+            );
+            const issues = checkModel(
+              {
+                workflow: target.workflow,
+                inputs: target.inputs,
+                modes: target.modes.map((mode) => ({
+                  id: mode.id,
+                  name: mode.name,
+                  ...checkModelOutputNodes(mode),
+                  inputSettings: mode.inputSettings,
+                })) satisfies CheckModelMode[],
+              },
+              objectInfo,
+            );
+            const reasons = [
+              ...seedReasons,
+              ...issues
+                .filter((issue) => issue.severity === "error")
+                .map((issue) => issue.message),
+            ];
+            if (reasons.length > 0) {
+              return c.json(
+                {
+                  error:
+                    "has errors; restore and disable this Model to save it anyway",
+                  reasons,
+                },
+                400,
+              );
+            }
+          }
+
+          try {
+            const result = await repository.restoreRevision(
+              id,
+              numberResult.data,
+              version,
+              adminActorFrom(c),
+            );
+            if (disable) {
+              const record = await repository.setState(
+                id,
+                "disabled",
+                result.record.version,
+                adminActorFrom(c),
+              );
+              return c.json({ ...result, record });
+            }
+            return c.json(result);
+          } catch (err) {
+            return handleError(c, err);
+          }
+        },
+      )
+      .get(
+        "/:id/history",
+        guard(routes, basePath, "get", "/:id/history", "admin"),
+        async (c) => {
+          const id = idParam(c);
+          if (!UUID_RE.test(id)) return c.json({ entries: [] });
+
+          const entries = await db
+            .select()
+            .from(auditEntries)
+            .where(
+              and(
+                eq(auditEntries.targetType, "model"),
+                eq(auditEntries.targetId, id),
+              ),
+            )
+            .orderBy(desc(auditEntries.createdAt));
+          return c.json({ entries });
+        },
+      )
+
+      // Issue #74: runs one Generation of the editor's own unsaved draft
+      // Mode and Inputs, on an unnumbered revision that never becomes
+      // current. Bypasses Pause, a disabled Model, Caps and Model terms;
+      // still blocked while the Mode has a `checkModel` error.
+      .post(
+        "/:id/test",
+        guard(routes, basePath, "post", "/:id/test", "admin"),
+        // The id, test-deps and session checks run before the body gate:
+        // the pre-conversion route checked them first (issue #168).
+        async (c, next) => {
+          const id = c.req.param("id");
+          if (!id || !UUID_RE.test(id)) {
+            return c.json({ error: "not found" }, 404);
+          }
+          if (!testDeps) {
+            return c.json({ error: "not available" }, 501);
+          }
+          const session = c.get("session");
+          if (!session) {
+            return c.json({ error: "unauthorized" }, 401);
+          }
+          return next();
+        },
+        validate("json", testSchema, (c, reason) =>
+          onInvalidModelBody(c, reason, null, testSchema, true),
+        ),
+        async (c) => {
+          const id = idParam(c);
+          if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+          if (!testDeps) return c.json({ error: "not available" }, 501);
+
+          const session = c.get("session");
+          if (!session) return c.json({ error: "unauthorized" }, 401);
+
+          const { mode, inputs, values, backendId } = c.req.valid("json");
+
+          try {
+            const { generation, prompt } = await submitTestGeneration(
+              {
+                modelId: id,
+                userId: session.user.id,
+                mode,
+                inputs: inputs as InputDefinition[],
+                values,
+                backendId,
+              },
+              {
+                modelRepository: repository,
+                modelBackendsRepository: modelBackends,
+                backendsService,
+                generationsRepository,
+                generationEvents: testDeps.generationEvents,
+                clock: testDeps.clock,
+                uploadsRepository: testDeps.uploadsRepository,
+                hasFreeDisk: testDeps.hasFreeDisk,
+                onGenerationQueued: testDeps.wakeDispatcher,
+              },
+            );
+            return c.json({ generation, prompt }, 201);
+          } catch (err) {
+            if (err instanceof TestModelNotFound) {
+              return c.json({ error: "not found" }, 404);
+            }
+            if (err instanceof TestModeHasErrors) {
+              return c.json(
+                { error: "mode_has_errors", reasons: err.reasons },
+                400,
+              );
+            }
+            if (err instanceof TestBackendNotAttached) {
+              return c.json({ error: err.message }, 400);
+            }
+            if (err instanceof TestNoBackend) {
+              return c.json({ error: "no_backend", message: err.message }, 400);
+            }
+            if (err instanceof TestSubmissionStorageFull) {
+              return c.json(
+                { error: "storage_full", message: err.message },
+                507,
+              );
+            }
+            if (err instanceof InvalidUploads) {
+              return c.json({ error: "invalid", issues: err.issues }, 400);
+            }
+            if (err instanceof InvalidInputValues) {
+              return c.json(
+                { error: "invalid", issues: toInputIssues(err.zodError) },
+                400,
+              );
+            }
+            if (err instanceof InvalidSeed) {
+              return c.json(
+                { error: "invalid_seed", message: err.message },
+                400,
+              );
+            }
+            return handleError(c, err);
+          }
+        },
+      )
+
+      // Issue #74's AC: "the last 5 tests are listed".
+      .get(
+        "/:id/tests",
+        guard(routes, basePath, "get", "/:id/tests", "admin"),
+        async (c) => {
+          const id = idParam(c);
+          if (!UUID_RE.test(id)) return c.json({ tests: [] });
+
+          const session = c.get("session");
+          if (!session) return c.json({ error: "unauthorized" }, 401);
+
+          const tests = await generationsRepository.listRecentTestsForModel(
+            id,
+            session.user.id,
+            5,
+          );
+          return c.json({ tests });
+        },
+      )
   );
-
-  // Issue #74's AC: "the last 5 tests are listed".
-  guardedRoute(
-    app,
-    routes,
-    basePath,
-    "get",
-    "/:id/tests",
-    "admin",
-    async (c) => {
-      const id = idParam(c);
-      if (!UUID_RE.test(id)) return c.json({ tests: [] });
-
-      const session = c.get("session");
-      if (!session) return c.json({ error: "unauthorized" }, 401);
-
-      const tests = await generationsRepository.listRecentTestsForModel(
-        id,
-        session.user.id,
-        5,
-      );
-      return c.json({ tests });
-    },
-  );
-
-  return app;
 }
 
 function handleError(c: Context<AppEnv>, err: unknown) {

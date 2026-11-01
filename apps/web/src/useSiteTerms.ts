@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { api, ok } from "./lib/api.js";
 
 export interface SiteTerms {
   version: number | null;
@@ -12,22 +13,14 @@ export type SiteTermsState =
 
 /** The current Site terms (issue #60), from `/api/terms`. Works signed out. */
 export function useSiteTerms(): SiteTermsState {
-  const [state, setState] = useState<SiteTermsState>({ status: "loading" });
-
-  useEffect(() => {
-    let cancelled = false;
-    fetch("/api/terms")
-      .then((res) => res.json() as Promise<SiteTerms>)
-      .then((terms) => {
-        if (!cancelled) setState({ status: "loaded", terms });
-      })
-      .catch(() => {
-        /* leave it loading rather than show a wrong "no terms" state */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  return state;
+  // Stays "loading" when no data is in the cache yet — including through
+  // the retries of a failed first fetch — rather than showing a wrong
+  // "no terms" state.
+  const { data } = useQuery({
+    queryKey: ["terms"],
+    queryFn: () => ok<SiteTerms>(api.api.terms.$get()),
+  });
+  return data === undefined
+    ? { status: "loading" }
+    : { status: "loaded", terms: data };
 }

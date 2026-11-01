@@ -3,12 +3,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { BUN_FETCH } from "../test/happy-dom-setup.js";
 
-const { cleanup, render, screen, waitFor } = await import(
-  "@testing-library/react"
-);
+const { cleanup, screen, waitFor } = await import("@testing-library/react");
 const { default: userEvent } = await import("@testing-library/user-event");
-const { MemoryRouter, Route, Routes } = await import("react-router-dom");
 const { UserPage } = await import("./UserPage.js");
+const { renderWithProviders } = await import("../test/render.js");
 
 afterEach(() => {
   cleanup();
@@ -71,14 +69,13 @@ function mockFetch(
 }
 
 function renderPage() {
-  return render(
-    <MemoryRouter initialEntries={["/admin/users/u1"]}>
-      <Routes>
-        <Route path="/admin/users/:id" element={<UserPage />} />
-        <Route path="/admin/users" element={<p>Users list</p>} />
-      </Routes>
-    </MemoryRouter>,
-  );
+  return renderWithProviders(null, {
+    route: "/admin/users/u1",
+    routes: [
+      { path: "/admin/users/:id", element: <UserPage /> },
+      { path: "/admin/users", element: <p>Users list</p> },
+    ],
+  });
 }
 
 describe("UserPage", () => {

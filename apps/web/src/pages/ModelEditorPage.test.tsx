@@ -29,19 +29,19 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
 await GlobalRegistrator.register();
 
-const { cleanup, fireEvent, render, waitFor } = await import(
-  "@testing-library/react"
-);
-const { Link, RouterProvider, createMemoryRouter } = await import(
-  "react-router-dom"
-);
+const { cleanup, fireEvent, waitFor } = await import("@testing-library/react");
+const { Link } = await import("react-router-dom");
 const { ModelEditorPage } = await import("./ModelEditorPage.js");
+const { drainMacrotasks, renderWithProviders } = await import(
+  "../test/render.js"
+);
 
 afterEach(() => {
   cleanup();
 });
 
 afterAll(async () => {
+  await drainMacrotasks();
   await GlobalRegistrator.unregister();
 });
 
@@ -108,8 +108,9 @@ function mockFetch(handler: (call: FetchCall) => Response | Promise<Response>) {
 
 /** Mirrors AdminShell's own nav link, alongside the editor, so a blocked click can be exercised. */
 function renderEditor() {
-  const router = createMemoryRouter(
-    [
+  return renderWithProviders(null, {
+    route: "/admin/models/m1",
+    routes: [
       {
         path: "/admin/models/:id",
         element: (
@@ -121,9 +122,7 @@ function renderEditor() {
       },
       { path: "/admin/models", element: <p>Models list</p> },
     ],
-    { initialEntries: ["/admin/models/m1"] },
-  );
-  return render(<RouterProvider router={router} />);
+  });
 }
 
 /** Issue #74: the editor opens the same per-user Generations stream the Workbench/Gallery do, to keep a Test's progress live. */

@@ -5,15 +5,18 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
 await GlobalRegistrator.register();
 
-const { cleanup, render, waitFor } = await import("@testing-library/react");
-const { createMemoryRouter, RouterProvider } = await import("react-router-dom");
+const { cleanup, waitFor } = await import("@testing-library/react");
 const { GalleryPage, dayLabel } = await import("./GalleryPage.js");
+const { drainMacrotasks, renderWithProviders } = await import(
+  "../test/render.js"
+);
 
 afterEach(() => {
   cleanup();
 });
 
 afterAll(async () => {
+  await drainMacrotasks();
   await GlobalRegistrator.unregister();
 });
 
@@ -82,11 +85,10 @@ function renderGallery(initialEntry = "/gallery") {
     FakeEventSource;
   FakeEventSource.instances = [];
 
-  const router = createMemoryRouter(
-    [{ path: "/gallery", element: <GalleryPage /> }],
-    { initialEntries: [initialEntry] },
-  );
-  return render(<RouterProvider router={router} />);
+  return renderWithProviders(null, {
+    route: initialEntry,
+    routes: [{ path: "/gallery", element: <GalleryPage /> }],
+  });
 }
 
 const SUBMISSION_1 = {

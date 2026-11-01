@@ -3,11 +3,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { BUN_FETCH } from "../test/happy-dom-setup.js";
 
-const { cleanup, render, screen, waitFor } = await import(
-  "@testing-library/react"
-);
-const { MemoryRouter } = await import("react-router-dom");
+const { cleanup, screen, waitFor } = await import("@testing-library/react");
 const { UsersPage } = await import("./UsersPage.js");
+const { renderWithProviders } = await import("../test/render.js");
 
 afterEach(() => {
   cleanup();
@@ -59,11 +57,7 @@ function userRow(overrides: Partial<Record<string, unknown>> = {}) {
 }
 
 function renderPage() {
-  return render(
-    <MemoryRouter initialEntries={["/admin/users"]}>
-      <UsersPage />
-    </MemoryRouter>,
-  );
+  return renderWithProviders(<UsersPage />, { route: "/admin/users" });
 }
 
 describe("UsersPage", () => {

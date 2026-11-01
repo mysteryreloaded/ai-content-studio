@@ -5,15 +5,18 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
 await GlobalRegistrator.register();
 
-const { cleanup, render, waitFor } = await import("@testing-library/react");
-const { createMemoryRouter, RouterProvider } = await import("react-router-dom");
+const { cleanup, waitFor } = await import("@testing-library/react");
 const { GalleryPage } = await import("./GalleryPage.js");
+const { drainMacrotasks, renderWithProviders } = await import(
+  "../test/render.js"
+);
 
 afterEach(() => {
   cleanup();
 });
 
 afterAll(async () => {
+  await drainMacrotasks();
   await GlobalRegistrator.unregister();
 });
 
@@ -58,14 +61,13 @@ function renderAt(initialEntry: string) {
     FakeEventSource;
   FakeEventSource.instances = [];
 
-  const router = createMemoryRouter(
-    [
+  return renderWithProviders(null, {
+    route: initialEntry,
+    routes: [
       { path: "/gallery", element: <GalleryPage /> },
       { path: "/generations/:id", element: <GalleryPage /> },
     ],
-    { initialEntries: [initialEntry] },
-  );
-  return render(<RouterProvider router={router} />);
+  });
 }
 
 const GENERATION_1 = {

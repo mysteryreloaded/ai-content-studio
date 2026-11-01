@@ -1,5 +1,6 @@
 import type { FooterLink, SignUpMode } from "@ai-content-studio/shared";
-import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { api, ok } from "./lib/api.js";
 
 export interface PublicSiteSettings {
   title: string;
@@ -14,28 +15,13 @@ export interface PublicSiteSettings {
   hasNonVideoEnabledModel: boolean;
 }
 
-/** The public branding `/api/site-settings` returns. Works signed out, and before the Site terms gate. */
+/** The public branding `/api/site-settings` returns (issue #65). Works signed out, and before the Site terms gate. */
 export function useSiteSettings(): PublicSiteSettings | null {
-  const [settings, setSettings] = useState<PublicSiteSettings | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    fetch("/api/site-settings")
-      .then((res) => {
-        if (!res.ok) throw new Error(`unexpected status ${res.status}`);
-        return res.json() as Promise<PublicSiteSettings>;
-      })
-      .then((data) => {
-        if (!cancelled) setSettings(data);
-      })
-      .catch(() => {
-        /* leave it null rather than show a wrong default, or the
-           {"error": ...} body from a 500 (issue #65 QA round 3) */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  return settings;
+  // A failed fetch (or a 500's {"error": ...} body, issue #65 QA round 3)
+  // leaves the data null rather than showing a wrong default.
+  const { data } = useQuery({
+    queryKey: ["site-settings"],
+    queryFn: () => ok<PublicSiteSettings>(api.api["site-settings"].$get()),
+  });
+  return data ?? null;
 }

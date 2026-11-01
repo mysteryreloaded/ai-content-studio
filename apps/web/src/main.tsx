@@ -1,3 +1,4 @@
+import { QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { Outlet, RouterProvider, createBrowserRouter } from "react-router-dom";
@@ -6,6 +7,7 @@ import { LandingPage } from "./LandingPage.js";
 import { NoticeBanner } from "./NoticeBanner.js";
 import { RequireActive } from "./RequireActive.js";
 import { RequireTermsAccepted } from "./RequireTermsAccepted.js";
+import { queryClient } from "./lib/query.js";
 import { useTabNotifier } from "./notifications/useTabNotifier.js";
 import { AccountPage } from "./pages/AccountPage.js";
 import { AdminShell } from "./pages/AdminShell.js";
@@ -114,6 +116,10 @@ const router = createBrowserRouter([
 
 createRoot(root).render(
   <StrictMode>
-    <RouterProvider router={router} />
+    {/* The one app-wide QueryClient (see lib/query.ts); every page's
+        query and SSE-fed cache update runs against it. */}
+    <QueryClientProvider client={queryClient}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>
   </StrictMode>,
 );

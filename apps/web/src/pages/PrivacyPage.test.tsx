@@ -3,14 +3,18 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
 await GlobalRegistrator.register();
 
-const { cleanup, render } = await import("@testing-library/react");
+const { cleanup } = await import("@testing-library/react");
 const { PrivacyPage } = await import("./PrivacyPage.js");
+const { drainMacrotasks, renderWithProviders } = await import(
+  "../test/render.js"
+);
 
 afterEach(() => {
   cleanup();
 });
 
 afterAll(async () => {
+  await drainMacrotasks();
   await GlobalRegistrator.unregister();
 });
 
@@ -56,7 +60,7 @@ describe("PrivacyPage", () => {
         generatedBody: "## What this studio stores",
       }),
     );
-    const view = render(<PrivacyPage />);
+    const view = renderWithProviders(<PrivacyPage />);
 
     expect(await view.findByText("We keep it simple.")).toBeTruthy();
     expect(
@@ -66,7 +70,7 @@ describe("PrivacyPage", () => {
 
   test("shows an error instead of crashing on a non-OK response", async () => {
     mockFetch(new Response("oops", { status: 500 }));
-    const view = render(<PrivacyPage />);
+    const view = renderWithProviders(<PrivacyPage />);
 
     expect(
       await view.findByText(
@@ -77,7 +81,7 @@ describe("PrivacyPage", () => {
 
   test("shows an error when the response body isn't valid JSON", async () => {
     mockFetch(new Response("not json", { status: 200 }));
-    const view = render(<PrivacyPage />);
+    const view = renderWithProviders(<PrivacyPage />);
 
     expect(
       await view.findByText(
@@ -95,7 +99,7 @@ describe("PrivacyPage", () => {
       }),
       { siteSettingsStatus: 500 },
     );
-    const view = render(<PrivacyPage />);
+    const view = renderWithProviders(<PrivacyPage />);
 
     expect(await view.findByText("We keep it simple.")).toBeTruthy();
     expect(view.getByRole("link", { name: "Privacy" })).toBeTruthy();

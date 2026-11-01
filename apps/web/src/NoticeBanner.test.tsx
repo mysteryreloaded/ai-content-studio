@@ -10,15 +10,19 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
 await GlobalRegistrator.register();
 
-const { cleanup, render, waitFor } = await import("@testing-library/react");
+const { cleanup, waitFor } = await import("@testing-library/react");
 const { NoticeBanner } = await import("./NoticeBanner.js");
 const { usePauseNotice } = await import("./usePauseNotice.js");
+const { drainMacrotasks, renderWithProviders } = await import(
+  "./test/render.js"
+);
 
 afterEach(() => {
   cleanup();
 });
 
 afterAll(async () => {
+  await drainMacrotasks();
   await GlobalRegistrator.unregister();
 });
 
@@ -59,7 +63,7 @@ async function streamFor() {
 
 describe("NoticeBanner", () => {
   test("shows nothing when there's no Notice and no Pause", async () => {
-    const view = render(<NoticeBanner />);
+    const view = renderWithProviders(<NoticeBanner />);
     const source = await streamFor();
     source.emit("notice", { paused: false, notice: "" });
 
@@ -67,7 +71,7 @@ describe("NoticeBanner", () => {
   });
 
   test("shows the Admin's own Notice text, dismissably", async () => {
-    const view = render(<NoticeBanner />);
+    const view = renderWithProviders(<NoticeBanner />);
     const source = await streamFor();
     source.emit("notice", { paused: false, notice: "Upgrading tonight." });
 
@@ -76,7 +80,7 @@ describe("NoticeBanner", () => {
   });
 
   test("shows the standard message during a Pause when the Notice is blank, with no Dismiss button", async () => {
-    const view = render(<NoticeBanner />);
+    const view = renderWithProviders(<NoticeBanner />);
     const source = await streamFor();
     source.emit("notice", { paused: true, notice: "" });
 
@@ -87,7 +91,7 @@ describe("NoticeBanner", () => {
   });
 
   test("shows the Admin's own text during a Pause too, when set", async () => {
-    const view = render(<NoticeBanner />);
+    const view = renderWithProviders(<NoticeBanner />);
     const source = await streamFor();
     source.emit("notice", { paused: true, notice: "Back by 3pm." });
 
@@ -95,7 +99,7 @@ describe("NoticeBanner", () => {
   });
 
   test("dismissing hides it until the text changes", async () => {
-    const view = render(<NoticeBanner />);
+    const view = renderWithProviders(<NoticeBanner />);
     const source = await streamFor();
     source.emit("notice", { paused: false, notice: "Upgrading tonight." });
 
@@ -125,7 +129,7 @@ describe("NoticeBanner", () => {
       );
     }
 
-    render(<App />);
+    renderWithProviders(<App />);
     await waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
 
     await new Promise((resolve) => setTimeout(resolve, 10));

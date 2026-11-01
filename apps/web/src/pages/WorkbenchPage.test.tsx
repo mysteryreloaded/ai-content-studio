@@ -29,15 +29,18 @@ await GlobalRegistrator.register();
   });
 }
 
-const { cleanup, render, waitFor } = await import("@testing-library/react");
-const { createMemoryRouter, RouterProvider } = await import("react-router-dom");
+const { cleanup, waitFor } = await import("@testing-library/react");
 const { WorkbenchPage } = await import("./WorkbenchPage.js");
+const { drainMacrotasks, renderWithProviders } = await import(
+  "../test/render.js"
+);
 
 afterEach(() => {
   cleanup();
 });
 
 afterAll(async () => {
+  await drainMacrotasks();
   await GlobalRegistrator.unregister();
 });
 
@@ -161,11 +164,10 @@ function renderWorkbench(initialEntry = "/models/ltx") {
     FakeEventSource;
   FakeEventSource.instances = [];
 
-  const router = createMemoryRouter(
-    [{ path: "/models/:slug", element: <WorkbenchPage /> }],
-    { initialEntries: [initialEntry] },
-  );
-  return render(<RouterProvider router={router} />);
+  return renderWithProviders(null, {
+    route: initialEntry,
+    routes: [{ path: "/models/:slug", element: <WorkbenchPage /> }],
+  });
 }
 
 describe("WorkbenchPage", () => {

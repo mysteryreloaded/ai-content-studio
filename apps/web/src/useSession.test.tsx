@@ -73,7 +73,7 @@ describe("useSession.refresh (issue #183 QA round 1)", () => {
     // `setQueryData(key, undefined)` is a no-op in TanStack v5, so the old
     // implementation left the stale session in the cache and `refresh`
     // looked like it did nothing until the (often never-run) invalidation.
-    let releaseRefetch: () => void;
+    let releaseRefetch: (() => void) | undefined;
     const gate = new Promise<void>((resolve) => {
       releaseRefetch = resolve;
     });
@@ -114,7 +114,7 @@ describe("useSession.refresh (issue #183 QA round 1)", () => {
     // The post-accept session refetch is held behind a gate: on a real
     // server it lands long after the navigation, which is exactly when
     // the stale cached session used to break the gate.
-    let releaseRefetch: () => void;
+    let releaseRefetch: (() => void) | undefined;
     const refetchGate = new Promise<void>((resolve) => {
       releaseRefetch = resolve;
     });

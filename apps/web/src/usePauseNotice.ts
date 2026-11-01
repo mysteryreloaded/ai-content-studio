@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useEventStream } from "./lib/sse.js";
 
 export interface PauseNotice {
   paused: boolean;
@@ -6,47 +7,30 @@ export interface PauseNotice {
   notice: string;
 }
 
-type Listener = (notice: PauseNotice) => void;
+/** The default shown until the first SSE snapshot arrives (issue #59). */
+export const DEFAULT_PAUSE_NOTICE: PauseNotice = { paused: false, notice: "" };
 
-// Module-level singleton: every `usePauseNotice` caller in a tab (the
-// NoticeBanner, the Workbench, the Gallery, ...) shares one EventSource
-// instead of each opening its own, which would burn through HTTP/1.1's
-// six-connections-per-origin limit after just a couple of tabs.
-let snapshot: PauseNotice = { paused: false, notice: "" };
-let source: EventSource | null = null;
-const listeners = new Set<Listener>();
-
-function ensureStream(): void {
-  if (source) return;
-  const opened = new EventSource("/api/site-settings/notice-stream");
-  opened.addEventListener("notice", (event) => {
-    snapshot = JSON.parse((event as MessageEvent).data) as PauseNotice;
-    for (const listener of listeners) listener(snapshot);
-  });
-  source = opened;
-}
-
-function releaseStream(): void {
-  source?.close();
-  source = null;
-  // Nobody's listening, so there's nothing fresher to show than the
-  // default; a later subscriber reconnects and gets a real snapshot
-  // instead of inheriting a possibly stale one from a past mount.
-  snapshot = { paused: false, notice: "" };
-}
-
-/** The Notice/Pause banner's live state (issue #59): works signed out too, over one shared SSE stream for everyone. */
+/**
+ * The Notice/Pause banner's live state (issue #59): works signed out too.
+ * The only shared SSE stream in the tab feeds a `["pause-notice"]` query
+ * (issue #172) instead of component state; `useEventStream` is the only
+ * place an `EventSource` is opened, and it is shared by every caller.
+ */
 export function usePauseNotice(): PauseNotice {
-  const [state, setState] = useState<PauseNotice>(snapshot);
+  const queryClient = useQueryClient();
 
-  useEffect(() => {
-    listeners.add(setState);
-    ensureStream();
-    return () => {
-      listeners.delete(setState);
-      if (listeners.size === 0) releaseStream();
-    };
-  }, []);
+  useEventStream("/api/site-settings/notice-stream", {
+    notice: (data, client) =>
+      client.setQueryData(
+        ["pause-notice"],
+        data === null || data === undefined
+          ? DEFAULT_PAUSE_NOTICE
+          : (data as PauseNotice),
+      ),
+  });
 
-  return state;
+  return (
+    queryClient.getQueryData<PauseNotice>(["pause-notice"]) ??
+    DEFAULT_PAUSE_NOTICE
+  );
 }

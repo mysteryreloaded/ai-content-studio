@@ -1,5 +1,6 @@
 import type { FooterLink, SignUpMode } from "@ai-content-studio/shared";
-import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { api, ok } from "./lib/api.js";
 
 export interface PublicSiteSettings {
   title: string;
@@ -16,26 +17,13 @@ export interface PublicSiteSettings {
 
 /** The public branding `/api/site-settings` returns. Works signed out, and before the Site terms gate. */
 export function useSiteSettings(): PublicSiteSettings | null {
-  const [settings, setSettings] = useState<PublicSiteSettings | null>(null);
+  const { data } = useQuery({
+    queryKey: ["site-settings"],
+    queryFn: () =>
+      ok<PublicSiteSettings>(api.api["site-settings"].$get()),
+  });
 
-  useEffect(() => {
-    let cancelled = false;
-    fetch("/api/site-settings")
-      .then((res) => {
-        if (!res.ok) throw new Error(`unexpected status ${res.status}`);
-        return res.json() as Promise<PublicSiteSettings>;
-      })
-      .then((data) => {
-        if (!cancelled) setSettings(data);
-      })
-      .catch(() => {
-        /* leave it null rather than show a wrong default, or the
-           {"error": ...} body from a 500 (issue #65 QA round 3) */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  return settings;
+  // Stay null rather than show a wrong default, or the {"error": ...}
+  // body from a 500 (issue #65 QA round 3).
+  return data ?? null;
 }

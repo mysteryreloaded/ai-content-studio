@@ -4,23 +4,6 @@ import { usePauseNotice } from "./usePauseNotice.js";
 
 const DISMISSED_KEY = "ai-content-studio:notice-dismissed";
 
-/** Self-contained, like `WorkbenchPage`'s own `<style>` (no shared global stylesheet exists). */
-const NOTICE_BANNER_STYLE = `
-.notice-banner {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 1rem;
-  padding: 0.5rem 1rem;
-  background: var(--accent);
-  color: var(--on-accent);
-  text-align: center;
-}
-.notice-banner p {
-  margin: 0;
-}
-`;
-
 function readDismissed(): string | null {
   try {
     return localStorage.getItem(DISMISSED_KEY);
@@ -53,9 +36,11 @@ export function NoticeBanner() {
 
   return (
     // biome-ignore lint/a11y/useSemanticElements: <output> is for a form's calculated result, not a banner with a Dismiss button
-    <div role="status" className="notice-banner">
-      <style>{NOTICE_BANNER_STYLE}</style>
-      <p>{text}</p>
+    <div
+      role="status"
+      className="flex items-center justify-center gap-4 bg-primary px-4 py-2 text-center text-primary-foreground"
+    >
+      <p className="m-0">{text}</p>
       {!paused && (
         <button
           type="button"

@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { Link, Navigate } from "react-router-dom";
-import { Footer } from "../Footer.js";
 import { useSession } from "../useSession.js";
 
 interface EnabledModel {
@@ -70,7 +69,6 @@ export function ModelsHome() {
           </article>
         ))}
       </main>
-      <Footer />
     </>
   );
 }

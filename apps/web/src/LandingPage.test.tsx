@@ -7,6 +7,7 @@ await GlobalRegistrator.register();
 const { cleanup, render } = await import("@testing-library/react");
 const { MemoryRouter } = await import("react-router-dom");
 const { LandingPage } = await import("./LandingPage.js");
+const { Footer } = await import("./Footer.js");
 
 afterEach(() => {
   cleanup();
@@ -64,6 +65,7 @@ function renderPage() {
   return render(
     <MemoryRouter>
       <LandingPage />
+      <Footer />
     </MemoryRouter>,
   );
 }

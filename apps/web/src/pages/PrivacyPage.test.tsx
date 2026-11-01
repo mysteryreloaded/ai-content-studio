@@ -5,6 +5,7 @@ await GlobalRegistrator.register();
 
 const { cleanup, render } = await import("@testing-library/react");
 const { PrivacyPage } = await import("./PrivacyPage.js");
+const { Footer } = await import("../Footer.js");
 
 afterEach(() => {
   cleanup();
@@ -95,10 +96,15 @@ describe("PrivacyPage", () => {
       }),
       { siteSettingsStatus: 500 },
     );
-    const view = render(<PrivacyPage />);
+    const view = render(
+      <>
+        <PrivacyPage />
+        <Footer />
+      </>,
+    );
 
     expect(await view.findByText("We keep it simple.")).toBeTruthy();
     expect(view.getByRole("link", { name: "Privacy" })).toBeTruthy();
-    expect(view.getByRole("group", { name: "Theme" })).toBeTruthy();
+    expect(view.getByRole("radiogroup", { name: "Theme" })).toBeTruthy();
   });
 });

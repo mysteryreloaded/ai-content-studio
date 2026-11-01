@@ -6,7 +6,6 @@ import {
   useParams,
   useSearchParams,
 } from "react-router-dom";
-import { Footer } from "../Footer.js";
 import { usePauseNotice } from "../usePauseNotice.js";
 import { useSession } from "../useSession.js";
 import { GenerationDetailOverlay } from "./GenerationDetailOverlay.js";
@@ -660,7 +659,6 @@ export function GalleryPage() {
           </button>
         )}
       </main>
-      <Footer />
     </>
   );
 }

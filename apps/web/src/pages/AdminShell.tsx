@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { Link, Navigate, Route, Routes } from "react-router-dom";
-import { Footer } from "../Footer.js";
 import { useSession } from "../useSession.js";
 import { AdminGenerationDetailPage } from "./AdminGenerationDetailPage.js";
 import { AdminGenerationsPage } from "./AdminGenerationsPage.js";
@@ -149,7 +148,6 @@ export function AdminShell() {
           <Route path="audit" element={<AuditPage />} />
         </Routes>
       </main>
-      <Footer />
     </>
   );
 }

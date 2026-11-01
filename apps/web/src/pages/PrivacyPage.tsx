@@ -1,6 +1,5 @@
 import { renderMarkdown } from "@ai-content-studio/shared";
 import { useEffect, useState } from "react";
-import { Footer } from "../Footer.js";
 
 interface PrivacyData {
   operatorBody: string;
@@ -66,7 +65,6 @@ export function PrivacyPage() {
           </>
         )}
       </main>
-      <Footer />
     </>
   );
 }

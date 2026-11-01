@@ -4,14 +4,18 @@ import type { PublicSiteSettings } from "./useSiteSettings.js";
 
 await GlobalRegistrator.register();
 
-const { cleanup, render } = await import("@testing-library/react");
+const { cleanup } = await import("@testing-library/react");
 const { Footer } = await import("./Footer.js");
+const { drainMacrotasks, renderWithProviders } = await import(
+  "./test/render.js"
+);
 
 afterEach(() => {
   cleanup();
 });
 
 afterAll(async () => {
+  await drainMacrotasks();
   await GlobalRegistrator.unregister();
 });
 
@@ -38,7 +42,7 @@ function mockFetch(overrides: Partial<PublicSiteSettings>) {
 }
 
 function renderFooter() {
-  return render(<Footer />);
+  return renderWithProviders(<Footer />);
 }
 
 describe("Footer", () => {

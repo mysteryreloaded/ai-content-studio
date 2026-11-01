@@ -4,15 +4,18 @@ import type { PublicSiteSettings } from "./useSiteSettings.js";
 
 await GlobalRegistrator.register();
 
-const { cleanup, render } = await import("@testing-library/react");
-const { MemoryRouter } = await import("react-router-dom");
+const { cleanup } = await import("@testing-library/react");
 const { LandingPage } = await import("./LandingPage.js");
+const { drainMacrotasks, renderWithProviders } = await import(
+  "./test/render.js"
+);
 
 afterEach(() => {
   cleanup();
 });
 
 afterAll(async () => {
+  await drainMacrotasks();
   await GlobalRegistrator.unregister();
 });
 
@@ -61,11 +64,7 @@ function mockFetch(options: {
 }
 
 function renderPage() {
-  return render(
-    <MemoryRouter>
-      <LandingPage />
-    </MemoryRouter>,
-  );
+  return renderWithProviders(<LandingPage />);
 }
 
 describe("LandingPage", () => {

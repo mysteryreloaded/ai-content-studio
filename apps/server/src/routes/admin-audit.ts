@@ -3,7 +3,7 @@
 
 import { and, desc, eq, gte, ilike, inArray, lt, lte, or } from "drizzle-orm";
 import { Hono } from "hono";
-import { type RouteEntry, guardedRoute } from "../auth/access.js";
+import { type RouteEntry, guard } from "../auth/access.js";
 import type { AppEnv } from "../auth/app-env.js";
 import type { Database } from "../db/client.js";
 import { auditEntries, users } from "../db/schema.js";
@@ -75,91 +75,89 @@ function filtersFrom(query: Record<string, string | undefined>) {
  * names are looked up live against the users table, never stored, so a
  * deleted user shows as "Deleted user" instead of a stale name.
  */
-export function adminAuditRoute(
-  db: Database,
-  routes: RouteEntry[],
-): Hono<AppEnv> {
-  const app = new Hono<AppEnv>();
+export function adminAuditRoute(db: Database, routes: RouteEntry[]) {
   const basePath = "/api/admin/audit";
 
-  guardedRoute(app, routes, basePath, "get", "/", "admin", async (c) => {
-    const query = c.req.query();
-    const clauses = filtersFrom(query);
+  return new Hono<AppEnv>().get(
+    "/",
+    guard(routes, basePath, "get", "/", "admin"),
+    async (c) => {
+      const query = c.req.query();
+      const clauses = filtersFrom(query);
 
-    const limitParam = Number.parseInt(query.limit ?? "", 10);
-    const limit =
-      Number.isFinite(limitParam) && limitParam > 0
-        ? Math.min(limitParam, MAX_LIMIT)
-        : DEFAULT_LIMIT;
+      const limitParam = Number.parseInt(query.limit ?? "", 10);
+      const limit =
+        Number.isFinite(limitParam) && limitParam > 0
+          ? Math.min(limitParam, MAX_LIMIT)
+          : DEFAULT_LIMIT;
 
-    // Fetch one extra row to tell whether there's an older page, without
-    // a separate count query; the extra row is trimmed off below.
-    const fetched = await db
-      .select({
-        id: auditEntries.id,
-        createdAt: auditEntries.createdAt,
-        actorType: auditEntries.actorType,
-        actorUserId: auditEntries.actorUserId,
-        actorEmail: auditEntries.actorEmail,
-        targetType: auditEntries.targetType,
-        targetId: auditEntries.targetId,
-        action: auditEntries.action,
-        before: auditEntries.before,
-        after: auditEntries.after,
-        images: auditEntries.images,
-      })
-      .from(auditEntries)
-      .where(clauses.length > 0 ? and(...clauses) : undefined)
-      .orderBy(desc(auditEntries.createdAt), desc(auditEntries.id))
-      .limit(limit + 1);
+      // Fetch one extra row to tell whether there's an older page, without
+      // a separate count query; the extra row is trimmed off below.
+      const fetched = await db
+        .select({
+          id: auditEntries.id,
+          createdAt: auditEntries.createdAt,
+          actorType: auditEntries.actorType,
+          actorUserId: auditEntries.actorUserId,
+          actorEmail: auditEntries.actorEmail,
+          targetType: auditEntries.targetType,
+          targetId: auditEntries.targetId,
+          action: auditEntries.action,
+          before: auditEntries.before,
+          after: auditEntries.after,
+          images: auditEntries.images,
+        })
+        .from(auditEntries)
+        .where(clauses.length > 0 ? and(...clauses) : undefined)
+        .orderBy(desc(auditEntries.createdAt), desc(auditEntries.id))
+        .limit(limit + 1);
 
-    const hasMore = fetched.length > limit;
-    const rows = hasMore ? fetched.slice(0, limit) : fetched;
+      const hasMore = fetched.length > limit;
+      const rows = hasMore ? fetched.slice(0, limit) : fetched;
 
-    // Admin actors keep their email denormalized (ADR 0005), so only a
-    // non-Admin actor (none exist yet) and a "user" target need a live
-    // lookup, which must never produce a stale name.
-    const lookupIds = new Set<string>();
-    for (const row of rows) {
-      if (row.actorType !== "admin" && row.actorUserId)
-        lookupIds.add(row.actorUserId);
-      if (row.targetType === "user" && isUuid(row.targetId))
-        lookupIds.add(row.targetId);
-    }
+      // Admin actors keep their email denormalized (ADR 0005), so only a
+      // non-Admin actor (none exist yet) and a "user" target need a live
+      // lookup, which must never produce a stale name.
+      const lookupIds = new Set<string>();
+      for (const row of rows) {
+        if (row.actorType !== "admin" && row.actorUserId)
+          lookupIds.add(row.actorUserId);
+        if (row.targetType === "user" && isUuid(row.targetId))
+          lookupIds.add(row.targetId);
+      }
 
-    const names = new Map<string, string>();
-    if (lookupIds.size > 0) {
-      const found = await db
-        .select({ id: users.id, name: users.name })
-        .from(users)
-        .where(inArray(users.id, Array.from(lookupIds)));
-      for (const user of found) names.set(user.id, user.name);
-    }
+      const names = new Map<string, string>();
+      if (lookupIds.size > 0) {
+        const found = await db
+          .select({ id: users.id, name: users.name })
+          .from(users)
+          .where(inArray(users.id, Array.from(lookupIds)));
+        for (const user of found) names.set(user.id, user.name);
+      }
 
-    const entries = rows.map((row) => ({
-      id: row.id,
-      createdAt: row.createdAt,
-      actorType: row.actorType,
-      actorName:
-        row.actorType === "admin"
-          ? row.actorEmail
-          : row.actorUserId
-            ? (names.get(row.actorUserId) ?? "Deleted user")
+      const entries = rows.map((row) => ({
+        id: row.id,
+        createdAt: row.createdAt,
+        actorType: row.actorType,
+        actorName:
+          row.actorType === "admin"
+            ? row.actorEmail
+            : row.actorUserId
+              ? (names.get(row.actorUserId) ?? "Deleted user")
+              : null,
+        targetType: row.targetType,
+        targetId: row.targetId,
+        targetName:
+          row.targetType === "user"
+            ? (names.get(row.targetId) ?? "Deleted user")
             : null,
-      targetType: row.targetType,
-      targetId: row.targetId,
-      targetName:
-        row.targetType === "user"
-          ? (names.get(row.targetId) ?? "Deleted user")
-          : null,
-      action: row.action,
-      before: row.before,
-      after: row.after,
-      images: row.images,
-    }));
+        action: row.action,
+        before: row.before,
+        after: row.after,
+        images: row.images,
+      }));
 
-    return c.json({ entries, hasMore });
-  });
-
-  return app;
+      return c.json({ entries, hasMore });
+    },
+  );
 }

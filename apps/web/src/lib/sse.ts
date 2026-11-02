@@ -38,14 +38,25 @@ const streams = new Map<string, SharedStream>();
  * mount (a re-render keeps the original closure — they receive the
  * `QueryClient` as an argument on purpose, so they should write the
  * cache through it rather than through captured state).
+ *
+ * `enabled` (default `true`) gates the whole subscription — no
+ * `EventSource` is opened at all while it is false — for streams whose
+ * route is user-scoped, like the `active`-only generations stream
+ * (issue #188).
  */
-export function useEventStream(url: string, handlers: EventHandlers): void {
+export function useEventStream(
+  url: string,
+  handlers: EventHandlers,
+  options: { enabled?: boolean } = {},
+): void {
+  const { enabled = true } = options;
   const queryClient = useQueryClient();
   const handlersRef = useRef(handlers);
   handlersRef.current = handlers;
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the stream (and its handler bindings) must live for the mount, not re-run on handler identity
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the stream (and its handler bindings) must live for the mount, re-running only when `enabled` flips, not on handler identity
   useEffect(() => {
+    if (!enabled) return;
     const mountedHandlers = handlersRef.current;
     let entry = streams.get(url);
     if (!entry) {
@@ -106,5 +117,5 @@ export function useEventStream(url: string, handlers: EventHandlers): void {
         streams.delete(url);
       }
     };
-  }, [url]);
+  }, [url, enabled]);
 }

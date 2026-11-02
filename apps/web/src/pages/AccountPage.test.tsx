@@ -3,7 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 // before @testing-library/react is imported, and never unregistered.
 import { BUN_FETCH } from "../test/happy-dom-setup.js";
 
-const { cleanup } = await import("@testing-library/react");
+const { cleanup, waitFor } = await import("@testing-library/react");
 const { default: userEvent } = await import("@testing-library/user-event");
 const { AccountPage } = await import("./AccountPage.js");
 const { renderWithProviders } = await import("../test/render.js");
@@ -109,10 +109,32 @@ describe("AccountPage (issue #174)", () => {
     );
     await userEvent.click(await view.findByRole("button", { name: "Delete" }));
 
-    // The dialog stays open, and the mismatch shows on the field.
+    // The dialog closes before the mismatch shows on the field, so the
+    // error isn't left behind the overlay's blur, aria-hidden.
+    await waitFor(() => expect(view.queryByRole("dialog")).toBeNull());
     expect(
-      await view.findByText("That email doesn't match your account."),
+      view.getByText("That email doesn't match your account."),
     ).toBeTruthy();
+  });
+
+  test("delete: a differently-cased email passes the check and reaches the DELETE", async () => {
+    // The server compares case-insensitively (account-deletion.ts), so
+    // "USER@EXAMPLE.COM" is the account's email — the client must not
+    // keep it out of the request on its own.
+    const calls = mockFetch();
+    const view = renderAccount();
+
+    const email = await view.findByLabelText(
+      "Type your email (user@example.com) to confirm",
+    );
+    await userEvent.type(email, "USER@EXAMPLE.COM");
+    await userEvent.click(
+      view.getByRole("button", { name: "Delete my account" }),
+    );
+    await userEvent.click(await view.findByRole("button", { name: "Delete" }));
+
+    expect(calls.accountEmail).toBe("USER@EXAMPLE.COM");
+    expect(await view.findByText("home")).toBeTruthy();
   });
 
   test("sign out: the Sign out button posts to /api/auth/signout and navigates home", async () => {

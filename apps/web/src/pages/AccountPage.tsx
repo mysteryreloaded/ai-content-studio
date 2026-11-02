@@ -66,17 +66,27 @@ function DeleteAccount({
         email: z
           .string()
           .email("Enter a valid email address.")
-          .refine((value) => value.trim() === email, {
-            message: MISMATCH_ERROR,
-          }),
+          // Case-insensitive, mirroring the server's check
+          // (apps/server/src/auth/account-deletion.ts compares
+          // trim().toLowerCase()), so a differently-cased email still
+          // reaches the DELETE and the server decides.
+          .refine(
+            (value) => value.trim().toLowerCase() === email.toLowerCase(),
+            {
+              message: MISMATCH_ERROR,
+            },
+          ),
       }),
     ),
   });
 
   const typedEmail = watch("email") ?? "";
 
-  // The server's `email_mismatch` 400 maps onto the field; anything else
-  // (forbidden, unknown) stays the page-level error, as before.
+  // A failed delete closes the confirm dialog before the error renders:
+  // while it's open the form sits behind the blurred, aria-hidden overlay,
+  // so an error left behind it is invisible. The server's `email_mismatch`
+  // 400 maps onto the field; anything else (forbidden, unknown, or a
+  // thrown request) becomes the page-level error.
   const { isPending, mutate } = useMutation({
     mutationFn: (email: string) => deleteAccount(email),
     onSuccess: (result) => {
@@ -84,10 +94,15 @@ function DeleteAccount({
         onDeleted();
         return;
       }
+      setConfirmOpen(false);
       if (result.error === "email_mismatch") {
         setError("email", { message: MISMATCH_ERROR });
         return;
       }
+      setGeneralError(DELETE_ERROR);
+    },
+    onError: () => {
+      setConfirmOpen(false);
       setGeneralError(DELETE_ERROR);
     },
   });

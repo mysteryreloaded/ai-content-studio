@@ -1,6 +1,10 @@
-import { type CSSProperties, useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import type { CSSProperties } from "react";
 import { Navigate } from "react-router-dom";
 import { GoogleSignInButton } from "./GoogleSignInButton.js";
+import { ModelCard } from "./components/ModelCard.js";
+import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert.js";
+import { api, ok } from "./lib/api.js";
 import { useSession } from "./useSession.js";
 import { useSiteSettings } from "./useSiteSettings.js";
 
@@ -48,17 +52,19 @@ function signInHref(returnTo?: string): string {
     : "/api/auth/google";
 }
 
+/** The prototype's Model-card grid (issue #175): one card per row on phones, auto-fill to 340px above. */
+const CARD_GRID_CLASS =
+  "grid grid-cols-[repeat(auto-fill,minmax(min(100%,340px),1fr))] gap-3.5";
+
 export function LandingPage() {
   const settings = useSiteSettings();
   const { session } = useSession();
-  const [models, setModels] = useState<EnabledModel[] | null>(null);
-
-  useEffect(() => {
-    fetch("/api/models")
-      .then((res) => res.json() as Promise<{ models: EnabledModel[] }>)
-      .then((body) => setModels(body.models))
-      .catch(() => setModels(null));
-  }, []);
+  // The one shared `["models"]` query (issue #175), shown as cards; a
+  // failed request shows an error (the old code ignored `res.ok`).
+  const { data, isError } = useQuery({
+    queryKey: ["models"],
+    queryFn: () => ok<{ models: EnabledModel[] }>(api.api.models.$get()),
+  });
 
   const authError = new URLSearchParams(window.location.search).get(
     "auth_error",
@@ -80,52 +86,60 @@ export function LandingPage() {
         )
       : "");
 
+  // The only data-driven style: the Operator's uploaded background image
+  // (issue #65). Without it the hero sits on the accent's landing
+  // background/foreground (spec #33/#24, injected by the server).
   const backgroundStyle: CSSProperties = settings?.hasBackground
     ? {
         backgroundImage: "url(/api/site-settings/background)",
         backgroundSize: "cover",
       }
-    : {
-        background: "var(--landing-background)",
-        color: "var(--landing-foreground)",
-      };
+    : {};
+
+  const models = data?.models;
 
   return (
-    <>
-      <main style={backgroundStyle}>
-        {settings?.hasLogo && (
-          <img src="/api/site-settings/logo" alt="" width={64} height={64} />
-        )}
-        <h1>{title}</h1>
-        {landingText && <p>{landingText}</p>}
-        {bannerMessage && (
-          <p role="alert">
-            {bannerMessage}
-            {authError === "disabled" && settings?.contact && (
-              <>
-                {" "}
-                Questions or reports:{" "}
-                <a href={contactHref(settings.contact)}>{settings.contact}</a>
-              </>
-            )}
-          </p>
-        )}
-        <GoogleSignInButton href={signInHref()} />
+    <main className="flex flex-col gap-4">
+      <header
+        style={backgroundStyle}
+        className="flex flex-col items-center rounded-[10px] bg-[var(--landing-background)] p-8 text-center text-[var(--landing-foreground)]"
+      >
+        <div className="flex w-full max-w-md flex-col items-center gap-4">
+          {settings?.hasLogo && (
+            <img src="/api/site-settings/logo" alt="" width={64} height={64} />
+          )}
+          <h1>{title}</h1>
+          {landingText && <p className="text-[15px]">{landingText}</p>}
+          {bannerMessage && (
+            <Alert variant="destructive" className="w-full">
+              <AlertTitle>{bannerMessage}</AlertTitle>
+              {authError === "disabled" && settings?.contact && (
+                <AlertDescription>
+                  Questions or reports:{" "}
+                  <a href={contactHref(settings.contact)}>{settings.contact}</a>
+                </AlertDescription>
+              )}
+            </Alert>
+          )}
+          <GoogleSignInButton href={signInHref()} />
+        </div>
+      </header>
 
-        {models && models.length > 0 && (
-          <section aria-label="Models">
-            {models.map((model) => (
-              <article key={model.id}>
-                <h2>
-                  <a href={signInHref(`/models/${model.slug}`)}>{model.name}</a>
-                </h2>
-                {model.description && <p>{model.description}</p>}
-                {model.attribution && <p>{model.attribution}</p>}
-              </article>
-            ))}
-          </section>
-        )}
-      </main>
-    </>
+      {isError && (
+        <p className="text-muted-foreground">could not load Models</p>
+      )}
+
+      {!isError && models && models.length > 0 && (
+        <section aria-label="Models" className={CARD_GRID_CLASS}>
+          {models.map((model) => (
+            <ModelCard
+              key={model.id}
+              href={signInHref(`/models/${model.slug}`)}
+              model={model}
+            />
+          ))}
+        </section>
+      )}
+    </main>
   );
 }

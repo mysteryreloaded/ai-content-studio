@@ -1,5 +1,6 @@
 import { renderMarkdown } from "@ai-content-studio/shared";
-import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { api, ok } from "../lib/api.js";
 
 interface PrivacyData {
   operatorBody: string;
@@ -7,64 +8,72 @@ interface PrivacyData {
   generatedBody: string;
 }
 
-type PrivacyState =
-  | { status: "loading" }
-  | { status: "error" }
-  | { status: "loaded"; data: PrivacyData };
+const ERROR_MESSAGE = "Could not load the Privacy policy. Please try again.";
+
+// The Markdown column's look (issue #174): the typography plugin's
+// `prose`, links in the site accent, no second max-width inside the
+// page's own readable column.
+const proseClass = "prose max-w-none prose-a:text-primary dark:prose-invert";
 
 /** `/privacy` always exists (issue #65): the Operator's own Markdown, then the studio-written section. */
 export function PrivacyPage() {
-  const [state, setState] = useState<PrivacyState>({ status: "loading" });
+  // Through the typed client (issue #174). A 200 whose body isn't valid
+  // JSON unwraps to `null` through `ok`; the route's shape never
+  // legitimately is one, so that reads as the error, like the old
+  // `fetch`'s catch did.
+  const { data, isError } = useQuery({
+    queryKey: ["privacy"],
+    queryFn: () => ok<PrivacyData | null>(api.api.privacy.$get()),
+  });
 
-  useEffect(() => {
-    fetch("/api/privacy")
-      .then((res) => {
-        if (!res.ok) throw new Error(`unexpected status ${res.status}`);
-        return res.json() as Promise<PrivacyData>;
-      })
-      .then((data) => setState({ status: "loaded", data }))
-      .catch(() => setState({ status: "error" }));
-  }, []);
+  const column = "mx-auto w-full max-w-[72ch]";
 
-  const data = state.status === "loaded" ? state.data : null;
+  if (isError || data === null) {
+    return (
+      <main className={column}>
+        <h1>Privacy</h1>
+        <p role="alert">{ERROR_MESSAGE}</p>
+      </main>
+    );
+  }
+
+  if (data === undefined) {
+    return (
+      <main className={column}>
+        <h1>Privacy</h1>
+        <p>Loading…</p>
+      </main>
+    );
+  }
 
   return (
-    <>
-      <main>
-        <h1>Privacy</h1>
-        {state.status === "loading" && <p>Loading…</p>}
-        {state.status === "error" && (
-          <p role="alert">
-            Could not load the Privacy policy. Please try again.
-          </p>
-        )}
-        {data && (
-          <>
-            {data.operatorUpdatedAt && (
-              <p>
-                Last updated{" "}
-                {new Date(data.operatorUpdatedAt).toLocaleDateString()}
-              </p>
-            )}
-            {data.operatorBody ? (
-              <div
-                // biome-ignore lint/security/noDangerouslySetInnerHtml: renderMarkdown (shared) strips raw HTML and images
-                dangerouslySetInnerHTML={{
-                  __html: renderMarkdown(data.operatorBody),
-                }}
-              />
-            ) : (
-              <p>The Operator hasn't published a privacy notice yet.</p>
-            )}
-            <div
-              // biome-ignore lint/security/noDangerouslySetInnerHtml: renderMarkdown (shared) strips raw HTML and images
-              dangerouslySetInnerHTML={{
-                __html: renderMarkdown(data.generatedBody),
-              }}
-            />
-          </>
-        )}
-      </main>
-    </>
+    <main className={column}>
+      <h1>Privacy</h1>
+      {data.operatorUpdatedAt && (
+        <p className="text-[12.5px] text-muted-foreground">
+          Last updated {new Date(data.operatorUpdatedAt).toLocaleDateString()}
+        </p>
+      )}
+      {data.operatorBody ? (
+        <div
+          className={proseClass}
+          // biome-ignore lint/security/noDangerouslySetInnerHtml: renderMarkdown (shared) strips raw HTML and images
+          dangerouslySetInnerHTML={{
+            __html: renderMarkdown(data.operatorBody),
+          }}
+        />
+      ) : (
+        <p className="text-muted-foreground">
+          The Operator hasn't published a privacy notice yet.
+        </p>
+      )}
+      <div
+        className={proseClass}
+        // biome-ignore lint/security/noDangerouslySetInnerHtml: renderMarkdown (shared) strips raw HTML and images
+        dangerouslySetInnerHTML={{
+          __html: renderMarkdown(data.generatedBody),
+        }}
+      />
+    </main>
   );
 }

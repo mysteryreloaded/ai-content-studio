@@ -4,6 +4,7 @@ import {
   hasAnyOutcome,
   isSubmissionEnded,
   outcomeCounts,
+  withoutOwnCancelledGenerations,
 } from "./submissionOutcome.js";
 import type { TrackedSubmission } from "./types.js";
 
@@ -86,6 +87,34 @@ describe("hasAnyOutcome", () => {
 
   test("true otherwise", () => {
     expect(hasAnyOutcome({ ready: 0, failed: 1 })).toBe(true);
+  });
+});
+
+describe("withoutOwnCancelledGenerations (issue #189)", () => {
+  const four = submission([
+    { id: "a", state: "cancelled" },
+    { id: "b", state: "succeeded" },
+    { id: "c", state: "succeeded" },
+    { id: "d", state: "succeeded" },
+  ]);
+
+  test("drops only the Generation the predicate marks own", () => {
+    const copy = withoutOwnCancelledGenerations(four, (id) => id === "a");
+    expect(copy.submissionId).toBe(four.submissionId);
+    expect(copy.modelName).toBe(four.modelName);
+    expect(copy.modeName).toBe(four.modeName);
+    expect(copy.generations.map((g) => g.id)).toEqual(["b", "c", "d"]);
+  });
+
+  test("an empty predicate keeps every Generation", () => {
+    const copy = withoutOwnCancelledGenerations(four, () => false);
+    expect(copy.generations).toEqual(four.generations);
+    expect(copy.generations).not.toBe(four.generations);
+  });
+
+  test("every Generation own-cancelled leaves an empty copy", () => {
+    const copy = withoutOwnCancelledGenerations(four, () => true);
+    expect(copy.generations).toEqual([]);
   });
 });
 

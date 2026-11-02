@@ -8,7 +8,8 @@ const NOTIFIER_LOCK_NAME = "ai-content-studio:notifier";
 
 export type TabMessage =
   | { type: "visibility"; tabId: string; visible: boolean }
-  | { type: "ownCancel"; submissionId: string };
+  | { type: "ownCancel"; submissionId: string }
+  | { type: "ownCancelGeneration"; generationId: string };
 
 type Listener = (message: TabMessage) => void;
 

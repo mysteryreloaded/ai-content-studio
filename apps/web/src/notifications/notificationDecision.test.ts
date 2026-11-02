@@ -4,6 +4,10 @@ import {
   notificationClickTarget,
   shouldNotify,
 } from "./notificationDecision.js";
+import {
+  outcomeCounts,
+  withoutOwnCancelledGenerations,
+} from "./submissionOutcome.js";
 import type { TrackedSubmission } from "./types.js";
 
 function submission(
@@ -111,5 +115,43 @@ describe("buildNotificationContent", () => {
 describe("notificationClickTarget", () => {
   test("the first succeeded Generation", () => {
     expect(notificationClickTarget(ENDED)).toBe("a");
+  });
+});
+
+describe("issue #189: one Generation's own cancel never sinks the rest of the Submission", () => {
+  const four = submission([
+    { id: "a", state: "cancelled" },
+    { id: "b", state: "succeeded" },
+    { id: "c", state: "succeeded" },
+    { id: "d", state: "succeeded" },
+  ]);
+
+  test("3 of 4 left after 1 own cancel: notifies with 3 ready / 0 failed", () => {
+    const reportable = withoutOwnCancelledGenerations(four, (id) => id === "a");
+    expect(
+      shouldNotify({
+        submission: reportable,
+        alreadyDecided: false,
+        anyTabVisible: false,
+        ownCancelled: false,
+      }),
+    ).toBe(true);
+    expect(outcomeCounts(reportable)).toEqual({ ready: 3, failed: 0 });
+    expect(buildNotificationContent(reportable, "My Studio")).toEqual({
+      title: "My Studio",
+      body: "3 ready — LTX 2.5 · First frame",
+    });
+  });
+
+  test("every Generation own-cancelled: no Notification", () => {
+    const reportable = withoutOwnCancelledGenerations(four, () => true);
+    expect(
+      shouldNotify({
+        submission: reportable,
+        alreadyDecided: false,
+        anyTabVisible: false,
+        ownCancelled: false,
+      }),
+    ).toBe(false);
   });
 });

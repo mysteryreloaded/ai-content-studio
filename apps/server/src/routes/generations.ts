@@ -9,6 +9,11 @@ import { Hono } from "hono";
 import { type RouteEntry, guard } from "../auth/access.js";
 import type { AppEnv } from "../auth/app-env.js";
 import type { Database } from "../db/client.js";
+import {
+  type CancellationDeps,
+  GenerationNotFound,
+  cancelGeneration,
+} from "../generations/cancellation.js";
 import { getCapsStatus } from "../generations/caps.js";
 import { deleteStorageFor } from "../generations/deletion.js";
 import type { GenerationEvent } from "../generations/events.js";
@@ -31,13 +36,14 @@ function sseEvent(event: string, data: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
-/** `/api/generations`: the signed-in user's own Generation stream (issue #43), detail dialog and delete (issue #57). */
+/** `/api/generations`: the signed-in user's own Generation stream (issue #43), detail dialog and delete (issue #57), and cancelling one Generation (issue #189). */
 export function generationsRoute(
   db: Database,
   generationsRepository: GenerationsRepository,
   generationEvents: GenerationEvents,
   clock: Clock,
   storage: Storage,
+  cancellationDeps: CancellationDeps,
   routes: RouteEntry[],
 ) {
   const basePath = "/api/generations";
@@ -235,6 +241,34 @@ export function generationsRoute(
           );
           if (!ok) return c.json({ error: "not found" }, 404);
           return c.json({ ok: true });
+        },
+      )
+      // `/api/generations/:id/cancel` (issue #189's AC): the owner
+      // cancelling just this one Generation, without cancelling the rest of
+      // its Submission — a `queued` one ends at once, a `starting`/`running`
+      // one moves to `cancelling` until its Backend confirms, a no-op for
+      // anything already past that. 404 for a missing id or someone
+      // else's, exactly like the detail GET.
+      .post(
+        "/:id/cancel",
+        guard(routes, basePath, "post", "/:id/cancel", "active"),
+        async (c) => {
+          const session = c.get("session");
+          if (!session) return c.json({ error: "unauthorized" }, 401);
+
+          const id = c.req.param("id");
+          if (!id || !UUID_RE.test(id))
+            return c.json({ error: "not found" }, 404);
+
+          try {
+            await cancelGeneration(id, session.user.id, cancellationDeps);
+          } catch (err) {
+            if (err instanceof GenerationNotFound) {
+              return c.json({ error: "not found" }, 404);
+            }
+            throw err;
+          }
+          return c.body(null, 204);
         },
       )
   );

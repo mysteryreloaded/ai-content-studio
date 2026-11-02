@@ -34,6 +34,13 @@ function generationsDismissRemoved(): void {
   });
 }
 
+function generationsCancel(): void {
+  client.api.generations[":id"].cancel.$post({
+    // @ts-expect-error — `:id` needs `param.id`, not `param.bogus`.
+    param: { bogus: ID },
+  });
+}
+
 // --- /api/assets ---
 function assetsGet(): void {
   client.api.assets[":id"].$get({
@@ -114,6 +121,7 @@ test("hc<AppType> types every converted generations, assets and uploads route", 
     generationsGet,
     generationsDelete,
     generationsDismissRemoved,
+    generationsCancel,
     assetsGet,
     assetsPoster,
     assetsThumb,

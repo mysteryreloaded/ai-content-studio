@@ -29,6 +29,23 @@ export function hasAnyOutcome(counts: OutcomeCounts): boolean {
   return counts.ready + counts.failed > 0;
 }
 
+/**
+ * Issue #189's AC: a copy of a Submission without the Generations the user
+ * cancelled on their own — the outcome the rest of the pipeline (counts,
+ * Notification content, click target) is built from. A whole-Submission
+ * own cancel is not the same thing (issue #58's AC) and stays with
+ * `shouldNotify`'s own `ownCancelled` flag.
+ */
+export function withoutOwnCancelledGenerations(
+  submission: TrackedSubmission,
+  isOwn: (generationId: string) => boolean,
+): TrackedSubmission {
+  const generations = submission.generations.filter(
+    (generation) => !isOwn(generation.id),
+  );
+  return { ...submission, generations };
+}
+
 /** The first succeeded Generation, else the first failed/cancelled one, else null (every Generation was removed). */
 export function firstClickGenerationId(
   submission: TrackedSubmission,

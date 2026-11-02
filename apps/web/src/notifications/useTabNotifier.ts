@@ -16,9 +16,12 @@ import {
   notificationClickTarget,
   shouldNotify,
 } from "./notificationDecision.js";
-import { isOwnCancelled } from "./ownCancel.js";
+import { isOwnCancelled, isOwnCancelledGeneration } from "./ownCancel.js";
 import { readNotificationsEnabled } from "./preference.js";
-import { outcomeCounts } from "./submissionOutcome.js";
+import {
+  outcomeCounts,
+  withoutOwnCancelledGenerations,
+} from "./submissionOutcome.js";
 import { endedTitle, faviconDotFor, underwayTitle } from "./tabTitle.js";
 import { TERMINAL_STATES, UNDERWAY_STATES } from "./types.js";
 import type { GenerationState, TrackedSubmission } from "./types.js";
@@ -157,9 +160,19 @@ export function useTabNotifier(): void {
       );
       if (!ended) return;
 
-      const counts = outcomeCounts(submission);
-      const alreadyDecided = decidedRef.current.has(submissionId);
+      // The `ended` check above runs on the whole Submission (issue #58's
+      // AC), and so does its own-cancel suppression — cancelling the
+      // Submission cancels it. Cancelling one of its Generations (issue
+      // #189's AC) only drops that one from the copy the counts, the
+      // Notification content and the click target are built from, so the
+      // rest of the Submission's outcome still notifies.
       const ownCancelled = isOwnCancelled(submissionId);
+      const reportable = withoutOwnCancelledGenerations(
+        submission,
+        isOwnCancelledGeneration,
+      );
+      const counts = outcomeCounts(reportable);
+      const alreadyDecided = decidedRef.current.has(submissionId);
 
       // A lone notifier tab gets no incoming BroadcastChannel messages, so
       // prune stale `visibleTabs` entries right here too, not only when a
@@ -188,17 +201,17 @@ export function useTabNotifier(): void {
         readNotificationsEnabled() &&
         getNotificationPermission() === "granted" &&
         shouldNotify({
-          submission,
+          submission: reportable,
           alreadyDecided,
           anyTabVisible: anyTabVisibleRef.current,
           ownCancelled,
         })
       ) {
         const content = buildNotificationContent(
-          submission,
+          reportable,
           siteTitleRef.current,
         );
-        const targetId = notificationClickTarget(submission);
+        const targetId = notificationClickTarget(reportable);
         try {
           showNotification(
             { ...content, icon: logoUrlRef.current ?? undefined },

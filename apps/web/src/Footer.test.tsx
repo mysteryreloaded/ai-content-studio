@@ -52,7 +52,7 @@ describe("Footer", () => {
 
     const privacy = await view.findByRole("link", { name: "Privacy" });
     expect(privacy.getAttribute("href")).toBe("/privacy");
-    expect(view.getByRole("group", { name: "Theme" })).toBeTruthy();
+    expect(view.getByRole("radiogroup", { name: "Theme" })).toBeTruthy();
     const credit = view.getByRole("link", {
       name: "Powered by AI Content Studio",
     });
@@ -135,7 +135,7 @@ describe("Footer", () => {
 
     const privacy = await view.findByRole("link", { name: "Privacy" });
     expect(privacy.getAttribute("href")).toBe("/privacy");
-    expect(view.getByRole("group", { name: "Theme" })).toBeTruthy();
+    expect(view.getByRole("radiogroup", { name: "Theme" })).toBeTruthy();
     expect(
       view.queryByRole("link", { name: "Contact · Report abuse" }),
     ).toBeNull();

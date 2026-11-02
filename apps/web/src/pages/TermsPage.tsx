@@ -1,7 +1,6 @@
 import { renderMarkdown } from "@ai-content-studio/shared";
 import { useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Footer } from "../Footer.js";
 import { useSession } from "../useSession.js";
 import { useSiteTerms } from "../useSiteTerms.js";
 
@@ -30,7 +29,6 @@ export function TermsPage() {
           <h1>Terms</h1>
           <p>No Site terms have been set.</p>
         </main>
-        <Footer />
       </>
     );
   }
@@ -83,7 +81,6 @@ export function TermsPage() {
           <p>You've accepted the current version.</p>
         )}
       </main>
-      <Footer />
     </>
   );
 }

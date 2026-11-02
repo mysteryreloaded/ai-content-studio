@@ -1,21 +1,11 @@
-import { useQuery } from "@tanstack/react-query";
 import type { CSSProperties } from "react";
 import { Navigate } from "react-router-dom";
 import { GoogleSignInButton } from "./GoogleSignInButton.js";
 import { ModelCard } from "./components/ModelCard.js";
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert.js";
-import { api, ok } from "./lib/api.js";
+import { useEnabledModels } from "./lib/models.js";
 import { useSession } from "./useSession.js";
 import { useSiteSettings } from "./useSiteSettings.js";
-
-interface EnabledModel {
-  id: string;
-  slug: string;
-  name: string;
-  description: string;
-  modeCount: number;
-  attribution: string;
-}
 
 const AUTH_ERROR_MESSAGES: Record<string, string> = {
   cancelled: "Sign-in was cancelled.",
@@ -59,12 +49,9 @@ const CARD_GRID_CLASS =
 export function LandingPage() {
   const settings = useSiteSettings();
   const { session } = useSession();
-  // The one shared `["models"]` query (issue #175), shown as cards; a
-  // failed request shows an error (the old code ignored `res.ok`).
-  const { data, isError } = useQuery({
-    queryKey: ["models"],
-    queryFn: () => ok<{ models: EnabledModel[] }>(api.api.models.$get()),
-  });
+  // The one shared `["models"]` query (issues #175/#188), shown as cards;
+  // a failed request shows an error (the old code ignored `res.ok`).
+  const { models, isError } = useEnabledModels();
 
   const authError = new URLSearchParams(window.location.search).get(
     "auth_error",
@@ -95,8 +82,6 @@ export function LandingPage() {
         backgroundSize: "cover",
       }
     : {};
-
-  const models = data?.models;
 
   return (
     <main className="flex flex-col gap-4">
@@ -129,7 +114,7 @@ export function LandingPage() {
         <p className="text-muted-foreground">could not load Models</p>
       )}
 
-      {!isError && models && models.length > 0 && (
+      {!isError && models.length > 0 && (
         <section aria-label="Models" className={CARD_GRID_CLASS}>
           {models.map((model) => (
             <ModelCard

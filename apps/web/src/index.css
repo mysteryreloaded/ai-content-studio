@@ -2,6 +2,10 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
+/* The official typography plugin (issue #174): the `prose` family for the
+   Terms and Privacy Markdown. */
+@plugin "@tailwindcss/typography";
+
 /*
  * Fonts are bundled with the build (issue #165 / #33): nothing loads a font
  * from another origin. IBM Plex Sans for UI (400/500/600), IBM Plex Sans

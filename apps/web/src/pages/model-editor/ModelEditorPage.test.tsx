@@ -1,22 +1,3 @@
-// A DOM is registered only for this file's run (not a global preload),
-// since bun test runs every file in one process and other files (the
-// server's, and this workspace's other page tests) must keep their own
-// fetch/Response and document untouched. It must be registered before
-// @testing-library/react is imported, since that module binds its
-// `screen` helper to `document.body` at import time — and since several
-// page test files now share one process, this file never uses that
-// global `screen` (it would still point at whichever file's document
-// happened to import the module first): every query below is bound to
-// this render's own result instead.
-//
-// That's not enough on its own: react-dom's scheduler is also cached
-// once per process, bound to whichever happy-dom window was global when
-// react-dom first loaded. Once an earlier file's `unregister()` closes
-// that window, state updates in every later file's React tree stop
-// flushing to the DOM. `bun test --isolate` (root package.json's `test`
-// script, and CI) gives every test file its own fresh global object,
-// which is what actually fixes that — this file's own register/unregister
-// dance only keeps the server's test files free of happy-dom globals.
 import {
   afterAll,
   afterEach,
@@ -25,128 +6,36 @@ import {
   expect,
   test,
 } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-
-await GlobalRegistrator.register();
-
-const { cleanup, fireEvent, waitFor } = await import("@testing-library/react");
-const { Link } = await import("react-router-dom");
-const { ModelEditorPage } = await import("./ModelEditorPage.js");
-const { drainMacrotasks, renderWithProviders } = await import(
-  "../test/render.js"
-);
+import {
+  type AttachedBackendEntry,
+  DETAIL,
+  type FetchCall,
+  NO_BACKENDS,
+  cleanup,
+  finishFile,
+  fireEvent,
+  mockFetch,
+  prepareConfirmAndEventSource,
+  renderEditor,
+  respondGet,
+  restoreConfirm,
+  waitFor,
+} from "./testing/harness.js";
 
 afterEach(() => {
   cleanup();
 });
 
 afterAll(async () => {
-  await drainMacrotasks();
-  await GlobalRegistrator.unregister();
+  await finishFile();
 });
 
-const DETAIL = {
-  model: {
-    id: "m1",
-    name: "LTX 2.5",
-    slug: "ltx-2-5",
-    description: "",
-    maxRunTimeMinutes: 30,
-    state: "disabled" as const,
-    currentRevision: 1,
-    version: 1,
-    termsBody: "",
-    licenseUrl: "",
-    attribution: "",
-    termsVersion: null,
-    termsVersionCreatedAt: null,
-    termsRevision: 1,
-  },
-  workflowHash: "hash1",
-  workflow: {
-    "1": { class_type: "LoadImage", inputs: {} },
-  },
-  nodes: [{ id: "1", classType: "LoadImage", title: null }],
-  outsideServiceNotes: [],
-  modes: [],
-};
-
-const NO_BACKENDS = { backends: [] };
-
-interface AttachedBackendEntry {
-  backend: { id: string; name: string; baseUrl: string };
-  reachable: boolean;
-  missingNodeTypes: string[] | null;
-  note: string | null;
-}
-
-interface FetchCall {
-  method: string;
-  url: string;
-  body: Record<string, unknown> | null;
-}
-
-/** `/api/admin/models/m1` gets the Model detail; every other GET (the Backends section's own two lookups) gets an empty list. */
-function respondGet(url: string): Response {
-  if (url.endsWith("/api/admin/models/m1")) return Response.json(DETAIL);
-  return Response.json(NO_BACKENDS);
-}
-
-function mockFetch(handler: (call: FetchCall) => Response | Promise<Response>) {
-  const calls: FetchCall[] = [];
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const call: FetchCall = {
-      method: (init?.method ?? "GET").toUpperCase(),
-      url: typeof input === "string" ? input : input.toString(),
-      body: typeof init?.body === "string" ? JSON.parse(init.body) : null,
-    };
-    calls.push(call);
-    return handler(call);
-  }) as typeof fetch;
-  return calls;
-}
-
-/** Mirrors AdminShell's own nav link, alongside the editor, so a blocked click can be exercised. */
-function renderEditor() {
-  return renderWithProviders(null, {
-    route: "/admin/models/m1",
-    routes: [
-      {
-        path: "/admin/models/:id",
-        element: (
-          <>
-            <Link to="/admin/models">Models</Link>
-            <ModelEditorPage />
-          </>
-        ),
-      },
-      { path: "/admin/models", element: <p>Models list</p> },
-    ],
-  });
-}
-
-/** Issue #74: the editor opens the same per-user Generations stream the Workbench/Gallery do, to keep a Test's progress live. */
-class FakeEventSource {
-  listeners: Record<string, Array<(event: { data: string }) => void>> = {};
-  constructor(public url: string) {}
-  addEventListener(type: string, cb: (event: { data: string }) => void) {
-    const list = this.listeners[type] ?? [];
-    list.push(cb);
-    this.listeners[type] = list;
-  }
-  close() {}
-}
-
-let originalConfirm: typeof window.confirm;
-
 beforeEach(() => {
-  originalConfirm = window.confirm;
-  (globalThis as unknown as { EventSource: unknown }).EventSource =
-    FakeEventSource;
+  prepareConfirmAndEventSource();
 });
 
 afterEach(() => {
-  window.confirm = originalConfirm;
+  restoreConfirm();
 });
 
 describe("ModelEditorPage", () => {

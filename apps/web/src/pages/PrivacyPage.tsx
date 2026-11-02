@@ -51,8 +51,7 @@ export function PrivacyPage() {
       <h1>Privacy</h1>
       {data.operatorUpdatedAt && (
         <p className="text-[12.5px] text-muted-foreground">
-          Last updated{" "}
-          {new Date(data.operatorUpdatedAt).toLocaleDateString()}
+          Last updated {new Date(data.operatorUpdatedAt).toLocaleDateString()}
         </p>
       )}
       {data.operatorBody ? (

@@ -110,7 +110,9 @@ describe("AccountPage (issue #174)", () => {
     await userEvent.click(await view.findByRole("button", { name: "Delete" }));
 
     // The dialog stays open, and the mismatch shows on the field.
-    expect(await view.findByText("That email doesn't match your account.")).toBeTruthy();
+    expect(
+      await view.findByText("That email doesn't match your account."),
+    ).toBeTruthy();
   });
 
   test("sign out: the Sign out button posts to /api/auth/signout and navigates home", async () => {

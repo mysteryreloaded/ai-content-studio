@@ -1,8 +1,8 @@
-import { z } from "zod";
 import { useMutation } from "@tanstack/react-query";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { Navigate } from "react-router-dom";
+import { z } from "zod";
 import { Button } from "../components/ui/button.js";
 import {
   Card,
@@ -121,7 +121,10 @@ function DeleteAccount({
               aria-invalid={errors.email ? true : undefined}
               {...register("email", {
                 onChange: (event) => {
-                  if (event.target.value.trim() && (errors.email || generalError)) {
+                  if (
+                    event.target.value.trim() &&
+                    (errors.email || generalError)
+                  ) {
                     clearErrors("email");
                     setGeneralError(null);
                   }

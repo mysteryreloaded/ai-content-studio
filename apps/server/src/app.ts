@@ -284,6 +284,7 @@ export async function createApp(deps: AppDeps) {
         generationEvents,
         deps.clock,
         storage,
+        cancellationDeps,
         routes,
       ),
     )

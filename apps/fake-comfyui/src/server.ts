@@ -9,7 +9,12 @@
 // Issue #50 adds `POST /upload/image` and `/view?type=input` (with HEAD),
 // backed by an in-memory input folder a test can seed and inspect. Issue
 // #79's contract suite settled that real ComfyUI's `/view` answers both
-// HEAD and `Range` for any `type`, so `/view` here does too.
+// HEAD and `Range` for any `type`, so `/view` here does too. Issue #187
+// adds `POST /__control__/script-next` (a FIFO queue: the next `/prompt`
+// whose `prompt_id` has no `/__control__/script` entry yet takes the next
+// queued script) and `POST /__control__/output-file` (stores the raw
+// request body, so a later `/view` for that filename serves it instead of
+// the placeholder).
 
 import objectInfoFixture from "./object-info-fixture.json" with {
   type: "json",
@@ -102,12 +107,14 @@ export function startFakeComfyUi(opts: FakeComfyUiOptions) {
   let unreachable = false;
   let unreachableTimer: ReturnType<typeof setTimeout> | null = null;
   const scripts = new Map<string, ScriptedJob>();
+  const nextScripts: ScriptedJob[] = [];
   const jobs = new Map<string, JobState>();
   const sockets = new Map<
     string,
     Set<{ send(data: string): void; close(): void }>
   >();
   const inputFiles = new Map<string, InputFile>();
+  const outputFiles = new Map<string, InputFile>();
   let uploadCount = 0;
 
   function sendTo(clientId: string, payload: unknown) {
@@ -217,13 +224,34 @@ export function startFakeComfyUi(opts: FakeComfyUiOptions) {
         });
       }
 
-      /** Simulates ComfyUI's process restarting: forgets every in-flight job, so `/api/jobs/:id` 404s the way it would for a job the server never ran (issue #55's AC). */
+      /** Enqueues a script for the next `/prompt` whose `prompt_id` has no `/__control__/script` entry yet (issue #187): the caller does not need to know ComfyUI's `prompt_id` before the request leaves the studio. */
+      if (url.pathname === "/__control__/script-next" && req.method === "POST") {
+        return req.json().then((body: unknown) => {
+          nextScripts.push(body as ScriptedJob);
+          return new Response(null, { status: 204 });
+        });
+      }
+
+      /** Stores the raw request body as an output file at `?filename=<name>`, so a following `/view?type=output` for that name serves those bytes instead of the placeholder (issue #187). */
+      if (url.pathname === "/__control__/output-file" && req.method === "POST") {
+        const filename = url.searchParams.get("filename") ?? "";
+        return req.arrayBuffer().then(async (buffer) => {
+          outputFiles.set(filename, {
+            bytes: new Uint8Array(buffer),
+            lastModified: new Date(),
+          });
+          return new Response(null, { status: 204 });
+        });
+      }
+
+      /** Simulates ComfyUI's process restarting: forgets every in-flight job and queued script, so `/api/jobs/:id` 404s the way it would for a job the server never ran (issue #55's AC). */
       if (url.pathname === "/__control__/restart" && req.method === "POST") {
         for (const job of jobs.values()) {
           if (job.timer) clearInterval(job.timer);
         }
         jobs.clear();
         scripts.clear();
+        nextScripts.length = 0;
         for (const set of sockets.values()) {
           for (const ws of set) ws.close();
         }
@@ -307,8 +335,15 @@ export function startFakeComfyUi(opts: FakeComfyUiOptions) {
             );
           }
 
-          const script = scripts.get(promptId) ?? {};
-          scripts.delete(promptId);
+          // A script registered for this `prompt_id` wins; otherwise the
+          // next queued script (issue #187), if any — which is exactly
+          // today's `?? {}` behavior when the queue is empty.
+          let script = scripts.get(promptId);
+          if (script === undefined) {
+            script = nextScripts.shift() ?? {};
+          } else {
+            scripts.delete(promptId);
+          }
           const totalSteps = script.steps ?? 1;
           const job: JobState = {
             status: "running",
@@ -420,6 +455,12 @@ export function startFakeComfyUi(opts: FakeComfyUiOptions) {
         if (!isAuthorized(req, opts))
           return new Response("unauthorized", { status: 401 });
         const filename = url.searchParams.get("filename") ?? "";
+        const stored = outputFiles.get(filename);
+        if (stored) {
+          return serveView(req, stored.bytes, stored.lastModified, {
+            "content-type": contentTypeFor(filename),
+          });
+        }
         return serveView(req, fakeFileBytes(filename), null, {
           "content-type": contentTypeFor(filename),
         });
@@ -464,6 +505,18 @@ export function startFakeComfyUi(opts: FakeComfyUiOptions) {
     script(promptId: string, job: ScriptedJob) {
       scripts.set(promptId, job);
     },
+    /** Enqueues a script for the next `/prompt` whose `prompt_id` has no `script()` entry, first in, first out (issue #187). */
+    scriptNext(job: ScriptedJob) {
+      nextScripts.push(job);
+    },
+    /** Stores an output file's bytes under its `/view` filename, so that filename serves these bytes instead of the placeholder (issue #187). */
+    putOutputFile(filename: string, bytes: Uint8Array) {
+      outputFiles.set(filename, { bytes, lastModified: new Date() });
+    },
+    /** The output file's bytes stored by `putOutputFile` or `/__control__/output-file`, if any. */
+    outputFile(filename: string): InputFile | undefined {
+      return outputFiles.get(filename);
+    },
     /** The input folder's file at `subfolder/filename`, as `/upload/image` stored it. */
     inputFile(subfolder: string, filename: string): InputFile | undefined {
       return inputFiles.get(inputKey(subfolder, filename));
@@ -494,6 +547,7 @@ export function startFakeComfyUi(opts: FakeComfyUiOptions) {
       }
       jobs.clear();
       scripts.clear();
+      nextScripts.length = 0;
       for (const set of sockets.values()) {
         for (const ws of set) ws.close();
       }

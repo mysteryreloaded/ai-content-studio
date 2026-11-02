@@ -71,6 +71,10 @@ describe("every route's access level is declared and enforced", () => {
     }
   });
 
+  // This one test is a full in-process matrix over every route, so it
+  // runs right up against bun's 5s default test timeout on a loaded
+  // machine: give it its own longer one (the pattern contract.e2e
+  // uses), rather than a timeout that flips on the machine's load.
   test("anonymous, active and Admin get the expected status for every route", async () => {
     const { app, routes, db } = await build();
 
@@ -239,6 +243,8 @@ describe("every route's access level is declared and enforced", () => {
       "GET /api/uploads/:id/thumb": 404,
       // Issue #68: no Generation with this fake id exists.
       "POST /api/generations/:id/dismiss-removed": 404,
+      // Issue #189: no Generation with this fake id exists.
+      "POST /api/generations/:id/cancel": 404,
     };
 
     // A pending user has a session but no approval yet: `signed-in`
@@ -367,7 +373,7 @@ describe("every route's access level is declared and enforced", () => {
         }
       }
     }
-  });
+  }, 15_000);
 
   test("active without terms: signed in and active, but Site terms are set and not yet accepted", async () => {
     const { app, routes, db } = await build();

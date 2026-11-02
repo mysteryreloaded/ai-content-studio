@@ -4,7 +4,7 @@ import type { PublicSiteSettings } from "./useSiteSettings.js";
 
 await GlobalRegistrator.register();
 
-const { cleanup } = await import("@testing-library/react");
+const { cleanup, within } = await import("@testing-library/react");
 const { LandingPage } = await import("./LandingPage.js");
 const { Footer } = await import("./Footer.js");
 const { drainMacrotasks, renderWithProviders } = await import(
@@ -36,6 +36,7 @@ const DEFAULT_SITE_SETTINGS = {
 function mockFetch(options: {
   siteSettings?: Partial<PublicSiteSettings>;
   models?: unknown[];
+  modelsStatus?: number;
   signedIn?: boolean;
 }) {
   const siteSettings = { ...DEFAULT_SITE_SETTINGS, ...options.siteSettings };
@@ -58,7 +59,10 @@ function mockFetch(options: {
       return Response.json(siteSettings);
     }
     if (url.endsWith("/api/models")) {
-      return Response.json({ models: options.models ?? [] });
+      return Response.json(
+        { models: options.models ?? [] },
+        { status: options.modelsStatus ?? 200 },
+      );
     }
     throw new Error(`unexpected fetch ${url}`);
   }) as typeof fetch;
@@ -111,7 +115,7 @@ describe("LandingPage", () => {
     await view.findByText("Powered by AI Content Studio");
   });
 
-  test("lists enabled Models, each a sign-in link that returns to it", async () => {
+  test("lists enabled Models, each card a sign-in link that returns to it", async () => {
     mockFetch({
       models: [
         {
@@ -126,13 +130,49 @@ describe("LandingPage", () => {
     });
     const view = renderPage();
 
-    const link = await view.findByRole("link", { name: "LTX 2.5" });
+    // The whole card is the link, so its accessible name is every card field.
+    const link = await view.findByRole("link", {
+      name: /LTX 2\.5 Fast video generation\. 2 Modes · Powered by LTX 2\.5/,
+    });
     expect(link.getAttribute("href")).toBe(
       "/api/auth/google?return_to=%2Fmodels%2Fltx",
     );
     expect(view.getByText("Fast video generation.")).toBeTruthy();
-    expect(view.getByText("Powered by LTX 2.5")).toBeTruthy();
+    // The Mode count and Attribution share one small line.
+    expect(view.getByText(/2 Modes · Powered by LTX 2\.5/)).toBeTruthy();
     await view.findByText("Powered by AI Content Studio");
+  });
+
+  test('a single-Mode Model reads "1 Mode" and the Attribution is left out when unset', async () => {
+    mockFetch({
+      models: [
+        {
+          id: "m1",
+          slug: "wan",
+          name: "Wan 2.2",
+          description: "Video",
+          modeCount: 1,
+          attribution: "",
+        },
+      ],
+    });
+    const view = renderPage();
+
+    await view.findByText("1 Mode");
+    // The card's small line is exactly "1 Mode": no Mode count plural, no
+    // "· Attribution" (the footer also has one, so check inside the region).
+    const card = view.getByRole("region", { name: "Models" });
+    expect(within(card).getByText("1 Mode")).toBeTruthy();
+    expect(within(card).queryByText("2 Modes")).toBeNull();
+    expect(within(card).queryByText(/·/)).toBeNull();
+  });
+
+  test("shows an error when the Models request fails", async () => {
+    mockFetch({ models: [], modelsStatus: 500 });
+    const view = renderPage();
+
+    expect(await view.findByText("could not load Models")).toBeTruthy();
+    expect(view.queryByRole("region", { name: "Models" })).toBeNull();
   });
 
   test("leaves out the Models section entirely when none are enabled", async () => {

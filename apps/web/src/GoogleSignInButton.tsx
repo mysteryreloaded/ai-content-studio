@@ -1,44 +1,20 @@
-import { useTheme } from "./useTheme.js";
-
 interface GoogleSignInButtonProps {
   href: string;
 }
 
-const LIGHT_STYLE = {
-  background: "#ffffff",
-  color: "#1f1f1f",
-  border: "1px solid #747775",
-};
-
-const DARK_STYLE = {
-  background: "#131314",
-  color: "#e3e3e3",
-  border: "1px solid #8e918f",
-};
-
-const BUTTON_BASE_STYLE = {
-  display: "inline-flex",
-  alignItems: "center",
-  gap: "12px",
-  padding: "8px 12px",
-  borderRadius: "4px",
-  fontFamily: "Roboto, Arial, sans-serif",
-  fontSize: "14px",
-  fontWeight: 500,
-  textDecoration: "none",
-  lineHeight: "20px",
-};
-
 /**
  * Google's official "Sign in with Google" asset (bundled, not loaded
- * from Google), light or dark to match the theme (issue #65/#31).
+ * from Google), light or dark to match the theme (issue #65/#31). The
+ * `dark:` variant resolves the same data-theme/OS-preference rule as
+ * `useTheme`'s `resolvedTheme`, so the button follows the theme switch.
+ * Colours, radius and sizes follow Google's guidelines.
  */
 export function GoogleSignInButton({ href }: GoogleSignInButtonProps) {
-  const { resolvedTheme } = useTheme();
-  const themeStyle = resolvedTheme === "dark" ? DARK_STYLE : LIGHT_STYLE;
-
   return (
-    <a href={href} style={{ ...BUTTON_BASE_STYLE, ...themeStyle }}>
+    <a
+      href={href}
+      className="inline-flex items-center gap-3 rounded border border-[#747775] bg-[#ffffff] px-3 py-2 font-[family-name:Roboto,Arial,sans-serif] text-sm font-medium leading-5 text-[#1f1f1f] no-underline dark:border-[#8e918f] dark:bg-[#131314] dark:text-[#e3e3e3]"
+    >
       <svg
         width="18"
         height="18"

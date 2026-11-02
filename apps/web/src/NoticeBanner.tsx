@@ -1,5 +1,6 @@
 import { effectiveNoticeText } from "@ai-content-studio/shared";
 import { useState } from "react";
+import { Button } from "./components/ui/button.js";
 import { usePauseNotice } from "./usePauseNotice.js";
 
 const DISMISSED_KEY = "ai-content-studio:notice-dismissed";
@@ -42,15 +43,22 @@ export function NoticeBanner() {
     >
       <p className="m-0">{text}</p>
       {!paused && (
-        <button
+        // A bare <button>'s global focus outline is var(--accent) — the
+        // same colour as this bar — so its focus ring is invisible
+        // (issue #188's gap 5): the on-accent overrides make it show in
+        // both themes.
+        <Button
           type="button"
+          variant="ghost"
+          size="sm"
           onClick={() => {
             writeDismissed(text);
             setDismissed(text);
           }}
+          className="text-primary-foreground hover:bg-primary-foreground/15 hover:text-primary-foreground focus-visible:border-primary-foreground focus-visible:ring-primary-foreground"
         >
           Dismiss
-        </button>
+        </Button>
       )}
     </div>
   );

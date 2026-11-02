@@ -196,8 +196,10 @@ export function AppHeader() {
             </DropdownMenuItem>
             <DropdownMenuItem
               onClick={() => {
-                void signOut();
-                navigate("/");
+                // Navigate only after the session clears, so LandingPage
+                // never sees a still-signed-in user and bounces to /models
+                // (QA round 1, PR #184).
+                void signOut().then(() => navigate("/"));
               }}
             >
               Sign out

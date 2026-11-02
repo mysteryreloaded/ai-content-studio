@@ -1,6 +1,5 @@
 import { type FormEvent, useState } from "react";
 import { Navigate } from "react-router-dom";
-import { Footer } from "../Footer.js";
 import { NotificationsSwitch } from "../notifications/NotificationsSwitch.js";
 import type { DeleteAccountResult } from "../useSession.js";
 import { useSession } from "../useSession.js";
@@ -115,7 +114,6 @@ export function AccountPage() {
           />
         )}
       </main>
-      <Footer />
     </>
   );
 }

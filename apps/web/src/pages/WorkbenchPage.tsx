@@ -26,7 +26,6 @@ import {
   useState,
 } from "react";
 import { Link, Navigate, useParams, useSearchParams } from "react-router-dom";
-import { Footer } from "../Footer.js";
 import {
   httpUploadApi,
   pickAudioIssue,
@@ -1493,12 +1492,9 @@ export function WorkbenchPage() {
   if (session.status === "signed-out") return <Navigate to="/" replace />;
   if (notFound) {
     return (
-      <>
-        <main>
-          <p role="alert">Model not found.</p>
-        </main>
-        <Footer />
-      </>
+      <main>
+        <p role="alert">Model not found.</p>
+      </main>
     );
   }
   if (!model) return <p>Loading…</p>;
@@ -1791,7 +1787,6 @@ export function WorkbenchPage() {
           )}
         </footer>
       </main>
-      <Footer />
     </>
   );
 }

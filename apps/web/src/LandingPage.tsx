@@ -1,6 +1,5 @@
 import { type CSSProperties, useEffect, useState } from "react";
 import { Navigate } from "react-router-dom";
-import { Footer } from "./Footer.js";
 import { GoogleSignInButton } from "./GoogleSignInButton.js";
 import { useSession } from "./useSession.js";
 import { useSiteSettings } from "./useSiteSettings.js";
@@ -127,7 +126,6 @@ export function LandingPage() {
           </section>
         )}
       </main>
-      <Footer />
     </>
   );
 }

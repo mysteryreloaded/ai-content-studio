@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { Navigate } from "react-router-dom";
-import { Footer } from "../Footer.js";
 import { useSession } from "../useSession.js";
 
 function contactHref(contact: string): string {
@@ -41,7 +40,6 @@ export function WaitingPage() {
           Sign out
         </button>
       </main>
-      <Footer />
     </>
   );
 }

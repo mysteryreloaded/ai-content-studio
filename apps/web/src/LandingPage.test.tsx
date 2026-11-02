@@ -6,6 +6,7 @@ await GlobalRegistrator.register();
 
 const { cleanup } = await import("@testing-library/react");
 const { LandingPage } = await import("./LandingPage.js");
+const { Footer } = await import("./Footer.js");
 const { drainMacrotasks, renderWithProviders } = await import(
   "./test/render.js"
 );
@@ -64,7 +65,14 @@ function mockFetch(options: {
 }
 
 function renderPage() {
-  return renderWithProviders(<LandingPage />);
+  // The Footer now lives in the app's RootLayout (issue #173), so the test
+  // renders it after the page to keep its footer-content coverage.
+  return renderWithProviders(
+    <>
+      <LandingPage />
+      <Footer />
+    </>,
+  );
 }
 
 describe("LandingPage", () => {

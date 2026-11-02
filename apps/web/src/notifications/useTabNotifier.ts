@@ -16,7 +16,7 @@ import {
   notificationClickTarget,
   shouldNotify,
 } from "./notificationDecision.js";
-import { isOwnCancelled } from "./ownCancel.js";
+import { isOwnCancelled, isOwnCancelledGeneration } from "./ownCancel.js";
 import { readNotificationsEnabled } from "./preference.js";
 import { outcomeCounts } from "./submissionOutcome.js";
 import { endedTitle, faviconDotFor, underwayTitle } from "./tabTitle.js";
@@ -159,7 +159,12 @@ export function useTabNotifier(): void {
 
       const counts = outcomeCounts(submission);
       const alreadyDecided = decidedRef.current.has(submissionId);
-      const ownCancelled = isOwnCancelled(submissionId);
+      // The user's own cancel never raises a Notification — the whole
+      // Submission (issue #58's AC) or just one of its Generations
+      // (issue #189's AC), whichever was cancelled.
+      const ownCancelled =
+        isOwnCancelled(submissionId) ||
+        submission.generations.some((g) => isOwnCancelledGeneration(g.id));
 
       // A lone notifier tab gets no incoming BroadcastChannel messages, so
       // prune stale `visibleTabs` entries right here too, not only when a

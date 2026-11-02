@@ -1,8 +1,14 @@
 import { cn } from "cn";
-import { type ReactNode, useEffect, useState } from "react";
+import type { ReactNode } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
+import {
+  underwayCount,
+  useActiveGenerations,
+} from "../lib/generationsStream.js";
+import { useEnabledModels } from "../lib/models.js";
 import { useSession } from "../useSession.js";
 import { useSiteSettings } from "../useSiteSettings.js";
+import { Avatar } from "./Avatar.js";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -11,23 +17,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "./ui/dropdown-menu.js";
-
-interface NavModel {
-  id: string;
-  slug: string;
-  name: string;
-}
-
-function initials(name: string): string {
-  return (
-    name
-      .split(/\s+/)
-      .filter(Boolean)
-      .slice(0, 2)
-      .map((part) => part[0]?.toUpperCase())
-      .join("") || "?"
-  );
-}
 
 /** One link in the header's Studio nav; the current page gets `aria-current` and the accent-soft background. */
 function NavItem({
@@ -62,9 +51,16 @@ function NavItem({
  * round avatar (the Google picture, or initials) opening the Account /
  * Sign out menu.
  *
+ * The Gallery link carries the live "N under way" count of the user's own
+ * Generations (issue #188) — the same N as the tab title's cue, both from
+ * the one shared `["generations", "active"]` store. The brand is a
+ * `<Link>` to the Models home (issue #188's gap 3), so clicking it keeps
+ * the query cache and the open streams.
+ *
  * Measurements follow the Workbench prototype's `.app-head`: sticky with a
- * panel background and bottom border, 8px/16px padding and a 14px gap (the
- * 32px avatar sets its ~49px height). At ≤560px the brand text hides, the
+ * panel background and bottom border, 16px horizontal padding and a 14px
+ * gap; its height is `--app-header-h` (the 32px avatar sets the ~49px,
+ * issue #188), so the two can't drift. At ≤560px the brand text hides, the
  * gap tightens to 8px, and the nav scrolls sideways.
  */
 export function AppHeader() {
@@ -72,34 +68,25 @@ export function AppHeader() {
   const { session, signOut } = useSession();
   const location = useLocation();
   const navigate = useNavigate();
-  const [models, setModels] = useState<NavModel[] | null>(null);
+  // The header's data is query-fed (issue #183, #188): the Models come
+  // from the one shared `["models"]` query, and the live count from the
+  // shared generations stream (one `EventSource` per tab, with
+  // `useTabNotifier` — the shell adds no extra connection).
+  const { models } = useEnabledModels();
+  const underway = underwayCount(useActiveGenerations().generations);
 
-  useEffect(() => {
-    let cancelled = false;
-    fetch("/api/models")
-      .then((res) => (res.ok ? res.json() : null))
-      .then((body: { models: NavModel[] } | null) => {
-        if (!cancelled && body) setModels(body.models);
-      })
-      .catch(() => {
-        /* the nav keeps Gallery (and Admin) rather than break the header */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // The header lives on signed-in pages only. The app pages themselves render
-  // nothing while the session is still loading, so the header and the page
-  // content appear together once `/api/auth/me` resolves (no layout shift).
+  // The header lives on signed-in pages only. The app pages themselves
+  // render nothing while the session is still loading, so the header and
+  // the page content appear together once `/api/auth/me` resolves (no
+  // layout shift).
   if (session.status !== "signed-in") return null;
   const user = session.user;
   const title = settings?.title ?? "AI Content Studio";
 
   return (
-    <header className="sticky top-0 z-[25] flex min-w-0 items-center gap-3.5 border-b border-border bg-card px-4 py-2 max-[560px]:gap-2">
-      <a
-        href="/"
+    <header className="sticky top-0 z-[25] flex h-[var(--app-header-h)] min-w-0 items-center gap-3.5 border-b border-border bg-card px-4 max-[560px]:gap-2">
+      <Link
+        to="/models"
         aria-label={title}
         className="inline-flex min-w-0 items-center gap-2 font-heading text-base font-semibold text-foreground max-[560px]:gap-0 max-[560px]:text-[0px]"
       >
@@ -116,13 +103,13 @@ export function AppHeader() {
           />
         )}
         {title}
-      </a>
+      </Link>
 
       <nav
         aria-label="Studio"
         className="flex min-w-0 items-center gap-0.5 overflow-x-auto [scrollbar-width:none]"
       >
-        {models?.map((model) => (
+        {models.map((model) => (
           <NavItem
             key={model.id}
             to={`/models/${model.slug}`}
@@ -138,15 +125,24 @@ export function AppHeader() {
             location.pathname.startsWith("/generations/")
           }
         >
-          Gallery
-          {/* Hidden slot for the live "N under way" count (issue #173): the
-              prototype's .nav-count badge (11px/600, 9px radius); a later
-              issue feeds it the value. */}
+          {"Gallery "}
+          {/* The live "N under way" count (issue #188): the prototype's
+              .nav-count badge (11px/600, 9px radius), shown only when N >
+              0; ` under way` is screen-reader-only, so the link reads
+              "Gallery 2 under way". At 0 the badge is display-none and
+              out of the accessible name (the sr-only suffix isn't
+              rendered then either). */}
           <span
             data-slot="nav-count"
-            aria-hidden="true"
-            className="hidden rounded-[9px] bg-primary px-1.5 text-[11px] leading-[17px] font-semibold text-primary-foreground"
-          />
+            aria-hidden={underway === 0 ? "true" : undefined}
+            className={cn(
+              "rounded-[9px] bg-primary px-1.5 text-[11px] leading-[17px] font-semibold text-primary-foreground",
+              underway === 0 && "hidden",
+            )}
+          >
+            {underway}
+          </span>
+          {underway > 0 && <span className="sr-only"> under way</span>}
         </NavItem>
         {user?.role === "admin" && (
           <NavItem to="/admin" current={location.pathname.startsWith("/admin")}>
@@ -161,18 +157,9 @@ export function AppHeader() {
             <button
               type="button"
               aria-label="Account"
-              className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[#c2884f] text-xs font-semibold text-white"
+              className="flex size-8 shrink-0 items-center justify-center"
             >
-              {user?.picture ? (
-                <img
-                  src={user.picture}
-                  alt=""
-                  className="size-full object-cover"
-                  referrerPolicy="no-referrer"
-                />
-              ) : user ? (
-                initials(user.name)
-              ) : null}
+              <Avatar name={user.name} picture={user.picture} size={32} />
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">

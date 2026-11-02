@@ -120,6 +120,11 @@
   color-scheme: light dark;
 
   --radius: 8px;
+  /* The header's height (issue #188): 8px padding above and below the
+     32px avatar plus its 1px bottom border, border-box. `AppHeader`
+     sizes itself with it, and the Model editor's sticky header and
+     checks rail (#213) offset from it, so the two can't drift. */
+  --app-header-h: 49px;
   --bg: #f4f6f5;
   --panel: #ffffff;
   --sunk: #edf1ef;

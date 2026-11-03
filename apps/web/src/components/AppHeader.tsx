@@ -58,10 +58,12 @@ function NavItem({
  * the query cache and the open streams.
  *
  * Measurements follow the Workbench prototype's `.app-head`: sticky with a
- * panel background and bottom border, 16px horizontal padding and a 14px
- * gap; its height is `--app-header-h` (the 32px avatar sets the ~49px,
- * issue #188), so the two can't drift. At ≤560px the brand text hides, the
- * gap tightens to 8px, and the nav scrolls sideways.
+ * panel background and bottom border, 16px horizontal padding; its height
+ * is `--app-header-h` (64px, issue #222 — the token in index.css, shared
+ * with the Model editor's sticky header and checks rail, #213), so the two
+ * can't drift. The nav links sit 24px apart (docs/ui-sizes.md); at ≤560px
+ * the brand text hides, the gap tightens to 8px, and the nav scrolls
+ * sideways.
  */
 export function AppHeader() {
   const settings = useSiteSettings();
@@ -107,7 +109,7 @@ export function AppHeader() {
 
       <nav
         aria-label="Studio"
-        className="flex min-w-0 items-center gap-0.5 overflow-x-auto [scrollbar-width:none]"
+        className="flex min-w-0 items-center gap-6 overflow-x-auto [scrollbar-width:none] max-[560px]:gap-2"
       >
         {models.map((model) => (
           <NavItem

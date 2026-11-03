@@ -12,16 +12,17 @@ const linkClass = "hover:text-foreground hover:underline";
 
 /**
  * Every page's footer (issue #65, restyled #173 from the Workbench
- * prototype's `.app-foot`): 12.5px muted text above a top border, with
- * 18px/16px padding and a 6px gap — the links, the theme switch and the
- * repo credit, which is pushed to the right edge.
+ * prototype's `.app-foot`): 12.5px muted text above a top border. The
+ * frame follows docs/ui-sizes.md (issue #222): 32px above and below, 24px
+ * between its items — the links, the theme switch and the repo credit,
+ * which is pushed to the right edge.
  */
 export function Footer() {
   const settings = useSiteSettings();
 
   return (
-    <footer className="mt-6 flex w-full flex-wrap items-center gap-1.5 border-t border-border px-4 py-[18px] text-[12.5px] text-muted-foreground">
-      <nav aria-label="Legal" className="flex flex-wrap items-center gap-1.5">
+    <footer className="mt-6 flex w-full flex-wrap items-center gap-6 border-t border-border px-4 py-8 text-[12.5px] text-muted-foreground">
+      <nav aria-label="Legal" className="flex flex-wrap items-center gap-6">
         <a href="/privacy" className={linkClass}>
           Privacy
         </a>

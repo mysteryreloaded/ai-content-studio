@@ -44,7 +44,7 @@ export function TermsPage() {
 
   if (terms.terms.version === null) {
     return (
-      <main className="mx-auto w-full max-w-[72ch]">
+      <main className="mx-auto w-full max-w-[72ch] flex flex-col gap-content">
         <h1>Terms</h1>
         <p className="text-muted-foreground">No Site terms have been set.</p>
       </main>
@@ -56,7 +56,7 @@ export function TermsPage() {
     session.user.termsAcceptedVersion === terms.terms.version;
 
   return (
-    <main className="mx-auto w-full max-w-[72ch]">
+    <main className="mx-auto w-full max-w-[72ch] flex flex-col gap-content">
       <h1>Terms</h1>
       {terms.terms.versionDate && (
         <p className="text-[12.5px] text-muted-foreground">
@@ -73,7 +73,7 @@ export function TermsPage() {
       />
 
       {session.status === "signed-in" && !alreadyAccepted && (
-        <div className="mt-6 space-y-2">
+        <div className="space-y-2">
           <Button type="button" disabled={isPending} onClick={() => mutate()}>
             Accept
           </Button>
@@ -85,7 +85,7 @@ export function TermsPage() {
         </div>
       )}
       {session.status === "signed-in" && alreadyAccepted && (
-        <p className="mt-6">You've accepted the current version.</p>
+        <p>You've accepted the current version.</p>
       )}
     </main>
   );

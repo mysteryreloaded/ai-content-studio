@@ -169,12 +169,13 @@ describe("RootLayout (issue #188)", () => {
     const view = await renderShell("/");
     const page = await view.findByTestId("page");
 
-    // The page's wrapper is the shared default container (`.page`:
-    // max-width 1280px, 22px/16px padding).
+    // The page's wrapper is the shared default container: max-width
+    // 1280px, the issue #222 page frame (docs/ui-sizes.md) — 16px sides
+    // on phones, 32px at md, 40px top/bottom.
     const container = page.parentElement as HTMLElement;
     expect(container.getAttribute("data-slot")).toBe("page-container");
     expect(container.className).toBe(
-      "mx-auto w-full max-w-320 flex-1 px-4 py-[22px]",
+      "mx-auto w-full max-w-320 flex-1 px-4 py-10 md:px-8",
     );
 
     // The root wrapper is a flex column at min-height 100dvh, so the

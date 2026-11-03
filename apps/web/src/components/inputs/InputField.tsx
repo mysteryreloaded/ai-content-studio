@@ -1,4 +1,9 @@
 import type { WorkbenchInput } from "@ai-content-studio/shared";
+import { Field, fieldDescribedBy } from "./Field.js";
+import { NumberControl } from "./NumberControl.js";
+import { SeedControl } from "./SeedControl.js";
+import { SelectControl } from "./SelectControl.js";
+import { TextControl } from "./TextControl.js";
 
 interface InputFieldProps {
   input: WorkbenchInput;
@@ -7,113 +12,69 @@ interface InputFieldProps {
   issue: string | undefined;
 }
 
-/** One Input's field: a blank, optional Input shows the Workflow's own value as its placeholder (issue #46). */
+/**
+ * One Input's field (issue #194): `Field` composed with its control. A
+ * blank, optional Input shows the Workflow's own value as its
+ * placeholder (issue #46). Used directly for text/number/seed/select
+ * Inputs; the Model editor's `TestPanel` also renders this unchanged.
+ */
 export function InputField({ input, value, onChange, issue }: InputFieldProps) {
   const placeholder =
     input.placeholder === null ? undefined : String(input.placeholder);
-  const helpId = input.help ? `input-help-${input.id}` : undefined;
-  const issueId = issue ? `input-issue-${input.id}` : undefined;
-  const describedBy = [helpId, issueId].filter(Boolean).join(" ") || undefined;
+  const describedBy = fieldDescribedBy(input.id, input.help, issue);
+  const invalid = Boolean(issue);
 
   return (
-    <div>
-      <label htmlFor={`input-${input.id}`}>
-        {input.label}
-        {input.required && " (required)"}
-      </label>
-      {input.help && <p id={helpId}>{input.help}</p>}
-
-      {input.kind === "text" &&
-        (input.multiline ? (
-          <textarea
-            id={`input-${input.id}`}
-            value={value}
-            placeholder={placeholder}
-            maxLength={input.maxLength}
-            aria-describedby={describedBy}
-            onChange={(event) => onChange(event.target.value)}
-          />
-        ) : (
-          <input
-            id={`input-${input.id}`}
-            value={value}
-            placeholder={placeholder}
-            maxLength={input.maxLength}
-            aria-describedby={describedBy}
-            onChange={(event) => onChange(event.target.value)}
-          />
-        ))}
-
-      {input.kind === "number" && (
-        <input
-          id={`input-${input.id}`}
-          type="number"
+    <Field
+      id={input.id}
+      label={input.label}
+      optional={!input.required}
+      help={input.help}
+      error={issue}
+    >
+      {input.kind === "text" && (
+        <TextControl
+          id={input.id}
+          input={input}
           value={value}
+          onChange={onChange}
           placeholder={placeholder}
-          min={input.min}
-          max={input.max}
-          step={input.step}
-          aria-describedby={describedBy}
-          onChange={(event) => onChange(event.target.value)}
+          describedBy={describedBy}
+          invalid={invalid}
         />
       )}
-
+      {input.kind === "number" && (
+        <NumberControl
+          id={input.id}
+          input={input}
+          value={value}
+          onChange={onChange}
+          placeholder={placeholder}
+          describedBy={describedBy}
+          invalid={invalid}
+        />
+      )}
       {input.kind === "seed" && (
-        <input
-          id={`input-${input.id}`}
-          type="number"
+        <SeedControl
+          id={input.id}
+          input={input}
           value={value}
-          placeholder="Random"
-          min={0}
-          max={input.max ?? undefined}
-          step={1}
-          aria-describedby={describedBy}
-          onChange={(event) => onChange(event.target.value)}
+          onChange={onChange}
+          describedBy={describedBy}
+          invalid={invalid}
         />
       )}
-
-      {input.kind === "select" && input.options.length === 2 && (
-        <label>
-          <input
-            type="checkbox"
-            id={`input-${input.id}`}
-            checked={value === input.options[1]?.id}
-            aria-describedby={describedBy}
-            onChange={(event) =>
-              onChange(
-                event.target.checked
-                  ? (input.options[1]?.id ?? "")
-                  : (input.options[0]?.id ?? ""),
-              )
-            }
-          />
-          {value === input.options[1]?.id
-            ? input.options[1]?.label
-            : (input.options[0]?.label ?? "")}
-        </label>
-      )}
-
-      {input.kind === "select" && input.options.length !== 2 && (
-        <select
-          id={`input-${input.id}`}
+      {input.kind === "select" && (
+        <SelectControl
+          id={input.id}
+          input={input}
           value={value}
-          aria-describedby={describedBy}
-          onChange={(event) => onChange(event.target.value)}
-        >
-          <option value="">Use the Workflow's value</option>
-          {input.options.map((option) => (
-            <option key={option.id} value={option.id}>
-              {option.label}
-            </option>
-          ))}
-        </select>
+          onChange={onChange}
+          optional={!input.required}
+          describedBy={describedBy}
+          invalid={invalid}
+        />
       )}
-
-      {issue && (
-        <p id={issueId} role="alert">
-          {issue}
-        </p>
-      )}
-    </div>
+    </Field>
   );
 }

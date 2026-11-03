@@ -1,49 +1,54 @@
-import { type Dispatch, type SetStateAction, useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
+import { api, ok } from "../../lib/api.js";
 import type { TermsDialogState, WorkbenchModel } from "./types.js";
+import { workbenchModelQueryKey } from "./workbenchModelQuery.js";
 
 /** The Model terms' own state (issue #61): whether the dialog is open, whether it's accepting, and the handler both the page and the 409 `model_terms_required` branch share. */
 export function useModelTerms({
   model,
-  setModel,
+  slug,
 }: {
   model: WorkbenchModel | null;
-  setModel: Dispatch<SetStateAction<WorkbenchModel | null>>;
+  slug: string;
 }) {
+  const queryClient = useQueryClient();
   const [termsDialog, setTermsDialog] = useState<TermsDialogState | null>(null);
-  const [accepting, setAccepting] = useState(false);
 
-  async function handleAcceptTerms() {
-    if (!model) return;
-    setAccepting(true);
-    try {
-      const res = await fetch(`/api/models/${model.slug}/terms/accept`, {
-        method: "POST",
-      });
-      if (!res.ok) {
-        setTermsDialog({
-          blocking: true,
-          error: "Could not record your acceptance. Please try again.",
-        });
-        return;
-      }
-      setModel((current) =>
-        current?.terms
-          ? { ...current, terms: { ...current.terms, accepted: true } }
-          : current,
+  const acceptMutation = useMutation({
+    mutationFn: () => {
+      if (!model) throw new Error("no Model");
+      return ok<{ ok: true; version: number }>(
+        api.api.models[":slug"].terms.accept.$post({
+          param: { slug: model.slug },
+        }),
+      );
+    },
+    onSuccess: () => {
+      queryClient.setQueryData<WorkbenchModel | null | undefined>(
+        workbenchModelQueryKey(slug),
+        (current) =>
+          current?.terms
+            ? { ...current, terms: { ...current.terms, accepted: true } }
+            : current,
       );
       setTermsDialog(null);
-    } finally {
-      setAccepting(false);
-    }
-  }
+    },
+    onError: () => {
+      setTermsDialog({
+        blocking: true,
+        error: "Could not record your acceptance. Please try again.",
+      });
+    },
+  });
 
   const handleTermsClose = () => setTermsDialog(null);
 
   return {
     termsDialog,
     setTermsDialog,
-    accepting,
-    handleAcceptTerms,
+    accepting: acceptMutation.isPending,
+    handleAcceptTerms: () => acceptMutation.mutate(),
     handleTermsClose,
   };
 }

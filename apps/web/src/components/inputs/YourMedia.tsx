@@ -1,3 +1,5 @@
+import { Fragment } from "react";
+import type { ElementType } from "react";
 import type {
   MediaUploadInput,
   TrimRange,
@@ -20,6 +22,7 @@ export function YourMedia({
   onTrimRangeChange,
   issuesByInputId,
   onPick,
+  bare = false,
 }: {
   inputs: MediaUploadInput[];
   uploads: Record<string, UploadState>;
@@ -27,11 +30,13 @@ export function YourMedia({
   onTrimRangeChange: (inputId: string, range: TrimRange) => void;
   issuesByInputId: Record<string, string>;
   onPick: (input: MediaUploadInput, file: File) => void;
+  bare?: boolean;
 }) {
   if (inputs.length === 0) return null;
+  const Wrapper: ElementType = bare ? Fragment : "fieldset";
   return (
-    <fieldset>
-      <legend>Your media</legend>
+    <Wrapper>
+      {!bare && <legend>Your media</legend>}
       {inputs.map((input) => {
         const upload = uploads[input.id];
         const issue =
@@ -152,6 +157,6 @@ export function YourMedia({
           </div>
         );
       })}
-    </fieldset>
+    </Wrapper>
   );
 }

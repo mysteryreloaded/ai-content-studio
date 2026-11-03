@@ -1,70 +1,110 @@
 import { renderMarkdown } from "@ai-content-studio/shared";
-import { useEffect, useRef } from "react";
+import { Button } from "../../components/ui/button.js";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogTitle,
+} from "../../components/ui/dialog.js";
 import type { ModelTerms } from "./types.js";
 
 /**
- * The Model terms dialog (issue #61): blocking (no dismiss, no Escape)
- * the first time a user opens a Model with terms and again whenever
- * re-asked; otherwise dismissible, for viewing the terms any time via
- * the Workbench's own link.
+ * The Model terms dialog (prototype `TermsDialog`, issue #61/#194):
+ * blocking (no dismiss, no Escape) the first time a user opens a Model
+ * with terms and again whenever re-asked; otherwise dismissible, for
+ * viewing the terms any time via the Workbench's own link.
  */
 export function ModelTermsDialog({
   modelName,
+  attribution,
   terms,
   blocking,
   accepting,
   error,
   onAccept,
   onClose,
+  onBackToModels,
 }: {
   modelName: string;
+  attribution: string;
   terms: ModelTerms;
   blocking: boolean;
   accepting: boolean;
   error: string | null;
   onAccept: () => void;
   onClose: () => void;
+  onBackToModels: () => void;
 }) {
-  const dialogRef = useRef<HTMLDialogElement>(null);
-
-  useEffect(() => {
-    const dialog = dialogRef.current;
-    if (!dialog) return;
-    if (!dialog.open) dialog.showModal();
-  }, []);
-
   return (
-    <dialog
-      ref={dialogRef}
-      onCancel={(event) => {
-        if (blocking) event.preventDefault();
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open && !blocking) onClose();
       }}
-      onClose={onClose}
     >
-      <h2>{modelName}'s terms</h2>
-      <div
-        // biome-ignore lint/security/noDangerouslySetInnerHtml: renderMarkdown (shared) strips raw HTML and images
-        dangerouslySetInnerHTML={{ __html: renderMarkdown(terms.body) }}
-      />
-      {terms.licenseUrl && (
-        <p>
-          <a href={terms.licenseUrl} target="_blank" rel="noopener noreferrer">
-            License
-          </a>
-        </p>
-      )}
-
-      {!terms.accepted && (
-        <button type="button" disabled={accepting} onClick={onAccept}>
-          Accept
-        </button>
-      )}
-      {!blocking && (
-        <button type="button" onClick={() => dialogRef.current?.close()}>
-          Close
-        </button>
-      )}
-      {error && <p role="alert">{error}</p>}
-    </dialog>
+      <DialogContent
+        showCloseButton={!blocking}
+        className="sm:max-w-[560px]"
+        onEscapeKeyDown={(event) => {
+          if (blocking) event.preventDefault();
+        }}
+        onInteractOutside={(event) => {
+          if (blocking) event.preventDefault();
+        }}
+      >
+        <DialogTitle>
+          {blocking
+            ? `Before you use ${modelName}`
+            : `${modelName}: Model terms`}
+        </DialogTitle>
+        <div className="flex flex-col gap-3 text-sm">
+          <div
+            // biome-ignore lint/security/noDangerouslySetInnerHtml: renderMarkdown (shared) strips raw HTML and images
+            dangerouslySetInnerHTML={{ __html: renderMarkdown(terms.body) }}
+          />
+          {terms.licenseUrl && (
+            <p>
+              <a
+                href={terms.licenseUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-primary underline underline-offset-2"
+              >
+                Read the model license
+              </a>
+            </p>
+          )}
+          {attribution && (
+            <p className="text-[12.5px] text-muted-foreground">{attribution}</p>
+          )}
+          {blocking && (
+            <p className="text-[12.5px] text-muted-foreground">
+              You agree once. If these terms change, we'll ask again.
+            </p>
+          )}
+          {error && (
+            <p role="alert" className="text-[12.5px] text-err">
+              {error}
+            </p>
+          )}
+        </div>
+        <DialogFooter>
+          {blocking ? (
+            <>
+              <Button type="button" variant="outline" onClick={onBackToModels}>
+                Back to Models
+              </Button>
+              <Button type="button" disabled={accepting} onClick={onAccept}>
+                I agree
+              </Button>
+            </>
+          ) : (
+            <Button type="button" onClick={onClose}>
+              Close
+            </Button>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

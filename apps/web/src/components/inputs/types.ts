@@ -43,6 +43,8 @@ export interface PointsPickersProps {
   values: Record<string, string>;
   onPointsChange: (inputId: string, raw: string) => void;
   issuesByInputId: Record<string, string>;
+  /** Drops the own `fieldset`/`legend` for a shared "Your files" group (issue #194). */
+  bare?: boolean;
 }
 
 export interface PointsFieldProps {

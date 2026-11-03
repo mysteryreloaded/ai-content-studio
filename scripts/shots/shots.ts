@@ -758,24 +758,36 @@ async function main(): Promise<void> {
 
     // ~80 sequential contexts on the one app-shooting browser can leave it
     // unstable (or outright closed) by the time we get here, so the
-    // prototype phase gets its own fresh browser instead of reusing it.
+    // prototype phase gets its own browser instead of reusing it.
     await browser.close().catch(() => undefined);
     let prototypeBrowser: Browser | null = null;
 
-    if (!args.noPrototype) {
-      log("extracting prototypes...");
-      await extractPrototypes(REPO_ROOT, run);
-      prototypeBrowser = await chromium.launch({
+    const launchPrototypeBrowser = () =>
+      chromium.launch({
         headless: true,
         channel: chromePath ? undefined : "chrome",
         executablePath: chromePath ?? undefined,
       });
+
+    if (!args.noPrototype) {
+      log("extracting prototypes...");
+      await extractPrototypes(REPO_ROOT, run);
       // One page load per (view, theme): a context's `colorScheme` is
       // fixed at creation, but `page.setViewportSize` doesn't reload the
       // page, so both widths share the one real navigation and click
       // sequence (section 7's clicks simulate progress and cost real
       // wall-clock time, and cdnjs/Google Fonts are real network calls).
+      //
+      // A browser kept alive across the whole phase reliably dies partway
+      // through (observed consistently at the 12th context, regardless of
+      // which views land there) — something in the extracted prototypes'
+      // own navigation/rendering destabilizes the shared browser process,
+      // not just a context. Rather than depend on that, relaunch a fresh
+      // browser before every view so no instance ever opens more than the
+      // two contexts (light/dark) that view needs.
       for (const view of PROTOTYPE_VIEWS) {
+        await prototypeBrowser?.close().catch(() => undefined);
+        prototypeBrowser = await launchPrototypeBrowser();
         for (const theme of ["light", "dark"] as const) {
           let ctx: BrowserContext | undefined;
           try {

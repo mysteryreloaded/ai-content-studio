@@ -8,3 +8,7 @@ backup.env
 .backup-staging/
 restic-repo/
 .env.restored
+
+# The shots tool's own runs (issue #187): never committed, only published
+# to a `shots/pr-<n>` branch with `--publish`.
+.shots/

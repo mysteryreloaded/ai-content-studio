@@ -50,6 +50,10 @@ docker compose up -d postgres   # the only external service the tests need
 bun run dev            # server + web together (mock Google issuer on localhost)
 ```
 
+`bun install --cwd scripts/shots && bun scripts/shots/shots.ts` boots a seeded studio on
+a fresh database and saves PNGs of every route (and the agreed prototypes) for restyle
+PRs to attach. It is a developer tool, not a test: it never runs in CI or under `bun test`.
+
 Before pushing, run what CI runs (`.github/workflows/ci.yml`):
 
 ```sh

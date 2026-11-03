@@ -75,15 +75,15 @@ export function ModelTermsDialog({
             </p>
           )}
           {attribution && (
-            <p className="text-[12.5px] text-muted-foreground">{attribution}</p>
+            <p className="text-muted-foreground">{attribution}</p>
           )}
           {blocking && (
-            <p className="text-[12.5px] text-muted-foreground">
+            <p className="text-muted-foreground">
               You agree once. If these terms change, we'll ask again.
             </p>
           )}
           {error && (
-            <p role="alert" className="text-[12.5px] text-err">
+            <p role="alert" className="text-err">
               {error}
             </p>
           )}

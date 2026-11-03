@@ -26,7 +26,7 @@ export function TextControl({
   const over = len > input.maxLength;
   const counter = (
     <span
-      className={`pointer-events-none absolute right-2 bottom-1.5 rounded-[3px] bg-card px-[3px] text-[11px] tabular-nums ${
+      className={`pointer-events-none absolute right-2 bottom-1.5 rounded-[3px] bg-card px-[3px] text-xs tabular-nums ${
         over ? "font-semibold text-err" : "text-faint"
       }`}
     >

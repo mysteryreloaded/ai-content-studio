@@ -31,32 +31,31 @@ export function Field({
   return (
     <div className="flex min-w-0 flex-col gap-1.5">
       <div className="flex items-baseline gap-2">
-        <label htmlFor={`input-${id}`} className="text-[13.5px] font-semibold">
+        <label htmlFor={`input-${id}`} className="text-sm font-semibold">
           {label}
         </label>
         {optional && (
-          <span className="text-[11.5px] font-normal text-faint">Optional</span>
+          <span className="text-xs font-normal text-faint">Optional</span>
         )}
       </div>
       {children}
       {help && (
-        <p id={helpId} className="text-[12.5px] text-muted-foreground">
+        <p id={helpId} className="text-sm text-muted-foreground">
           {help}
         </p>
       )}
       {note && (
-        <p className="flex items-start gap-[5px] text-[12.5px] text-info">
-          <Info className="size-[13px] shrink-0 translate-y-px" /> {note}
+        <p className="flex items-start gap-1.5 text-sm text-info">
+          <Info className="size-3.5 shrink-0 translate-y-px" /> {note}
         </p>
       )}
       {error && (
         <p
           id={issueId}
           role="alert"
-          className="flex items-start gap-[5px] text-[12.5px] text-err"
+          className="flex items-start gap-1.5 text-sm text-err"
         >
-          <TriangleAlert className="size-[13px] shrink-0 translate-y-px" />{" "}
-          {error}
+          <TriangleAlert className="size-3.5 shrink-0 translate-y-px" /> {error}
         </p>
       )}
     </div>

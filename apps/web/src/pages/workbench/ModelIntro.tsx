@@ -16,19 +16,19 @@ export function ModelIntro({
   const both = Boolean(model.attribution) && Boolean(model.terms);
   return (
     <div className="flex flex-col gap-1">
-      <h1 className="font-heading text-[26px] leading-tight">{model.name}</h1>
+      <h1>{model.name}</h1>
       {model.description && (
         <p className="text-muted-foreground">{model.description}</p>
       )}
       {(model.attribution || model.terms) && (
-        <p className="text-[12.5px] text-faint">
+        <p className="text-xs text-faint">
           {model.attribution}
           {both ? " · " : ""}
           {model.terms && (
             <Button
               type="button"
               variant="link"
-              className="h-auto p-0 text-[12.5px] underline underline-offset-2"
+              className="h-auto p-0 text-xs underline underline-offset-2"
               onClick={onShowTerms}
             >
               Model terms

@@ -84,7 +84,7 @@ export function WorkbenchForm({
       {hasSeedInput && <CountPicker count={count} onChange={setCount} />}
 
       {submitState.status === "error" && (
-        <p role="alert" className="text-[12.5px] text-err">
+        <p role="alert" className="text-sm text-err">
           {submitState.message}
         </p>
       )}

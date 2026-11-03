@@ -73,7 +73,7 @@ export function SelectControl({
             >
               {option.label}
               {def && (
-                <span className="ml-[3px] text-[10.5px] font-normal text-faint">
+                <span className="ml-1 text-xs font-normal text-faint">
                   default
                 </span>
               )}

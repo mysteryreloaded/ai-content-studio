@@ -69,7 +69,7 @@ export function InputGroups({
             key={group}
             className="m-0 flex min-w-0 flex-col gap-3.5 border-0 p-0"
           >
-            <legend className="pb-2 text-[11px] leading-[1.2] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+            <legend className="pb-2 text-xs leading-tight font-semibold uppercase tracking-[0.08em] text-muted-foreground">
               {GROUP_LABELS[group]}
             </legend>
             {group === "files"

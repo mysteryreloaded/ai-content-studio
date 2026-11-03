@@ -16,9 +16,9 @@ export function WorkbenchBanner({
 }) {
   if (!banner) return null;
   return (
-    <Alert className="flex items-start gap-2 rounded-xl border-[color-mix(in_srgb,var(--info)_35%,var(--line))] bg-[color-mix(in_srgb,var(--info)_12%,var(--panel))] px-2.5 py-2 text-[13px]">
+    <Alert className="flex items-start gap-2 rounded-xl border-[color-mix(in_srgb,var(--info)_35%,var(--line))] bg-[color-mix(in_srgb,var(--info)_12%,var(--panel))] px-2.5 py-2">
       <InfoIcon className="size-3.5 text-info" />
-      <AlertDescription className="flex-1 text-[13px] text-foreground">
+      <AlertDescription className="flex-1 text-foreground">
         {banner}
       </AlertDescription>
       <Button

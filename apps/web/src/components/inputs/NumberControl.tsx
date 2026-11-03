@@ -37,7 +37,7 @@ export function NumberControl({
         aria-invalid={invalid}
         onChange={(event) => onChange(event.target.value)}
       />
-      <span className="text-[12.5px] text-faint tabular-nums">
+      <span className="text-sm text-faint tabular-nums">
         {input.min}–{input.max}
         {input.step !== 1 ? `, steps of ${input.step}` : ""}
       </span>

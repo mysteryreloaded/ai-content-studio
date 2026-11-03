@@ -19,10 +19,10 @@ export function ModeUses({ mode }: { mode: WorkbenchMode }) {
     (input) => UPLOAD_KINDS.has(input.kind) || input.kind === "points",
   );
   if (uses.length === 0) {
-    return <span className="text-[12.5px] text-faint">Prompt only</span>;
+    return <span className="text-xs text-faint">Prompt only</span>;
   }
   return (
-    <span className="flex flex-wrap gap-x-2.5 gap-y-1 text-[12.5px] text-faint">
+    <span className="flex flex-wrap gap-x-2.5 gap-y-1 text-xs text-faint">
       {uses.map((input) => {
         const Icon = KIND_ICON[input.kind];
         return (

@@ -10,7 +10,7 @@ import { MODE_MENU_GROUP_LABELS, groupModesForMenu } from "./modeMenuGroups.js";
 import type { WorkbenchMode } from "./types.js";
 
 const EYEBROW =
-  "text-[11px] leading-[1.2] font-semibold uppercase tracking-[0.08em] text-muted-foreground";
+  "text-xs leading-tight font-semibold uppercase tracking-[0.08em] text-muted-foreground";
 
 /**
  * The Mode menu (prototype `ModeMenu`, issue #194 story 20): one Mode
@@ -39,10 +39,8 @@ export function ModeMenu({
         <span className={EYEBROW}>Mode</span>
         {mode && (
           <>
-            <h2 className="text-[15px] font-semibold">{mode.name}</h2>
-            <p className="text-[12.5px] text-muted-foreground">
-              {mode.description}
-            </p>
+            <h2 className="text-base font-semibold">{mode.name}</h2>
+            <p className="text-sm text-muted-foreground">{mode.description}</p>
           </>
         )}
       </div>
@@ -67,10 +65,10 @@ export function ModeMenu({
             className="flex w-full items-center gap-2.5 rounded-xl border border-input bg-card px-3 py-[9px] text-left hover:border-foreground"
           >
             <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-              <strong className="text-[14px] font-semibold">
+              <strong className="text-base font-semibold">
                 {currentMode?.name}
               </strong>
-              <span className="text-[12.5px] text-muted-foreground">
+              <span className="text-sm text-muted-foreground">
                 {currentMode?.description}
               </span>
             </span>
@@ -103,9 +101,7 @@ export function ModeMenu({
                     setOpen(false);
                   }}
                 >
-                  <strong className="text-[13.5px] font-semibold">
-                    {mode.name}
-                  </strong>
+                  <strong className="text-sm font-semibold">{mode.name}</strong>
                   <ModeUses mode={mode} />
                 </button>
               ))}

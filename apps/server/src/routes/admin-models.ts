@@ -27,6 +27,7 @@ import { adminActorFrom } from "../audit/actor.js";
 import { type RouteEntry, guard } from "../auth/access.js";
 import type { AppEnv } from "../auth/app-env.js";
 import { type ValidateReason, validate } from "../auth/validate.js";
+import type { BackendRepository } from "../backends/repository.js";
 import type { BackendsService } from "../backends/service.js";
 import type { Database } from "../db/client.js";
 import { auditEntries } from "../db/schema.js";
@@ -46,6 +47,7 @@ import {
   submitTestGeneration,
 } from "../generations/test-submission.js";
 import { checkEnableReadiness } from "../models/enablement.js";
+import { modelFiguresFor } from "../models/list-figures.js";
 import { NotFound as BackendNotFound } from "../models/model-backends.js";
 import type { ModelBackendsRepository } from "../models/model-backends.js";
 import {
@@ -409,8 +411,10 @@ async function onInvalidModelBody(
 
 export function adminModelsRoute(
   db: Database,
+  clock: Clock,
   repository: ModelRepository,
   modelBackends: ModelBackendsRepository,
+  backendRepository: BackendRepository,
   backendsService: BackendsService,
   generationsRepository: GenerationsRepository,
   routes: RouteEntry[],
@@ -430,8 +434,32 @@ export function adminModelsRoute(
   return (
     new Hono<AppEnv>()
       .get("/", guard(routes, basePath, "get", "/", "admin"), async (c) => {
-        const list = await repository.list();
-        return c.json({ models: list });
+        const [list, backendList] = await Promise.all([
+          repository.list(),
+          backendRepository.list(),
+        ]);
+        const figures = await modelFiguresFor(
+          db,
+          clock,
+          list,
+          backendList,
+          backendsService,
+        );
+        const models = list.map((model) => {
+          const stats = figures.get(model.id);
+          return {
+            ...model,
+            modeCount: stats?.modeCount ?? 0,
+            backends: {
+              usable: stats?.usableBackends ?? 0,
+              attached: stats?.attachedBackends ?? 0,
+            },
+            modesWithoutBackend: stats?.modesWithoutBackend ?? [],
+            queued: stats?.queued ?? 0,
+            running: stats?.running ?? 0,
+          };
+        });
+        return c.json({ models });
       })
       .post(
         "/",

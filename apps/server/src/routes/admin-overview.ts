@@ -5,7 +5,7 @@
 // not duplicated here.
 
 import type { Clock } from "@ai-content-studio/shared";
-import { and, eq, gte, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { type RouteEntry, guard } from "../auth/access.js";
 import type { AppEnv } from "../auth/app-env.js";
@@ -13,19 +13,17 @@ import type { BackendRepository } from "../backends/repository.js";
 import type { BackendsService } from "../backends/service.js";
 import type { Database } from "../db/client.js";
 import {
-  backends as backendsTable,
   generations,
   logEntries,
-  modelBackends,
   models as modelsTable,
   modes as modesTable,
 } from "../db/schema.js";
+import { modelFiguresFor } from "../models/list-figures.js";
 import type { ModelRepository } from "../models/repository.js";
 import { freeDiskBytes } from "../problems/disk.js";
 import type { ProblemsRegistry } from "../problems/problems.js";
 
 const BYTES_PER_GB = 1024 * 1024 * 1024;
-const MEDIAN_WAIT_WINDOW_MS = 24 * 60 * 60 * 1000;
 const RUNNING_STATES = ["starting", "running", "saving"] as const;
 
 export function adminOverviewRoute(
@@ -56,12 +54,10 @@ export function adminOverviewRoute(
         ],
       );
 
-      const [runningByBackend, modelQueueStats, attachedBackendRows] =
-        await Promise.all([
-          runningGenerationsByBackend(db),
-          modelQueueStatsFor(db, clock),
-          attachedBackendsFor(db),
-        ]);
+      const [runningByBackend, figures] = await Promise.all([
+        runningGenerationsByBackend(db),
+        modelFiguresFor(db, clock, modelList, backendList, backendsService),
+      ]);
 
       const problems = registry.list().map((problem) => ({
         code: problem.code,
@@ -82,16 +78,7 @@ export function adminOverviewRoute(
       }));
 
       const models = modelList.map((model) => {
-        const attached = attachedBackendRows.get(model.id) ?? [];
-        const usableBackends = attached.filter((backendId) => {
-          const backend = backendList.find((b) => b.id === backendId);
-          if (!backend || !backend.enabled || backend.draining) return false;
-          const health = backendsService.healthFor(backendId);
-          return (
-            !health.credentialsError && health.reachability === "reachable"
-          );
-        }).length;
-        const stats = modelQueueStats.get(model.id);
+        const stats = figures.get(model.id);
 
         return {
           id: model.id,
@@ -102,8 +89,8 @@ export function adminOverviewRoute(
           running: stats?.running ?? 0,
           oldestQueuedAt: stats?.oldestQueuedAt?.toISOString() ?? null,
           medianWait24hMs: stats?.medianWait24hMs ?? null,
-          usableBackends,
-          attachedBackends: attached.length,
+          usableBackends: stats?.usableBackends ?? 0,
+          attachedBackends: stats?.attachedBackends ?? 0,
         };
       });
 
@@ -200,114 +187,4 @@ async function runningGenerationsByBackend(
     });
   }
   return result;
-}
-
-interface ModelQueueStats {
-  queued: number;
-  running: number;
-  oldestQueuedAt: Date | null;
-  medianWait24hMs: number | null;
-}
-
-function median(values: number[]): number | null {
-  if (values.length === 0) return null;
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0
-    ? ((sorted[mid - 1] as number) + (sorted[mid] as number)) / 2
-    : (sorted[mid] as number);
-}
-
-/** Per-Model queued/running counts, the oldest queued wait and the 24h median start wait, for the Overview's Models table. */
-async function modelQueueStatsFor(
-  db: Database,
-  clock: Clock,
-): Promise<Map<string, ModelQueueStats>> {
-  const since = new Date(clock.now().getTime() - MEDIAN_WAIT_WINDOW_MS);
-
-  const [queueRows, waitRows] = await Promise.all([
-    db
-      .select({
-        modelId: generations.modelId,
-        state: generations.state,
-        queuedAt: generations.queuedAt,
-      })
-      .from(generations)
-      .where(inArray(generations.state, ["queued", ...RUNNING_STATES])),
-    db
-      .select({
-        modelId: generations.modelId,
-        queuedAt: generations.queuedAt,
-        startedAt: generations.startedAt,
-      })
-      .from(generations)
-      .where(
-        and(
-          sql`${generations.startedAt} is not null`,
-          gte(generations.startedAt, since),
-        ),
-      ),
-  ]);
-
-  const stats = new Map<string, ModelQueueStats>();
-  function statsFor(modelId: string): ModelQueueStats {
-    let entry = stats.get(modelId);
-    if (!entry) {
-      entry = {
-        queued: 0,
-        running: 0,
-        oldestQueuedAt: null,
-        medianWait24hMs: null,
-      };
-      stats.set(modelId, entry);
-    }
-    return entry;
-  }
-
-  for (const row of queueRows) {
-    const entry = statsFor(row.modelId);
-    if (row.state === "queued") {
-      entry.queued += 1;
-      if (!entry.oldestQueuedAt || row.queuedAt < entry.oldestQueuedAt) {
-        entry.oldestQueuedAt = row.queuedAt;
-      }
-    } else {
-      entry.running += 1;
-    }
-  }
-
-  const waitsByModel = new Map<string, number[]>();
-  for (const row of waitRows) {
-    if (!row.startedAt) continue;
-    const waits = waitsByModel.get(row.modelId) ?? [];
-    waits.push(row.startedAt.getTime() - row.queuedAt.getTime());
-    waitsByModel.set(row.modelId, waits);
-  }
-  for (const [modelId, waits] of waitsByModel) {
-    statsFor(modelId).medianWait24hMs = median(waits);
-  }
-
-  return stats;
-}
-
-/** Every attached (non-deleted) Backend's id, grouped by Model, for the Overview's "N of M usable Backends". */
-async function attachedBackendsFor(
-  db: Database,
-): Promise<Map<string, string[]>> {
-  const rows = await db
-    .select({
-      modelId: modelBackends.modelId,
-      backendId: modelBackends.backendId,
-    })
-    .from(modelBackends)
-    .innerJoin(backendsTable, eq(backendsTable.id, modelBackends.backendId))
-    .where(isNull(backendsTable.deletedAt));
-
-  const byModel = new Map<string, string[]>();
-  for (const row of rows) {
-    const list = byModel.get(row.modelId) ?? [];
-    list.push(row.backendId);
-    byModel.set(row.modelId, list);
-  }
-  return byModel;
 }

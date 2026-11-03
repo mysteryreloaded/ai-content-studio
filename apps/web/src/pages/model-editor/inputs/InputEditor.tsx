@@ -13,11 +13,7 @@ import { changeInputKind } from "../helpers/newInputs.js";
 import type { ModelDetail } from "../types.js";
 import { Field } from "../ui/Field.js";
 import { StateChip } from "../ui/StateChip.js";
-import {
-  TypeDot,
-  typeDotKindFor,
-  typeDotKindForValueType,
-} from "../ui/TypeDot.js";
+import { TypeDot, typeDotKindForValueType } from "../ui/TypeDot.js";
 import type { ModelEditor } from "../useModelEditor.js";
 import { BindingPicker } from "../workflow/BindingPicker.js";
 import { NumberSettings } from "./NumberSettings.js";
@@ -135,7 +131,14 @@ export function InputEditor({
             className="h-10 w-full min-w-0 rounded-lg border border-input bg-transparent px-3 text-base disabled:cursor-not-allowed disabled:opacity-50"
           >
             {INPUT_TYPE_OPTIONS.map((type) => (
-              <option key={type.kind} value={type.kind}>
+              <option
+                key={type.kind}
+                value={type.kind}
+                disabled={
+                  type.kind === "seed" &&
+                  otherInputs.some((other) => other.kind === "seed")
+                }
+              >
                 {type.label}
               </option>
             ))}

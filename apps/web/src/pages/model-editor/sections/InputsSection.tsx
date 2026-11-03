@@ -149,12 +149,21 @@ export function InputsSection({
                   </Button>
                 </TableCell>
                 <TableCell className="px-2.5 py-1.5 text-[13px]">
-                  <strong>{input.label || "Untitled Input"}</strong>
-                  {errorCount > 0 && (
-                    <span className="ml-1.5 inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-err px-1.5 text-[11px] font-semibold text-card">
-                      {errorCount}
-                    </span>
-                  )}
+                  <button
+                    type="button"
+                    className="text-left"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setOpenInputId(input.id);
+                    }}
+                  >
+                    <strong>{input.label || "Untitled Input"}</strong>
+                    {errorCount > 0 && (
+                      <span className="ml-1.5 inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-err px-1.5 text-[11px] font-semibold text-card">
+                        {errorCount}
+                      </span>
+                    )}
+                  </button>
                 </TableCell>
                 <TableCell className="px-2.5 py-1.5 text-[13px]">
                   <span className="flex items-center gap-1.5">

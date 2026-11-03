@@ -10,8 +10,8 @@ import type { ModelEditor } from "../useModelEditor.js";
 
 const MS_PER_SECOND = 1000;
 
-function msToSeconds(ms: number): string {
-  return String(ms / MS_PER_SECOND);
+function msToSeconds(ms: number): number {
+  return ms / MS_PER_SECOND;
 }
 
 function secondsToMs(value: string): number {

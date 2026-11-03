@@ -294,6 +294,44 @@ describe("InputsSection (issue #215)", () => {
     expect(within(rowsAfter[2] as HTMLElement).getByText("A")).toBeTruthy();
   });
 
+  test("a row's Input button opens the sheet from the keyboard", async () => {
+    const detail = {
+      ...DETAIL,
+      inputs: [
+        {
+          id: "a",
+          kind: "text" as const,
+          group: "describe" as const,
+          label: "Prompt",
+          help: "",
+          default: "",
+          multiline: false,
+          maxLength: 2000,
+          bindings: [],
+        },
+      ],
+    };
+    mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1")) {
+        return Response.json(detail);
+      }
+      if (call.method === "GET") return respondGet(call.url);
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+
+    await view.findByText("LTX 2.5");
+    await openSection(view, "Inputs");
+
+    const rowButton = view.getByRole("button", { name: /^Prompt/ });
+    rowButton.focus();
+    await userEvent.keyboard("{Enter}");
+
+    expect(view.getByLabelText("Label")).toBeTruthy();
+  });
+
   test("Bind a field opens the picker and adds the binding", async () => {
     const detail = {
       ...DETAIL,

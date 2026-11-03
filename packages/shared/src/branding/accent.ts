@@ -9,8 +9,11 @@
  *
  * The order is the agreed one: Teal, Green, Blue, Indigo, Violet,
  * Fuchsia, Orange, Graphite. Red and Yellow are left out on purpose
- * because they mean error and warning, so Fuchsia and Orange are tuned
- * to sit >= 20 degrees away from the state tokens' hues.
+ * because they mean error and warning, so Fuchsia is tuned to sit
+ * >= 20 degrees away from the state tokens' hues. Orange sits at
+ * hue ~22 degrees: no real orange can be 20 degrees from both the
+ * err token (~5 degrees) and the warn token (~39 degrees), so it gets
+ * a 15 degree floor from each of them instead (see accent.test.ts).
  */
 export interface AccentPalette {
   key: string;
@@ -134,16 +137,16 @@ export const ACCENT_PALETTES: readonly AccentPalette[] = [
     key: "orange",
     label: "Orange",
     light: {
-      accent: "#6b7004",
+      accent: "#b84a0a",
       onAccent: "#ffffff",
-      background: "#fefce8",
-      foreground: "#444104",
+      background: "#fff7ed",
+      foreground: "#431407",
     },
     dark: {
-      accent: "#e2e80a",
+      accent: "#fb8c4a",
       onAccent: "#0b0b0c",
-      background: "#221a04",
-      foreground: "#fde047",
+      background: "#261105",
+      foreground: "#ffedd5",
     },
   },
   {

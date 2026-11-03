@@ -427,6 +427,7 @@ export async function createApp(deps: AppDeps) {
         problemsRegistry,
         backendRepository,
         backendsService,
+        modelRepository,
         deps.env.DATA_DIR,
         deps.env.MIN_FREE_DISK_GB,
         APP_VERSION,

@@ -51,6 +51,8 @@ export interface GenerationSummary {
   assets: AssetSummary[];
   /** Issue #68: an Admin removed this Generation — shown as a dismissable card, same as the Gallery's. */
   removedAt: string | null;
+  /** Issue #74/#198: a test run from the Model editor, marked with a "Test" pill in the Gallery. */
+  isTest?: boolean;
 }
 
 export interface GenerationProgress {

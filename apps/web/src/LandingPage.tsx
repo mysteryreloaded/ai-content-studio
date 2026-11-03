@@ -1,3 +1,4 @@
+import { cn } from "cn";
 import type { CSSProperties } from "react";
 import { Navigate } from "react-router-dom";
 import { GoogleSignInButton } from "./GoogleSignInButton.js";
@@ -42,9 +43,41 @@ function signInHref(returnTo?: string): string {
     : "/api/auth/google";
 }
 
-/** The prototype's Model-card grid (issue #175): one card per row on phones, auto-fill to 340px above. */
+/** Issue #223's Model-card grid: 1 column on phones, 2 from 768px, 3 from 1200px, 24px gaps. */
 const CARD_GRID_CLASS =
-  "grid grid-cols-[repeat(auto-fill,minmax(min(100%,340px),1fr))] gap-sections";
+  "grid grid-cols-1 gap-6 md:grid-cols-2 min-[1200px]:grid-cols-3";
+
+/** The quiet line under the hero's sign-in button (issue #223). */
+function signInNote(signUpMode: "open" | "approval"): string {
+  return signUpMode === "approval"
+    ? "An Admin approves new accounts"
+    : "Sign in with Google to start";
+}
+
+interface HowItWorksStep {
+  title: string;
+  body: string;
+}
+
+function howItWorksSteps(signUpMode: "open" | "approval"): HowItWorksStep[] {
+  return [
+    {
+      title: "Sign in with Google",
+      body:
+        signUpMode === "approval"
+          ? "Sign in with Google and wait for an Admin to approve you."
+          : "Sign in with Google.",
+    },
+    {
+      title: "Pick a Model",
+      body: "Pick a Model and describe what you want.",
+    },
+    {
+      title: "Watch it render",
+      body: "Watch it render, then download it from your Gallery.",
+    },
+  ];
+}
 
 export function LandingPage() {
   const settings = useSiteSettings();
@@ -75,26 +108,47 @@ export function LandingPage() {
 
   // The only data-driven style: the Operator's uploaded background image
   // (issue #65). Without it the hero sits on the accent's landing
-  // background/foreground (spec #33/#24, injected by the server).
-  const backgroundStyle: CSSProperties = settings?.hasBackground
+  // background/foreground (spec #33/#24, injected by the server). With one,
+  // a gradient scrim sits over it (issue #223) so white hero text keeps AA
+  // contrast regardless of the image or the accent.
+  const hasBackground = Boolean(settings?.hasBackground);
+  const backgroundStyle: CSSProperties = hasBackground
     ? {
         backgroundImage: "url(/api/site-settings/background)",
         backgroundSize: "cover",
+        backgroundPosition: "center",
       }
     : {};
+
+  const signUpMode = settings?.signUpMode ?? "open";
 
   return (
     <main className="flex flex-col gap-sections">
       <header
         style={backgroundStyle}
-        className="flex flex-col items-center rounded-[10px] bg-[var(--landing-background)] p-8 text-center text-[var(--landing-foreground)]"
+        className={cn(
+          "relative flex flex-col items-center justify-center gap-content overflow-hidden rounded-[10px] px-4 py-16 text-center sm:px-8 lg:min-h-[60vh]",
+          hasBackground
+            ? "text-white"
+            : "bg-[var(--landing-background)] text-[var(--landing-foreground)]",
+        )}
       >
-        <div className="flex w-full max-w-md flex-col items-center gap-content">
+        {hasBackground && (
+          <div
+            aria-hidden="true"
+            className="absolute inset-0 bg-gradient-to-b from-black/60 to-black/80"
+          />
+        )}
+        <div className="relative z-10 flex w-full max-w-xl flex-col items-center gap-content">
           {settings?.hasLogo && (
             <img src="/api/site-settings/logo" alt="" width={64} height={64} />
           )}
-          <h1>{title}</h1>
-          {landingText && <p>{landingText}</p>}
+          <h1 className="text-[36px] leading-[1.1] lg:text-[52px]">{title}</h1>
+          {landingText && (
+            <p className="max-w-[60ch] text-[19px] leading-snug">
+              {landingText}
+            </p>
+          )}
           {bannerMessage && (
             <Alert variant="destructive" className="w-full">
               <AlertTitle>{bannerMessage}</AlertTitle>
@@ -106,7 +160,17 @@ export function LandingPage() {
               )}
             </Alert>
           )}
-          <GoogleSignInButton href={signInHref()} />
+          <div className="flex flex-col items-center gap-2">
+            <GoogleSignInButton href={signInHref()} size="lg" />
+            <p
+              className={cn(
+                "text-sm",
+                hasBackground ? "text-white" : "text-muted-foreground",
+              )}
+            >
+              {signInNote(signUpMode)}
+            </p>
+          </div>
         </div>
       </header>
 
@@ -115,16 +179,49 @@ export function LandingPage() {
       )}
 
       {!isError && models.length > 0 && (
-        <section aria-label="Models" className={CARD_GRID_CLASS}>
-          {models.map((model) => (
-            <ModelCard
-              key={model.id}
-              href={signInHref(`/models/${model.slug}`)}
-              model={model}
-            />
-          ))}
-        </section>
+        <div className="flex flex-col gap-content">
+          <div className="flex flex-col gap-1.5 text-center">
+            <h2>What you can make</h2>
+            <p className="text-muted-foreground">
+              Every Model the Operator has turned on, ready to run.
+            </p>
+          </div>
+          <section aria-label="Models" className={CARD_GRID_CLASS}>
+            {models.map((model) => (
+              <ModelCard
+                key={model.id}
+                href={signInHref(`/models/${model.slug}`)}
+                model={model}
+              />
+            ))}
+          </section>
+        </div>
       )}
+
+      <section className="flex flex-col gap-content">
+        <h2 className="text-center">How it works</h2>
+        <div className="grid grid-cols-1 gap-content md:grid-cols-3">
+          {howItWorksSteps(signUpMode).map((step, index) => (
+            <div
+              key={step.title}
+              className="flex flex-col items-center gap-2 text-center"
+            >
+              <span className="flex size-10 items-center justify-center rounded-full bg-primary font-heading text-lg font-semibold text-primary-foreground">
+                {index + 1}
+              </span>
+              <h3>{step.title}</h3>
+              <p className="text-muted-foreground">{step.body}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="flex flex-col items-center gap-content rounded-[10px] bg-secondary px-4 py-12 text-center">
+        <p className="text-lg">
+          Sign in to start making something with {title}.
+        </p>
+        <GoogleSignInButton href={signInHref()} size="lg" />
+      </section>
     </main>
   );
 }

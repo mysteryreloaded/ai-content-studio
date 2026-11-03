@@ -120,11 +120,11 @@
   color-scheme: light dark;
 
   --radius: 8px;
-  /* The header's height (issue #188): 8px padding above and below the
-     32px avatar plus its 1px bottom border, border-box. `AppHeader`
-     sizes itself with it, and the Model editor's sticky header and
-     checks rail (#213) offset from it, so the two can't drift. */
-  --app-header-h: 49px;
+  /* The header's height (issue #188, roomier #222): the 64px row
+     `AppHeader` sizes itself with (docs/ui-sizes.md); the Model
+     editor's sticky header and checks rail (#213) offset from it, so
+     the two can't drift. */
+  --app-header-h: 64px;
   --bg: #f4f6f5;
   --panel: #ffffff;
   --sunk: #edf1ef;
@@ -204,11 +204,15 @@
   html {
     font-family: var(--font-ui);
   }
+  /* The roomier type scale (issue #222): 16px body text on a 1.6
+     line-height, and the heading steps from the scale in
+     docs/ui-sizes.md — the prototype's 14px/1.45 prototype type is
+     replaced, its layout and colours are not. */
   body {
     background-color: var(--bg);
     color: var(--fg);
-    font-size: 14px;
-    line-height: 1.45;
+    font-size: 16px;
+    line-height: 1.6;
   }
   h1,
   h2,
@@ -217,23 +221,67 @@
     font-family: var(--font-head);
     font-weight: 600;
     letter-spacing: 0.005em;
-  }
-  h1 {
-    font-size: 22px;
-    line-height: 1.2;
-  }
-  h2 {
-    font-size: 18px;
     line-height: 1.25;
   }
+  h1 {
+    font-size: 32px;
+  }
+  h2 {
+    font-size: 24px;
+  }
   h3 {
-    font-size: 15px;
+    font-size: 20px;
   }
   h4 {
-    font-size: 13px;
+    font-size: 17px;
+  }
+  /* A page heading steps up at the lg breakpoint (docs/ui-sizes.md). */
+  @media (min-width: 1024px) {
+    h1 {
+      font-size: 40px;
+    }
+  }
+  /* Body copy and lists get the scale's bottom margin (1em at 16px). */
+  p,
+  ul,
+  ol {
+    margin-bottom: 16px;
   }
   :focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
+  }
+}
+
+/*
+ * The page rhythm (issue #222): the named vertical gaps the restyled
+ * pages (docs/ui-sizes.md) use instead of per-page one-off values —
+ * stacked fields 20px apart, a title 24px from its content, groups and
+ * sections 40px apart. They are `gap`s on a flex/grid column; the
+ * base-layer element margins are zeroed on their block children, so the
+ * named value is the only spacing in the column.
+ */
+@utility gap-fields {
+  gap: 20px;
+  & > p,
+  & > ul,
+  & > ol {
+    margin-bottom: 0;
+  }
+}
+@utility gap-content {
+  gap: 24px;
+  & > p,
+  & > ul,
+  & > ol {
+    margin-bottom: 0;
+  }
+}
+@utility gap-sections {
+  gap: 40px;
+  & > p,
+  & > ul,
+  & > ol {
+    margin-bottom: 0;
   }
 }

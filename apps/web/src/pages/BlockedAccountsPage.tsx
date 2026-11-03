@@ -1,96 +1,198 @@
-import { useEffect, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 import { Link } from "react-router-dom";
+import { AdminPageHeader } from "../components/admin/AdminPageHeader.js";
+import { AdminSection } from "../components/admin/AdminSection.js";
+import { AdminTable, adminHeadCell } from "../components/admin/AdminTable.js";
+import { AdminTabs, userSectionTabs } from "../components/admin/AdminTabs.js";
+import { EmptyState } from "../components/admin/EmptyState.js";
+import { LoadError } from "../components/admin/LoadError.js";
+import { Button } from "../components/ui/button.js";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "../components/ui/dialog.js";
+import {
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "../components/ui/table.js";
+import { api, ok } from "../lib/api.js";
+import { formatWhen } from "../lib/format.js";
 
 interface BlockedAccount {
   id: string;
   userId: string;
   disabledAt: string | null;
   reason: string | null;
+  /** When the entry was created (the Admin delete that blocked the account). */
   createdAt: string;
 }
 
-/** `/admin/blocked-accounts`: the Google accounts an Admin delete blocked from signing up again (issue #64), and clearing one off the list. */
+interface BlockedAccountsResponse {
+  blockedAccounts: BlockedAccount[];
+}
+
+/** The original page's explanation, kept as the section's description (issue #207). */
+const DESCRIPTION =
+  "A Google account an Admin deleted while it was disabled, kept here so it can't simply sign up again. Clearing an entry lets that account sign up as a brand-new user.";
+
+/**
+ * The blocked accounts of the Users section (issue #207): the Google
+ * accounts an Admin delete blocked from signing up again, and clearing
+ * one off the list. Users and Blocked accounts share the "Users" header
+ * and its tabs; clearing asks first.
+ */
 export function BlockedAccountsPage() {
-  const [rows, setRows] = useState<BlockedAccount[] | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const [clearing, setClearing] = useState<BlockedAccount | null>(null);
+  // The original page's action error: a failed Clear is visible, in the
+  // open dialog, and a new attempt starts from a clean line.
+  const [clearError, setClearError] = useState<string | null>(null);
 
-  function load() {
-    fetch("/api/admin/blocked-accounts")
-      .then((res) => {
-        if (!res.ok) throw new Error(`unexpected status ${res.status}`);
-        return res.json() as Promise<{ blockedAccounts: BlockedAccount[] }>;
-      })
-      .then((body) => {
-        setRows(body.blockedAccounts);
-        setLoadError(null);
-      })
-      .catch(() => setLoadError("could not load blocked accounts"));
-  }
+  const listQuery = useQuery({
+    queryKey: ["admin", "blocked-accounts"],
+    queryFn: ({ signal }) =>
+      ok<BlockedAccountsResponse>(
+        api.api.admin["blocked-accounts"].$get({ init: { signal } }),
+      ),
+  });
 
-  useEffect(load, []);
+  const clearMutation = useMutation({
+    mutationFn: ({ id }: { id: string }) =>
+      ok<{ ok: boolean }>(
+        api.api.admin["blocked-accounts"][":id"].$delete({ param: { id } }),
+      ),
+    onSuccess: () => {
+      setClearing(null);
+      setClearError(null);
+      void queryClient.invalidateQueries({
+        queryKey: ["admin", "blocked-accounts"],
+      });
+    },
+    // A failed Clear keeps its dialog open, the error inside it.
+    onError: () => setClearError("could not clear this entry"),
+  });
 
-  async function clear(id: string) {
-    setActionError(null);
-    const res = await fetch(`/api/admin/blocked-accounts/${id}`, {
-      method: "DELETE",
-    });
-    if (!res.ok) {
-      setActionError("could not clear this entry");
-      return;
-    }
-    load();
-  }
-
-  if (loadError) return <p role="alert">{loadError}</p>;
-  if (!rows) return <p>Loading…</p>;
+  const rows = listQuery.data?.blockedAccounts ?? [];
 
   return (
-    <section>
-      <h2>Blocked accounts</h2>
-      <p>
-        A Google account an Admin deleted while it was disabled, kept here so it
-        can't simply sign up again. Clearing an entry lets that account sign up
-        as a brand-new user.
-      </p>
-      {actionError && <p role="alert">{actionError}</p>}
-      <table>
-        <thead>
-          <tr>
-            <th>User</th>
-            <th>Disabled</th>
-            <th>Deleted</th>
-            <th>Reason (no name or email — that's gone with the account)</th>
-            <th />
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr key={row.id}>
-              <td>
-                <Link to={`/admin/users/${row.userId}`}>{row.userId}</Link>
-              </td>
-              <td>
-                {row.disabledAt
-                  ? new Date(row.disabledAt).toLocaleString()
-                  : "—"}
-              </td>
-              <td>{new Date(row.createdAt).toLocaleString()}</td>
-              <td>{row.reason || "—"}</td>
-              <td>
-                <button type="button" onClick={() => void clear(row.id)}>
-                  Clear
-                </button>
-              </td>
-            </tr>
-          ))}
-          {rows.length === 0 && (
-            <tr>
-              <td colSpan={5}>No blocked accounts.</td>
-            </tr>
-          )}
-        </tbody>
-      </table>
-    </section>
+    <>
+      <AdminPageHeader
+        crumb={
+          <>
+            Admin /{" "}
+            <Link to="/admin/users" className="hover:underline">
+              Users
+            </Link>
+          </>
+        }
+        title="Users"
+      />
+      <AdminTabs tabs={userSectionTabs} />
+      <AdminSection title="Blocked accounts" description={DESCRIPTION}>
+        {listQuery.isError && listQuery.data === undefined ? (
+          <LoadError
+            message="could not load the blocked accounts"
+            onRetry={() => void listQuery.refetch()}
+          />
+        ) : listQuery.isPending ? (
+          <p>Loading…</p>
+        ) : rows.length === 0 ? (
+          <EmptyState>No blocked accounts.</EmptyState>
+        ) : (
+          <AdminTable>
+            <TableHeader>
+              <TableRow>
+                <TableHead className={adminHeadCell}>User</TableHead>
+                <TableHead className={adminHeadCell}>Disabled</TableHead>
+                <TableHead className={adminHeadCell}>Deleted</TableHead>
+                <TableHead className={adminHeadCell}>Reason</TableHead>
+                <TableHead className={adminHeadCell}>Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((row) => (
+                <TableRow key={row.id}>
+                  <TableCell className="max-w-60 truncate font-mono text-xs">
+                    <Link
+                      to={`/admin/users/${row.userId}`}
+                      className="hover:underline"
+                    >
+                      {row.userId}
+                    </Link>
+                  </TableCell>
+                  <TableCell>
+                    {row.disabledAt ? formatWhen(row.disabledAt) : "—"}
+                  </TableCell>
+                  <TableCell>{formatWhen(row.createdAt)}</TableCell>
+                  <TableCell className="max-w-80">
+                    {row.reason || "—"}
+                  </TableCell>
+                  <TableCell>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        // A fresh dialog starts from a clean line: a
+                        // stale error from a prior Clear does not
+                        // surface in it.
+                        setClearError(null);
+                        setClearing(row);
+                      }}
+                    >
+                      Clear
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </AdminTable>
+        )}
+      </AdminSection>
+
+      <Dialog
+        open={clearing !== null}
+        onOpenChange={(open) => {
+          if (!open) setClearing(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-[520px]">
+          <DialogHeader>
+            <DialogTitle>Clear this block?</DialogTitle>
+            <DialogDescription>
+              That Google account can then sign up again as a brand-new user.
+            </DialogDescription>
+          </DialogHeader>
+          {clearError ? (
+            <p role="alert" className="text-err">
+              {clearError}
+            </p>
+          ) : null}
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setClearing(null)}>
+              Cancel
+            </Button>
+            <Button
+              disabled={clearMutation.isPending}
+              onClick={() => {
+                if (clearing) {
+                  setClearError(null);
+                  void clearMutation.mutate({ id: clearing.id });
+                }
+              }}
+            >
+              Clear
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

@@ -19,19 +19,6 @@ export const WORKBENCH_STYLE = `
 .workbench-ai-reminder {
   opacity: 0.7;
 }
-.workbench-layout {
-  display: flex;
-  gap: 2rem;
-  align-items: flex-start;
-}
-.workbench-form {
-  flex: 1;
-  min-width: 0;
-}
-.workbench-submissions {
-  width: 320px;
-  flex-shrink: 0;
-}
 .workbench-generate-bar {
   position: sticky;
   bottom: 0;
@@ -48,12 +35,6 @@ export const WORKBENCH_STYLE = `
   font-size: 0.9em;
 }
 @media (max-width: 640px) {
-  .workbench-layout {
-    flex-direction: column;
-  }
-  .workbench-submissions {
-    width: auto;
-  }
   .workbench-generate-bar {
     justify-content: space-between;
   }

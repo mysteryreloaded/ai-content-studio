@@ -122,7 +122,9 @@ function OutputsEditor({
                       #{nodeId}
                     </span>
                     <Pill tone="accent" className="gap-1">
-                      <TypeDot kind={typeDotKindForValueType("string")} />
+                      <TypeDot
+                        kind={kind ?? typeDotKindForValueType("string")}
+                      />
                       {kind ?? "unknown kind"}
                     </Pill>
                   </>

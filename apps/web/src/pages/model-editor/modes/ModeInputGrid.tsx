@@ -199,9 +199,16 @@ export function ModeInputGrid({
                       issue.severity === "error",
                   );
                   const label = `${input.label || "this Input"} in ${mode.name || "this Mode"}`;
+                  const fixedDisplayValue =
+                    input.kind === "select" &&
+                    typeof setting.fixedValue === "string"
+                      ? (input.options.find(
+                          (option) => option.id === setting.fixedValue,
+                        )?.label ?? setting.fixedValue)
+                      : setting.fixedValue;
                   const stateLabel =
                     setting.state === "fixed"
-                      ? `Fixed${setting.fixedValue !== null && setting.fixedValue !== "" ? ` (${setting.fixedValue})` : ""}`
+                      ? `Fixed${fixedDisplayValue !== null && fixedDisplayValue !== "" ? ` (${fixedDisplayValue})` : ""}`
                       : setting.state.charAt(0).toUpperCase() +
                         setting.state.slice(1);
                   return (
@@ -231,7 +238,7 @@ export function ModeInputGrid({
                       >
                         <StateChip
                           state={setting.state}
-                          fixedValue={setting.fixedValue}
+                          fixedValue={fixedDisplayValue}
                         />
                         {setting.label !== "" && (
                           <span className="block max-w-[110px] truncate text-[11px] text-muted-foreground">

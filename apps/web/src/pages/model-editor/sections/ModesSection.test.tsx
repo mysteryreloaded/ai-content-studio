@@ -598,6 +598,82 @@ describe("ModesSection", () => {
     expect(await view.findByText("Describe the scene")).toBeTruthy();
   });
 
+  test("fixing a select Input to an option shows its label, not the option's id (issue #216)", async () => {
+    const DETAIL_SELECT_MODE = {
+      ...DETAIL,
+      modes: [
+        {
+          id: "mode-1",
+          sortOrder: 0,
+          name: "Mode 1",
+          description: "",
+          outputNodes: [
+            { nodeId: "2", classType: "SaveImage", title: null, kind: "image" },
+          ],
+          inputSettings: [],
+        },
+      ],
+      inputs: [
+        {
+          id: "style-input",
+          kind: "select",
+          group: "settings",
+          label: "Style",
+          help: "",
+          default: null,
+          options: [
+            {
+              id: "11111111-1111-1111-1111-111111111111",
+              label: "Watercolor",
+              values: ["watercolor"],
+            },
+            {
+              id: "22222222-2222-2222-2222-222222222222",
+              label: "Oil",
+              values: ["oil"],
+            },
+          ],
+          bindings: [
+            {
+              nodeId: "1",
+              field: "image",
+              classType: "LoadImage",
+              title: null,
+            },
+          ],
+        },
+      ],
+    };
+
+    mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1"))
+        return Response.json(DETAIL_SELECT_MODE);
+      if (call.method === "GET") return Response.json(NO_BACKENDS);
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+
+    await userEvent.click(
+      await view.findByRole("button", { name: /^Style in Mode 1/ }),
+    );
+    await userEvent.click(view.getByRole("radio", { name: "Fixed" }));
+    await userEvent.selectOptions(
+      view.getByLabelText("Style fixed value"),
+      "11111111-1111-1111-1111-111111111111",
+    );
+    await userEvent.keyboard("{Escape}");
+
+    expect(
+      view.getByRole("button", {
+        name: "Style in Mode 1: Fixed (Watercolor)",
+      }),
+    ).toBeTruthy();
+    expect(view.getByText("Watercolor")).toBeTruthy();
+    expect(view.queryByText("11111111-1111-1111-1111-111111111111")).toBeNull();
+  });
+
   test("cell popover closes on an outside scroll, but not on a scroll inside itself (issue #216)", async () => {
     const DETAIL_ONE_MODE = {
       ...DETAIL,

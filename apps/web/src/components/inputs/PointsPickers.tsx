@@ -6,6 +6,8 @@ import {
   isPointInCrop,
 } from "@ai-content-studio/shared";
 import {
+  type ElementType,
+  Fragment,
   type MouseEvent as ReactMouseEvent,
   useEffect,
   useMemo,
@@ -54,11 +56,13 @@ export function PointsPickers({
   values,
   onPointsChange,
   issuesByInputId,
+  bare = false,
 }: PointsPickersProps) {
   if (inputs.length === 0) return null;
+  const Wrapper: ElementType = bare ? Fragment : "fieldset";
   return (
-    <fieldset>
-      <legend>Points</legend>
+    <Wrapper>
+      {!bare && <legend>Points</legend>}
       {inputs.map((input) => (
         <PointsField
           key={input.id}
@@ -71,7 +75,7 @@ export function PointsPickers({
           issue={issuesByInputId[input.id]}
         />
       ))}
-    </fieldset>
+    </Wrapper>
   );
 }
 

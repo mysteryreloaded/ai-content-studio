@@ -350,8 +350,10 @@ export async function createApp(deps: AppDeps) {
       "/api/admin/models",
       adminModelsRoute(
         deps.db,
+        deps.clock,
         modelRepository,
         modelBackendsRepository,
+        backendRepository,
         backendsService,
         generationsRepository,
         routes,

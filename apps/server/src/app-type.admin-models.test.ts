@@ -15,6 +15,19 @@ const client = hc<AppType>("http://x");
 // types instead (and, for the version-only routes, the exact
 // `{ version }` shape, which `disable` is not part of).
 async function typedCalls() {
+  // List: GET / carries each row's queue/Backend figures (issue #204),
+  // reused from `/api/admin/overview` (issue #203).
+  const listRes = await client.api.admin.models.$get();
+  const { models: modelsList } = await listRes.json();
+  const [row] = modelsList;
+  const modeCount: number | undefined = row?.modeCount;
+  const backendFigures: { usable: number; attached: number } | undefined =
+    row?.backends;
+  const modesWithoutBackend: string[] | undefined = row?.modesWithoutBackend;
+  const queued: number | undefined = row?.queued;
+  const running: number | undefined = row?.running;
+  void [modeCount, backendFigures, modesWithoutBackend, queued, running];
+
   // Model create: POST / takes the create schema (`name` plus the raw
   // workflow).
   await client.api.admin.models.$post({

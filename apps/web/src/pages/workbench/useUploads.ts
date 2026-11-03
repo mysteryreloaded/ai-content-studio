@@ -54,25 +54,45 @@ export function useUploads({
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: modelRef/valuesRef and every setter are stable across renders (refs, or useState setters from the caller); the dependency array matches the Workbench component's own, unchanged by this extraction.
   const startUpload = useCallback(
-    async (input: ImageUploadInput | MediaUploadInput, file: File) => {
+    async (
+      input: ImageUploadInput | MediaUploadInput,
+      file: File,
+      needsPlayableVideo = false,
+    ) => {
       const current = modelRef.current;
       if (!current) return;
       runningUploadsRef.current.get(input.id)?.controller.abort();
       runningUploadsRef.current.delete(input.id);
       setValues((v) => ({ ...v, [input.id]: "" }));
+      // CEO review round 1: cleared together with the trim range, not
+      // left stale, so a Points Input watching this Upload sees the old
+      // one go away in the same render — "the video changed", not a
+      // spurious "the trim start moved" from the trim range alone
+      // disappearing a render early.
+      setUploads((u) => {
+        const { [input.id]: _, ...rest } = u;
+        return rest;
+      });
       setTrimRangeByInputId((ranges) => {
         const { [input.id]: _, ...rest } = ranges;
         return rest;
       });
 
-      const issue = await issueFor(input, file, maxUploadMb);
+      const issue = await issueFor(
+        input,
+        file,
+        maxUploadMb,
+        needsPlayableVideo,
+      );
       if (issue) {
         setUploads((u) => ({
           ...u,
           [input.id]: {
             status: "error",
             name: file.name,
-            message: `${file.name} ${issue}.`,
+            message: issue.prefixed
+              ? `${file.name} ${issue.message}.`
+              : issue.message,
           },
         }));
         return;
@@ -81,7 +101,13 @@ export function useUploads({
       const controller = new AbortController();
       setUploads((u) => ({
         ...u,
-        [input.id]: { status: "uploading", name: file.name, progress: 0 },
+        [input.id]: {
+          status: "uploading",
+          name: file.name,
+          progress: 0,
+          size: file.size,
+          file,
+        },
       }));
       const promise = uploadResumable(file, httpUploadApi(), {
         hint: { modelId: current.id, inputId: input.id },
@@ -90,7 +116,13 @@ export function useUploads({
           if (controller.signal.aborted) return;
           setUploads((u) => ({
             ...u,
-            [input.id]: { status: "uploading", name: file.name, progress },
+            [input.id]: {
+              status: "uploading",
+              name: file.name,
+              progress,
+              size: file.size,
+              file,
+            },
           }));
         },
       })
@@ -110,12 +142,23 @@ export function useUploads({
               uploadId: done.id,
               durationMs: done.durationMs,
               browserPlayable: done.browserPlayable,
+              size: file.size,
+              width: done.width,
+              height: done.height,
             },
           }));
           if (done.durationMs !== null) {
+            const maxDurationMs =
+              input.kind === "image_upload" ? null : input.maxDurationMs;
             setTrimRangeByInputId((ranges) => ({
               ...ranges,
-              [input.id]: { startMs: 0, endMs: done.durationMs as number },
+              [input.id]: {
+                startMs: 0,
+                endMs:
+                  maxDurationMs !== null
+                    ? Math.min(done.durationMs as number, maxDurationMs)
+                    : (done.durationMs as number),
+              },
             }));
           }
         })
@@ -142,12 +185,29 @@ export function useUploads({
     [maxUploadMb],
   );
 
+  /** Abort a running Upload and clear it, its trim range and (through the Points field's own clear-on-change effect) its points (issue #197's AC). */
+  // biome-ignore lint/correctness/useExhaustiveDependencies: setValues is a stable setter from the caller, like startUpload's own dependency array above.
+  const clearUpload = useCallback((inputId: string) => {
+    runningUploadsRef.current.get(inputId)?.controller.abort();
+    runningUploadsRef.current.delete(inputId);
+    setValues((v) => ({ ...v, [inputId]: "" }));
+    setUploads((u) => {
+      const { [inputId]: _, ...rest } = u;
+      return rest;
+    });
+    setTrimRangeByInputId((ranges) => {
+      const { [inputId]: _, ...rest } = ranges;
+      return rest;
+    });
+  }, []);
+
   return {
     uploads,
     trimRangeByInputId,
     setTrimRangeByInputId,
     runningUploadsRef,
     startUpload,
+    clearUpload,
     resetUploads,
   };
 }

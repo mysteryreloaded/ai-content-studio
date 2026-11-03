@@ -319,6 +319,39 @@ export interface RebindOutcome {
  * with the save is what let a Mode's untouched, now-differently-classed
  * output node slip through as "fixed" in round 2.
  */
+/**
+ * Repoints every binding named in `rebindMap` onto its mapped node,
+ * taking classType/title fresh from `workflow` the same way `applyRebind`
+ * does for a binding it rebinds — so a rebound binding's `validateBinding`
+ * (or `checkModel`'s) check sees the *new* node's class, not the stale one
+ * it was originally bound for. Shared by `saveDraft`'s fresh-validation
+ * path and the `/draft` route's enabled-Model gate, so both agree on what
+ * a rebind actually changes about a binding (CEO review round 4, issue
+ * #254: the gate swapping only `nodeId` left a rebound-to-a-different-
+ * class-type binding looking like it still targeted its old class).
+ */
+export function remapInputBindings(
+  inputs: readonly InputDefinition[],
+  rebindMap: ReadonlyMap<string, string>,
+  workflow: Workflow,
+): InputDefinition[] {
+  if (rebindMap.size === 0) return inputs as InputDefinition[];
+  return inputs.map((def) => ({
+    ...def,
+    bindings: def.bindings.map((b) => {
+      const newNodeId = rebindMap.get(b.nodeId);
+      if (!newNodeId) return b;
+      const node = workflow[newNodeId];
+      return {
+        ...b,
+        nodeId: newNodeId,
+        classType: node?.class_type ?? b.classType,
+        title: node?._meta?.title ?? null,
+      };
+    }),
+  }));
+}
+
 export function applyRebind(
   workflow: Workflow,
   modeRecords: readonly ModeRecord[],
@@ -1791,23 +1824,11 @@ export class ModelRepository {
           // Workflow — otherwise a rebound-but-edited Input's binding
           // would still carry its old classType and spuriously fail
           // "this binding was made for" the old class.
-          const remappedInputs: InputDefinition[] =
-            rebindMap.size === 0
-              ? input.inputs
-              : input.inputs.map((def) => ({
-                  ...def,
-                  bindings: def.bindings.map((b) => {
-                    const newNodeId = rebindMap.get(b.nodeId);
-                    if (!newNodeId) return b;
-                    const node = workflow[newNodeId];
-                    return {
-                      ...b,
-                      nodeId: newNodeId,
-                      classType: node?.class_type ?? b.classType,
-                      title: node?._meta?.title ?? null,
-                    };
-                  }),
-                }));
+          const remappedInputs = remapInputBindings(
+            input.inputs,
+            rebindMap,
+            workflow,
+          );
 
           const outputNodeIds = new Set(
             finalModes.flatMap((mode) =>

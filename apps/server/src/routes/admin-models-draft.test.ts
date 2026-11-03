@@ -554,14 +554,14 @@ describe("PUT /api/admin/models/:id/draft (Workflow re-upload tolerance)", () =>
     expect(enableRes.status).toBe(200);
     const enabled = (await enableRes.json()) as { version: number };
 
-    return { model, headers, version: enabled.version };
+    return { model, headers, version: enabled.version, backendId: backend.id };
   }
 
   test("a Workflow re-upload with one rebound and one 'Leave broken' output node 400s without disable, and saves one new revision with disable: true", async () => {
     const fake = startFakeComfyUi({ port: 0 });
     try {
       const { app } = await build();
-      const { model, headers, version } = await buildEnabledModel(
+      const { model, headers, version, backendId } = await buildEnabledModel(
         app,
         fake.url,
       );
@@ -642,6 +642,14 @@ describe("PUT /api/admin/models/:id/draft (Workflow re-upload tolerance)", () =>
 
       const revisionsAfter = await db.select().from(modelRevisions);
       expect(revisionsAfter.length).toBe(revisionsBefore.length + 1);
+
+      // Stops this Backend's health monitor before the shared FakeClock
+      // (reused test-to-test) can advance into a poll for a row a later
+      // test's cleanup has already deleted.
+      await app.request(`/api/admin/backends/${backendId}?version=1`, {
+        method: "DELETE",
+        headers,
+      });
     } finally {
       await fake.stop();
     }
@@ -651,7 +659,7 @@ describe("PUT /api/admin/models/:id/draft (Workflow re-upload tolerance)", () =>
     const fake = startFakeComfyUi({ port: 0 });
     try {
       const { app } = await build();
-      const { model, headers, version } = await buildEnabledModel(
+      const { model, headers, version, backendId } = await buildEnabledModel(
         app,
         fake.url,
       );
@@ -753,6 +761,14 @@ describe("PUT /api/admin/models/:id/draft (Workflow re-upload tolerance)", () =>
 
       const revisionsAfter = await db.select().from(modelRevisions);
       expect(revisionsAfter.length).toBe(revisionsBefore.length + 1);
+
+      // Stops this Backend's health monitor before the shared FakeClock
+      // (reused test-to-test) can advance into a poll for a row a later
+      // test's cleanup has already deleted.
+      await app.request(`/api/admin/backends/${backendId}?version=1`, {
+        method: "DELETE",
+        headers,
+      });
     } finally {
       await fake.stop();
     }
@@ -768,7 +784,7 @@ describe("PUT /api/admin/models/:id/draft (Workflow re-upload tolerance)", () =>
     const fake = startFakeComfyUi({ port: 0 });
     try {
       const { app } = await build();
-      const { model, headers, version } = await buildEnabledModel(
+      const { model, headers, version, backendId } = await buildEnabledModel(
         app,
         fake.url,
       );
@@ -826,6 +842,142 @@ describe("PUT /api/admin/models/:id/draft (Workflow re-upload tolerance)", () =>
       expect(saved.modes[0]?.outputNodes).toEqual([
         { nodeId: "6", classType: "SaveImage", kind: "image", title: null },
       ]);
+
+      // Stops this Backend's health monitor before the shared FakeClock
+      // (reused test-to-test) can advance into a poll for a row a later
+      // test's cleanup has already deleted.
+      await app.request(`/api/admin/backends/${backendId}?version=1`, {
+        method: "DELETE",
+        headers,
+      });
+    } finally {
+      await fake.stop();
+    }
+  });
+
+  // Issue #254 CEO review round 4: the enabled-Model gate swapped only
+  // `nodeId` on a rebound binding, leaving its `classType` stale, so
+  // `checkModel`'s `validateBinding` saw the new node's real class and
+  // reported "now a LoraLoader, not the KSampler this binding was made
+  // for" — a false positive that 400ed a Save the editor's own
+  // (correct) `reboundInputsFrom` check had already cleared, with no
+  // "Save and disable" offered either. `remapInputBindings` (shared
+  // with `saveDraft`'s own fresh-validation rebind) fixes the gate to
+  // take classType/title from the new node, same as a real save would.
+  test("a rebound Input binding onto a different classType still saves an enabled Model without disable", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const { app } = await build();
+      const { model, headers, version, backendId } = await buildEnabledModel(
+        app,
+        fake.url,
+      );
+
+      const stepsInput = {
+        id: "33333333-3333-3333-3333-333333333333",
+        kind: "number",
+        group: "settings",
+        label: "Steps",
+        help: "",
+        numberMode: "integer",
+        min: 1,
+        max: 50,
+        step: 1,
+        default: null,
+        bindings: [
+          { nodeId: "2", field: "steps", classType: "KSampler", title: null },
+        ],
+      };
+
+      const inputsRes = await app.request(
+        `/api/admin/models/${model.id}/inputs`,
+        {
+          method: "PUT",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({
+            version,
+            inputs: [promptInput(false), stepsInput],
+          }),
+        },
+      );
+      expect(inputsRes.status).toBe(200);
+      const { record: afterInputs } = (await inputsRes.json()) as {
+        record: { version: number };
+      };
+
+      // "2" (a KSampler) is renamed "7" and becomes a LoraLoader — same
+      // node id slot, different class, the exact repro from the CEO
+      // report (a KSampler rebound onto a KSamplerAdvanced).
+      const WORKFLOW_STEPS_REBOUND = {
+        "1": { class_type: "CheckpointLoaderSimple", inputs: {} },
+        "7": {
+          class_type: "LoraLoader",
+          inputs: { model: ["1", 0], steps: 20 },
+        },
+        "3": { class_type: "SaveImage", inputs: { images: ["7", 0] } },
+        "4": { class_type: "SaveImage", inputs: { images: ["7", 0] } },
+        "5": { class_type: "CLIPTextEncode", inputs: { text: "a cat" } },
+      };
+
+      const draftBody = {
+        version: afterInputs.version,
+        details: {
+          name: model.name,
+          slug: model.slug,
+          description: model.description,
+          maxRunTimeMinutes: model.maxRunTimeMinutes,
+        },
+        terms: BLANK_TERMS,
+        workflow: {
+          json: WORKFLOW_STEPS_REBOUND,
+          rebind: [{ nodeId: "2", newNodeId: "7" }],
+        },
+        inputs: [promptInput(false), stepsInput],
+        modes: [
+          {
+            name: "Default",
+            description: "",
+            outputNodeIds: ["3", "4"],
+            inputSettings: promptInputSetting(false),
+          },
+        ],
+        disable: false,
+      };
+
+      const res = await app.request(`/api/admin/models/${model.id}/draft`, {
+        method: "PUT",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify(draftBody),
+      });
+      expect(res.status).toBe(200);
+      const saved = (await res.json()) as {
+        model: { state: string };
+        inputs: {
+          label: string;
+          bindings: {
+            nodeId: string;
+            field: string;
+            classType: string;
+            title: string | null;
+          }[];
+        }[];
+      };
+      expect(saved.model.state).toBe("enabled");
+      const steps = saved.inputs.find((i) => i.label === "Steps");
+      expect(steps?.bindings[0]).toEqual({
+        nodeId: "7",
+        field: "steps",
+        classType: "LoraLoader",
+        title: null,
+      });
+
+      // Stops this Backend's health monitor before the shared FakeClock
+      // (reused test-to-test) can advance into a poll for a row a later
+      // test's cleanup has already deleted.
+      await app.request(`/api/admin/backends/${backendId}?version=1`, {
+        method: "DELETE",
+        headers,
+      });
     } finally {
       await fake.stop();
     }

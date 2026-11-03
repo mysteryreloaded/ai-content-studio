@@ -61,6 +61,7 @@ import {
   SlugTaken,
   StaleVersion,
   applyRebind,
+  remapInputBindings,
 } from "../models/repository.js";
 import type {
   ModeInput,
@@ -1232,13 +1233,11 @@ export function adminModelsRoute(
                 ),
                 inputSettings: mode.inputSettings,
               })) satisfies CheckModelMode[];
-              const proposedInputs = inputs.map((def) => ({
-                ...def,
-                bindings: def.bindings.map((b) => ({
-                  ...b,
-                  nodeId: rebindMap.get(b.nodeId) ?? b.nodeId,
-                })),
-              })) as InputDefinition[];
+              const proposedInputs = remapInputBindings(
+                inputs as InputDefinition[],
+                rebindMap,
+                proposedWorkflow,
+              );
 
               const objectInfo = toCheckModelBackends(
                 await buildObjectInfo(attached, backendsService),

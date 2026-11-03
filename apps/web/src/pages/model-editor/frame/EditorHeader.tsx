@@ -29,7 +29,7 @@ export function EditorHeader({
   detail: ModelDetail;
   nav: EditorNavigation;
 }) {
-  const { draft, mustDisableToSave } = editor;
+  const { draft, mustDisableToSave, loadRevisions } = editor;
   const enabled = detail.model.state === "enabled";
   const dirty = draft.anyDraftDirty;
   // Issue #241 CEO review: Reload (from the stale-save alert) must ask
@@ -39,8 +39,14 @@ export function EditorHeader({
 
   async function handleSave() {
     const result = await draft.save(mustDisableToSave);
-    if (!result.ok && result.invalidSection)
+    if (!result.ok && result.invalidSection) {
       nav.setSection(result.invalidSection);
+      return;
+    }
+    // A Save creates a new revision (issue #218); the Revisions list
+    // (loaded once per Model id) needs reloading to show it, same as
+    // the removed "Replace Workflow" path's own `loadRevisions` call.
+    if (result.ok) loadRevisions();
   }
 
   function handleReloadClick() {

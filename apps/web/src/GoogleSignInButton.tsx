@@ -1,5 +1,9 @@
+import { cn } from "cn";
+
 interface GoogleSignInButtonProps {
   href: string;
+  /** `lg` is the 48px-tall control (docs/ui-sizes.md) for the Landing hero and closing band. */
+  size?: "default" | "lg";
 }
 
 /**
@@ -9,11 +13,19 @@ interface GoogleSignInButtonProps {
  * `useTheme`'s `resolvedTheme`, so the button follows the theme switch.
  * Colours, radius and sizes follow Google's guidelines.
  */
-export function GoogleSignInButton({ href }: GoogleSignInButtonProps) {
+export function GoogleSignInButton({
+  href,
+  size = "default",
+}: GoogleSignInButtonProps) {
   return (
     <a
       href={href}
-      className="inline-flex items-center gap-3 rounded border border-[#747775] bg-[#ffffff] px-3 py-2 font-[family-name:Roboto,Arial,sans-serif] text-sm font-medium leading-5 text-[#1f1f1f] no-underline dark:border-[#8e918f] dark:bg-[#131314] dark:text-[#e3e3e3]"
+      className={cn(
+        "inline-flex items-center gap-3 rounded border border-[#747775] bg-[#ffffff] font-[family-name:Roboto,Arial,sans-serif] font-medium text-[#1f1f1f] no-underline dark:border-[#8e918f] dark:bg-[#131314] dark:text-[#e3e3e3]",
+        size === "lg"
+          ? "h-12 px-6 text-base leading-5"
+          : "px-3 py-2 text-sm leading-5",
+      )}
     >
       <svg
         width="18"

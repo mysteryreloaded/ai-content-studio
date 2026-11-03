@@ -117,4 +117,28 @@ describe("BlockedAccountsPage", () => {
     // The cleared list reloads to its empty state.
     expect(await screen.findByText("No blocked accounts.")).toBeTruthy();
   });
+
+  test("a failed clear keeps the dialog open and shows the error", async () => {
+    mockFetch((call) => {
+      if (call.method === "DELETE" && call.url.endsWith("/ba-1")) {
+        return Response.json({ error: "boom" }, { status: 500 });
+      }
+      return undefined;
+    });
+
+    renderPage();
+    await screen.findByText("Abusive prompts");
+
+    await userEvent.click(screen.getByText("Clear"));
+    const confirmClear = screen.getAllByText("Clear").at(-1);
+    if (confirmClear === undefined) throw new Error("no confirm Clear button");
+    await userEvent.click(confirmClear);
+
+    // The original page's "could not clear this entry" line, inside the
+    // open dialog, which stays open for a retry.
+    expect(await screen.findByText("could not clear this entry")).toBeTruthy();
+    expect(
+      screen.getByRole("heading", { name: "Clear this block?" }),
+    ).toBeTruthy();
+  });
 });

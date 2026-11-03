@@ -52,6 +52,9 @@ const DESCRIPTION =
 export function BlockedAccountsPage() {
   const queryClient = useQueryClient();
   const [clearing, setClearing] = useState<BlockedAccount | null>(null);
+  // The original page's action error: a failed Clear is visible, in the
+  // open dialog, and a new attempt starts from a clean line.
+  const [clearError, setClearError] = useState<string | null>(null);
 
   const listQuery = useQuery({
     queryKey: ["admin", "blocked-accounts"],
@@ -68,10 +71,13 @@ export function BlockedAccountsPage() {
       ),
     onSuccess: () => {
       setClearing(null);
+      setClearError(null);
       void queryClient.invalidateQueries({
         queryKey: ["admin", "blocked-accounts"],
       });
     },
+    // A failed Clear keeps its dialog open, the error inside it.
+    onError: () => setClearError("could not clear this entry"),
   });
 
   const rows = listQuery.data?.blockedAccounts ?? [];
@@ -158,6 +164,11 @@ export function BlockedAccountsPage() {
               That Google account can then sign up again as a brand-new user.
             </DialogDescription>
           </DialogHeader>
+          {clearError ? (
+            <p role="alert" className="text-err">
+              {clearError}
+            </p>
+          ) : null}
           <DialogFooter>
             <Button variant="ghost" onClick={() => setClearing(null)}>
               Cancel
@@ -166,6 +177,7 @@ export function BlockedAccountsPage() {
               disabled={clearMutation.isPending}
               onClick={() => {
                 if (clearing) {
+                  setClearError(null);
                   void clearMutation.mutate({ id: clearing.id });
                 }
               }}

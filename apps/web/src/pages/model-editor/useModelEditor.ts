@@ -439,19 +439,21 @@ export function useModelEditor() {
     loadObjectInfo();
   }
 
-  function addMode() {
-    if (!modesDraft) return;
+  /** "+ Mode" (issue #216): adds "Mode N" (N = count + 1) with no outputs, returning its key so the caller opens its sheet right away. */
+  function addMode(): string | null {
+    if (!modesDraft) return null;
+    const key = crypto.randomUUID();
     setModesDraft([
       ...modesDraft,
       {
-        key: crypto.randomUUID(),
-        name: "",
+        key,
+        name: `Mode ${modesDraft.length + 1}`,
         description: "",
         outputNodeIds: [],
         inputSettings: [],
       },
     ]);
-    setEditingModeIndex(modesDraft.length);
+    return key;
   }
 
   function removeMode(index: number) {
@@ -467,11 +469,11 @@ export function useModelEditor() {
     );
   }
 
-  /** Duplicates Mode `index` right after it, as a fresh (unsaved) Mode (issue #48). */
-  function duplicateMode(index: number) {
-    if (!modesDraft) return;
+  /** Duplicates Mode `index` right after it, as a fresh (unsaved) Mode (issue #48), returning the copy's key so the caller opens its sheet right away (issue #216). */
+  function duplicateMode(index: number): string | null {
+    if (!modesDraft) return null;
     const mode = modesDraft[index];
-    if (!mode) return;
+    if (!mode) return null;
     const copy: DraftMode = {
       ...mode,
       key: crypto.randomUUID(),
@@ -482,6 +484,7 @@ export function useModelEditor() {
       copy,
       ...modesDraft.slice(index + 1),
     ]);
+    return copy.key;
   }
 
   /** Sets Mode `modeIndex`'s setting for `inputId` (issue #48's grid cell). */

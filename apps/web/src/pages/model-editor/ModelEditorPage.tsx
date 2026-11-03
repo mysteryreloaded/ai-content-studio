@@ -70,7 +70,7 @@ export function ModelEditorPage() {
               <InputsSection editor={editor} detail={detail} nav={nav} />
             )}
             {nav.section === "modes" && (
-              <ModesSection editor={editor} detail={detail} />
+              <ModesSection editor={editor} detail={detail} nav={nav} />
             )}
             {nav.section === "backends" && (
               <BackendsSection editor={editor} detail={detail} />
@@ -80,7 +80,7 @@ export function ModelEditorPage() {
             )}
             {nav.section === "test" && (
               <p className="text-muted-foreground">
-                Run a Test from a Mode's sheet, in Modes.
+                Testing a Mode is coming soon (issue #217).
               </p>
             )}
             {nav.section === "revisions" && (

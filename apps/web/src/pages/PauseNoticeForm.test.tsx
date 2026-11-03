@@ -154,8 +154,23 @@ describe("PauseNoticeForm", () => {
   });
 
   test("PauseControl and NoticeForm render on their own", async () => {
-    mockFetch(() => Response.json(RUNNING_SETTINGS));
+    const SETTINGS_WITH_NOTICE = {
+      ...RUNNING_SETTINGS,
+      notice: "Hello",
+      noticeRevision: 4,
+    };
+    const calls = mockFetch((call) => {
+      if (call.url.endsWith("/api/admin/site-settings/notice")) {
+        return Response.json({
+          ...SETTINGS_WITH_NOTICE,
+          notice: "Hello",
+          noticeRevision: 5,
+        });
+      }
+      return Response.json(SETTINGS_WITH_NOTICE);
+    });
 
+    const { default: userEvent } = await import("@testing-library/user-event");
     renderWithProviders(
       <>
         <PauseControl />
@@ -166,6 +181,40 @@ describe("PauseNoticeForm", () => {
     await waitFor(() =>
       expect(screen.getByText("Generating is running normally.")).toBeTruthy(),
     );
-    expect(screen.getByLabelText("Notice")).toBeTruthy();
+    expect(await screen.findByDisplayValue("Hello")).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (call) =>
+            call.method === "PUT" &&
+            call.url.endsWith("/api/admin/site-settings/notice"),
+        ),
+      ).toBe(true),
+    );
+    const noticeCall = calls.find((call) =>
+      call.url.endsWith("/api/admin/site-settings/notice"),
+    );
+    expect(noticeCall?.body).toEqual({ revision: 4, text: "Hello" });
+  });
+
+  test("a non-409 error pausing shows a save-error message", async () => {
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/admin/site-settings/pause")) {
+        return Response.json({ error: "terms_required" }, { status: 403 });
+      }
+      return Response.json(RUNNING_SETTINGS);
+    });
+
+    const { default: userEvent } = await import("@testing-library/user-event");
+    renderWithProviders(<PauseControl />);
+    await screen.findByRole("button", { name: "Pause" });
+
+    await userEvent.click(screen.getByRole("button", { name: "Pause" }));
+
+    expect(await screen.findByText("terms_required")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Pause" })).toBeTruthy();
   });
 });

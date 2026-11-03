@@ -117,7 +117,8 @@ export function SiteTermsForm({
         onSubmit={handleSubmit((values) => {
           setJustSaved(false);
           setSaveError(null);
-          mutate(siteTermsFieldsSchema.parse(values));
+          const parsed = siteTermsFieldsSchema.parse(values);
+          mutate(isChanged ? parsed : { ...parsed, askAgain: false });
         })}
       >
         <MarkdownEditor

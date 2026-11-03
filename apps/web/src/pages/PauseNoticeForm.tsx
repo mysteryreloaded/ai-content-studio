@@ -54,6 +54,7 @@ export function PauseControl({
 }) {
   const queryClient = useQueryClient();
   const [conflict, setConflict] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   const resolved = useOwnSettings(settings);
 
   const { mutate: pause, isPending: isPausing } = useMutation({
@@ -63,11 +64,15 @@ export function PauseControl({
       queryClient.setQueryData(siteSettingsQueryKey, updated);
       queryClient.invalidateQueries({ queryKey: ["admin", "overview"] });
       setConflict(false);
+      setActionError(null);
     },
     onError: (error: unknown) => {
       if (error instanceof ApiError && error.status === 409) {
         setConflict(true);
+        setActionError(null);
+        return;
       }
+      setActionError(describeSaveError(error));
     },
   });
 
@@ -78,11 +83,15 @@ export function PauseControl({
       queryClient.setQueryData(siteSettingsQueryKey, updated);
       queryClient.invalidateQueries({ queryKey: ["admin", "overview"] });
       setConflict(false);
+      setActionError(null);
     },
     onError: (error: unknown) => {
       if (error instanceof ApiError && error.status === 409) {
         setConflict(true);
+        setActionError(null);
+        return;
       }
+      setActionError(describeSaveError(error));
     },
   });
 
@@ -94,6 +103,7 @@ export function PauseControl({
     });
     queryClient.setQueryData(siteSettingsQueryKey, fresh);
     setConflict(false);
+    setActionError(null);
   }
 
   if (!resolved) return <p className="text-muted-foreground">Loading…</p>;
@@ -130,14 +140,17 @@ export function PauseControl({
               ones wait, test Generations still run.
             </p>
           </div>
-          <Button
-            type="button"
-            className="border-warn bg-warn text-card hover:bg-warn/90"
-            disabled={isPending}
-            onClick={() => pause()}
-          >
-            Pause
-          </Button>
+          <div className="flex flex-col items-end gap-1">
+            <Button
+              type="button"
+              className="border-warn bg-warn text-card hover:bg-warn/90"
+              disabled={isPending}
+              onClick={() => pause()}
+            >
+              Pause
+            </Button>
+            {actionError && <p className="text-err">{actionError}</p>}
+          </div>
         </div>
       )}
 
@@ -150,14 +163,17 @@ export function PauseControl({
               : "unknown"}{" "}
             by {resolved.pausedByName}
           </span>
-          <Button
-            type="button"
-            size="sm"
-            disabled={isPending}
-            onClick={() => resume()}
-          >
-            Resume
-          </Button>
+          <div className="flex flex-col items-end gap-1">
+            <Button
+              type="button"
+              size="sm"
+              disabled={isPending}
+              onClick={() => resume()}
+            >
+              Resume
+            </Button>
+            {actionError && <p className="text-err">{actionError}</p>}
+          </div>
         </div>
       )}
     </div>
@@ -173,14 +189,19 @@ function defaultValuesFrom(settings: AdminSiteSettings): SiteNoticeFields {
  * the Overview, #203, can place it on its own).
  */
 export function NoticeForm({ settings }: { settings?: AdminSiteSettings }) {
-  const queryClient = useQueryClient();
   const resolved = useOwnSettings(settings);
+
+  if (!resolved) return <p className="text-muted-foreground">Loading…</p>;
+
+  return <NoticeFormFields settings={resolved} />;
+}
+
+function NoticeFormFields({ settings }: { settings: AdminSiteSettings }) {
+  const queryClient = useQueryClient();
   const [staleSave, setStaleSave] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [noticeRevision, setNoticeRevision] = useState(
-    resolved?.noticeRevision,
-  );
+  const [noticeRevision, setNoticeRevision] = useState(settings.noticeRevision);
 
   const {
     register,
@@ -191,7 +212,7 @@ export function NoticeForm({ settings }: { settings?: AdminSiteSettings }) {
     formState: { errors, isDirty, isSubmitting },
   } = useForm<SiteNoticeFields>({
     resolver: zodResolver(siteNoticeFieldsSchema),
-    defaultValues: resolved ? defaultValuesFrom(resolved) : { text: "" },
+    defaultValues: defaultValuesFrom(settings),
   });
 
   const text = watch("text") ?? "";
@@ -200,7 +221,7 @@ export function NoticeForm({ settings }: { settings?: AdminSiteSettings }) {
     mutationFn: (values: SiteNoticeFields) =>
       ok<AdminSiteSettings>(
         api.api.admin["site-settings"].notice.$put({
-          json: { revision: noticeRevision ?? 1, ...values },
+          json: { revision: noticeRevision, ...values },
         }),
       ),
     onSuccess: (updated) => {
@@ -236,8 +257,6 @@ export function NoticeForm({ settings }: { settings?: AdminSiteSettings }) {
     setSaveError(null);
     setNoticeRevision(fresh.noticeRevision);
   }
-
-  if (!resolved) return <p className="text-muted-foreground">Loading…</p>;
 
   return (
     <form

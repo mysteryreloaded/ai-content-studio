@@ -135,4 +135,42 @@ describe("SiteTermsForm", () => {
     });
     expect(await screen.findByText("Saved.")).toBeTruthy();
   });
+
+  test("reverting to the original body sends askAgain:false even if it was ticked", async () => {
+    const calls = mockPut(() =>
+      Response.json({
+        ...BASE_SETTINGS,
+        termsBody: "Old terms.",
+        termsVersion: 1,
+        termsRevision: 6,
+      }),
+    );
+
+    renderForm({
+      ...BASE_SETTINGS,
+      termsBody: "Old terms.",
+      termsVersion: 1,
+      termsRevision: 5,
+    });
+
+    fireEvent.change(screen.getByLabelText("Terms (Markdown)"), {
+      target: { value: "New terms." },
+    });
+    await screen.findByText("Ask everyone to accept again");
+    fireEvent.click(screen.getByRole("checkbox"));
+
+    fireEvent.change(screen.getByLabelText("Terms (Markdown)"), {
+      target: { value: "Old terms." },
+    });
+    expect(screen.queryByText("Ask everyone to accept again")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(calls.length).toBe(1));
+    expect(calls[0]?.body).toEqual({
+      revision: 5,
+      body: "Old terms.",
+      askAgain: false,
+    });
+  });
 });

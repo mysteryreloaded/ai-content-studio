@@ -5,7 +5,9 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
 await GlobalRegistrator.register();
 
-const { cleanup, fireEvent, waitFor } = await import("@testing-library/react");
+const { cleanup, fireEvent, waitFor, within } = await import(
+  "@testing-library/react"
+);
 const { GalleryPage } = await import("./GalleryPage.js");
 const { drainMacrotasks, renderWithProviders } = await import(
   "../test/render.js"
@@ -45,6 +47,14 @@ class FakeEventSource {
     for (const handler of this.listeners[type] ?? []) {
       handler({ data: JSON.stringify(data) });
     }
+  }
+  /** The Gallery also opens the Notice/Pause stream; tests target the Generations one by its URL. */
+  static generationsStream(): FakeEventSource {
+    const source = FakeEventSource.instances.find((instance) =>
+      instance.url.includes("/api/generations/stream"),
+    );
+    if (!source) throw new Error("no Generations EventSource yet");
+    return source;
   }
 }
 
@@ -612,10 +622,60 @@ describe("GenerationDetailOverlay (issue #57/#199)", () => {
     await waitFor(() =>
       expect(FakeEventSource.instances.length).toBeGreaterThan(0),
     );
-    FakeEventSource.instances[0]?.dispatch("change", { ...GENERATION_1 });
+    FakeEventSource.generationsStream().dispatch("change", { ...GENERATION_1 });
 
     await waitFor(() =>
       expect(document.body.querySelector("img[alt='']")).toBeTruthy(),
+    );
+  });
+
+  test("after → to a new Generation, a change event for *that* id still refetches it", async () => {
+    // Regression for the stale-closure bug: `useEventStream` binds its
+    // `change` handler once per mount of the shared stream, and this
+    // dialog is never remounted on ←/→ (same component, new `id` prop)
+    // — a handler closing directly over the `id` prop would keep
+    // checking the id the dialog *opened* with, not the one now open.
+    let g2Failed = false;
+    mockFetch((call) => {
+      const base = galleryHandlers()(call);
+      if (base) return base;
+      if (call.url === "/api/generations/g1")
+        return Response.json(GENERATION_1);
+      if (call.url === "/api/generations/g2") {
+        return Response.json(
+          g2Failed
+            ? { ...GENERATION_2, state: "failed", error: "boom", assets: [] }
+            : GENERATION_2,
+        );
+      }
+      throw new Error(`unexpected fetch ${call.url}`);
+    });
+
+    const view = renderAt("/generations/g1");
+    await waitFor(() => expect(view.getByText("Generation")).toBeTruthy());
+
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await userEvent.click(
+      view.getByRole("button", { name: "Next Generation" }),
+    );
+    await waitFor(() =>
+      expect(
+        view.getByRole("button", { name: "Next Generation" }),
+      ).toHaveProperty("disabled", true),
+    );
+
+    g2Failed = true;
+    await waitFor(() => FakeEventSource.generationsStream());
+    FakeEventSource.generationsStream().dispatch("change", {
+      ...GENERATION_2,
+      state: "failed",
+    });
+
+    const dialog = document.body.querySelector(
+      "[role='dialog']",
+    ) as HTMLElement;
+    await waitFor(() =>
+      expect(within(dialog).getByText("Failed")).toBeTruthy(),
     );
   });
 });

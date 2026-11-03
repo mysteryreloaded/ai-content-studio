@@ -1,69 +1,20 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import {
-  type Location,
-  Route,
-  RouterProvider,
-  Routes,
-  createBrowserRouter,
-  useLocation,
-  useParams,
-} from "react-router-dom";
+import { RouterProvider, createBrowserRouter } from "react-router-dom";
 import "./index.css";
+import { AppContentRoute } from "./AppContentRoute.js";
 import { LandingPage } from "./LandingPage.js";
 import { RequireActive } from "./RequireActive.js";
 import { RequireTermsAccepted } from "./RequireTermsAccepted.js";
 import { RootLayout } from "./RootLayout.js";
 import { queryClient } from "./lib/query.js";
-import { RoutedGenerationIdProvider } from "./lib/routedGeneration.js";
 import { AccountPage } from "./pages/AccountPage.js";
 import { AdminShell } from "./pages/AdminShell.js";
-import { GalleryPage } from "./pages/GalleryPage.js";
 import { ModelsHome } from "./pages/ModelsHome.js";
 import { PrivacyPage } from "./pages/PrivacyPage.js";
 import { TermsPage } from "./pages/TermsPage.js";
 import { WaitingPage } from "./pages/WaitingPage.js";
-import { WorkbenchPage } from "./pages/WorkbenchPage.js";
-
-/**
- * `/generations/:id` (issue #199): a pasted link, a reload or a
- * Notification click carries no `state.backgroundLocation`, so it opens
- * over the Gallery, exactly like before #199 — `GalleryPage` reads the
- * `:id` itself from this route's own params. Opened from the Workbench
- * (`WorkbenchFeed.openDetails`), `state.backgroundLocation` names the
- * Workbench's own location (its URL never actually changes); re-running
- * the route tree against it, React Router's modal-route pattern, keeps
- * the Workbench mounted underneath while this route's real URL sits on
- * top. The real id isn't a param anywhere in that background tree, so
- * it's handed down through `RoutedGenerationIdProvider` instead.
- */
-function GenerationDetailRoute() {
-  const { id } = useParams<{ id: string }>();
-  const location = useLocation();
-  const background = (
-    location.state as { backgroundLocation?: Location } | null
-  )?.backgroundLocation;
-
-  if (!background) return <GalleryPage />;
-
-  return (
-    <RoutedGenerationIdProvider value={id ?? null}>
-      <Routes location={background}>
-        <Route
-          path="/models/:slug"
-          element={
-            <RequireTermsAccepted>
-              <RequireActive>
-                <WorkbenchPage />
-              </RequireActive>
-            </RequireTermsAccepted>
-          }
-        />
-      </Routes>
-    </RoutedGenerationIdProvider>
-  );
-}
 
 const root = document.getElementById("root");
 if (!root) throw new Error("missing #root element");
@@ -88,37 +39,29 @@ const router = createBrowserRouter([
         ),
       },
       {
-        path: "/models/:slug",
+        // `/models/:slug`, `/gallery` and `/generations/:id` (issue
+        // #199 round 2) all resolve here, through one shared `*`
+        // catch-all rather than three separate entries. `AppContentRoute`
+        // tells them apart itself (`useLocation`) and renders a nested
+        // `<Routes>` over the matching one — but that nested match only
+        // comes out right when *this* outer route's own matched prefix
+        // is "/" (react-router computes the nested `<Routes>`'s pathname
+        // by stripping the outer match's prefix first); a concrete path
+        // like "/models/:slug" would strip itself away and leave the
+        // nested match with nothing to go on. React Router ranks a
+        // static/dynamic path like "/models" or "/account" above this
+        // catch-all, so those keep matching themselves as before.
+        //
+        // `RootLayout` decides the full-width layout (issue #194) for
+        // whichever of these is the Workbench itself by checking the
+        // location (`isWorkbenchLocation`, exported alongside
+        // `AppContentRoute`), since a `handle` here would apply to all
+        // three alike.
+        path: "*",
         element: (
           <RequireTermsAccepted>
             <RequireActive>
-              <WorkbenchPage />
-            </RequireActive>
-          </RequireTermsAccepted>
-        ),
-        // Full-width (issue #194): the Workbench runs its own `.va-grid`
-        // edge to edge, not the default 1280px page container.
-        handle: { layout: "full" },
-      },
-      {
-        path: "/gallery",
-        element: (
-          <RequireTermsAccepted>
-            <RequireActive>
-              <GalleryPage />
-            </RequireActive>
-          </RequireTermsAccepted>
-        ),
-      },
-      {
-        // Issue #57/#199: a Generation's own link opens its detail
-        // dialog over the Gallery, or over the Workbench when it was
-        // opened from there — see `GenerationDetailRoute`'s own comment.
-        path: "/generations/:id",
-        element: (
-          <RequireTermsAccepted>
-            <RequireActive>
-              <GenerationDetailRoute />
+              <AppContentRoute />
             </RequireActive>
           </RequireTermsAccepted>
         ),

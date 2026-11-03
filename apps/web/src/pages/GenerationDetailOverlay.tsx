@@ -9,7 +9,7 @@
 
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, RotateCcw, X } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { ConfirmDelete } from "../components/generations/ConfirmDelete.js";
 import {
@@ -67,10 +67,21 @@ export function GenerationDetailOverlay({
   });
   const notFound = !!error;
 
+  // `useEventStream` binds its handlers once per mount of the shared
+  // `/api/generations/stream` connection (`sse.ts`) — this component
+  // itself is never remounted on ←/→ (same dialog, new `id` prop), so a
+  // handler closing directly over `id` would keep checking the id this
+  // dialog opened with. Read the current id through a ref instead.
+  const idRef = useRef(id);
+  idRef.current = id;
+
   useEventStream("/api/generations/stream", {
     change: (queryClient, data) => {
-      if ((data as { id: string }).id === id) {
-        void queryClient.invalidateQueries({ queryKey });
+      const changedId = (data as { id: string }).id;
+      if (changedId === idRef.current) {
+        void queryClient.invalidateQueries({
+          queryKey: ["generation", changedId],
+        });
       }
     },
   });

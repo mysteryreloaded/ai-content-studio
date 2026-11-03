@@ -122,6 +122,7 @@ export function WorkbenchPage() {
     setIssuesByInputId,
     setSelectedModeId,
     setTermsDialog: termsApi.setTermsDialog,
+    setBanner,
     refreshCaps,
     setSubmissions: feedApi.setSubmissions,
   });
@@ -238,17 +239,16 @@ export function WorkbenchPage() {
               updateValues={updateValues}
               handlePointsChange={handlePointsChange}
               displayedIssuesByInputId={displayedIssuesByInputId}
-              hasSeedInput={hasSeedInput}
-              count={count}
-              setCount={setCount}
-              submitState={generateApi.submitState}
             />
           </>
         }
         foot={
           <GenerateBar
             capsStatus={capsStatus}
-            activeCount={feedApi.activeCount}
+            hasSeedInput={hasSeedInput}
+            count={count}
+            setCount={setCount}
+            uploads={uploadsApi.uploads}
             {...generateApi}
             paused={paused}
             pauseNoticeText={pauseNoticeText}

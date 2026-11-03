@@ -48,8 +48,8 @@ export type SubmitState =
   | { status: "idle" }
   /** Issue #50: Generate was pressed while Uploads were still running. */
   | { status: "waiting" }
-  /** Issue #51: one trim, covering every Generation in the Submission, runs before it's built. */
-  | { status: "trimming" }
+  /** Issue #51: one trim, covering every Generation in the Submission, runs before it's built. `kind` picks the foot's "Preparing video…"/"Preparing audio…" label and note (issue #196). */
+  | { status: "trimming"; kind: "video" | "audio" }
   | { status: "submitting" }
   | { status: "error"; message: string };
 
@@ -74,6 +74,7 @@ export interface UseGenerateOptions {
   setIssuesByInputId: Dispatch<SetStateAction<Record<string, string>>>;
   setSelectedModeId: Dispatch<SetStateAction<string | null>>;
   setTermsDialog: Dispatch<SetStateAction<TermsDialogState | null>>;
+  setBanner: Dispatch<SetStateAction<string | null>>;
   refreshCaps: () => void;
   setSubmissions: Dispatch<SetStateAction<SubmissionSummary[]>>;
 }

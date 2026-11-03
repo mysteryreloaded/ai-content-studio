@@ -1,5 +1,4 @@
 import type { Dispatch, SetStateAction } from "react";
-import { CountPicker } from "../../components/inputs/CountPicker.js";
 import { InputGroups } from "../../components/inputs/InputGroups.js";
 import type {
   ImageUploadInput,
@@ -9,7 +8,7 @@ import type {
 } from "../../components/inputs/types.js";
 import { ModeMenu } from "./ModeMenu.js";
 import { WorkbenchBanner } from "./WorkbenchBanner.js";
-import type { SubmitState, WorkbenchMode } from "./types.js";
+import type { WorkbenchMode } from "./types.js";
 
 export function WorkbenchForm({
   modes,
@@ -26,10 +25,6 @@ export function WorkbenchForm({
   handlePointsChange,
   displayedIssuesByInputId,
   startUpload,
-  hasSeedInput,
-  count,
-  setCount,
-  submitState,
 }: {
   modes: WorkbenchMode[];
   selectedModeId: string | null;
@@ -47,10 +42,6 @@ export function WorkbenchForm({
   handlePointsChange: (inputId: string, raw: string) => void;
   displayedIssuesByInputId: Record<string, string>;
   startUpload: (input: ImageUploadInput | MediaUploadInput, file: File) => void;
-  hasSeedInput: boolean;
-  count: number;
-  setCount: (count: number) => void;
-  submitState: SubmitState;
 }) {
   return (
     <>
@@ -79,14 +70,6 @@ export function WorkbenchForm({
           onPick={(input, file) => void startUpload(input, file)}
           onPointsChange={handlePointsChange}
         />
-      )}
-
-      {hasSeedInput && <CountPicker count={count} onChange={setCount} />}
-
-      {submitState.status === "error" && (
-        <p role="alert" className="text-sm text-err">
-          {submitState.message}
-        </p>
       )}
     </>
   );

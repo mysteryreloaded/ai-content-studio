@@ -137,6 +137,16 @@ const DEFAULT_CAPS_STATUS = {
   oldestCountedSubmittedAt: null,
 };
 
+/** The Caps line's bold numbers break its text up across elements, so `findByText` needs the exact-`textContent` element, not an ancestor whose own direct text also happens to contain it. */
+function withExactTextContent(text: string) {
+  return (_content: string, element: Element | null) => {
+    if (!element || element.textContent !== text) return false;
+    return Array.from(element.children).every(
+      (child) => child.textContent !== text,
+    );
+  };
+}
+
 function mockFetch(handler: (call: FetchCall) => Response | Promise<Response>) {
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
@@ -216,27 +226,6 @@ describe("WorkbenchPage", () => {
     expect(await view.findByText("Model not found.")).toBeTruthy();
   });
 
-  test("shows the live under-way count from the SSE snapshot", async () => {
-    mockFetch((call) => {
-      if (call.url.endsWith("/api/models/ltx")) {
-        return Response.json({ model: MODEL });
-      }
-      if (call.url.endsWith("/api/models/ltx/generations")) {
-        return Response.json({ submissions: [] });
-      }
-      throw new Error(`unexpected fetch ${call.url}`);
-    });
-
-    const view = renderWorkbench();
-    await view.findByRole("heading", { name: "LTX 2.5" });
-
-    await waitFor(() => FakeEventSource.generationsStream());
-    const source = FakeEventSource.generationsStream();
-    source.emit("snapshot", { generations: [{ id: "g1" }, { id: "g2" }] });
-
-    expect(await view.findByText("2 under way")).toBeTruthy();
-  });
-
   test("reloads the Model and shows a message on 409 model_changed", async () => {
     mockFetch((call) => {
       if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
@@ -268,7 +257,9 @@ describe("WorkbenchPage", () => {
     await view.findByRole("button", { name: "Generate" });
     await userEvent.click(view.getByRole("button", { name: "Generate" }));
 
-    expect(await view.findByText(/This Model changed; reloaded/)).toBeTruthy();
+    expect(
+      await view.findByText("This Model was updated, check your settings."),
+    ).toBeTruthy();
   });
 
   describe("Value carrying across Modes and model_changed (issue #48 AC6)", () => {
@@ -423,7 +414,7 @@ describe("WorkbenchPage", () => {
       await userEvent.click(await view.findByRole("option", { name: "Wide" }));
 
       await userEvent.click(view.getByRole("button", { name: "Generate" }));
-      await view.findByText(/This Model changed; reloaded/);
+      await view.findByText("This Model was updated, check your settings.");
 
       expect((view.getByLabelText("Prompt") as HTMLInputElement).value).toBe(
         "a dog",
@@ -725,7 +716,7 @@ describe("WorkbenchPage", () => {
     const view = renderWorkbench();
     await view.findByRole("heading", { name: "LTX 2.5" });
 
-    expect(view.queryByLabelText("How many (1-4)")).toBeNull();
+    expect(view.queryByRole("group", { name: "Generations" })).toBeNull();
   });
 
   test("sends the picked count in the POST when the Mode has a bound Seed Input (issue #47)", async () => {
@@ -756,12 +747,60 @@ describe("WorkbenchPage", () => {
     const view = renderWorkbench();
     const { default: userEvent } = await import("@testing-library/user-event");
 
-    await view.findByLabelText("How many (1-4)");
-    await userEvent.selectOptions(view.getByLabelText("How many (1-4)"), "3");
-    await userEvent.click(view.getByRole("button", { name: "Generate" }));
+    await view.findByRole("group", { name: "Generations" });
+    await userEvent.click(view.getByRole("radio", { name: "3" }));
+    await userEvent.click(view.getByRole("button", { name: "Generate 3" }));
 
     await waitFor(() => expect(posts.length).toBe(1));
     expect(posts[0]?.count).toBe(3);
+  });
+
+  test("sends the picked count even when the Mode hides its Seed Input (issue #196 regression)", async () => {
+    const MODEL_HIDDEN_SEED = {
+      ...MODEL,
+      modes: [
+        {
+          id: "mode1",
+          name: "Default",
+          description: "",
+          inputs: [],
+          hasSeed: true,
+        },
+      ],
+    };
+    const posts: Array<Record<string, unknown> | null> = [];
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
+        return Response.json({ model: MODEL_HIDDEN_SEED });
+      }
+      if (
+        call.url.endsWith("/api/models/ltx/generations") &&
+        call.method === "GET"
+      ) {
+        return Response.json({ submissions: [] });
+      }
+      if (
+        call.url.endsWith("/api/models/ltx/generations") &&
+        call.method === "POST"
+      ) {
+        posts.push(call.body);
+        return Response.json(
+          { generations: [], prompt: null },
+          { status: 201 },
+        );
+      }
+      throw new Error(`unexpected fetch ${call.url}`);
+    });
+
+    const view = renderWorkbench();
+    const { default: userEvent } = await import("@testing-library/user-event");
+
+    await view.findByRole("group", { name: "Generations" });
+    await userEvent.click(view.getByRole("radio", { name: "2" }));
+    await userEvent.click(view.getByRole("button", { name: "Generate 2" }));
+
+    await waitFor(() => expect(posts.length).toBe(1));
+    expect(posts[0]?.count).toBe(2);
   });
 
   test("shows a Submission's prompt, prefixed when it's the Workflow's own unset value", async () => {
@@ -911,7 +950,9 @@ describe("WorkbenchPage", () => {
       const view = renderWorkbench();
 
       expect(
-        await view.findByText("22 of 30 left today · 2 more at once"),
+        await view.findByText(
+          withExactTextContent("22 of 30 left today · 2 more at once"),
+        ),
       ).toBeTruthy();
     });
 
@@ -1074,7 +1115,7 @@ describe("WorkbenchPage", () => {
 
       await userEvent.click(view.getByRole("button", { name: "Generate" }));
       expect(
-        await view.findByText("Waiting for your files to finish…"),
+        await view.findByRole("button", { name: "Waiting for Uploads…" }),
       ).toBeTruthy();
       expect(view.getByRole("button", { name: "Don't start" })).toBeTruthy();
       expect(server.posts).toHaveLength(0);
@@ -1101,6 +1142,7 @@ describe("WorkbenchPage", () => {
         new File(["PNG!"], "frame.png", { type: "image/png" }),
       );
       await userEvent.click(view.getByRole("button", { name: "Generate" }));
+      await view.findByRole("button", { name: "Waiting for Uploads…" });
       await userEvent.click(
         await view.findByRole("button", { name: "Don't start" }),
       );
@@ -2058,6 +2100,223 @@ describe("WorkbenchPage", () => {
 
       await waitFor(() => expect(posts).toHaveLength(1));
       expect(posts[0]?.body?.values).toEqual({ "mode-b-prompt": "hi" });
+    });
+  });
+
+  describe("Restyled foot (issue #196)", () => {
+    test('the Generate button is labelled "Generate 2" once the count is picked', async () => {
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
+          return Response.json({ model: MODEL_WITH_SEED });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ submissions: [] });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await view.findByRole("group", { name: "Generations" });
+      await userEvent.click(view.getByRole("radio", { name: "2" }));
+
+      expect(
+        await view.findByRole("button", { name: "Generate 2" }),
+      ).toBeTruthy();
+    });
+
+    test('shows "Sending…", disabled with a spinner, while the POST is pending', async () => {
+      const postGate: { resolve: (() => void) | null } = { resolve: null };
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
+          return Response.json({ model: MODEL });
+        }
+        if (
+          call.url.endsWith("/api/models/ltx/generations") &&
+          call.method === "GET"
+        ) {
+          return Response.json({ submissions: [] });
+        }
+        if (
+          call.url.endsWith("/api/models/ltx/generations") &&
+          call.method === "POST"
+        ) {
+          return new Promise<Response>((resolve) => {
+            postGate.resolve = () =>
+              resolve(
+                Response.json(
+                  { generations: [], prompt: null },
+                  { status: 201 },
+                ),
+              );
+          });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+      await view.findByRole("button", { name: "Generate" });
+      await userEvent.click(view.getByRole("button", { name: "Generate" }));
+
+      const button = await view.findByRole("button", { name: "Sending…" });
+      expect(button.getAttribute("aria-busy")).toBe("true");
+      expect((button as HTMLButtonElement).disabled).toBe(true);
+
+      postGate.resolve?.();
+      await waitFor(() =>
+        expect(view.getByRole("button", { name: "Generate" })).toBeTruthy(),
+      );
+    });
+
+    test("shows a pending-Uploads note before Generate is pressed", async () => {
+      const UPLOAD_INPUT_ID = "66666666-6666-4666-8666-666666666666";
+      const UPLOAD_MODEL = {
+        ...MODEL,
+        modes: [
+          {
+            id: "mode-upload",
+            name: "Default",
+            description: "",
+            inputs: [
+              {
+                id: UPLOAD_INPUT_ID,
+                kind: "image_upload",
+                group: "describe",
+                label: "Start frame",
+                help: "",
+                placeholder: null,
+                maxSizeMb: 5,
+                maxLongSide: null,
+              },
+            ],
+          },
+        ],
+      };
+      const chunkGate = new Promise<void>(() => {});
+      mockFetch(async (call) => {
+        if (call.url.endsWith("/api/models/ltx")) {
+          return Response.json({ model: UPLOAD_MODEL });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ submissions: [] });
+        }
+        if (call.url === "/api/uploads") {
+          return Response.json(
+            { upload: { id: "u1", chunkSize: 16 * 1024 * 1024 } },
+            { status: 201 },
+          );
+        }
+        if (call.url.startsWith("/api/uploads/u1/chunk")) {
+          await chunkGate;
+          return Response.json({ offset: 4 });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+      await view.findByText("Your files");
+      await userEvent.upload(
+        view.getByLabelText("Start frame"),
+        new File(["PNG!"], "frame.png", { type: "image/png" }),
+      );
+
+      expect(
+        await view.findByText(
+          "1 Upload still in progress. You can keep filling the form, or press Generate now.",
+        ),
+      ).toBeTruthy();
+    });
+
+    test("a trim failure puts the server's message on the Upload's own field", async () => {
+      const VIDEO_INPUT_ID = "88888888-8888-4888-8888-888888888888";
+      const UPLOAD_ID = "99999999-9999-4999-8999-999999999999";
+      const VIDEO_MODEL = {
+        ...MODEL,
+        modes: [
+          {
+            id: "mode-video",
+            name: "Default",
+            description: "",
+            inputs: [
+              {
+                id: VIDEO_INPUT_ID,
+                kind: "video_upload",
+                group: "describe",
+                label: "Clip",
+                help: "",
+                placeholder: null,
+                maxSizeMb: 50,
+                maxLongSide: null,
+                minDurationMs: 0,
+                maxDurationMs: 10_000,
+                trimmable: true,
+              },
+            ],
+          },
+        ],
+      };
+      mockFetch(async (call) => {
+        if (call.url.endsWith("/api/models/ltx")) {
+          return Response.json({ model: VIDEO_MODEL });
+        }
+        if (
+          call.url.endsWith("/api/models/ltx/generations") &&
+          call.method === "GET"
+        ) {
+          return Response.json({ submissions: [] });
+        }
+        if (call.url === "/api/uploads") {
+          return Response.json(
+            { upload: { id: UPLOAD_ID, chunkSize: 16 * 1024 * 1024 } },
+            { status: 201 },
+          );
+        }
+        if (call.url.startsWith(`/api/uploads/${UPLOAD_ID}/chunk`)) {
+          return Response.json({ offset: 4 });
+        }
+        if (call.url === `/api/uploads/${UPLOAD_ID}/complete`) {
+          return Response.json({
+            upload: { id: UPLOAD_ID, durationMs: 2000, browserPlayable: true },
+          });
+        }
+        if (call.url === `/api/uploads/${UPLOAD_ID}/trim`) {
+          return Response.json(
+            { error: "storage_full", message: "storage is full, try later" },
+            { status: 507 },
+          );
+        }
+        throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await view.findByLabelText("Clip");
+      await userEvent.upload(
+        view.getByLabelText("Clip"),
+        new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
+      );
+      const startInput = await view.findByLabelText("Start (s)");
+      await userEvent.clear(startInput);
+      await userEvent.type(startInput, "0.5");
+
+      await userEvent.click(view.getByRole("button", { name: "Generate" }));
+
+      expect(await view.findByText("storage is full, try later")).toBeTruthy();
+      expect(
+        await view.findByText("Check the highlighted fields."),
+      ).toBeTruthy();
     });
   });
 });

@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
-import { Link, Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes } from "react-router-dom";
+import { AdminNav } from "../components/admin/AdminNav.js";
+import { AdminPage } from "../components/admin/AdminPage.js";
 import { useSession } from "../useSession.js";
 import { AdminGenerationDetailPage } from "./AdminGenerationDetailPage.js";
 import { AdminGenerationsPage } from "./AdminGenerationsPage.js";
@@ -20,79 +21,22 @@ import { UserPage } from "./UserPage.js";
 import { UsersPage } from "./UsersPage.js";
 import { ModelEditorPage } from "./model-editor/ModelEditorPage.js";
 
-const ERROR_BADGE_POLL_MS = 30_000;
-
 /**
- * The 24h error-count badge next to the Logs nav link (issue #67). Polls
- * only once `enabled`, so an Admin-only page opened by a non-Admin never
- * calls an admin route (and so never leaves its own "non-Admin called an
- * admin route" warning Log entry) before the role check below redirects.
+ * The admin frame (issue #200): the section nav restyled to the Model
+ * editor prototype's shared admin design system, sitting under the app
+ * header (`RootLayout`'s `handle: { layout: "full" }` on `/admin/*`
+ * gives this component the full width to put it in). The routed content
+ * — not the nav — is the page's `<main>` landmark (the old shell's own
+ * `<main>` is gone, and `RootLayout` has none of its own for a full-width
+ * route). Every route except the Model editor renders inside `AdminPage`
+ * (`PageContainer`, the same frame the rest of the app uses); the Model
+ * editor gets a full-width, unpadded slot for its own `.va` workspace
+ * (#212–#217).
  */
-function useErrorBadge(enabled: boolean): number | null {
-  const [count, setCount] = useState<number | null>(null);
-
-  useEffect(() => {
-    if (!enabled) return;
-    let cancelled = false;
-
-    function poll() {
-      fetch("/api/admin/logs/error-count-24h")
-        .then((res) => (res.ok ? res.json() : null))
-        .then((body: { count: number } | null) => {
-          if (!cancelled && body) setCount(body.count);
-        })
-        .catch(() => {
-          /* leave the previous count showing */
-        });
-    }
-
-    poll();
-    const timer = setInterval(poll, ERROR_BADGE_POLL_MS);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, [enabled]);
-
-  return count;
-}
-
-/** The pending-users badge next to the Users nav link (issue #62). Same gating as `useErrorBadge`. */
-function usePendingBadge(enabled: boolean): number | null {
-  const [count, setCount] = useState<number | null>(null);
-
-  useEffect(() => {
-    if (!enabled) return;
-    let cancelled = false;
-
-    function poll() {
-      fetch("/api/admin/users/pending-count")
-        .then((res) => (res.ok ? res.json() : null))
-        .then((body: { count: number } | null) => {
-          if (!cancelled && body) setCount(body.count);
-        })
-        .catch(() => {
-          /* leave the previous count showing */
-        });
-    }
-
-    poll();
-    const timer = setInterval(poll, ERROR_BADGE_POLL_MS);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, [enabled]);
-
-  return count;
-}
-
 export function AdminShell() {
   const { session } = useSession();
   const isAdmin =
     session.status === "signed-in" && session.user.role === "admin";
-  const errorCount = useErrorBadge(isAdmin);
-  const pendingCount = usePendingBadge(isAdmin);
 
   if (session.status === "loading") return null;
   if (session.status === "signed-out") return <Navigate to="/" replace />;
@@ -100,52 +44,118 @@ export function AdminShell() {
 
   return (
     <>
+      <AdminNav isAdmin={isAdmin} />
       <main>
-        <h1>Admin</h1>
-        <nav>
-          <Link to="/admin">Overview</Link>
-          <Link to="/admin/settings">Settings</Link>
-          <Link to="/admin/models">Models</Link>
-          <Link to="/admin/generations">Generations</Link>
-          <Link to="/admin/users">
-            Users{pendingCount ? ` (${pendingCount})` : ""}
-          </Link>
-          <Link to="/admin/blocked-accounts">Blocked accounts</Link>
-          <Link to="/admin/logs">
-            Logs{errorCount ? ` (${errorCount})` : ""}
-          </Link>
-          <Link to="/admin/audit">Audit</Link>
-        </nav>
-
         <Routes>
-          <Route index element={<OverviewPage />} />
+          <Route
+            index
+            element={
+              <AdminPage>
+                <OverviewPage />
+              </AdminPage>
+            }
+          />
           <Route
             path="settings"
             element={
-              <>
+              <AdminPage>
                 <SiteSettingsForm />
                 <PauseNoticeForm />
                 <SiteTermsForm />
                 <SitePrivacyForm />
                 <BlockedWordsForm />
                 <CapsForm />
-                <BackendsPage />
-              </>
+              </AdminPage>
             }
           />
-          <Route path="models" element={<ModelsPage />} />
-          <Route path="models/:id" element={<ModelEditorPage />} />
-          <Route path="generations" element={<AdminGenerationsPage />} />
+          <Route
+            path="backends"
+            element={
+              <AdminPage>
+                <BackendsPage />
+              </AdminPage>
+            }
+          />
+          <Route
+            path="models"
+            element={
+              <AdminPage>
+                <ModelsPage />
+              </AdminPage>
+            }
+          />
+          <Route
+            path="models/:id"
+            element={
+              <div className="w-full min-w-0">
+                <ModelEditorPage />
+              </div>
+            }
+          />
+          <Route
+            path="generations"
+            element={
+              <AdminPage>
+                <AdminGenerationsPage />
+              </AdminPage>
+            }
+          />
           <Route
             path="generations/:id"
-            element={<AdminGenerationDetailPage />}
+            element={
+              <AdminPage>
+                <AdminGenerationDetailPage />
+              </AdminPage>
+            }
           />
-          <Route path="users" element={<UsersPage />} />
-          <Route path="users/:id" element={<UserPage />} />
-          <Route path="users/:id/uploads" element={<AdminUploadsPage />} />
-          <Route path="blocked-accounts" element={<BlockedAccountsPage />} />
-          <Route path="logs" element={<LogsPage />} />
-          <Route path="audit" element={<AuditPage />} />
+          <Route
+            path="users"
+            element={
+              <AdminPage>
+                <UsersPage />
+              </AdminPage>
+            }
+          />
+          <Route
+            path="users/:id"
+            element={
+              <AdminPage>
+                <UserPage />
+              </AdminPage>
+            }
+          />
+          <Route
+            path="users/:id/uploads"
+            element={
+              <AdminPage>
+                <AdminUploadsPage />
+              </AdminPage>
+            }
+          />
+          <Route
+            path="blocked-accounts"
+            element={
+              <AdminPage>
+                <BlockedAccountsPage />
+              </AdminPage>
+            }
+          />
+          <Route
+            path="logs"
+            element={
+              <AdminPage>
+                <LogsPage />
+              </AdminPage>
+            }
+          />
+          <Route
+            path="audit"
+            element={
+              <AdminPage>
+                <AuditPage />
+              </AdminPage>
+            }
+          />
         </Routes>
       </main>
     </>

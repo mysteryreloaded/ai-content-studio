@@ -113,6 +113,7 @@ export function UsersPage() {
   return (
     <section>
       <h2>Users</h2>
+      <Link to="/admin/blocked-accounts">Blocked accounts</Link>
 
       <form onSubmit={handleSubmit}>
         <label htmlFor="users-q">Search</label>

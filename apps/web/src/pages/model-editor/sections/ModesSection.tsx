@@ -18,24 +18,20 @@ export function ModesSection({
     attachedBackends,
     duplicateMode,
     editingModeIndex,
-    handleSaveModes,
     handleTestSubmit,
     inputsDraft,
-    modesDirty,
     modesDraft,
     modesHeadingRef,
-    modesSaveError,
     moveOutputNode,
-    mustDisableToSave,
     removeMode,
     removeOutputNode,
-    savingModes,
     setEditingModeIndex,
     setModeInputSetting,
     setTestBackendId,
     setTestTrimRangeByInputId,
     setTestValues,
     startTestUpload,
+    clearTestUpload,
     testBackendId,
     testError,
     testOpenForModeKey,
@@ -117,6 +113,7 @@ export function ModesSection({
               onValuesChange={setTestValues}
               uploads={testUploads}
               onPick={(input, file) => startTestUpload(input, file)}
+              onClear={(input) => clearTestUpload(input)}
               trimRangeByInputId={testTrimRangeByInputId}
               onTrimRangeChange={(inputId, range) =>
                 setTestTrimRangeByInputId((ranges) => ({
@@ -165,15 +162,6 @@ export function ModesSection({
           onApplyToEveryEligibleMode={applySettingToEveryEligibleMode}
         />
       )}
-
-      <button
-        type="button"
-        disabled={savingModes || !modesDirty}
-        onClick={() => void handleSaveModes()}
-      >
-        {mustDisableToSave ? "Save and disable" : "Save Modes"}
-      </button>
-      {modesSaveError && <p role="alert">{modesSaveError}</p>}
 
       {testRuns.length > 0 && <RecentTests runs={testRuns} />}
     </section>

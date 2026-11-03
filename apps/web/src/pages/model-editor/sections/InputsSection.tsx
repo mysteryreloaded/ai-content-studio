@@ -12,14 +12,9 @@ export function InputsSection({
 }) {
   const {
     addInput,
-    handleSaveInputs,
-    inputsDirty,
     inputsDraft,
     inputsHeadingRef,
-    inputsSaveError,
-    mustDisableToSave,
     newInputKind,
-    savingInputs,
     setNewInputKind,
   } = editor;
   return (
@@ -60,14 +55,6 @@ export function InputsSection({
       <button type="button" onClick={addInput}>
         Add Input
       </button>
-      <button
-        type="button"
-        disabled={savingInputs || !inputsDirty}
-        onClick={() => void handleSaveInputs()}
-      >
-        {mustDisableToSave ? "Save and disable" : "Save Inputs"}
-      </button>
-      {inputsSaveError && <p role="alert">{inputsSaveError}</p>}
     </section>
   );
 }

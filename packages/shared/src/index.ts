@@ -18,3 +18,4 @@ export * from "./branding/site-settings.js";
 export * from "./caps/caps.js";
 export * from "./markdown/markdown.js";
 export * from "./models/model-terms.js";
+export * from "./models/model-details.js";

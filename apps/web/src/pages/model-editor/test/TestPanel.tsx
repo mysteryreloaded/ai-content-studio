@@ -37,6 +37,7 @@ export function TestPanel({
   onValuesChange,
   uploads,
   onPick,
+  onClear,
   trimRangeByInputId,
   onTrimRangeChange,
   backendId,
@@ -55,6 +56,9 @@ export function TestPanel({
   onPick: (
     input: WorkbenchImageUploadInput | WorkbenchMediaUploadInput,
     file: File,
+  ) => void;
+  onClear: (
+    input: WorkbenchImageUploadInput | WorkbenchMediaUploadInput,
   ) => void;
   trimRangeByInputId: Record<string, { startMs: number; endMs: number }>;
   onTrimRangeChange: (
@@ -123,6 +127,7 @@ export function TestPanel({
         uploads={uploads}
         issuesByInputId={{}}
         onPick={onPick}
+        onClear={onClear}
       />
       <YourMedia
         inputs={mediaInputs}
@@ -131,6 +136,7 @@ export function TestPanel({
         onTrimRangeChange={onTrimRangeChange}
         issuesByInputId={{}}
         onPick={onPick}
+        onClear={onClear}
       />
       <PointsPickers
         inputs={pointsInputs}

@@ -59,6 +59,21 @@ interface SiteCaps {
   concurrentCap: number;
 }
 
+/**
+ * What the action endpoints (approve, promote, demote, enable, disable)
+ * return: the user's six core fields and nothing else (the server's
+ * `respondForAction`) — no createdAt, caps, pinned or disabled fields —
+ * so a result is merged into the cached user, never a replacement of it.
+ */
+interface UserActionResponse {
+  id: string;
+  email: string;
+  name: string;
+  picture: string | null;
+  role: Role;
+  status: Status;
+}
+
 const DISABLE_REASON_MAX_LENGTH = 500;
 
 /**
@@ -155,14 +170,25 @@ export function UserPage() {
     void queryClient.invalidateQueries({ queryKey: adminBadgeKeys.pending });
   };
 
+  // Merges an action's six-field response into the cached user. A
+  // replacement by it would drop the fields it does not carry — the
+  // Joined date would read NaN, the Cap inputs would reset to
+  // "undefined" (wiping unsaved edits) and the pinned pill would vanish
+  // — until the invalidation's refetch lands.
+  const patchCachedUser = (data: UserActionResponse) => {
+    queryClient.setQueryData<AdminUser>(["admin", "users", id], (prev) =>
+      prev ? { ...prev, ...data } : prev,
+    );
+  };
+
   const approveMutation = useMutation({
     mutationFn: () =>
-      ok<AdminUser>(
+      ok<UserActionResponse>(
         api.api.admin.users[":id"].approve.$post({ param: { id } }),
       ),
     onSuccess: (data) => {
       setActionError(null);
-      queryClient.setQueryData(["admin", "users", id], data);
+      patchCachedUser(data);
       invalidateUserAndBadge();
     },
     onError: () => setActionError("could not approve this user"),
@@ -171,15 +197,15 @@ export function UserPage() {
   const roleMutation = useMutation({
     mutationFn: ({ action }: { action: "promote" | "demote" }) =>
       action === "promote"
-        ? ok<AdminUser>(
+        ? ok<UserActionResponse>(
             api.api.admin.users[":id"].promote.$post({ param: { id } }),
           )
-        : ok<AdminUser>(
+        : ok<UserActionResponse>(
             api.api.admin.users[":id"].demote.$post({ param: { id } }),
           ),
     onSuccess: (data) => {
       setActionError(null);
-      queryClient.setQueryData(["admin", "users", id], data);
+      patchCachedUser(data);
       invalidateUserAndBadge();
     },
     onError: (_error, { action }) =>
@@ -188,10 +214,12 @@ export function UserPage() {
 
   const enableMutation = useMutation({
     mutationFn: () =>
-      ok<AdminUser>(api.api.admin.users[":id"].enable.$post({ param: { id } })),
+      ok<UserActionResponse>(
+        api.api.admin.users[":id"].enable.$post({ param: { id } }),
+      ),
     onSuccess: (data) => {
       setActionError(null);
-      queryClient.setQueryData(["admin", "users", id], data);
+      patchCachedUser(data);
       invalidateUserAndBadge();
     },
     onError: () => setActionError("could not enable this user"),
@@ -199,7 +227,7 @@ export function UserPage() {
 
   const disableMutation = useMutation({
     mutationFn: ({ reason }: { reason: string }) =>
-      ok<AdminUser>(
+      ok<UserActionResponse>(
         api.api.admin.users[":id"].disable.$post({
           param: { id },
           json: { reason: reason.trim() || undefined },
@@ -209,7 +237,7 @@ export function UserPage() {
       setActionError(null);
       setDisableOpen(false);
       setDisableReason("");
-      queryClient.setQueryData(["admin", "users", id], data);
+      patchCachedUser(data);
       invalidateUserAndBadge();
     },
     // A failed disable keeps its dialog open, the error inside it.
@@ -438,7 +466,12 @@ export function UserPage() {
               <Button
                 variant="danger"
                 size="sm"
-                onClick={() => setDisableOpen(true)}
+                onClick={() => {
+                  // A fresh dialog starts from a clean line: a stale
+                  // error from a prior action does not surface in it.
+                  setActionError(null);
+                  setDisableOpen(true);
+                }}
               >
                 Disable
               </Button>
@@ -447,7 +480,12 @@ export function UserPage() {
               <Button
                 variant="danger"
                 size="sm"
-                onClick={() => setDeleteOpen(true)}
+                onClick={() => {
+                  // A fresh dialog starts from a clean line: a stale
+                  // error from a prior action does not surface in it.
+                  setActionError(null);
+                  setDeleteOpen(true);
+                }}
               >
                 Delete account
               </Button>

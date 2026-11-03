@@ -118,6 +118,54 @@ describe("BlockedAccountsPage", () => {
     expect(await screen.findByText("No blocked accounts.")).toBeTruthy();
   });
 
+  test("a fresh dialog does not surface a stale clear error", async () => {
+    mockFetch((call) => {
+      if (call.method === "DELETE" && call.url.endsWith("/ba-1")) {
+        return Response.json({ error: "boom" }, { status: 500 });
+      }
+      if (call.method === "GET") {
+        return Response.json({
+          blockedAccounts: [
+            blockedRow(),
+            blockedRow({ id: "ba-2", userId: "u-spam", reason: "Spam" }),
+          ],
+        });
+      }
+      return undefined;
+    });
+
+    renderPage();
+
+    // A failed Clear on the first entry leaves the error in its dialog...
+    const rowClears = await screen.findAllByText("Clear");
+    expect(rowClears).toHaveLength(2);
+    const firstClear = rowClears[0];
+    if (firstClear === undefined) throw new Error("no Clear button");
+    await userEvent.click(firstClear);
+    const confirmFirst = screen.getAllByText("Clear").at(-1);
+    if (confirmFirst === undefined) throw new Error("no confirm Clear button");
+    await userEvent.click(confirmFirst);
+    expect(await screen.findByText("could not clear this entry")).toBeTruthy();
+
+    // ...which closing the dialog takes away...
+    const cancel = screen.getByRole("button", { name: "Cancel" });
+    await userEvent.click(cancel);
+    expect(
+      screen.queryByRole("heading", { name: "Clear this block?" }),
+    ).toBeNull();
+    expect(screen.queryByText("could not clear this entry")).toBeNull();
+
+    // ...and a fresh dialog for another entry opens from a clean line:
+    // no stale error before any new attempt there.
+    const secondClear = screen.getAllByText("Clear").at(1);
+    if (secondClear === undefined) throw new Error("no second Clear button");
+    await userEvent.click(secondClear);
+    expect(
+      screen.getByRole("heading", { name: "Clear this block?" }),
+    ).toBeTruthy();
+    expect(screen.queryByText("could not clear this entry")).toBeNull();
+  });
+
   test("a failed clear keeps the dialog open and shows the error", async () => {
     mockFetch((call) => {
       if (call.method === "DELETE" && call.url.endsWith("/ba-1")) {

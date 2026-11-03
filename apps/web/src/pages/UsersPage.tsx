@@ -58,6 +58,21 @@ interface UsersResponse {
   hasMore: boolean;
 }
 
+/**
+ * What the action endpoints (approve, promote, demote) return: the
+ * user's six core fields and nothing else (the server's
+ * `respondForAction`), so no `createdAt` — an acted row is therefore
+ * patched by merging the response into the row, never replaced by it.
+ */
+interface UserActionResponse {
+  id: string;
+  email: string;
+  name: string;
+  picture: string | null;
+  role: Role;
+  status: Status;
+}
+
 const PAGE_SIZE = 50;
 
 type ListAction = "approve" | "promote" | "demote";
@@ -192,21 +207,26 @@ export function UsersPage() {
   const actionMutation = useMutation({
     mutationFn: ({ id, action }: { id: string; action: ListAction }) =>
       action === "approve"
-        ? ok<AdminUser>(
+        ? ok<UserActionResponse>(
             api.api.admin.users[":id"].approve.$post({ param: { id } }),
           )
         : action === "promote"
-          ? ok<AdminUser>(
+          ? ok<UserActionResponse>(
               api.api.admin.users[":id"].promote.$post({ param: { id } }),
             )
-          : ok<AdminUser>(
+          : ok<UserActionResponse>(
               api.api.admin.users[":id"].demote.$post({ param: { id } }),
             ),
     // The list refetch covers the newest page, but the appended "older"
     // pages are not re-appended on a refetch (the append guard keeps one
     // page per cursor), so the acted row is patched from the response.
+    // The response carries only the six core fields, so it is merged
+    // into the row: replacing it would drop the row's createdAt (its
+    // Created cell and, as the last row, the next Load-older cursor).
     onSuccess: (data, { id }) => {
-      setOlder((prev) => prev.map((u) => (u.id === id ? data : u)));
+      setOlder((prev) =>
+        prev.map((u) => (u.id === id ? { ...u, ...data } : u)),
+      );
       invalidateListAndBadge();
     },
   });

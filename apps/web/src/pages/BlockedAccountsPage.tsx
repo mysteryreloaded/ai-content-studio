@@ -139,7 +139,13 @@ export function BlockedAccountsPage() {
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => setClearing(row)}
+                      onClick={() => {
+                        // A fresh dialog starts from a clean line: a
+                        // stale error from a prior Clear does not
+                        // surface in it.
+                        setClearError(null);
+                        setClearing(row);
+                      }}
                     >
                       Clear
                     </Button>

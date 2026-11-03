@@ -4,6 +4,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { useQuery } from "@tanstack/react-query";
 import { adminBadgeKeys } from "../components/admin/AdminNav.js";
 import { api, ok } from "../lib/api.js";
+import { formatWhen } from "../lib/format.js";
 import { BUN_FETCH } from "../test/happy-dom-setup.js";
 
 const { cleanup, screen, waitFor } = await import("@testing-library/react");
@@ -74,6 +75,24 @@ function userRow(overrides: Partial<Record<string, unknown>> = {}) {
     status: "active",
     pinned: false,
     createdAt: "2026-01-02T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+/**
+ * The action endpoints' (approve, promote, demote) response shape: the
+ * server's `respondForAction` returns the user's six core fields and
+ * nothing else — no createdAt or caps — so the page merges it into its
+ * row instead of replacing it.
+ */
+function actionResponse(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: "pending-1",
+    email: "user@example.com",
+    name: "A User",
+    picture: null,
+    role: "user",
+    status: "active",
     ...overrides,
   };
 }
@@ -250,9 +269,10 @@ describe("UsersPage", () => {
   test("a row action updates an appended older row from the response", async () => {
     mockFetch((call) => {
       if (call.url.includes("/approve")) {
-        // The mutation's response is the source of truth for the row.
+        // The server's action response: the six core fields only — no
+        // createdAt — so the merged row must keep its own.
         return Response.json(
-          userRow({ id: "u2", name: "Second User", status: "active" }),
+          actionResponse({ id: "u2", name: "Second User", status: "active" }),
         );
       }
       if (call.url.includes("beforeCreatedAt")) {
@@ -260,7 +280,12 @@ describe("UsersPage", () => {
         // appended list must not depend on it.
         return Response.json({
           users: [
-            userRow({ id: "u2", name: "Second User", status: "pending" }),
+            userRow({
+              id: "u2",
+              name: "Second User",
+              status: "pending",
+              createdAt: "2025-12-01T00:00:00.000Z",
+            }),
           ],
           hasMore: false,
         });
@@ -289,6 +314,13 @@ describe("UsersPage", () => {
     await waitFor(() => {
       expect(screen.getAllByText("Approve").length).toBe(1);
     });
+    // The response carries no createdAt: the merge keeps the row's own,
+    // so its Created cell keeps formatting (a replacement by the
+    // response would read NaN, and as the last row it would break the
+    // next Load-older cursor too).
+    expect(
+      screen.getAllByText(formatWhen("2025-12-01T00:00:00.000Z")).length,
+    ).toBe(1);
   });
 
   test("a failed older page shows an error with a retry, not a hidden button", async () => {
@@ -334,7 +366,8 @@ describe("UsersPage", () => {
       }
       if (call.url.includes("/approve")) {
         approved = true;
-        return Response.json(userRow({ id: "pending-1", status: "active" }));
+        // The server's six-field action response.
+        return Response.json(actionResponse());
       }
       return Response.json({
         users: [

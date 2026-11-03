@@ -137,6 +137,9 @@ export function UsersPage() {
     id: string;
   } | null>(null);
   const [older, setOlder] = useState<AdminUser[]>([]);
+  // The older page appended for a cursor: the key that was appended, so
+  // a refetch never appends it twice.
+  const appended = useRef<string | null>(null);
   const olderQuery = useQuery({
     queryKey: [
       "admin",
@@ -164,10 +167,12 @@ export function UsersPage() {
   useEffect(() => {
     setOlder([]);
     setCursor(null);
+    // The append guard is per cursor, so a cursor that recurs after a
+    // filter change must be allowed to append again.
+    appended.current = null;
   }, [filterKey]);
 
   // Append the fetched older page once per cursor.
-  const appended = useRef<string | null>(null);
   useEffect(() => {
     if (!cursor || !olderQuery.data) return;
     const key = `${cursor.createdAt}|${cursor.id}`;
@@ -197,17 +202,26 @@ export function UsersPage() {
           : ok<AdminUser>(
               api.api.admin.users[":id"].demote.$post({ param: { id } }),
             ),
-    onSuccess: invalidateListAndBadge,
+    // The list refetch covers the newest page, but the appended "older"
+    // pages are not re-appended on a refetch (the append guard keeps one
+    // page per cursor), so the acted row is patched from the response.
+    onSuccess: (data, { id }) => {
+      setOlder((prev) => prev.map((u) => (u.id === id ? data : u)));
+      invalidateListAndBadge();
+    },
   });
 
   const selfId = session.status === "signed-in" ? session.user.id : null;
   const page1 = listQuery.data?.users ?? [];
   const users = [...page1, ...older];
-  const hasMore = cursor
-    ? (olderQuery.data?.hasMore ?? false)
-    : (listQuery.data?.hasMore ?? false);
   const loadingOlder =
     cursor !== null && (olderQuery.isPending || olderQuery.isFetching);
+
+  // "Load older": the keyset cursor over the last visible row.
+  const loadOlder = () => {
+    const last = users[users.length - 1];
+    if (last) setCursor({ createdAt: last.createdAt, id: last.id });
+  };
 
   return (
     <>
@@ -249,15 +263,19 @@ export function UsersPage() {
         </FormField>
         <FormField label="Status" htmlFor="users-status">
           <Select
-            value={draft.status}
+            value={draft.status || "any"}
             onValueChange={(value) =>
-              setDraft((d) => ({ ...d, status: (value ?? "") as Status | "" }))
+              setDraft((d) => ({
+                ...d,
+                status: (value === "any" ? "" : value) as Status | "",
+              }))
             }
           >
             <SelectTrigger id="users-status">
-              <SelectValue placeholder="Any" />
+              <SelectValue />
             </SelectTrigger>
             <SelectContent>
+              <SelectItem value="any">Any</SelectItem>
               <SelectItem value="pending">Pending</SelectItem>
               <SelectItem value="active">Active</SelectItem>
               <SelectItem value="disabled">Disabled</SelectItem>
@@ -266,21 +284,34 @@ export function UsersPage() {
         </FormField>
         <FormField label="Role" htmlFor="users-role">
           <Select
-            value={draft.role}
+            value={draft.role || "any"}
             onValueChange={(value) =>
-              setDraft((d) => ({ ...d, role: (value ?? "") as Role | "" }))
+              setDraft((d) => ({
+                ...d,
+                role: (value === "any" ? "" : value) as Role | "",
+              }))
             }
           >
             <SelectTrigger id="users-role">
-              <SelectValue placeholder="Any" />
+              <SelectValue />
             </SelectTrigger>
             <SelectContent>
+              <SelectItem value="any">Any</SelectItem>
               <SelectItem value="user">User</SelectItem>
               <SelectItem value="admin">Admin</SelectItem>
             </SelectContent>
           </Select>
         </FormField>
       </FilterBar>
+
+      {/* One failed row action shows one alert above the table, not one
+          per row (the original page's single `actionError` line). */}
+      {actionMutation.error ? (
+        <p
+          role="alert"
+          className="text-err"
+        >{`could not ${actionMutation.variables.action} this user`}</p>
+      ) : null}
 
       {listQuery.isError && !listQuery.data ? (
         <LoadError
@@ -361,12 +392,6 @@ export function UsersPage() {
                   <TableCell>{formatWhen(user.createdAt)}</TableCell>
                   <TableCell>
                     <div className="flex flex-wrap items-center gap-2">
-                      {actionMutation.error ? (
-                        <p
-                          role="alert"
-                          className="text-err"
-                        >{`could not ${actionMutation.variables.action} this user`}</p>
-                      ) : null}
                       {canAct && user.status === "pending" ? (
                         <Button
                           variant="outline"
@@ -426,14 +451,27 @@ export function UsersPage() {
         </AdminTable>
       )}
 
-      {hasMore ? (
+      {/* The "Load older" affordance: while an older page is in flight the
+          button stays mounted (loading), and a failed older page is an
+          error with a retry, not a silently hidden button. */}
+      {cursor ? (
+        olderQuery.isError ? (
+          <LoadError
+            message="could not load older users"
+            onRetry={() => void olderQuery.refetch()}
+          />
+        ) : loadingOlder || (olderQuery.data?.hasMore ?? false) ? (
+          <LoadMoreButton
+            label="Load older"
+            isLoading={loadingOlder}
+            onClick={loadOlder}
+          />
+        ) : null
+      ) : (listQuery.data?.hasMore ?? false) ? (
         <LoadMoreButton
           label="Load older"
-          isLoading={loadingOlder}
-          onClick={() => {
-            const last = users[users.length - 1];
-            if (last) setCursor({ createdAt: last.createdAt, id: last.id });
-          }}
+          isLoading={false}
+          onClick={loadOlder}
         />
       ) : null}
     </>

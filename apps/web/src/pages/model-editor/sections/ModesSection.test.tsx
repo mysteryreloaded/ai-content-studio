@@ -646,6 +646,43 @@ describe("ModesSection", () => {
     expect(within(sheet).getByText("#2")).toBeTruthy();
   });
 
+  test("Mode sheet's output row shows the inferred kind, not the raw class_type (issue #216)", async () => {
+    const DETAIL_ONE_MODE = {
+      ...DETAIL,
+      modes: [
+        {
+          id: "mode-1",
+          sortOrder: 0,
+          name: "Mode 1",
+          description: "",
+          outputNodes: [
+            { nodeId: "2", classType: "SaveImage", title: null, kind: "image" },
+          ],
+          inputSettings: [],
+        },
+      ],
+    };
+
+    mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1"))
+        return Response.json(DETAIL_ONE_MODE);
+      if (call.method === "GET") return Response.json(NO_BACKENDS);
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await openSection(view, "Modes");
+
+    await userEvent.click(view.getByRole("button", { name: "Mode 1" }));
+    const sheet = view.getByRole("dialog");
+
+    // The output row's kind pill must show "image" (via inferOutputNodeKind),
+    // not the raw class_type "SaveImage".
+    const row = within(sheet).getByText("#2").closest("li") as HTMLElement;
+    expect(within(row).getByText("image")).toBeTruthy();
+  });
+
   test("preview shows only the Mode's shown Inputs under its labels", async () => {
     const DETAIL_PREVIEW = {
       ...DETAIL,

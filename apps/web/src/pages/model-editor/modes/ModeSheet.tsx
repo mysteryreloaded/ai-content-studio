@@ -1,4 +1,5 @@
 import type { ModelIssue } from "@ai-content-studio/shared";
+import { inferOutputNodeKind } from "@ai-content-studio/shared";
 import { ArrowUp, Plus, RotateCcw, X } from "lucide-react";
 import { useState } from "react";
 import { Button } from "../../../components/ui/button.js";
@@ -82,7 +83,7 @@ function OutputsEditor({
           {mode.outputNodeIds.map((nodeId, position) => {
             const node = detail.workflow[nodeId];
             const missing = !node;
-            const kind = node ? node.class_type : null;
+            const kind = node ? inferOutputNodeKind(node.class_type) : null;
             return (
               <li
                 key={nodeId}
@@ -122,7 +123,7 @@ function OutputsEditor({
                     </span>
                     <Pill tone="accent" className="gap-1">
                       <TypeDot kind={typeDotKindForValueType("string")} />
-                      {kind}
+                      {kind ?? "unknown kind"}
                     </Pill>
                   </>
                 )}

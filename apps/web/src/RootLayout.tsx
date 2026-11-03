@@ -4,6 +4,7 @@ import { Outlet, useMatches } from "react-router-dom";
 import { Footer } from "./Footer.js";
 import { NoticeBanner } from "./NoticeBanner.js";
 import { AppHeader } from "./components/AppHeader.js";
+import { Toaster } from "./components/ui/sonner.js";
 import { useTabNotifier } from "./notifications/useTabNotifier.js";
 
 /**
@@ -82,6 +83,7 @@ export function RootLayout() {
           <Outlet />
         </PageContainer>
       )}
+      <Toaster />
       <Footer />
     </div>
   );

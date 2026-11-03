@@ -41,6 +41,8 @@ export class UploadError extends Error {
     message: string,
     public readonly fatal: boolean,
     public readonly serverOffset?: number,
+    /** Whether `message` came from the server's response body, rather than a client-made fallback (e.g. "upload failed (504)"). */
+    public readonly fromServer: boolean = false,
   ) {
     super(message);
   }
@@ -152,9 +154,10 @@ async function errorFrom(res: Response): Promise<UploadError> {
     error?: string;
     offset?: number;
   };
+  const fromServer = body.message != null || body.error != null;
   const message = body.message ?? body.error ?? `upload failed (${res.status})`;
   if (res.status === 409 && typeof body.offset === "number") {
-    return new UploadError(message, false, body.offset);
+    return new UploadError(message, false, body.offset, fromServer);
   }
   // 5xx (other than storage full) and 408/429 are transient; every other
   // refusal (too large, wrong kind, not found) won't change on a retry.
@@ -162,7 +165,7 @@ async function errorFrom(res: Response): Promise<UploadError> {
     (res.status >= 500 && res.status !== 507) ||
     res.status === 408 ||
     res.status === 429;
-  return new UploadError(message, !transient);
+  return new UploadError(message, !transient, undefined, fromServer);
 }
 
 /** The real `/api/uploads` calls. */

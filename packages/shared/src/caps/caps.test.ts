@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   type CapsStatus,
+  capsFooterParts,
   capsFooterText,
   concurrentRemaining,
   dailyRemaining,
@@ -104,5 +105,43 @@ describe("capsFooterText", () => {
     expect(capsFooterText(status, now)).toBe(
       "25 of 30 left today · 0 more at once",
     );
+  });
+});
+
+describe("capsFooterParts", () => {
+  const now = new Date("2026-10-24T12:00:00Z");
+
+  test("splits out the numbers and the next-slot clause, for CapsLine's own markup", () => {
+    const status: CapsStatus = {
+      dailyCap: 20,
+      dailyUsed: 19,
+      concurrentCap: 4,
+      concurrentUsed: 1,
+      oldestCountedSubmittedAt: new Date(
+        now.getTime() - 20 * 60 * 60 * 1000,
+      ).toISOString(),
+    };
+    expect(capsFooterParts(status, now)).toEqual({
+      daily: 1,
+      dailyCap: 20,
+      concurrent: 3,
+      nextSlot: "next slot frees in 4h",
+    });
+  });
+
+  test("no next-slot clause when plenty is left today", () => {
+    const status: CapsStatus = {
+      dailyCap: 30,
+      dailyUsed: 8,
+      concurrentCap: 4,
+      concurrentUsed: 2,
+      oldestCountedSubmittedAt: null,
+    };
+    expect(capsFooterParts(status, now)).toEqual({
+      daily: 22,
+      dailyCap: 30,
+      concurrent: 2,
+      nextSlot: null,
+    });
   });
 });

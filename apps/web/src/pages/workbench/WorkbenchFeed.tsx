@@ -14,11 +14,12 @@ import type { WorkbenchFeedProps } from "./types.js";
 
 /** Re-renders every 30s so each block's relative time ("12 min ago") stays current. */
 function useTick(intervalMs: number) {
-  const [, setTick] = useState(0);
+  const [tick, setTick] = useState(0);
   useEffect(() => {
     const id = setInterval(() => setTick((t) => t + 1), intervalMs);
     return () => clearInterval(id);
   }, [intervalMs]);
+  return tick;
 }
 
 export function WorkbenchFeed({
@@ -41,11 +42,12 @@ export function WorkbenchFeed({
   handleDismissGeneration,
   setSubmissions,
 }: WorkbenchFeedProps) {
-  useTick(30_000);
+  const tick = useTick(30_000);
   const { generations } = useActiveGenerations();
   const underway = underwayCountFor(generations, model.slug);
   const feedRef = useRef<HTMLElement>(null);
-  const now = useMemo(() => new Date(), []);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `tick` only forces this to recompute every 30s; `new Date()` doesn't read it.
+  const now = useMemo(() => new Date(), [tick]);
   const [openGenerationId, setOpenGenerationId] = useState<string | null>(null);
 
   const orderedIds = useMemo(

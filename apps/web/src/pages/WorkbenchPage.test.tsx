@@ -1,6 +1,6 @@
 // See ModelEditorPage.test.tsx's header comment: this file registers its
 // own happy-dom instance (bun test --isolate gives it a clean process).
-import { afterAll, afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, jest, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
 await GlobalRegistrator.register();
@@ -29,7 +29,7 @@ await GlobalRegistrator.register();
   });
 }
 
-const { cleanup, waitFor } = await import("@testing-library/react");
+const { act, cleanup, waitFor } = await import("@testing-library/react");
 const { WorkbenchPage } = await import("./WorkbenchPage.js");
 const { drainMacrotasks, renderWithProviders } = await import(
   "../test/render.js"
@@ -2009,6 +2009,40 @@ describe("WorkbenchPage", () => {
       await userEvent.click(view.getByRole("button", { name: "Delete" }));
 
       await waitFor(() => expect(deleteCalls).toBe(1));
+    });
+
+    test("a Submission's relative time advances on the 30s tick, not just at page-load (QA regression)", async () => {
+      jest.useFakeTimers({ now: new Date("2026-01-01T00:00:00.000Z") });
+      try {
+        mockFetch((call) => {
+          if (call.url.endsWith("/api/models/ltx")) {
+            return Response.json({ model: MODEL });
+          }
+          if (call.url.endsWith("/api/models/ltx/generations")) {
+            return Response.json({
+              submissions: [
+                {
+                  ...ENDED_SUBMISSION,
+                  submittedAt: "2026-01-01T00:00:00.000Z",
+                },
+              ],
+            });
+          }
+          throw new Error(`unexpected fetch ${call.url}`);
+        });
+
+        const view = renderWorkbench();
+        await view.findByText("just now");
+
+        await act(async () => {
+          jest.advanceTimersByTime(60_000);
+        });
+
+        expect(await view.findByText("1 min ago")).toBeTruthy();
+        expect(view.queryByText("just now")).toBeNull();
+      } finally {
+        jest.useRealTimers();
+      }
     });
 
     test("the notifications offer renders inside the newly created Submission's block", async () => {

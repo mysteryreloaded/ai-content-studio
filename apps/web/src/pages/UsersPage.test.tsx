@@ -1,11 +1,33 @@
 // See ../test/happy-dom-setup.ts for why this is registered once, here,
 // before @testing-library/react is imported, and never unregistered.
 import { afterEach, describe, expect, test } from "bun:test";
+import { useQuery } from "@tanstack/react-query";
+import { adminBadgeKeys } from "../components/admin/AdminNav.js";
+import { api, ok } from "../lib/api.js";
 import { BUN_FETCH } from "../test/happy-dom-setup.js";
 
 const { cleanup, screen, waitFor } = await import("@testing-library/react");
+const { default: userEvent } = await import("@testing-library/user-event");
 const { UsersPage } = await import("./UsersPage.js");
 const { renderWithProviders } = await import("../test/render.js");
+
+/**
+ * The nav's pending badge, exactly the query AdminNav runs (see
+ * AdminNav.tsx) — the query the page's row actions invalidate (issue
+ * #207's AC: approving refreshes the badge).
+ */
+function PendingBadgeProbe() {
+  const { data } = useQuery({
+    queryKey: adminBadgeKeys.pending,
+    queryFn: () =>
+      ok<{ count: number }>(api.api.admin.users["pending-count"].$get()),
+  });
+  return (
+    <span data-testid="pending-badge">
+      {data ? `${data.count} pending` : ""}
+    </span>
+  );
+}
 
 afterEach(() => {
   cleanup();
@@ -120,8 +142,6 @@ describe("UsersPage", () => {
 
     await screen.findByText("First User");
     const loadOlder = screen.getByText("Load older");
-
-    const { default: userEvent } = await import("@testing-library/user-event");
     await userEvent.click(loadOlder);
 
     expect(await screen.findByText("Second User")).toBeTruthy();
@@ -154,5 +174,64 @@ describe("UsersPage", () => {
       name: "Blocked accounts",
     });
     expect(link.getAttribute("href")).toBe("/admin/blocked-accounts");
+  });
+
+  test("filters are read from the URL", async () => {
+    const calls = mockFetch(() =>
+      Response.json({ users: [userRow()], hasMore: false }),
+    );
+
+    renderWithProviders(<UsersPage />, {
+      route: "/admin/users?q=alice&status=pending&role=admin",
+    });
+
+    await screen.findByText("A User");
+
+    const listCall = calls[0];
+    expect(listCall?.url).toContain("q=alice");
+    expect(listCall?.url).toContain("status=pending");
+    expect(listCall?.url).toContain("role=admin");
+  });
+
+  test("approve invalidates the pending badge", async () => {
+    let approved = false;
+    let pendingCountFetches = 0;
+    mockFetch((call) => {
+      if (call.url.includes("/pending-count")) {
+        pendingCountFetches += 1;
+        return Response.json({ count: approved ? 0 : 1 });
+      }
+      if (call.url.includes("/approve")) {
+        approved = true;
+        return Response.json(userRow({ id: "pending-1", status: "active" }));
+      }
+      return Response.json({
+        users: [
+          userRow({
+            id: "pending-1",
+            status: approved ? "active" : "pending",
+          }),
+        ],
+        hasMore: false,
+      });
+    });
+
+    renderWithProviders(
+      <>
+        <UsersPage />
+        <PendingBadgeProbe />
+      </>,
+      { route: "/admin/users" },
+    );
+
+    // The badge, as the nav runs it, loads on mount.
+    await screen.findByText("1 pending");
+
+    await userEvent.click(screen.getByText("Approve"));
+
+    // Approve invalidates the badge's query, and the refetched count
+    // (now 0) replaces it.
+    await screen.findByText("0 pending");
+    expect(pendingCountFetches).toBeGreaterThanOrEqual(2);
   });
 });

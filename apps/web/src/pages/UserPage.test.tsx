@@ -110,6 +110,39 @@ describe("UserPage", () => {
     expect(disableCall?.body).toEqual({ reason: "Abusive prompts" });
   });
 
+  test("disable asks in a dialog and sends the reason", async () => {
+    const calls = mockFetch((call) => {
+      if (call.url.endsWith("/disable")) {
+        return Response.json(targetUser({ status: "disabled" }));
+      }
+      return undefined;
+    });
+
+    renderPage();
+    await screen.findByText("A User");
+
+    await userEvent.click(screen.getByText("Disable"));
+
+    // A dialog asks — it is not an inline form — and nothing is sent
+    // until it is confirmed.
+    expect(
+      await screen.findByRole("heading", { name: "Disable A User?" }),
+    ).toBeTruthy();
+    expect(screen.getByText(/Their sessions end now/)).toBeTruthy();
+    expect(calls.find((c) => c.url.endsWith("/disable"))).toBeUndefined();
+
+    await userEvent.type(
+      screen.getByLabelText("Reason (optional, Admin-only)"),
+      "Abusive prompts",
+    );
+    await userEvent.click(screen.getByText("Confirm disable"));
+
+    await waitFor(() => {
+      const disableCall = calls.find((c) => c.url.endsWith("/disable"));
+      expect(disableCall?.body).toEqual({ reason: "Abusive prompts" });
+    });
+  });
+
   test("enable is offered for a disabled user and clears the status", async () => {
     let status = "disabled";
     mockFetch((call) => {
@@ -178,6 +211,23 @@ describe("UserPage", () => {
       dailyCapOverride: 0,
       concurrentCapOverride: 2,
     });
+  });
+
+  test("a 0 Cap override is flagged as blocked", async () => {
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/admin/users/u1") && call.method === "GET") {
+        return Response.json(targetUser({ dailyCapOverride: 0 }));
+      }
+      return undefined;
+    });
+
+    renderPage();
+    await screen.findByText("A User");
+
+    // A saved 0 fills the Daily input and is flagged as a block.
+    const daily = screen.getByLabelText("Daily cap override");
+    expect((daily as HTMLInputElement).value).toBe("0");
+    expect(screen.getAllByText("Blocked from generating").length).toBe(1);
   });
 
   test("actions are hidden for a pinned row and the acting Admin's own row", async () => {

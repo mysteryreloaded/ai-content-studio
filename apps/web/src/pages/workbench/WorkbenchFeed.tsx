@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { SubmissionBlock } from "../../components/generations/SubmissionBlock.js";
 import { Button } from "../../components/ui/button.js";
 import { Pill } from "../../components/ui/pill.js";
@@ -7,6 +7,7 @@ import {
   underwayCountFor,
   useActiveGenerations,
 } from "../../lib/generationsStream.js";
+import { useRoutedGenerationId } from "../../lib/routedGeneration.js";
 import { FirstSubmissionNotifyPrompt } from "../../notifications/FirstSubmissionNotifyPrompt.js";
 import { GenerationDetailOverlay } from "../GenerationDetailOverlay.js";
 import { UnderwayChip } from "./UnderwayChip.js";
@@ -48,7 +49,9 @@ export function WorkbenchFeed({
   const feedRef = useRef<HTMLElement>(null);
   // biome-ignore lint/correctness/useExhaustiveDependencies: `tick` only forces this to recompute every 30s; `new Date()` doesn't read it.
   const now = useMemo(() => new Date(), [tick]);
-  const [openGenerationId, setOpenGenerationId] = useState<string | null>(null);
+  const openGenerationId = useRoutedGenerationId();
+  const location = useLocation();
+  const navigate = useNavigate();
 
   const orderedIds = useMemo(
     () =>
@@ -58,9 +61,16 @@ export function WorkbenchFeed({
     [submissions],
   );
 
-  // #199 later gives this its own URL over the Workbench; only this function changes then.
+  /** Issue #199: the Workbench stays mounted underneath, via `main.tsx`'s background-location modal route. */
   function openDetails(id: string) {
-    setOpenGenerationId(id);
+    navigate(`/generations/${id}`, { state: { backgroundLocation: location } });
+  }
+
+  function navigateGeneration(id: string) {
+    navigate(`/generations/${id}`, {
+      replace: true,
+      state: { backgroundLocation: location },
+    });
   }
 
   function removeFromFeed(id: string) {
@@ -76,17 +86,21 @@ export function WorkbenchFeed({
 
   return (
     <>
-      {openGenerationId && (
-        <GenerationDetailOverlay
-          id={openGenerationId}
-          prevId={orderedIds[orderedIds.indexOf(openGenerationId) - 1] ?? null}
-          nextId={orderedIds[orderedIds.indexOf(openGenerationId) + 1] ?? null}
-          onClose={() => setOpenGenerationId(null)}
-          onNavigate={setOpenGenerationId}
-          onDeleted={removeFromFeed}
-          onDismissed={removeFromFeed}
-        />
-      )}
+      {openGenerationId &&
+        (() => {
+          const index = orderedIds.indexOf(openGenerationId);
+          return (
+            <GenerationDetailOverlay
+              id={openGenerationId}
+              prevId={index > 0 ? (orderedIds[index - 1] ?? null) : null}
+              nextId={index !== -1 ? (orderedIds[index + 1] ?? null) : null}
+              onClose={() => navigate(-1)}
+              onNavigate={navigateGeneration}
+              onDeleted={removeFromFeed}
+              onDismissed={removeFromFeed}
+            />
+          );
+        })()}
       <section
         ref={feedRef}
         aria-label={`Your ${model.name} Generations`}

@@ -1,13 +1,22 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { RouterProvider, createBrowserRouter } from "react-router-dom";
+import {
+  type Location,
+  Route,
+  RouterProvider,
+  Routes,
+  createBrowserRouter,
+  useLocation,
+  useParams,
+} from "react-router-dom";
 import "./index.css";
 import { LandingPage } from "./LandingPage.js";
 import { RequireActive } from "./RequireActive.js";
 import { RequireTermsAccepted } from "./RequireTermsAccepted.js";
 import { RootLayout } from "./RootLayout.js";
 import { queryClient } from "./lib/query.js";
+import { RoutedGenerationIdProvider } from "./lib/routedGeneration.js";
 import { AccountPage } from "./pages/AccountPage.js";
 import { AdminShell } from "./pages/AdminShell.js";
 import { GalleryPage } from "./pages/GalleryPage.js";
@@ -16,6 +25,45 @@ import { PrivacyPage } from "./pages/PrivacyPage.js";
 import { TermsPage } from "./pages/TermsPage.js";
 import { WaitingPage } from "./pages/WaitingPage.js";
 import { WorkbenchPage } from "./pages/WorkbenchPage.js";
+
+/**
+ * `/generations/:id` (issue #199): a pasted link, a reload or a
+ * Notification click carries no `state.backgroundLocation`, so it opens
+ * over the Gallery, exactly like before #199 — `GalleryPage` reads the
+ * `:id` itself from this route's own params. Opened from the Workbench
+ * (`WorkbenchFeed.openDetails`), `state.backgroundLocation` names the
+ * Workbench's own location (its URL never actually changes); re-running
+ * the route tree against it, React Router's modal-route pattern, keeps
+ * the Workbench mounted underneath while this route's real URL sits on
+ * top. The real id isn't a param anywhere in that background tree, so
+ * it's handed down through `RoutedGenerationIdProvider` instead.
+ */
+function GenerationDetailRoute() {
+  const { id } = useParams<{ id: string }>();
+  const location = useLocation();
+  const background = (
+    location.state as { backgroundLocation?: Location } | null
+  )?.backgroundLocation;
+
+  if (!background) return <GalleryPage />;
+
+  return (
+    <RoutedGenerationIdProvider value={id ?? null}>
+      <Routes location={background}>
+        <Route
+          path="/models/:slug"
+          element={
+            <RequireTermsAccepted>
+              <RequireActive>
+                <WorkbenchPage />
+              </RequireActive>
+            </RequireTermsAccepted>
+          }
+        />
+      </Routes>
+    </RoutedGenerationIdProvider>
+  );
+}
 
 const root = document.getElementById("root");
 if (!root) throw new Error("missing #root element");
@@ -63,15 +111,14 @@ const router = createBrowserRouter([
         ),
       },
       {
-        // Issue #57: a Generation's own link opens its detail dialog
-        // over the Gallery — `GalleryPage` renders the same either way,
-        // reading an optional `:id` param to decide whether the dialog
-        // is open.
+        // Issue #57/#199: a Generation's own link opens its detail
+        // dialog over the Gallery, or over the Workbench when it was
+        // opened from there — see `GenerationDetailRoute`'s own comment.
         path: "/generations/:id",
         element: (
           <RequireTermsAccepted>
             <RequireActive>
-              <GalleryPage />
+              <GenerationDetailRoute />
             </RequireActive>
           </RequireTermsAccepted>
         ),

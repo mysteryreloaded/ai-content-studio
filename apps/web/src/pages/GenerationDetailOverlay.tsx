@@ -1,186 +1,43 @@
-// The Generation detail dialog (issue #57): opened at `/generations/<id>`,
-// over the Gallery when the link is pasted. Shows the player, Download,
-// facts, the Model/Mode/Attribution/times/id, the settings it ran with,
-// and lets the owner reuse them on the Workbench or delete it. A missing
-// id or someone else's Generation both read as "not found" — the API
-// itself 404s either way, so this dialog never learns which.
+// The Generation detail dialog (issue #57, restyled for #199): opened at
+// `/generations/<id>`, over the Gallery when the link is pasted, or over
+// the Workbench via the background-location modal pattern (`main.tsx`).
+// Shows the player, Download, facts, the Model/Mode/Attribution/times/id,
+// the settings it ran with, and lets the owner reuse them on the
+// Workbench, cancel it under way, or delete it once ended. A missing id
+// or someone else's Generation both read as "not found" — the API itself
+// 404s either way, so this dialog never learns which.
 
-import type { GenerationInputSetting } from "@ai-content-studio/shared";
-import { useEffect, useRef, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { ChevronLeft, ChevronRight, RotateCcw, X } from "lucide-react";
+import { useEffect } from "react";
+import { useNavigate } from "react-router-dom";
+import { ConfirmDelete } from "../components/generations/ConfirmDelete.js";
+import {
+  type GenerationDetail,
+  GenerationMediaPanel,
+  GenerationSettingsList,
+} from "../components/generations/GenerationDetailBody.js";
+import {
+  CANCELLABLE_STATES,
+  DONE_STATES,
+} from "../components/generations/types.js";
+import { Button } from "../components/ui/button.js";
+import { Dialog, DialogContent, DialogTitle } from "../components/ui/dialog.js";
+import { type ApiError, api, ok } from "../lib/api.js";
+import { useEventStream } from "../lib/sse.js";
+import { markOwnCancelGeneration } from "../notifications/ownCancel.js";
 
-interface GenerationAssetDetail {
-  id: string;
-  nodeId: string;
-  sortOrder: number;
-  kind: string;
-  contentType: string;
-  size: number;
-  width: number | null;
-  height: number | null;
-  durationMs: number | null;
-  fps: number | null;
-}
+const IGNORE_TAGS = new Set(["INPUT", "TEXTAREA", "SELECT", "VIDEO", "AUDIO"]);
 
-interface GenerationDetail {
-  id: string;
-  state: string;
-  error: string | null;
-  tries: number;
-  submittedAt: string;
-  startedAt: string | null;
-  endedAt: string | null;
-  deletedAt: string | null;
-  /** Issue #68: an Admin removed this Generation — a dismissable card, no reason, no Reuse. */
-  removedAt: string | null;
-  modelId: string;
-  modelSlug: string;
-  modelName: string;
-  modelAttribution: string;
-  modelDeleted: boolean;
-  modeId: string;
-  modeName: string;
-  assets: GenerationAssetDetail[];
-  settings: GenerationInputSetting[];
-}
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ["KB", "MB", "GB"];
-  let value = bytes / 1024;
-  let unitIndex = 0;
-  while (value >= 1024 && unitIndex < units.length - 1) {
-    value /= 1024;
-    unitIndex++;
+/** ← / → are ignored while a focused control (incl. a player seeking) or a modifier key would otherwise hijack them (issue #199's AC). */
+function shouldIgnoreArrowKey(event: KeyboardEvent): boolean {
+  if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+    return true;
   }
-  return `${value.toFixed(1)} ${units[unitIndex]}`;
-}
-
-function formatDuration(ms: number): string {
-  const totalSeconds = Math.round(ms / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes}:${String(seconds).padStart(2, "0")}`;
-}
-
-function assetFacts(asset: GenerationAssetDetail): string {
-  const parts: string[] = [];
-  if (asset.width && asset.height) parts.push(`${asset.width}×${asset.height}`);
-  if (asset.durationMs) parts.push(formatDuration(asset.durationMs));
-  if (asset.fps) parts.push(`${Math.round(asset.fps)} fps`);
-  parts.push(formatSize(asset.size));
-  return parts.join(" · ");
-}
-
-function assetSrc(asset: GenerationAssetDetail): string {
-  return `/api/assets/${asset.id}`;
-}
-
-function AssetPlayer({ asset }: { asset: GenerationAssetDetail }) {
-  if (asset.kind === "video") {
-    return (
-      // biome-ignore lint/a11y/useMediaCaption: a generated Asset has no captions to offer.
-      <video
-        controls
-        poster={`/api/assets/${asset.id}/poster`}
-        src={assetSrc(asset)}
-        className="generation-detail-player"
-      />
-    );
-  }
-  if (asset.kind === "audio") {
-    return (
-      // biome-ignore lint/a11y/useMediaCaption: a generated Asset has no captions to offer.
-      <audio
-        controls
-        src={assetSrc(asset)}
-        className="generation-detail-player"
-      />
-    );
-  }
-  return (
-    <img src={assetSrc(asset)} alt="" className="generation-detail-player" />
-  );
-}
-
-function PointsPreview({
-  setting,
-}: {
-  setting: Extract<GenerationInputSetting, { kind: "points" }>;
-}) {
-  const width = setting.frameWidth ?? 1;
-  const height = setting.frameHeight ?? 1;
-  return (
-    <svg
-      viewBox={`0 0 ${width} ${height}`}
-      className="generation-detail-points"
-      role="img"
-      aria-label={`${setting.points.length} points drawn on the frame`}
-    >
-      <rect x={0} y={0} width={width} height={height} />
-      {setting.points.map((point, i) => (
-        <circle
-          // biome-ignore lint/suspicious/noArrayIndexKey: points have no other stable identity.
-          key={i}
-          cx={point.x}
-          cy={point.y}
-          r={Math.max(width, height) * 0.01}
-        />
-      ))}
-    </svg>
-  );
-}
-
-function SettingRow({ setting }: { setting: GenerationInputSetting }) {
-  return (
-    <div className="generation-detail-setting">
-      <span className="generation-detail-setting-label">{setting.label}</span>
-      {setting.kind === "upload" ? (
-        setting.upload ? (
-          <span className="generation-detail-setting-value">
-            {setting.upload.thumbnailKey && (
-              <img
-                src={`/api/uploads/${setting.upload.id}/thumb`}
-                alt=""
-                className="generation-detail-upload-thumb"
-              />
-            )}
-            {setting.upload.name} · {formatSize(setting.upload.size)}
-            {setting.upload.durationMs
-              ? ` · ${formatDuration(setting.upload.durationMs)}`
-              : ""}
-            {setting.upload.width && setting.upload.height
-              ? ` · ${setting.upload.width}×${setting.upload.height}`
-              : ""}
-            {setting.upload.trimmedFromName
-              ? ` · trimmed from ${setting.upload.trimmedFromName}`
-              : null}
-          </span>
-        ) : (
-          <span className="generation-detail-setting-value">None</span>
-        )
-      ) : setting.kind === "points" ? (
-        <span className="generation-detail-setting-value">
-          <PointsPreview setting={setting} />
-          {setting.display}
-        </span>
-      ) : (
-        <span className="generation-detail-setting-value">
-          {setting.display}
-        </span>
-      )}
-    </div>
-  );
-}
-
-function runTime(
-  startedAt: string | null,
-  endedAt: string | null,
-): string | null {
-  if (!startedAt || !endedAt) return null;
-  const ms = new Date(endedAt).getTime() - new Date(startedAt).getTime();
-  if (ms < 0) return null;
-  return formatDuration(ms);
+  const target = event.target as HTMLElement | null;
+  if (!target) return false;
+  if (IGNORE_TAGS.has(target.tagName)) return true;
+  return target.isContentEditable;
 }
 
 export function GenerationDetailOverlay({
@@ -201,49 +58,53 @@ export function GenerationDetailOverlay({
   onDismissed?: (id: string) => void;
 }) {
   const navigate = useNavigate();
-  const [detail, setDetail] = useState<GenerationDetail | null>(null);
-  const [notFound, setNotFound] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
-  const [dismissing, setDismissing] = useState(false);
-  const [dismissError, setDismissError] = useState<string | null>(null);
-  const dialogRef = useRef<HTMLDialogElement>(null);
+  const queryKey = ["generation", id];
 
-  useEffect(() => {
-    setDetail(null);
-    setNotFound(false);
-    setCopied(false);
-    setDeleteError(null);
-    let cancelled = false;
-    fetch(`/api/generations/${id}`)
-      .then((res) => {
-        if (res.status === 404) {
-          if (!cancelled) setNotFound(true);
-          return null;
-        }
-        if (!res.ok) throw new Error(`unexpected status ${res.status}`);
-        return res.json() as Promise<GenerationDetail>;
-      })
-      .then((body) => {
-        if (!cancelled && body) setDetail(body);
-      })
-      .catch(() => {
-        if (!cancelled) setNotFound(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [id]);
+  const { data: detail, error } = useQuery<GenerationDetail, ApiError>({
+    queryKey,
+    queryFn: () =>
+      ok<GenerationDetail>(api.api.generations[":id"].$get({ param: { id } })),
+  });
+  const notFound = !!error;
 
-  useEffect(() => {
-    const dialog = dialogRef.current;
-    if (!dialog) return;
-    if (!dialog.open) dialog.showModal();
-  }, []);
+  useEventStream("/api/generations/stream", {
+    change: (queryClient, data) => {
+      if ((data as { id: string }).id === id) {
+        void queryClient.invalidateQueries({ queryKey });
+      }
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: () => ok(api.api.generations[":id"].$delete({ param: { id } })),
+    onSuccess: () => {
+      onDeleted(id);
+      onClose();
+    },
+  });
+
+  const dismissMutation = useMutation({
+    mutationFn: () =>
+      ok(
+        api.api.generations[":id"]["dismiss-removed"].$post({
+          param: { id },
+        }),
+      ),
+    onSuccess: () => {
+      onDismissed?.(id);
+      onClose();
+    },
+  });
+
+  const cancelMutation = useMutation({
+    mutationFn: () =>
+      ok(api.api.generations[":id"].cancel.$post({ param: { id } })),
+    onSuccess: () => markOwnCancelGeneration(id),
+  });
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
+      if (shouldIgnoreArrowKey(event)) return;
       if (event.key === "ArrowLeft" && prevId) onNavigate(prevId);
       else if (event.key === "ArrowRight" && nextId) onNavigate(nextId);
     }
@@ -251,284 +112,135 @@ export function GenerationDetailOverlay({
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [prevId, nextId, onNavigate]);
 
-  async function handleDelete() {
-    if (!window.confirm("Delete this Generation? This can't be undone.")) {
-      return;
-    }
-    setDeleting(true);
-    setDeleteError(null);
-    try {
-      const res = await fetch(`/api/generations/${id}`, { method: "DELETE" });
-      if (!res.ok) throw new Error(`unexpected status ${res.status}`);
-      onDeleted(id);
-      onClose();
-    } catch {
-      setDeleteError("Could not delete this Generation.");
-    } finally {
-      setDeleting(false);
-    }
-  }
-
-  async function handleDismiss() {
-    setDismissing(true);
-    setDismissError(null);
-    try {
-      const res = await fetch(`/api/generations/${id}/dismiss-removed`, {
-        method: "POST",
-      });
-      if (!res.ok) throw new Error(`unexpected status ${res.status}`);
-      onDismissed?.(id);
-      onClose();
-    } catch {
-      setDismissError("Could not dismiss this card.");
-    } finally {
-      setDismissing(false);
-    }
-  }
-
-  function handleCopyId() {
-    navigator.clipboard?.writeText(id).then(
-      () => setCopied(true),
-      () => {},
-    );
-  }
-
-  const mainAsset = detail?.assets[0];
-  const ended =
-    detail &&
-    !["queued", "starting", "running", "saving", "cancelling"].includes(
-      detail.state,
-    );
+  const ended = !!detail && DONE_STATES.has(detail.state);
 
   return (
-    <dialog
-      ref={dialogRef}
-      onClose={onClose}
-      className="generation-detail-dialog"
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
     >
-      <style>{GENERATION_DETAIL_STYLE}</style>
-      <div className="generation-detail-nav">
-        <button
-          type="button"
-          disabled={!prevId}
-          onClick={() => prevId && onNavigate(prevId)}
-          aria-label="Previous Generation"
-        >
-          ←
-        </button>
-        <button
-          type="button"
-          disabled={!nextId}
-          onClick={() => nextId && onNavigate(nextId)}
-          aria-label="Next Generation"
-        >
-          →
-        </button>
-        <button
-          type="button"
-          onClick={() => dialogRef.current?.close()}
-          aria-label="Close"
-          className="generation-detail-close"
-        >
-          ×
-        </button>
-      </div>
+      <DialogContent
+        showCloseButton={false}
+        className="flex max-h-[calc(100vh-48px)] w-full flex-col gap-0 rounded-2xl border border-border bg-card p-0 shadow-md sm:max-w-[980px] max-sm:inset-0 max-sm:top-0 max-sm:left-0 max-sm:h-dvh max-sm:max-h-none max-sm:max-w-none max-sm:translate-x-0 max-sm:translate-y-0 max-sm:rounded-none max-sm:border-0"
+      >
+        <header className="flex items-center gap-2.5 border-b border-border px-4 py-3">
+          <DialogTitle className="min-w-0 flex-1 truncate font-heading text-lg">
+            {detail ? (
+              <>
+                {detail.modeName}{" "}
+                <span className="text-muted-foreground">
+                  · {detail.modelName}
+                </span>
+              </>
+            ) : (
+              "Generation"
+            )}
+          </DialogTitle>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Previous Generation"
+            disabled={!prevId}
+            onClick={() => prevId && onNavigate(prevId)}
+          >
+            <ChevronLeft />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Next Generation"
+            disabled={!nextId}
+            onClick={() => nextId && onNavigate(nextId)}
+          >
+            <ChevronRight />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Close"
+            onClick={onClose}
+          >
+            <X />
+          </Button>
+        </header>
 
-      {notFound && <p role="alert">Not found.</p>}
-      {!notFound && !detail && <p>Loading…</p>}
+        <div className="min-h-0 overflow-y-auto p-4 pb-[max(16px,env(safe-area-inset-bottom))]">
+          {notFound && <p role="alert">Not found.</p>}
+          {!notFound && !detail && <p>Loading…</p>}
 
-      {detail && (
-        <>
-          <header className="generation-detail-header">
-            <h2>
-              <Link to={`/models/${detail.modelSlug}`}>{detail.modelName}</Link>
-              {" · "}
-              {detail.modeName}
-            </h2>
-            {detail.modelAttribution && <p>{detail.modelAttribution}</p>}
-          </header>
+          {detail?.deletedAt && <p>Deleted.</p>}
 
-          {detail.deletedAt ? (
-            <p>Deleted.</p>
-          ) : detail.removedAt ? (
-            <div className="generation-detail-removed">
+          {detail && !detail.deletedAt && detail.removedAt && (
+            <div className="flex flex-col gap-2">
               <p role="alert">Removed by an administrator.</p>
-              <button
+              <Button
                 type="button"
-                onClick={() => void handleDismiss()}
-                disabled={dismissing}
+                variant="outline"
+                size="sm"
+                disabled={dismissMutation.isPending}
+                onClick={() => dismissMutation.mutate()}
               >
                 Dismiss
-              </button>
-              {dismissError && <p role="alert">{dismissError}</p>}
+              </Button>
+              {dismissMutation.isError && (
+                <p role="alert">Could not dismiss this card.</p>
+              )}
             </div>
-          ) : (
-            <>
-              {detail.state === "succeeded" && mainAsset ? (
-                <>
-                  <AssetPlayer asset={mainAsset} />
-                  <p className="generation-detail-download">
-                    <a href={`/api/assets/${mainAsset.id}?download=1`}>
-                      Download
-                    </a>{" "}
-                    <span className="generation-detail-ai-reminder">
-                      AI-generated: say so when you share it.
-                    </span>
-                  </p>
-                  <p>{assetFacts(mainAsset)}</p>
-                  {detail.assets.length > 1 && (
-                    <ul className="generation-detail-extra-assets">
-                      {detail.assets.slice(1).map((asset) => (
-                        <li key={asset.id}>
-                          <a href={`/api/assets/${asset.id}?download=1`}>
-                            Download
-                          </a>{" "}
-                          {assetFacts(asset)}
-                        </li>
-                      ))}
-                    </ul>
+          )}
+
+          {detail && !detail.deletedAt && !detail.removedAt && (
+            <div className="grid grid-cols-1 gap-[18px] min-[1100px]:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
+              <div className="flex flex-col gap-3">
+                <GenerationMediaPanel detail={detail} />
+              </div>
+              <div className="flex flex-col gap-3">
+                <GenerationSettingsList detail={detail} />
+                <div className="flex flex-wrap items-center gap-2">
+                  {ended && !detail.modelDeleted && (
+                    <Button
+                      type="button"
+                      onClick={() =>
+                        navigate(
+                          `/models/${detail.modelSlug}?reuse=${detail.id}`,
+                        )
+                      }
+                    >
+                      <RotateCcw />
+                      Reuse these settings
+                    </Button>
                   )}
-                </>
-              ) : detail.state === "failed" ? (
-                <p role="alert">{detail.error ?? "This Generation failed."}</p>
-              ) : (
-                <p>{detail.state}</p>
-              )}
-
-              <dl className="generation-detail-facts">
-                <dt>Submitted</dt>
-                <dd>{new Date(detail.submittedAt).toLocaleString()}</dd>
-                {ended && (
-                  <>
-                    <dt>Run time</dt>
-                    <dd>{runTime(detail.startedAt, detail.endedAt) ?? "—"}</dd>
-                  </>
-                )}
-                <dt>Id</dt>
-                <dd>
-                  <code>{detail.id}</code>{" "}
-                  <button type="button" onClick={handleCopyId}>
-                    {copied ? "Copied" : "Copy"}
-                  </button>
-                </dd>
-              </dl>
-
-              {detail.settings.length > 0 && (
-                <section>
-                  <h3>Settings</h3>
-                  {detail.settings.map((setting) => (
-                    <SettingRow key={setting.inputId} setting={setting} />
-                  ))}
-                </section>
-              )}
-
-              <div className="generation-detail-actions">
-                {ended && !detail.modelDeleted && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      navigate(`/models/${detail.modelSlug}?reuse=${detail.id}`)
-                    }
-                  >
-                    Reuse these settings
-                  </button>
-                )}
-                {ended && (
-                  <button
-                    type="button"
-                    onClick={() => void handleDelete()}
-                    disabled={deleting}
-                  >
-                    Delete
-                  </button>
+                  {CANCELLABLE_STATES.has(detail.state) && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={cancelMutation.isPending}
+                      onClick={() => cancelMutation.mutate()}
+                    >
+                      Cancel
+                    </Button>
+                  )}
+                  {ended && (
+                    <ConfirmDelete
+                      label="Delete this Generation"
+                      small={false}
+                      pending={deleteMutation.isPending}
+                      onConfirm={() => deleteMutation.mutate()}
+                    />
+                  )}
+                </div>
+                {deleteMutation.isError && (
+                  <p role="alert">Could not delete this Generation.</p>
                 )}
               </div>
-              {deleteError && <p role="alert">{deleteError}</p>}
-            </>
+            </div>
           )}
-        </>
-      )}
-    </dialog>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
-
-const GENERATION_DETAIL_STYLE = `
-.generation-detail-dialog {
-  width: min(640px, 100vw);
-  max-height: 90vh;
-  overflow-y: auto;
-}
-.generation-detail-nav {
-  display: flex;
-  justify-content: space-between;
-  gap: 0.5rem;
-}
-.generation-detail-close {
-  margin-left: auto;
-}
-.generation-detail-player {
-  width: 100%;
-  max-height: 60vh;
-  object-fit: contain;
-  display: block;
-}
-.generation-detail-ai-reminder {
-  opacity: 0.7;
-  font-size: 0.85rem;
-}
-.generation-detail-facts {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 0.25rem 0.75rem;
-}
-.generation-detail-setting {
-  display: flex;
-  justify-content: space-between;
-  gap: 0.5rem;
-  padding: 0.25rem 0;
-  border-bottom: 1px solid rgba(128, 128, 128, 0.2);
-}
-.generation-detail-upload-thumb {
-  width: 2rem;
-  height: 2rem;
-  object-fit: cover;
-  vertical-align: middle;
-  margin-right: 0.25rem;
-}
-.generation-detail-points {
-  width: 3rem;
-  height: 3rem;
-  vertical-align: middle;
-  background: rgba(128, 128, 128, 0.15);
-  margin-right: 0.25rem;
-}
-.generation-detail-points rect {
-  fill: none;
-  stroke: currentColor;
-  opacity: 0.3;
-}
-.generation-detail-points circle {
-  fill: red;
-}
-.generation-detail-removed {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  align-items: flex-start;
-}
-.generation-detail-actions {
-  display: flex;
-  gap: 0.5rem;
-  margin-top: 1rem;
-}
-@media (max-width: 640px) {
-  .generation-detail-dialog {
-    width: 100vw;
-    height: 100vh;
-    max-height: 100vh;
-    max-width: 100vw;
-    margin: 0;
-    border-radius: 0;
-  }
-}
-`;

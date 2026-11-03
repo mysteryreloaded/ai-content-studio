@@ -330,6 +330,25 @@ async function shootRoute(
 ): Promise<{ width: number; error: string }[]> {
   const page = await context.newPage();
   const errors: { width: number; error: string }[] = [];
+  async function runActions(): Promise<void> {
+    for (const action of route.actions ?? []) {
+      try {
+        await page
+          .getByRole(action.role as Parameters<Page["getByRole"]>[0], {
+            name: action.name,
+          })
+          .first()
+          .click({ timeout: 5000 });
+      } catch {
+        // A looser fallback for a page whose accessible role/name
+        // don't match exactly yet (section 5: markup still changes
+        // under later restyle tickets).
+        await page.getByText(action.name, { exact: true }).first().click({
+          timeout: 5000,
+        });
+      }
+    }
+  }
   try {
     const alreadyActioned = route.repeatActions
       ? undefined
@@ -338,23 +357,7 @@ async function shootRoute(
     await page.goto(url.toString());
 
     if (!alreadyActioned) {
-      for (const action of route.actions ?? []) {
-        try {
-          await page
-            .getByRole(action.role as Parameters<Page["getByRole"]>[0], {
-              name: action.name,
-            })
-            .first()
-            .click({ timeout: 5000 });
-        } catch {
-          // A looser fallback for a page whose accessible role/name
-          // don't match exactly yet (section 5: markup still changes
-          // under later restyle tickets).
-          await page.getByText(action.name, { exact: true }).first().click({
-            timeout: 5000,
-          });
-        }
-      }
+      await runActions();
     }
 
     await waitSettled(page, route.ready);
@@ -375,6 +378,29 @@ async function shootRoute(
     for (const width of widths) {
       try {
         await page.setViewportSize({ width, height: 800 });
+
+        // A viewport resize is a real scroll-under-it for client-side
+        // state an action opened (e.g. `CellPopover`, by design, closes
+        // on a genuine scroll) — `repeatActions` routes re-open it for
+        // each width, not just each theme, so every capture still shows
+        // what `route.ready` names, not the plain page the resize left.
+        if (route.repeatActions && route.ready) {
+          // The resize's own close (if any) runs off a `scroll` event
+          // React handles asynchronously — a beat to let that settle
+          // before checking, or this reads the pre-close DOM and skips
+          // the very re-open it exists to do.
+          await page.waitForTimeout(300);
+          const stillReady = await page
+            .locator(route.ready)
+            .first()
+            .isVisible()
+            .catch(() => false);
+          if (!stillReady) {
+            await runActions();
+            await waitSettled(page, route.ready);
+          }
+        }
+
         const file = path.join(
           appDir,
           `${route.name}-${width}-${themeLabel}.png`,

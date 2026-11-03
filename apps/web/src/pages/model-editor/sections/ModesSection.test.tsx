@@ -559,6 +559,12 @@ describe("ModesSection", () => {
     fireEvent.scroll(popover, { bubbles: false });
     expect(view.queryByText("Label in this Mode")).toBeTruthy();
 
+    // A real scroll moves the document's scroll position; the popover
+    // only treats that as "the page moved under it" (and closes) when
+    // the position actually changed, not for a same-position `scroll`
+    // event (Chromium fires one of those itself when Radix moves focus
+    // into the popover on open, which must not close it right back up).
+    document.documentElement.scrollTop = 50;
     fireEvent.scroll(window, { bubbles: false });
     expect(view.queryByText("Label in this Mode")).toBeNull();
   });

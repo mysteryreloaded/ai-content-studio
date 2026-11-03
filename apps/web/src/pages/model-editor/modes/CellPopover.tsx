@@ -45,8 +45,19 @@ export function CellPopover({
   // outside click (Radix's own defaults for those two) — but not a
   // scroll inside the popover itself (e.g. a long label or hint text
   // scrolling its own field), which isn't "the page moved under it".
+  //
+  // Opening the popover moves focus onto its own controls (Radix's
+  // FocusScope), and Chromium's scroll anchoring can fire a `scroll`
+  // event on `document` for that focus move even though nothing's
+  // position actually changed — `document` isn't an Element, so it
+  // never matched the popover-content check above and closed the
+  // popover it had just opened. Comparing the real scroll position
+  // catches that zero-delta case without missing a genuine scroll.
   useEffect(() => {
     if (!open) return;
+    const scroller = document.scrollingElement;
+    let lastTop = scroller?.scrollTop ?? 0;
+    let lastLeft = scroller?.scrollLeft ?? 0;
     function onScroll(event: Event) {
       const target = event.target;
       if (
@@ -55,6 +66,11 @@ export function CellPopover({
       ) {
         return;
       }
+      const top = scroller?.scrollTop ?? 0;
+      const left = scroller?.scrollLeft ?? 0;
+      if (top === lastTop && left === lastLeft) return;
+      lastTop = top;
+      lastLeft = left;
       onOpenChange(false);
     }
     window.addEventListener("scroll", onScroll, true);

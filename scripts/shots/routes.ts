@@ -189,6 +189,7 @@ export const routes: Route[] = [
     repeatActions: true,
     ready: "text=Apply to every Mode whose Path holds this Input's fields",
     prototype: "editor-a",
+    fullPage: false,
   },
   {
     name: "admin-editor-mode-sheet",

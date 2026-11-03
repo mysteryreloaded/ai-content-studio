@@ -85,6 +85,7 @@ const { act, cleanup, fireEvent, waitFor, within } = await import(
   "@testing-library/react"
 );
 const { WorkbenchPage } = await import("./WorkbenchPage.js");
+const { AppContentRoute } = await import("../AppContentRoute.js");
 const { drainMacrotasks, renderWithProviders } = await import(
   "../test/render.js"
 );
@@ -3394,6 +3395,146 @@ describe("WorkbenchPage", () => {
       expect(
         await view.findByText("Check the highlighted fields."),
       ).toBeTruthy();
+    });
+  });
+
+  describe("Generation detail dialog over the Workbench (issue #199)", () => {
+    const DETAIL_MODEL = {
+      ...MODEL,
+      revision: 301,
+      modes: [
+        {
+          id: "dm-mode1",
+          name: "Default",
+          description: "",
+          inputs: [
+            {
+              id: "dp1",
+              group: "describe" as const,
+              label: "Prompt",
+              help: "",
+              required: false,
+              placeholder: null,
+              kind: "text" as const,
+              multiline: false,
+              maxLength: 2000,
+              default: "",
+            },
+          ],
+        },
+      ],
+    };
+
+    const ENDED_GENERATION = {
+      id: "g1",
+      modelId: "m1",
+      modeId: "dm-mode1",
+      modeName: "Default",
+      submissionId: "sub1",
+      state: "succeeded" as const,
+      tries: 1,
+      error: null,
+      submittedAt: "2026-01-01T00:00:00.000Z",
+      startedAt: "2026-01-01T00:00:00.000Z",
+      endedAt: "2026-01-01T00:00:05.000Z",
+      removedAt: null,
+      assets: [
+        {
+          id: "a1",
+          nodeId: "3",
+          sortOrder: 0,
+          kind: "image",
+          contentType: "image/png",
+          size: 100,
+          width: 10,
+          height: 10,
+          durationMs: null,
+        },
+      ],
+    };
+
+    const GENERATION_DETAIL = {
+      id: "g1",
+      state: "succeeded",
+      error: null,
+      tries: 1,
+      submittedAt: ENDED_GENERATION.submittedAt,
+      startedAt: ENDED_GENERATION.startedAt,
+      endedAt: ENDED_GENERATION.endedAt,
+      deletedAt: null,
+      removedAt: null,
+      modelId: "m1",
+      modelSlug: "ltx",
+      modelName: "LTX 2.5",
+      modelAttribution: "",
+      modelDeleted: false,
+      modeId: "dm-mode1",
+      modeName: "Default",
+      assets: ENDED_GENERATION.assets,
+      settings: [],
+    };
+
+    function renderAppContent(initialEntry = "/models/ltx") {
+      (globalThis as unknown as { EventSource: unknown }).EventSource =
+        FakeEventSource;
+      FakeEventSource.instances = [];
+
+      return renderWithProviders(null, {
+        route: initialEntry,
+        // One shared `*` entry, exactly like `main.tsx` (see
+        // `AppContentRoute`'s own comment on why it has to be a bare
+        // splat rather than "/models/:slug"/"/generations/:id" directly).
+        routes: [{ path: "*", element: <AppContentRoute /> }],
+      });
+    }
+
+    test("Details opens the dialog over the Workbench, and closing it keeps a typed prompt", async () => {
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
+          return Response.json({ model: DETAIL_MODEL });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({
+            submissions: [
+              {
+                submissionId: "sub1",
+                modeId: "dm-mode1",
+                modeName: "Default",
+                submittedAt: ENDED_GENERATION.submittedAt,
+                generations: [ENDED_GENERATION],
+              },
+            ],
+          });
+        }
+        if (call.url === "/api/generations/g1") {
+          return Response.json(GENERATION_DETAIL);
+        }
+        throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+      });
+
+      const view = renderAppContent();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      const promptField = await view.findByLabelText("Prompt");
+      await userEvent.type(promptField, "a dog on the beach");
+
+      await userEvent.click(view.getByRole("button", { name: "Details" }));
+
+      // The dialog is open, and the Workbench underneath is still the
+      // same mounted page — not reloaded from scratch.
+      expect(await view.findByText("Generation")).toBeTruthy();
+      expect((view.getByLabelText("Prompt") as HTMLInputElement).value).toBe(
+        "a dog on the beach",
+      );
+
+      await userEvent.click(view.getByRole("button", { name: "Close" }));
+
+      await waitFor(() => expect(view.queryByText("Generation")).toBeNull());
+      expect((view.getByLabelText("Prompt") as HTMLInputElement).value).toBe(
+        "a dog on the beach",
+      );
     });
   });
 });

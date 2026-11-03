@@ -291,10 +291,12 @@ describe("resolveGenerationSettings", () => {
       points: { x: number; y: number }[];
       frameWidth: number | null;
       frameHeight: number | null;
+      videoInputId: string;
     };
     expect(pointsSetting.points).toEqual([{ x: 10, y: 20 }]);
     expect(pointsSetting.frameWidth).toBe(512);
     expect(pointsSetting.frameHeight).toBe(512);
+    expect(pointsSetting.videoInputId).toBe("video");
   });
 
   test("a fixed Input is left out, like the Workbench form itself", () => {

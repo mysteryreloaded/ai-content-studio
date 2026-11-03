@@ -16,19 +16,18 @@ import type {
 } from "@ai-content-studio/shared";
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useBlocker, useNavigate, useParams } from "react-router-dom";
+import { issueFor } from "../../components/inputs/issueFor.js";
+import type {
+  UploadState,
+  ImageUploadInput as WorkbenchImageUploadInput,
+  MediaUploadInput as WorkbenchMediaUploadInput,
+} from "../../components/inputs/types.js";
 import {
   httpUploadApi,
   trimUpload,
   uploadResumable,
 } from "../../lib/chunkedUpload.js";
 import { useSession } from "../../useSession.js";
-// TODO #192: move the Workbench imports into components/inputs/ once #192 merges.
-import {
-  type UploadState,
-  type ImageUploadInput as WorkbenchImageUploadInput,
-  type MediaUploadInput as WorkbenchMediaUploadInput,
-  issueFor,
-} from "../WorkbenchPage.js";
 import { candidateFieldsFor, toggleBinding } from "./helpers/bindings.js";
 import {
   detailsFrom,

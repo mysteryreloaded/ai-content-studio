@@ -1,5 +1,8 @@
 import { parseInputValues, toInputIssues } from "@ai-content-studio/shared";
-import type { InputDefinition, WorkbenchInput } from "@ai-content-studio/shared";
+import type {
+  InputDefinition,
+  WorkbenchInput,
+} from "@ai-content-studio/shared";
 import type { WorkbenchMode } from "./types.js";
 
 /** The form's starting values for `mode`'s Inputs: each Input's own default, or blank. */

@@ -1,9 +1,9 @@
-import type { GenerationProgress, GenerationSummary } from "./types.js";
 import { AssetPlayer } from "./AssetPlayer.js";
 import { DownloadAsset } from "./DownloadAsset.js";
 import { ProgressLabel } from "./ProgressLabel.js";
 import { RemovedCard } from "./RemovedCard.js";
 import { stateLabel } from "./stateLabel.js";
+import type { GenerationProgress, GenerationSummary } from "./types.js";
 
 export function GenerationCard({
   generation,

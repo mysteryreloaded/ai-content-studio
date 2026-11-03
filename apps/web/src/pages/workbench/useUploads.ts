@@ -1,11 +1,3 @@
-import { issueFor } from "../../components/inputs/issueFor.js";
-import type {
-  ImageUploadInput,
-  MediaUploadInput,
-  TrimRange,
-  UploadState,
-} from "../../components/inputs/types.js";
-import { httpUploadApi, uploadResumable } from "../../lib/chunkedUpload.js";
 import {
   type Dispatch,
   type RefObject,
@@ -14,6 +6,14 @@ import {
   useRef,
   useState,
 } from "react";
+import { issueFor } from "../../components/inputs/issueFor.js";
+import type {
+  ImageUploadInput,
+  MediaUploadInput,
+  TrimRange,
+  UploadState,
+} from "../../components/inputs/types.js";
+import { httpUploadApi, uploadResumable } from "../../lib/chunkedUpload.js";
 import type { WorkbenchModel } from "./types.js";
 
 export function useUploads({
@@ -52,6 +52,7 @@ export function useUploads({
     setTrimRangeByInputId({});
   }, []);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: modelRef/valuesRef and every setter are stable across renders (refs, or useState setters from the caller); the dependency array matches the Workbench component's own, unchanged by this extraction.
   const startUpload = useCallback(
     async (input: ImageUploadInput | MediaUploadInput, file: File) => {
       const current = modelRef.current;

@@ -1,4 +1,4 @@
-import { MODE_MENU_GROUP_LABELS, groupModesForMenu } from "./modeMenu.js";
+import { MODE_MENU_GROUP_LABELS, groupModesForMenu } from "./modeMenuGroups.js";
 import type { WorkbenchMode } from "./types.js";
 
 export function ModeMenu({

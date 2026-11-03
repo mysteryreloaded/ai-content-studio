@@ -34,3 +34,23 @@ export type UploadState =
   | { status: "error"; name: string; message: string };
 
 export type TrimRange = { startMs: number; endMs: number };
+
+export interface PointsPickersProps {
+  inputs: PointsInput[];
+  allInputs: WorkbenchInput[];
+  uploads: Record<string, UploadState>;
+  trimRangeByInputId: Record<string, TrimRange>;
+  values: Record<string, string>;
+  onPointsChange: (inputId: string, raw: string) => void;
+  issuesByInputId: Record<string, string>;
+}
+
+export interface PointsFieldProps {
+  input: PointsInput;
+  allInputs: WorkbenchInput[];
+  uploads: Record<string, UploadState>;
+  trimRangeByInputId: Record<string, TrimRange>;
+  values: Record<string, string>;
+  onPointsChange: (inputId: string, raw: string) => void;
+  issue: string | undefined;
+}

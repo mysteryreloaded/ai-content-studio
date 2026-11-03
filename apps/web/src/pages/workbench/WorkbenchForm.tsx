@@ -1,3 +1,9 @@
+import type { Dispatch, SetStateAction } from "react";
+import { CountPicker } from "../../components/inputs/CountPicker.js";
+import { InputGroups } from "../../components/inputs/InputGroups.js";
+import { PointsPickers } from "../../components/inputs/PointsPickers.js";
+import { YourFiles } from "../../components/inputs/YourFiles.js";
+import { YourMedia } from "../../components/inputs/YourMedia.js";
 import type {
   ImageUploadInput,
   MediaUploadInput,
@@ -5,12 +11,6 @@ import type {
   TrimRange,
   UploadState,
 } from "../../components/inputs/types.js";
-import { CountPicker } from "../../components/inputs/CountPicker.js";
-import { InputGroups } from "../../components/inputs/InputGroups.js";
-import { PointsPickers } from "../../components/inputs/PointsPickers.js";
-import { YourFiles } from "../../components/inputs/YourFiles.js";
-import { YourMedia } from "../../components/inputs/YourMedia.js";
-import type { Dispatch, SetStateAction } from "react";
 import { ModeMenu } from "./ModeMenu.js";
 import type { SubmitState, WorkbenchMode } from "./types.js";
 
@@ -45,10 +45,7 @@ export function WorkbenchForm({
   setTrimRangeByInputId: Dispatch<SetStateAction<Record<string, TrimRange>>>;
   handlePointsChange: (inputId: string, raw: string) => void;
   displayedIssuesByInputId: Record<string, string>;
-  startUpload: (
-    input: ImageUploadInput | MediaUploadInput,
-    file: File,
-  ) => void;
+  startUpload: (input: ImageUploadInput | MediaUploadInput, file: File) => void;
   hasSeedInput: boolean;
   count: number;
   setCount: (count: number) => void;
@@ -65,8 +62,7 @@ export function WorkbenchForm({
       {selectedMode && (
         <YourFiles
           inputs={selectedMode.inputs.filter(
-            (input): input is ImageUploadInput =>
-              input.kind === "image_upload",
+            (input): input is ImageUploadInput => input.kind === "image_upload",
           )}
           uploads={uploads}
           issuesByInputId={displayedIssuesByInputId}

@@ -1,6 +1,6 @@
+import { GenerationCard } from "./GenerationCard.js";
 import { DONE_STATES } from "./types.js";
 import type { GenerationProgress, SubmissionSummary } from "./types.js";
-import { GenerationCard } from "./GenerationCard.js";
 
 export function SubmissionBlock({
   submission,

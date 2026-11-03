@@ -1,27 +1,13 @@
-import {
-  type Dispatch,
-  type RefObject,
-  type SetStateAction,
-  useCallback,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useRef, useState } from "react";
 import { upsertGeneration } from "../../components/generations/submissionCache.js";
-import type {
-  GenerationSummary,
-  SubmissionSummary,
-} from "../../components/generations/types.js";
-import type {
-  MediaUploadInput,
-  TrimRange,
-  UploadState,
-} from "../../components/inputs/types.js";
+import type { GenerationSummary } from "../../components/generations/types.js";
+import type { MediaUploadInput } from "../../components/inputs/types.js";
 import { trimUpload } from "../../lib/chunkedUpload.js";
 import { carryValuesFor, liveIssuesFor, valuesPayload } from "./formValues.js";
 import type {
   InputIssue,
   SubmitState,
-  TermsDialogState,
+  UseGenerateOptions,
   WorkbenchModel,
 } from "./types.js";
 
@@ -40,29 +26,13 @@ export function useGenerate({
   setTermsDialog,
   refreshCaps,
   setSubmissions,
-}: {
-  modelRef: RefObject<WorkbenchModel | null>;
-  valuesRef: RefObject<Record<string, string>>;
-  runningUploadsRef: RefObject<
-    Map<string, { promise: Promise<void>; controller: AbortController }>
-  >;
-  selectedModeId: string | null;
-  count: number;
-  uploads: Record<string, UploadState>;
-  trimRangeByInputId: Record<string, TrimRange>;
-  setValues: Dispatch<SetStateAction<Record<string, string>>>;
-  setIssuesByInputId: Dispatch<SetStateAction<Record<string, string>>>;
-  setModel: Dispatch<SetStateAction<WorkbenchModel | null>>;
-  setSelectedModeId: Dispatch<SetStateAction<string | null>>;
-  setTermsDialog: Dispatch<SetStateAction<TermsDialogState | null>>;
-  refreshCaps: () => void;
-  setSubmissions: Dispatch<SetStateAction<SubmissionSummary[]>>;
-}) {
+}: UseGenerateOptions) {
   const [submitState, setSubmitState] = useState<SubmitState>({
     status: "idle",
   });
   const waitRef = useRef<{ cancelled: boolean } | null>(null);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: modelRef/valuesRef/runningUploadsRef and every setter are stable across renders (refs, or useState setters from the caller); the dependency array matches the Workbench component's own, unchanged by this extraction.
   const handleGenerate = useCallback(async () => {
     // Issue #50: pressed early, Generate waits for running Uploads, then
     // submits, unless "Don't start" is pressed meanwhile.

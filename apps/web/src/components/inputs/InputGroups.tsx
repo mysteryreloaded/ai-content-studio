@@ -1,7 +1,7 @@
 import type { WorkbenchInput } from "@ai-content-studio/shared";
+import type { WorkbenchMode } from "../../pages/workbench/types.js";
 import { InputField } from "./InputField.js";
 import { UPLOAD_KINDS } from "./types.js";
-import type { WorkbenchMode } from "../../pages/workbench/types.js";
 
 interface InputGroupsProps {
   mode: WorkbenchMode;

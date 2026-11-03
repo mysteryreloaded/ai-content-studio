@@ -6,18 +6,17 @@ import {
   toWorkbenchInput,
   visibleModeBoundFields,
 } from "@ai-content-studio/shared";
-// TODO #192: move the Workbench imports into components/inputs/ once #192 merges.
-import {
-  InputField,
-  PointsPickers,
-  UPLOAD_KINDS,
-  type UploadState,
-  type ImageUploadInput as WorkbenchImageUploadInput,
-  type MediaUploadInput as WorkbenchMediaUploadInput,
-  type PointsInput as WorkbenchPointsInput,
-  YourFiles,
-  YourMedia,
-} from "../../WorkbenchPage.js";
+import { InputField } from "../../../components/inputs/InputField.js";
+import { PointsPickers } from "../../../components/inputs/PointsPickers.js";
+import { YourFiles } from "../../../components/inputs/YourFiles.js";
+import { YourMedia } from "../../../components/inputs/YourMedia.js";
+import { UPLOAD_KINDS } from "../../../components/inputs/types.js";
+import type {
+  UploadState,
+  ImageUploadInput as WorkbenchImageUploadInput,
+  MediaUploadInput as WorkbenchMediaUploadInput,
+  PointsInput as WorkbenchPointsInput,
+} from "../../../components/inputs/types.js";
 import { workflowForMode } from "../helpers/workflow.js";
 import type { AttachedBackendEntry, DraftMode, ModelDetail } from "../types.js";
 /**

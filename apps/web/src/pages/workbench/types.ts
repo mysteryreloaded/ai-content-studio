@@ -1,4 +1,11 @@
 import type { WorkbenchInput } from "@ai-content-studio/shared";
+import type { Dispatch, RefObject, SetStateAction } from "react";
+import type { SubmissionSummary } from "../../components/generations/types.js";
+import type {
+  GenerationProgress,
+  SubmissionSummary as Submission,
+} from "../../components/generations/types.js";
+import type { TrimRange, UploadState } from "../../components/inputs/types.js";
 
 export type ModeMenuGroup = "prompt" | "images" | "audio" | "video";
 
@@ -47,3 +54,37 @@ export type SubmitState =
 
 /** The terms dialog's own state (issue #61): whether it blocks dismissal and the error, if any, to show. */
 export type TermsDialogState = { blocking: boolean; error: string | null };
+
+export type RunningUploads = RefObject<
+  Map<string, { promise: Promise<void>; controller: AbortController }>
+>;
+
+export interface UseGenerateOptions {
+  modelRef: RefObject<WorkbenchModel | null>;
+  valuesRef: RefObject<Record<string, string>>;
+  runningUploadsRef: RunningUploads;
+  selectedModeId: string | null;
+  count: number;
+  uploads: Record<string, UploadState>;
+  trimRangeByInputId: Record<string, TrimRange>;
+  setValues: Dispatch<SetStateAction<Record<string, string>>>;
+  setIssuesByInputId: Dispatch<SetStateAction<Record<string, string>>>;
+  setModel: Dispatch<SetStateAction<WorkbenchModel | null>>;
+  setSelectedModeId: Dispatch<SetStateAction<string | null>>;
+  setTermsDialog: Dispatch<SetStateAction<TermsDialogState | null>>;
+  refreshCaps: () => void;
+  setSubmissions: Dispatch<SetStateAction<SubmissionSummary[]>>;
+}
+
+export interface WorkbenchFeedProps {
+  submissions: Submission[];
+  progressById: Map<string, GenerationProgress>;
+  paused: boolean;
+  cancellingSubmissionIds: Set<string>;
+  deletingSubmissionIds: Set<string>;
+  cancelErrorSubmissionId: string | null;
+  deleteErrorSubmissionId: string | null;
+  onOpen: (submission: Submission) => void;
+  handleCancelSubmission: (submissionId: string) => void;
+  handleDeleteSubmission: (submissionId: string) => void;
+}

@@ -1,3 +1,4 @@
+import { useCallback, useEffect, useState } from "react";
 import { upsertGeneration } from "../../components/generations/submissionCache.js";
 import {
   DONE_STATES,
@@ -7,7 +8,6 @@ import {
   type SubmissionSummary,
 } from "../../components/generations/types.js";
 import { markOwnCancel } from "../../notifications/ownCancel.js";
-import { useCallback, useEffect, useState } from "react";
 import type { WorkbenchModel } from "./types.js";
 
 export function useWorkbenchFeed({

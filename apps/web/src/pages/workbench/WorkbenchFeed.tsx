@@ -1,9 +1,6 @@
 import { SubmissionBlock } from "../../components/generations/SubmissionBlock.js";
-import type {
-  GenerationProgress,
-  SubmissionSummary,
-} from "../../components/generations/types.js";
 import { FirstSubmissionNotifyPrompt } from "../../notifications/FirstSubmissionNotifyPrompt.js";
+import type { WorkbenchFeedProps } from "./types.js";
 
 export function WorkbenchFeed({
   submissions,
@@ -14,20 +11,9 @@ export function WorkbenchFeed({
   cancelErrorSubmissionId,
   deleteErrorSubmissionId,
   onOpen,
-  onCancel,
-  onDelete,
-}: {
-  submissions: SubmissionSummary[];
-  progressById: Map<string, GenerationProgress>;
-  paused: boolean;
-  cancellingSubmissionIds: Set<string>;
-  deletingSubmissionIds: Set<string>;
-  cancelErrorSubmissionId: string | null;
-  deleteErrorSubmissionId: string | null;
-  onOpen: (submission: SubmissionSummary) => void;
-  onCancel: (submissionId: string) => void;
-  onDelete: (submissionId: string) => void;
-}) {
+  handleCancelSubmission,
+  handleDeleteSubmission,
+}: WorkbenchFeedProps) {
   return (
     <aside className="workbench-submissions" aria-label="Submissions">
       <h2>Submissions</h2>
@@ -45,8 +31,8 @@ export function WorkbenchFeed({
             cancelError={cancelErrorSubmissionId === submission.submissionId}
             deleteError={deleteErrorSubmissionId === submission.submissionId}
             onOpen={() => onOpen(submission)}
-            onCancel={() => onCancel(submission.submissionId)}
-            onDelete={() => onDelete(submission.submissionId)}
+            onCancel={() => handleCancelSubmission(submission.submissionId)}
+            onDelete={() => handleDeleteSubmission(submission.submissionId)}
           />
         ))}
       </ul>

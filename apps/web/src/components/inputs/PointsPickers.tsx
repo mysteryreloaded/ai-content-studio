@@ -5,7 +5,6 @@ import {
   encodePointsValue,
   isPointInCrop,
 } from "@ai-content-studio/shared";
-import type { WorkbenchInput } from "@ai-content-studio/shared";
 import {
   type MouseEvent as ReactMouseEvent,
   useEffect,
@@ -13,7 +12,11 @@ import {
   useRef,
   useState,
 } from "react";
-import type { PointsInput, TrimRange, UploadState, VideoUploadInput } from "./types.js";
+import type {
+  PointsFieldProps,
+  PointsPickersProps,
+  VideoUploadInput,
+} from "./types.js";
 
 /**
  * A Points Input's crop/scale target Width or Height (issue #52 CEO
@@ -51,15 +54,7 @@ export function PointsPickers({
   values,
   onPointsChange,
   issuesByInputId,
-}: {
-  inputs: PointsInput[];
-  allInputs: WorkbenchInput[];
-  uploads: Record<string, UploadState>;
-  trimRangeByInputId: Record<string, TrimRange>;
-  values: Record<string, string>;
-  onPointsChange: (inputId: string, raw: string) => void;
-  issuesByInputId: Record<string, string>;
-}) {
+}: PointsPickersProps) {
   if (inputs.length === 0) return null;
   return (
     <fieldset>
@@ -88,15 +83,7 @@ function PointsField({
   values,
   onPointsChange,
   issue,
-}: {
-  input: PointsInput;
-  allInputs: WorkbenchInput[];
-  uploads: Record<string, UploadState>;
-  trimRangeByInputId: Record<string, TrimRange>;
-  values: Record<string, string>;
-  onPointsChange: (inputId: string, raw: string) => void;
-  issue: string | undefined;
-}) {
+}: PointsFieldProps) {
   const videoInput = allInputs.find(
     (candidate): candidate is VideoUploadInput =>
       candidate.id === input.videoInputId && candidate.kind === "video_upload",

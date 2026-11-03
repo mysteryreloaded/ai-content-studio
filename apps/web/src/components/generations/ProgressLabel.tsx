@@ -1,5 +1,5 @@
-import type { GenerationProgress } from "./types.js";
 import { formatElapsed } from "./stateLabel.js";
+import type { GenerationProgress } from "./types.js";
 
 /** Elapsed time against the median of its last 10 successes, capped at 99%; without that history, just the elapsed time, indeterminate. */
 export function ProgressLabel({

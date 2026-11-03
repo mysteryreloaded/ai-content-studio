@@ -11,7 +11,9 @@ export function NotificationsSwitch() {
   const supported = isNotificationSupported();
 
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    // A control+text row (issue #222, docs/ui-sizes.md): 40px tall, with
+    // a 10px gap between the Switch and its label.
+    <div className="flex min-h-10 flex-wrap items-center gap-2.5">
       <Switch
         id={SWITCH_ID}
         checked={enabled}

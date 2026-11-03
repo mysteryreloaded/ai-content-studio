@@ -37,15 +37,19 @@ Heights are fixed, not derived from the type:
 | Button `lg`                      | 48px, 24px padding          |
 | Input, select trigger (default)  | 40px, 12px padding, 16px text |
 | Input, select trigger `sm`       | 36px                        |
-| Textarea                         | 40px minimum, 12px / 10px padding, 16px text |
+| Textarea                         | 96px minimum, 12px / 10px padding, 16px text |
 | Tabs trigger, toggle (default)   | 40px                        |
 | Tabs trigger, toggle `sm`        | 36px                        |
 | Tabs trigger, toggle `lg`        | 48px                        |
 | Menu items (select, dropdown)    | 36px minimum                |
 
-- A label sits 6–8px from the control it labels. A label row for a
-  radio-group item, checkbox or switch is 40px tall with a 10px
-  control-to-text gap (the `Label` primitive's `min-h-10` and `gap-2.5`).
+- A label sits 6–8px from the control it labels (the page's own gap, not
+  the `Label` primitive itself — see e.g. `AccountPage`'s
+  `space-y-1.5` wrapper around a `Label` + `Input`).
+- A control+text row — a radio-group item, checkbox, switch or similar —
+  is `flex min-h-10 items-center gap-2.5`: 40px tall, with a 10px gap
+  between the control and its text (see `NotificationsSwitch`, which
+  wraps a `Switch` and a `Label` this way).
 - The tab list takes the height of its 40px triggers (`h-fit`).
 
 ## Cards, tables, menus
@@ -61,7 +65,8 @@ Heights are fixed, not derived from the type:
   and up, 40px above and below; the prototype's max-width is kept.
 - `AppHeader`: 64px tall, from `--app-header-h` — the Model editor's sticky
   header and checks rail (#213) offset from that token. Nav links sit 24px
-  apart (8px below 560px, where they wrap).
+  apart (8px below 560px, where the nav scrolls sideways instead of
+  wrapping).
 - `Footer`: 32px vertical padding, 24px between its items.
 
 ## The rhythm

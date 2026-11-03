@@ -162,6 +162,27 @@ export function newInputFromField(
 ): InputDefinition {
   const kind = newInputKindForField(field, hasSeed);
   const label = labelForNewInput(field, kind);
+  if (kind === "select") {
+    // A boolean field's new Input is the agreed 2-option toggle (issue
+    // #214 CEO review): seeded Off/On with false/true, not `toggleBinding`'s
+    // generic "push this field's current value onto every option" (which
+    // would give both options that one value and no label at all).
+    const binding = {
+      nodeId: field.nodeId,
+      field: field.field,
+      classType: field.classType,
+      title: field.title,
+    };
+    return {
+      ...newSelectInput(),
+      label,
+      options: [
+        { id: crypto.randomUUID(), label: "Off", values: [false] },
+        { id: crypto.randomUUID(), label: "On", values: [true] },
+      ],
+      bindings: [binding],
+    };
+  }
   const base: InputDefinition =
     kind === "text"
       ? newTextInput()
@@ -173,8 +194,6 @@ export function newInputFromField(
             ? newImageUploadInput()
             : kind === "video_upload"
               ? newVideoUploadInput()
-              : kind === "audio_upload"
-                ? newAudioUploadInput()
-                : newSelectInput();
+              : newAudioUploadInput();
   return toggleBinding({ ...base, label }, field);
 }

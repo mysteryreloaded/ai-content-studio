@@ -177,6 +177,263 @@ describe("WorkflowSection (issue #214)", () => {
     expect(view.getByDisplayValue("Image")).toBeTruthy();
   });
 
+  test("a boolean field becomes a 2-option Select seeded Off/On, false/true", async () => {
+    const detail = {
+      ...DETAIL,
+      workflow: {
+        "1": { class_type: "KSampler", inputs: { add_noise: true } },
+      },
+      nodes: [{ id: "1", classType: "KSampler", title: null }],
+      inputs: [],
+    };
+    mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1")) {
+        return Response.json(detail);
+      }
+      if (call.method === "GET") return Response.json(NO_BACKENDS);
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await openSection(view, "Workflow");
+
+    await userEvent.click(
+      view.getByText("#1").closest("button") as HTMLElement,
+    );
+    await userEvent.click(view.getByText("Make it an Input"));
+    await userEvent.click(view.getByText("New Input from this field"));
+
+    await openSection(view, "Inputs");
+    expect(await view.findByDisplayValue("Off")).toBeTruthy();
+    expect(view.getByDisplayValue("On")).toBeTruthy();
+    const checkboxes = view.getAllByLabelText(
+      "1.add_noise",
+    ) as HTMLInputElement[];
+    expect(checkboxes[0]?.checked).toBe(false);
+    expect(checkboxes[1]?.checked).toBe(true);
+  });
+
+  test("Make it an Input is hidden for a null-valued field", async () => {
+    const detail = {
+      ...DETAIL,
+      workflow: {
+        "1": { class_type: "KSampler", inputs: { seed_variation: null } },
+      },
+      nodes: [{ id: "1", classType: "KSampler", title: null }],
+      inputs: [],
+    };
+    mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1")) {
+        return Response.json(detail);
+      }
+      if (call.method === "GET") return Response.json(NO_BACKENDS);
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await openSection(view, "Workflow");
+
+    await userEvent.click(
+      view.getByText("#1").closest("button") as HTMLElement,
+    );
+
+    expect(await view.findByText("seed_variation")).toBeTruthy();
+    expect(view.queryByText("Make it an Input")).toBeNull();
+    expect(view.getByText("Keeps the Workflow value")).toBeTruthy();
+  });
+
+  test("'Or add to an Input…' excludes Seed and Points, and keeps a Select's option values in sync", async () => {
+    const textInput = {
+      id: "text1",
+      kind: "text" as const,
+      group: "describe" as const,
+      label: "Text A",
+      help: "",
+      default: "",
+      multiline: false,
+      maxLength: 2000,
+      bindings: [],
+    };
+    const pointsInput = {
+      id: "points1",
+      kind: "points" as const,
+      group: "describe" as const,
+      label: "Points A",
+      help: "",
+      videoInputId: "",
+      widthField: { nodeId: "", field: "" },
+      heightField: { nodeId: "", field: "" },
+      bindings: [],
+    };
+    const selectInput = {
+      id: "select1",
+      kind: "select" as const,
+      group: "settings" as const,
+      label: "Switch",
+      help: "",
+      default: null,
+      options: [
+        { id: "optA", label: "A", values: ["x"] },
+        { id: "optB", label: "B", values: ["y"] },
+      ],
+      bindings: [
+        { nodeId: "1", field: "mode", classType: "KSampler", title: null },
+      ],
+    };
+    const detail = {
+      ...DETAIL,
+      workflow: {
+        "1": {
+          class_type: "KSampler",
+          inputs: { mode: "x", prompt: "hello", extra: "z" },
+        },
+      },
+      nodes: [{ id: "1", classType: "KSampler", title: null }],
+      inputs: [textInput, pointsInput, selectInput],
+    };
+    mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1")) {
+        return Response.json(detail);
+      }
+      if (call.method === "GET") return Response.json(NO_BACKENDS);
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await openSection(view, "Workflow");
+
+    await userEvent.click(
+      view.getByText("#1").closest("button") as HTMLElement,
+    );
+
+    // "prompt" (a string field) is compatible with both Text A and
+    // Points A by type, but a Points Input's own bound field is picked
+    // from its own settings (issue #214 CEO review), not here.
+    await userEvent.click(
+      within(view.getByText("prompt").closest("tr") as HTMLElement).getByText(
+        "Make it an Input",
+      ),
+    );
+    const promptSelect = within(
+      view.getByText("prompt").closest("tr") as HTMLElement,
+    ).getByLabelText("Or add to an Input…");
+    expect(within(promptSelect).queryByText("Points A")).toBeNull();
+    expect(within(promptSelect).getByText("Text A")).toBeTruthy();
+
+    // Binding "prompt" onto the existing Select keeps every option's
+    // `values` the same length as its `bindings` (toggleBinding, not
+    // the old hand-rolled append).
+    await userEvent.selectOptions(promptSelect, "select1");
+
+    await openSection(view, "Inputs");
+    const promptFields = view.getAllByLabelText(
+      "1.prompt",
+    ) as HTMLInputElement[];
+    expect(promptFields).toHaveLength(2);
+    expect(promptFields[0]?.value).toBe("hello");
+    expect(promptFields[1]?.value).toBe("hello");
+  });
+
+  test("the 'In <Mode>' column defaults an unset Input to Optional, not Hidden", async () => {
+    const detail = {
+      ...DETAIL,
+      workflow: {
+        "1": { class_type: "LoadImage", inputs: { image: "a.png" } },
+      },
+      nodes: [{ id: "1", classType: "LoadImage", title: null }],
+      inputs: [
+        {
+          id: "img",
+          kind: "image_upload" as const,
+          group: "describe" as const,
+          label: "Photo",
+          help: "",
+          maxSizeMb: 20,
+          maxLongSide: null,
+          bindings: [
+            {
+              nodeId: "1",
+              field: "image",
+              classType: "LoadImage",
+              title: null,
+            },
+          ],
+        },
+      ],
+      modes: [
+        {
+          id: "mode-1",
+          sortOrder: 0,
+          name: "Default",
+          description: "",
+          outputNodes: [],
+          inputSettings: [],
+        },
+      ],
+    };
+    mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1")) {
+        return Response.json(detail);
+      }
+      if (call.method === "GET") return Response.json(NO_BACKENDS);
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await openSection(view, "Workflow");
+
+    await userEvent.click(view.getByRole("button", { name: /^Default/ }));
+    await userEvent.click(
+      view.getByText("#1").closest("button") as HTMLElement,
+    );
+
+    expect(
+      view
+        .getByRole("radio", { name: "Optional" })
+        .getAttribute("aria-checked"),
+    ).toBe("true");
+  });
+
+  test("workflowErrorMessage surfaces the server's own validation errors", async () => {
+    mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1")) {
+        return Response.json(DETAIL);
+      }
+      if (call.method === "GET") return Response.json(NO_BACKENDS);
+      if (call.method === "PUT" && call.url.endsWith("/workflow")) {
+        return Response.json(
+          {
+            errors: [
+              { field: "workflow", message: "links to missing nodes: 7" },
+            ],
+          },
+          { status: 400 },
+        );
+      }
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await openSection(view, "Workflow");
+
+    const file = new File(
+      [JSON.stringify({ "1": { class_type: "LoadImage", inputs: {} } })],
+      "wf.json",
+      { type: "application/json" },
+    );
+    await userEvent.upload(await view.findByLabelText("Choose file…"), file);
+    await userEvent.click(view.getByText("Replace Workflow"));
+
+    expect(
+      await view.findByText("workflow: links to missing nodes: 7"),
+    ).toBeTruthy();
+  });
+
   test("a linked field is refused with the hint", async () => {
     const detail = {
       ...DETAIL,
@@ -405,5 +662,80 @@ describe("WorkflowSection (issue #214)", () => {
     expect(stepsBind.getAttribute("title")).toBe(
       "Takes number; this Input can't write it",
     );
+  });
+
+  test("the rebind picker repoints a broken output node, and Replace Workflow sends it", async () => {
+    const MODE_DETAIL = {
+      ...DETAIL,
+      model: { ...DETAIL.model, currentRevision: 2, version: 1 },
+      workflow: {
+        "1": { class_type: "LoadImage", inputs: {} },
+        "2": { class_type: "SaveImage", inputs: { images: ["1", 0] } },
+      },
+      nodes: [
+        { id: "1", classType: "LoadImage", title: null },
+        { id: "2", classType: "SaveImage", title: null },
+      ],
+      modes: [
+        {
+          id: "mode-1",
+          sortOrder: 0,
+          name: "Default",
+          description: "",
+          outputNodes: [
+            { nodeId: "2", classType: "SaveImage", title: null, kind: "image" },
+          ],
+          inputSettings: [],
+        },
+      ],
+      inputs: [],
+    };
+
+    const calls = mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1")) {
+        return Response.json(MODE_DETAIL);
+      }
+      if (call.method === "GET") return Response.json(NO_BACKENDS);
+      if (call.method === "PUT" && call.url.endsWith("/workflow")) {
+        return Response.json({
+          record: { ...MODE_DETAIL.model, currentRevision: 3, version: 2 },
+          modes: [],
+          inputs: [],
+          outsideServiceNotes: [],
+        });
+      }
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await openSection(view, "Workflow");
+
+    // Node "2" keeps its id but turns into a VHS_VideoCombine; node "3"
+    // is a genuine SaveImage the rebind picker can repoint the Mode's
+    // output node onto instead (CEO review: the VHS_VideoCombine bug).
+    const file = new File(
+      [
+        JSON.stringify({
+          "1": { class_type: "LoadImage", inputs: {} },
+          "2": { class_type: "VHS_VideoCombine", inputs: { images: ["1", 0] } },
+          "3": { class_type: "SaveImage", inputs: { images: ["1", 0] } },
+        }),
+      ],
+      "wf2.json",
+      { type: "application/json" },
+    );
+    await userEvent.upload(await view.findByLabelText("Choose file…"), file);
+
+    expect(await view.findByText(/rebind it/)).toBeTruthy();
+
+    await userEvent.selectOptions(view.getByLabelText('Rebind node "2"'), "3");
+    await userEvent.click(view.getByText("Replace Workflow"));
+
+    const saved = calls.find(
+      (c) => c.method === "PUT" && c.url.endsWith("/workflow"),
+    );
+    const body = saved?.body as { rebind: unknown } | null;
+    expect(body?.rebind).toEqual([{ nodeId: "2", newNodeId: "3" }]);
   });
 });

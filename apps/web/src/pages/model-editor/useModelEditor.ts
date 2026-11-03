@@ -381,10 +381,18 @@ export function useModelEditor() {
     });
   }
 
-  /** The server's own refusal (issue #214: "Show a server refusal's own text if one still comes back"). */
+  /** The server's own refusal (issue #214: "Show a server refusal's own text if one still comes back"): `errors` (`ValidationFailed`, e.g. uploadWorkflow's own structural checks) takes the same shape `messageFrom` reads for every other section's save. */
   function workflowErrorMessage(err: unknown): string {
     if (err instanceof ApiError) {
-      const body = err.body as { error?: string; reasons?: string[] } | null;
+      const body = err.body as {
+        error?: string;
+        errors?: { field: string; message: string }[];
+        reasons?: string[];
+      } | null;
+      const issues = body?.errors
+        ?.map((e) => `${e.field}: ${e.message}`)
+        .join(", ");
+      if (issues) return issues;
       if (body?.reasons && body.reasons.length > 0) {
         return body.reasons.join(", ");
       }

@@ -4,6 +4,7 @@ import {
   SAVE_NODE_KINDS,
   fieldKey,
   isNodeLink,
+  modeInputSetting,
 } from "@ai-content-studio/shared";
 import type {
   BindableField,
@@ -23,7 +24,7 @@ import {
   TableHeader,
   TableRow,
 } from "../../../components/ui/table.js";
-import { candidateFieldsFor } from "../helpers/bindings.js";
+import { candidateFieldsFor, toggleBinding } from "../helpers/bindings.js";
 import { newInputFromField } from "../helpers/newInputs.js";
 import { GROUP_ORDER, nodeGroup } from "../helpers/workflow.js";
 import type { EditorNavigation } from "../hooks/useEditorNavigation.js";
@@ -47,6 +48,20 @@ function sortedNodeIds(nodes: ModelNode[]): ModelNode[] {
 
 function cutTo60(value: string): string {
   return value.length > 60 ? `${value.slice(0, 60)}…` : value;
+}
+
+/**
+ * A plain (non-linked) field's own JS value type, or null for anything
+ * "Make it an Input" shouldn't offer: a link (handled separately), a
+ * `null` field, or an unexpected shape (issue #214 CEO review).
+ */
+function plainValueType(
+  value: unknown,
+): "string" | "number" | "boolean" | null {
+  if (typeof value === "string") return "string";
+  if (typeof value === "number") return "number";
+  if (typeof value === "boolean") return "boolean";
+  return null;
 }
 
 function bindableField(
@@ -375,21 +390,12 @@ export function WorkflowSection({
                 setInputsDraft([...inputs, created]);
                 nav.openInput(created.id);
                 setMakeInputKey(null);
+                setAddToInputId("");
               }}
               onAddToInput={(input, index, field) => {
-                updateInput(index, {
-                  ...input,
-                  bindings: [
-                    ...input.bindings,
-                    {
-                      nodeId: field.nodeId,
-                      field: field.field,
-                      classType: field.classType,
-                      title: field.title,
-                    },
-                  ],
-                });
+                updateInput(index, toggleBinding(input, field));
                 setMakeInputKey(null);
+                setAddToInputId("");
               }}
               onOpenInput={(id) => nav.openInput(id)}
               onModeInputSettingChange={(inputId, patch) => {
@@ -675,20 +681,27 @@ function NodeInspector({
             {Object.entries(workflowNode.inputs).map(([field, value]) => {
               const linked = isNodeLink(value);
               const linkedFrom = linked ? value[0] : null;
-              const valueType =
-                linked || value === null
-                  ? null
-                  : (typeof value as "string" | "number" | "boolean");
+              // "Make it an Input" only ever applies to a value-holding
+              // field whose JS type is one of these three (issue #214
+              // CEO review): a link has no value to seed an Input with,
+              // and an unexpected object/array shouldn't offer it either.
+              const valueType = linked ? null : plainValueType(value);
               const isFilenamePrefix = field === "filename_prefix";
               const boundInput = bindingFor(node.id, field);
               const key = fieldKey(node.id, field);
               const sourceNode = linkedFrom
                 ? detail.workflow[linkedFrom]
                 : undefined;
+              // A Seed binds exactly one field already (ADR 0007) and a
+              // Points Input's one bound field is picked in its own
+              // settings, not via "Or add to an Input…" (issue #214 CEO
+              // review).
               const otherCompatibleInputs = valueType
                 ? inputs.filter(
                     (candidate) =>
                       candidate.id !== boundInput?.id &&
+                      candidate.kind !== "seed" &&
+                      candidate.kind !== "points" &&
                       candidateFieldsFor(
                         detail.workflow,
                         candidate,
@@ -746,7 +759,7 @@ function NodeInspector({
                       <span className="text-[12.5px] text-muted-foreground">
                         Fed by a link. Bind the source node.
                       </span>
-                    ) : isFilenamePrefix ? (
+                    ) : isFilenamePrefix || !valueType ? (
                       <span className="text-[12.5px] text-muted-foreground">
                         Keeps the Workflow value
                       </span>
@@ -778,8 +791,9 @@ function NodeInspector({
                                   index,
                                   bindableField(node, field, value),
                                 );
+                              } else {
+                                setAddToInputId(event.target.value);
                               }
-                              setAddToInputId(event.target.value);
                             }}
                             className="h-8 rounded-md border border-input bg-transparent px-2 text-[13px]"
                           >
@@ -795,7 +809,10 @@ function NodeInspector({
                           type="button"
                           size="sm"
                           variant="ghost"
-                          onClick={() => setMakeInputKey(null)}
+                          onClick={() => {
+                            setMakeInputKey(null);
+                            setAddToInputId("");
+                          }}
                         >
                           Cancel
                         </Button>
@@ -817,23 +834,26 @@ function NodeInspector({
                         <StateEditor
                           input={boundInput}
                           state={
-                            editingMode.inputSettings.find(
-                              (s) => s.inputId === boundInput.id,
-                            )?.state ?? "hidden"
+                            modeInputSetting(
+                              editingMode.inputSettings,
+                              boundInput.id,
+                            ).state
                           }
                           fixedValue={
-                            editingMode.inputSettings.find(
-                              (s) => s.inputId === boundInput.id,
-                            )?.fixedValue ?? null
+                            modeInputSetting(
+                              editingMode.inputSettings,
+                              boundInput.id,
+                            ).fixedValue
                           }
                           onStateChange={(state) =>
                             onModeInputSettingChange(boundInput.id, {
                               state,
                               fixedValue:
                                 state === "fixed"
-                                  ? (editingMode.inputSettings.find(
-                                      (s) => s.inputId === boundInput.id,
-                                    )?.fixedValue ?? null)
+                                  ? modeInputSetting(
+                                      editingMode.inputSettings,
+                                      boundInput.id,
+                                    ).fixedValue
                                   : null,
                             })
                           }

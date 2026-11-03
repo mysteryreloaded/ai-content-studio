@@ -66,12 +66,33 @@ export function useEditorNavigation({
     setPendingOpenInputId(null);
   }
 
-  function openMode(_modeId: string) {
+  // Issue #216: mirrors `pendingOpenInputId` above — the Modes section
+  // (once mounted) opens that Mode's sheet, or that cell's popover.
+  const [pendingOpenModeId, setPendingOpenModeId] = useState<string | null>(
+    null,
+  );
+
+  function openMode(modeId: string) {
     setSection("modes");
+    setPendingOpenModeId(modeId);
   }
 
-  function openCell(_modeId: string, _inputId: string) {
+  function clearPendingOpenMode() {
+    setPendingOpenModeId(null);
+  }
+
+  const [pendingOpenCell, setPendingOpenCell] = useState<{
+    modeId: string;
+    inputId: string;
+  } | null>(null);
+
+  function openCell(modeId: string, inputId: string) {
     setSection("modes");
+    setPendingOpenCell({ modeId, inputId });
+  }
+
+  function clearPendingOpenCell() {
+    setPendingOpenCell(null);
   }
 
   // The only jump this ticket makes real: open Backends, then — once
@@ -104,7 +125,11 @@ export function useEditorNavigation({
     pendingOpenInputId,
     clearPendingOpenInput,
     openMode,
+    pendingOpenModeId,
+    clearPendingOpenMode,
     openCell,
+    pendingOpenCell,
+    clearPendingOpenCell,
     focusBackend,
   };
 }

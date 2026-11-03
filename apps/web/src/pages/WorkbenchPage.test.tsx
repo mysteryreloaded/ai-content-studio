@@ -8,10 +8,17 @@ await GlobalRegistrator.register();
 // happy-dom never fires a <video>/<audio> element's loadedmetadata or
 // error event for a blob: URL, so `readMediaDuration` (chunkedUpload.ts)
 // would hang forever reading a picked file's own duration. Firing
-// `error` (as a real browser would for a file it truly can't decode)
-// resolves it to `null`, which is exactly how the client already
-// handles "the browser couldn't tell": skip the client-side duration
-// check and let the server's own probe at complete decide.
+// `loadedmetadata` (as a real browser would for any file it can at
+// least demux) resolves it with happy-dom's own duration/videoWidth/
+// videoHeight (0, since it doesn't decode media), which is enough for
+// every fixture here (all `minDurationMs`/`maxLongSide` tolerate 0).
+// `unplayableNextMediaLoad` (below) makes the *next* load behave like a
+// file this browser truly can't read at all (issue #197's AC), firing
+// `error` instead so it resolves to `null` just this once.
+let forceNextMediaLoadUnplayable = false;
+function unplayableNextMediaLoad() {
+  forceNextMediaLoadUnplayable = true;
+}
 {
   const descriptor = Object.getOwnPropertyDescriptor(
     HTMLMediaElement.prototype,
@@ -24,12 +31,32 @@ await GlobalRegistrator.register();
     },
     set(value: string) {
       descriptor?.set?.call(this, value);
-      queueMicrotask(() => this.dispatchEvent(new Event("error")));
+      fireMediaLoadEvent(this);
     },
   });
 }
+function fireMediaLoadEvent(media: HTMLMediaElement) {
+  const unplayable = forceNextMediaLoadUnplayable;
+  forceNextMediaLoadUnplayable = false;
+  queueMicrotask(() =>
+    media.dispatchEvent(new Event(unplayable ? "error" : "loadedmetadata")),
+  );
+}
+// React sets a host element's `src` via `setAttribute`, not the property
+// setter above (which only matters for `readMediaDuration`'s own direct
+// `element.src = …`), so `PointsField`/`Trimmer`'s own JSX `<video src=…>`
+// needs its own hook here too.
+{
+  const originalSetAttribute = HTMLMediaElement.prototype.setAttribute;
+  HTMLMediaElement.prototype.setAttribute = function (name, value) {
+    originalSetAttribute.call(this, name, value);
+    if (name === "src") fireMediaLoadEvent(this);
+  };
+}
 
-const { cleanup, waitFor, within } = await import("@testing-library/react");
+const { cleanup, fireEvent, waitFor, within } = await import(
+  "@testing-library/react"
+);
 const { WorkbenchPage } = await import("./WorkbenchPage.js");
 const { drainMacrotasks, renderWithProviders } = await import(
   "../test/render.js"
@@ -1132,6 +1159,48 @@ describe("WorkbenchPage", () => {
       ).toBeTruthy();
       expect(server.calls).toEqual([]);
     });
+
+    test("dropping a file on the drop zone starts the upload", async () => {
+      const server = uploadServer();
+      const view = renderWorkbench();
+
+      await view.findByText("Your files");
+      const dropZone = view.getByLabelText("Start frame").closest("div");
+      if (!dropZone) throw new Error("no drop zone");
+      const file = new File(["PNG!"], "frame.png", { type: "image/png" });
+      fireEvent.drop(dropZone, { dataTransfer: { files: [file] } });
+
+      expect(
+        await view.findByRole("progressbar", { name: "Uploading frame.png" }),
+      ).toBeTruthy();
+      server.release();
+      await waitFor(() => expect(server.calls).toContain("complete"));
+    });
+
+    test("Remove clears the Upload so the field can be picked again", async () => {
+      const server = uploadServer();
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await view.findByText("Your files");
+      await userEvent.upload(
+        view.getByLabelText("Start frame"),
+        new File(["PNG!"], "frame.png", { type: "image/png" }),
+      );
+      server.release();
+      await view.findByText("frame.png");
+
+      await userEvent.click(
+        view.getByRole("button", { name: "Remove Start frame" }),
+      );
+
+      expect(view.queryByText("frame.png")).toBeNull();
+      expect(
+        view.getByRole("button", { name: /Choose an image/ }),
+      ).toBeTruthy();
+    });
   });
 
   describe("Video Upload Inputs: trimming before Generate (issue #51's AC)", () => {
@@ -1231,9 +1300,13 @@ describe("WorkbenchPage", () => {
         new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
       );
 
-      const startInput = await view.findByLabelText("Start (s)");
-      await userEvent.clear(startInput);
-      await userEvent.type(startInput, "0.5");
+      const startHandle = await view.findByRole("slider", {
+        name: "Trim start",
+      });
+      startHandle.focus();
+      for (let i = 0; i < 5; i++) {
+        await userEvent.keyboard("{ArrowRight}");
+      }
 
       await userEvent.click(view.getByRole("button", { name: "Generate" }));
 
@@ -1262,7 +1335,7 @@ describe("WorkbenchPage", () => {
         view.getByLabelText("Clip"),
         new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
       );
-      await view.findByLabelText("Start (s)");
+      await view.findByRole("slider", { name: "Trim start" });
 
       await userEvent.click(view.getByRole("button", { name: "Generate" }));
 
@@ -1287,9 +1360,13 @@ describe("WorkbenchPage", () => {
         new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
       );
 
-      const startInput = await view.findByLabelText("Start (s)");
-      await userEvent.clear(startInput);
-      await userEvent.type(startInput, "0.5");
+      const startHandle = await view.findByRole("slider", {
+        name: "Trim start",
+      });
+      startHandle.focus();
+      for (let i = 0; i < 5; i++) {
+        await userEvent.keyboard("{ArrowRight}");
+      }
       await userEvent.click(view.getByRole("button", { name: "Generate" }));
 
       await waitFor(() => expect(server.trimCalls).toHaveLength(1));
@@ -1298,8 +1375,10 @@ describe("WorkbenchPage", () => {
         values: { [VIDEO_INPUT_ID]: TRIMMED_ID },
       });
 
-      await userEvent.clear(startInput);
-      await userEvent.type(startInput, "0");
+      startHandle.focus();
+      for (let i = 0; i < 5; i++) {
+        await userEvent.keyboard("{ArrowLeft}");
+      }
       await userEvent.click(view.getByRole("button", { name: "Generate" }));
 
       await waitFor(() => expect(server.posts).toHaveLength(2));
@@ -1307,6 +1386,126 @@ describe("WorkbenchPage", () => {
       expect(server.posts[1]?.body).toMatchObject({
         values: { [VIDEO_INPUT_ID]: UPLOAD_ID },
       });
+    });
+
+    test("the trim end can't be dragged below the min length past the start", async () => {
+      const server = videoServer();
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await view.findByLabelText("Clip");
+      await userEvent.upload(
+        view.getByLabelText("Clip"),
+        new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
+      );
+
+      const endHandle = await view.findByRole("slider", { name: "Trim end" });
+      endHandle.focus();
+      for (let i = 0; i < 30; i++) {
+        await userEvent.keyboard("{ArrowLeft}");
+      }
+
+      // The 2s clip's min length is max(0.5s, minDurationMs=0) = 0.5s, so
+      // the end handle stops at 0.5s no matter how many more ArrowLefts.
+      expect(endHandle.getAttribute("aria-valuenow")).toBe("0.5");
+      void server;
+    });
+
+    test("a clip longer than the Input's max starts pre-trimmed to [0, max]", async () => {
+      const LONG_VIDEO_INPUT_ID = "cccccccc-1111-4111-8111-111111111111";
+      const LONG_UPLOAD_ID = "dddddddd-1111-4111-8111-111111111111";
+      const LONG_TRIMMED_ID = "eeeeeeee-1111-4111-8111-111111111111";
+      const LONG_MODEL = {
+        ...MODEL,
+        modes: [
+          {
+            id: "mode-long",
+            name: "Default",
+            description: "",
+            inputs: [
+              {
+                id: LONG_VIDEO_INPUT_ID,
+                kind: "video_upload",
+                group: "describe",
+                label: "Clip",
+                help: "",
+                placeholder: null,
+                maxSizeMb: 50,
+                maxLongSide: null,
+                minDurationMs: 0,
+                maxDurationMs: 2_000,
+                trimmable: true,
+              },
+            ],
+          },
+        ],
+      };
+      const trimCalls: FetchCall[] = [];
+      mockFetch(async (call) => {
+        if (call.url.endsWith("/api/models/ltx")) {
+          return Response.json({ model: LONG_MODEL });
+        }
+        if (
+          call.url.endsWith("/api/models/ltx/generations") &&
+          call.method === "GET"
+        ) {
+          return Response.json({ submissions: [] });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ generation: { id: "g1" } }, { status: 201 });
+        }
+        if (call.url === "/api/uploads") {
+          return Response.json(
+            { upload: { id: LONG_UPLOAD_ID, chunkSize: 16 * 1024 * 1024 } },
+            { status: 201 },
+          );
+        }
+        if (call.url.startsWith(`/api/uploads/${LONG_UPLOAD_ID}/chunk`)) {
+          return Response.json({ offset: 4 });
+        }
+        if (call.url === `/api/uploads/${LONG_UPLOAD_ID}/complete`) {
+          return Response.json({
+            upload: {
+              id: LONG_UPLOAD_ID,
+              durationMs: 5000,
+              browserPlayable: true,
+            },
+          });
+        }
+        if (call.url === `/api/uploads/${LONG_UPLOAD_ID}/trim`) {
+          trimCalls.push(call);
+          return Response.json(
+            {
+              upload: {
+                id: LONG_TRIMMED_ID,
+                durationMs: 2000,
+                browserPlayable: true,
+              },
+            },
+            { status: 201 },
+          );
+        }
+        throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await view.findByLabelText("Clip");
+      await userEvent.upload(
+        view.getByLabelText("Clip"),
+        new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
+      );
+
+      expect(await view.findByText(/Using 0:00\.0–0:02\.0/)).toBeTruthy();
+
+      await userEvent.click(view.getByRole("button", { name: "Generate" }));
+      await waitFor(() => expect(trimCalls).toHaveLength(1));
+      expect(trimCalls[0]?.body).toEqual({ startMs: 0, endMs: 2000 });
     });
   });
 
@@ -1477,7 +1676,7 @@ describe("WorkbenchPage", () => {
       const view = renderWorkbench();
 
       await view.findByLabelText("Clip");
-      expect(view.getByText("Pick a video above first.")).toBeTruthy();
+      expect(view.getByText(/Add the clip first/)).toBeTruthy();
     });
 
     test("shows the point counter once a video is uploaded and a target size is known", async () => {
@@ -1492,9 +1691,11 @@ describe("WorkbenchPage", () => {
         view.getByLabelText("Clip"),
         new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
       );
-      await view.findByLabelText("Start (s)");
+      await view.findByRole("slider", { name: "Trim start" });
 
-      expect(await view.findByText(/0\/10 points picked/)).toBeTruthy();
+      expect(
+        await view.findByText(/No points yet.*frame at 0:00\.0/),
+      ).toBeTruthy();
     });
 
     test("resolves the crop's target size from a bound Number Input, not just the literal default", async () => {
@@ -1509,11 +1710,13 @@ describe("WorkbenchPage", () => {
         view.getByLabelText("Clip"),
         new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
       );
-      await view.findByLabelText("Start (s)");
+      await view.findByRole("slider", { name: "Trim start" });
 
       // No literal `defaultWidth` on this fixture: the picker only shows
       // once *some* target width is known, here from the Width Input.
-      expect(await view.findByText(/0\/10 points picked/)).toBeTruthy();
+      expect(
+        await view.findByText(/No points yet.*frame at 0:00\.0/),
+      ).toBeTruthy();
     });
 
     test("resolves the crop's target size from a bound Select Input's chosen option value, not Number() of its option id", async () => {
@@ -1528,12 +1731,14 @@ describe("WorkbenchPage", () => {
         view.getByLabelText("Clip"),
         new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
       );
-      await view.findByLabelText("Start (s)");
+      await view.findByRole("slider", { name: "Trim start" });
 
       // `Size` defaults to the Big option: `Number(optionId)` is NaN,
       // so before the fix this fell back to `defaultWidth` (null here),
       // showing "Set a size first." instead of the picker.
-      expect(await view.findByText(/0\/10 points picked/)).toBeTruthy();
+      expect(
+        await view.findByText(/No points yet.*frame at 0:00\.0/),
+      ).toBeTruthy();
     });
   });
 

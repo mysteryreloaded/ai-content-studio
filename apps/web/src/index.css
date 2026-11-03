@@ -76,6 +76,7 @@
   --color-err-soft: var(--err-soft);
   --color-info: var(--info);
   --color-media: var(--media);
+  --color-media-foreground: var(--media-fg);
 
   --color-chart-1: var(--accent);
   --color-chart-2: var(--info);

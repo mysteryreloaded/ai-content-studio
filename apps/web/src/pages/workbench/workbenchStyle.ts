@@ -1,23 +1,8 @@
 export const WORKBENCH_STYLE = `
-.workbench-asset {
-  display: block;
-  max-width: 100%;
-  margin-top: 0.25rem;
-}
-.workbench-progress {
-  opacity: 0.8;
-}
 .workbench-thumb {
   max-width: 160px;
   max-height: 160px;
   vertical-align: middle;
-}
-.workbench-download {
-  margin: 0.25rem 0 0;
-  font-size: 0.85rem;
-}
-.workbench-ai-reminder {
-  opacity: 0.7;
 }
 .workbench-layout {
   display: flex;
@@ -27,10 +12,6 @@ export const WORKBENCH_STYLE = `
 .workbench-form {
   flex: 1;
   min-width: 0;
-}
-.workbench-submissions {
-  width: 320px;
-  flex-shrink: 0;
 }
 .workbench-generate-bar {
   position: sticky;
@@ -50,9 +31,6 @@ export const WORKBENCH_STYLE = `
 @media (max-width: 640px) {
   .workbench-layout {
     flex-direction: column;
-  }
-  .workbench-submissions {
-    width: auto;
   }
   .workbench-generate-bar {
     justify-content: space-between;

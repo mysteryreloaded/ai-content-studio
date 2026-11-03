@@ -1,12 +1,10 @@
 import { effectiveNoticeText } from "@ai-content-studio/shared";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, useParams, useSearchParams } from "react-router-dom";
-import type { SubmissionSummary } from "../components/generations/types.js";
 import { UPLOAD_KINDS } from "../components/inputs/types.js";
 import { usePauseNotice } from "../usePauseNotice.js";
 import { useSession } from "../useSession.js";
 import { GenerateBar } from "./workbench/GenerateBar.js";
-import { GenerationDetailDialog } from "./workbench/GenerationDetailDialog.js";
 import { ModelTermsDialog } from "./workbench/ModelTermsDialog.js";
 import { WorkbenchFeed } from "./workbench/WorkbenchFeed.js";
 import { WorkbenchForm } from "./workbench/WorkbenchForm.js";
@@ -66,8 +64,9 @@ export function WorkbenchPage() {
     },
     [updateValues],
   );
-  const [selectedSubmission, setSelectedSubmission] =
-    useState<SubmissionSummary | null>(null);
+  const [lastOwnSubmissionId, setLastOwnSubmissionId] = useState<string | null>(
+    null,
+  );
   const maxUploadMb =
     session.status === "signed-in" ? (session.user.maxUploadMb ?? null) : null;
   const selectedMode =
@@ -105,6 +104,7 @@ export function WorkbenchPage() {
     setTermsDialog: termsApi.setTermsDialog,
     refreshCaps,
     setSubmissions: feedApi.setSubmissions,
+    setLastOwnSubmissionId,
   });
   const selectMode = useCallback(
     (mode: WorkbenchMode) => {
@@ -208,12 +208,6 @@ export function WorkbenchPage() {
             onClose={termsApi.handleTermsClose}
           />
         )}
-        {selectedSubmission && (
-          <GenerationDetailDialog
-            detail={{ submission: selectedSubmission, model }}
-            onClose={() => setSelectedSubmission(null)}
-          />
-        )}
         <div className="workbench-layout">
           <WorkbenchForm
             {...uploadsApi}
@@ -232,13 +226,13 @@ export function WorkbenchPage() {
           />
           <WorkbenchFeed
             {...feedApi}
+            model={model}
             paused={paused}
-            onOpen={setSelectedSubmission}
+            lastOwnSubmissionId={lastOwnSubmissionId}
           />
         </div>
         <GenerateBar
           capsStatus={capsStatus}
-          activeCount={feedApi.activeCount}
           {...generateApi}
           paused={paused}
           pauseNoticeText={pauseNoticeText}

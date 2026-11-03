@@ -74,17 +74,26 @@ export interface UseGenerateOptions {
   setTermsDialog: Dispatch<SetStateAction<TermsDialogState | null>>;
   refreshCaps: () => void;
   setSubmissions: Dispatch<SetStateAction<SubmissionSummary[]>>;
+  setLastOwnSubmissionId: Dispatch<SetStateAction<string | null>>;
 }
 
 export interface WorkbenchFeedProps {
+  model: WorkbenchModel;
   submissions: Submission[];
+  hasMore: boolean;
   progressById: Map<string, GenerationProgress>;
   paused: boolean;
+  lastOwnSubmissionId: string | null;
   cancellingSubmissionIds: Set<string>;
   deletingSubmissionIds: Set<string>;
   cancelErrorSubmissionId: string | null;
   deleteErrorSubmissionId: string | null;
-  onOpen: (submission: Submission) => void;
+  cancellingGenerationIds: Set<string>;
+  deletingGenerationIds: Set<string>;
   handleCancelSubmission: (submissionId: string) => void;
   handleDeleteSubmission: (submissionId: string) => void;
+  handleCancelGeneration: (id: string) => void;
+  handleDeleteGeneration: (id: string) => void;
+  handleDismissGeneration: (id: string) => void;
+  setSubmissions: Dispatch<SetStateAction<Submission[]>>;
 }

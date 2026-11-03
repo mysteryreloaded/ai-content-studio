@@ -232,9 +232,36 @@ describe("WorkbenchPage", () => {
 
     await waitFor(() => FakeEventSource.generationsStream());
     const source = FakeEventSource.generationsStream();
-    source.emit("snapshot", { generations: [{ id: "g1" }, { id: "g2" }] });
+    source.emit("snapshot", {
+      generations: [
+        {
+          id: "g1",
+          modelId: "m1",
+          modelSlug: "ltx",
+          modelName: "LTX 2.5",
+          modeId: "mode1",
+          modeName: "Default",
+          submissionId: "s1",
+          state: "queued",
+          deletedAt: null,
+          removedAt: null,
+        },
+        {
+          id: "g2",
+          modelId: "m1",
+          modelSlug: "ltx",
+          modelName: "LTX 2.5",
+          modeId: "mode1",
+          modeName: "Default",
+          submissionId: "s1",
+          state: "running",
+          deletedAt: null,
+          removedAt: null,
+        },
+      ],
+    });
 
-    expect(await view.findByText("2 under way")).toBeTruthy();
+    expect(await view.findAllByText("2 under way")).toHaveLength(2);
   });
 
   test("reloads the Model and shows a message on 409 model_changed", async () => {
@@ -445,7 +472,7 @@ describe("WorkbenchPage", () => {
 
     const view = renderWorkbench();
     await view.findByRole("heading", { name: "LTX 2.5" });
-    expect(view.getByText("No Submissions yet.")).toBeTruthy();
+    expect(view.getByText("Nothing yet.")).toBeTruthy();
 
     await waitFor(() => FakeEventSource.generationsStream());
     const source = FakeEventSource.generationsStream();
@@ -459,12 +486,17 @@ describe("WorkbenchPage", () => {
       submissionId: "s1",
       state: "queued",
       tries: 0,
+      error: null,
       submittedAt: "2026-01-01T00:00:00.000Z",
+      startedAt: null,
+      endedAt: null,
+      assets: [],
+      removedAt: null,
     });
 
-    expect(await view.findByText("Waiting for a GPU…")).toBeTruthy();
+    expect(await view.findByText("waiting for a free GPU")).toBeTruthy();
     expect(view.getByText("Default", { selector: "strong" })).toBeTruthy();
-    expect(view.queryByText("No Submissions yet.")).toBeNull();
+    expect(view.queryByText("Nothing yet.")).toBeNull();
   });
 
   test("shows a removed Generation as a dismissable-looking card, not its own state (issue #68's AC)", async () => {
@@ -533,7 +565,7 @@ describe("WorkbenchPage", () => {
       ],
     };
 
-    test("posts to the cancel route and disables the button meanwhile", async () => {
+    test("posts to the card's own cancel route and disables the button meanwhile", async () => {
       let cancelCalls = 0;
       mockFetch((call) => {
         if (call.url.endsWith("/api/models/ltx")) {
@@ -542,7 +574,7 @@ describe("WorkbenchPage", () => {
         if (call.url.endsWith("/api/models/ltx/generations")) {
           return Response.json({ submissions: [QUEUED_SUBMISSION] });
         }
-        if (call.url.endsWith("/api/submissions/s1/cancel")) {
+        if (call.url.endsWith("/api/generations/g1/cancel")) {
           cancelCalls += 1;
           return new Response(null, { status: 204 });
         }
@@ -567,13 +599,20 @@ describe("WorkbenchPage", () => {
       );
     });
 
-    test("shows an error and leaves the button enabled when the cancel request fails", async () => {
+    test("'Cancel all' shows an error and leaves the button enabled when the request fails", async () => {
+      const twoActive = {
+        ...QUEUED_SUBMISSION,
+        generations: [
+          QUEUED_SUBMISSION.generations[0],
+          { ...QUEUED_SUBMISSION.generations[0], id: "g2" },
+        ],
+      };
       mockFetch((call) => {
         if (call.url.endsWith("/api/models/ltx")) {
           return Response.json({ model: MODEL });
         }
         if (call.url.endsWith("/api/models/ltx/generations")) {
-          return Response.json({ submissions: [QUEUED_SUBMISSION] });
+          return Response.json({ submissions: [twoActive] });
         }
         if (call.url.endsWith("/api/submissions/s1/cancel")) {
           return new Response(null, { status: 500 });
@@ -585,16 +624,16 @@ describe("WorkbenchPage", () => {
       const { default: userEvent } = await import(
         "@testing-library/user-event"
       );
-      const cancelButton = await view.findByRole("button", {
-        name: "Cancel",
+      const cancelAllButton = await view.findByRole("button", {
+        name: "Cancel all",
       });
-      await userEvent.click(cancelButton);
+      await userEvent.click(cancelAllButton);
 
       expect(
         await view.findByText("Could not cancel. Please try again."),
       ).toBeTruthy();
       expect(
-        (view.getByRole("button", { name: "Cancel" }) as HTMLButtonElement)
+        (view.getByRole("button", { name: "Cancel all" }) as HTMLButtonElement)
           .disabled,
       ).toBe(false);
     });
@@ -1703,6 +1742,342 @@ describe("WorkbenchPage", () => {
         ),
       ).toBeTruthy();
       await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+  });
+
+  describe("Generations column restyle (issue #195)", () => {
+    const ENDED_SUBMISSION = {
+      submissionId: "s1",
+      modeId: "mode1",
+      modeName: "Default",
+      submittedAt: "2026-01-01T00:00:00.000Z",
+      generations: [
+        {
+          id: "g1",
+          modelId: "m1",
+          modelSlug: "ltx",
+          modelName: "LTX 2.5",
+          modeId: "mode1",
+          modeName: "Default",
+          submissionId: "s1",
+          state: "succeeded",
+          tries: 0,
+          error: null,
+          submittedAt: "2026-01-01T00:00:00.000Z",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          endedAt: "2026-01-01T00:01:00.000Z",
+          assets: [
+            {
+              id: "a1",
+              nodeId: "n1",
+              sortOrder: 0,
+              kind: "image",
+              contentType: "image/png",
+              size: 100,
+              width: 512,
+              height: 512,
+              durationMs: null,
+            },
+          ],
+          removedAt: null,
+        },
+      ],
+    };
+
+    test("the pill ignores another Model's Generations", async () => {
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx")) {
+          return Response.json({ model: MODEL });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ submissions: [] });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      await view.findByRole("heading", { name: "LTX 2.5" });
+
+      await waitFor(() => FakeEventSource.generationsStream());
+      FakeEventSource.generationsStream().emit("snapshot", {
+        generations: [
+          {
+            id: "g1",
+            modelId: "m1",
+            modelSlug: "ltx",
+            modelName: "LTX 2.5",
+            modeId: "mode1",
+            modeName: "Default",
+            submissionId: "s1",
+            state: "queued",
+            deletedAt: null,
+            removedAt: null,
+          },
+          {
+            id: "g2",
+            modelId: "m2",
+            modelSlug: "other",
+            modelName: "Other Model",
+            modeId: "mode2",
+            modeName: "Other",
+            submissionId: "s2",
+            state: "queued",
+            deletedAt: null,
+            removedAt: null,
+          },
+        ],
+      });
+
+      expect(await view.findAllByText("1 under way")).toHaveLength(2);
+      expect(view.queryByText("2 under way")).toBeNull();
+    });
+
+    test("per-card Cancel posts to the Generation's own route and leaves its sibling running", async () => {
+      const twoQueued = {
+        ...ENDED_SUBMISSION,
+        generations: [
+          {
+            ...ENDED_SUBMISSION.generations[0],
+            id: "g1",
+            state: "queued",
+            assets: [],
+          },
+          {
+            ...ENDED_SUBMISSION.generations[0],
+            id: "g2",
+            state: "queued",
+            assets: [],
+          },
+        ],
+      };
+      const cancelled: string[] = [];
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx")) {
+          return Response.json({ model: MODEL });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ submissions: [twoQueued] });
+        }
+        if (
+          call.url.endsWith("/cancel") &&
+          call.url.includes("/generations/")
+        ) {
+          cancelled.push(call.url);
+          return new Response(null, { status: 204 });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+      const cancelButtons = await view.findAllByRole("button", {
+        name: "Cancel",
+      });
+      expect(cancelButtons).toHaveLength(2);
+      await userEvent.click(cancelButtons[0] as HTMLElement);
+
+      await waitFor(() =>
+        expect(cancelled).toEqual(["/api/generations/g1/cancel"]),
+      );
+      // The sibling Generation's own Cancel is untouched.
+      expect(
+        await view.findAllByRole("button", { name: "Cancel" }),
+      ).toHaveLength(2);
+    });
+
+    test("Copy writes the full Generation id", async () => {
+      const failed = {
+        ...ENDED_SUBMISSION,
+        generations: [
+          {
+            ...ENDED_SUBMISSION.generations[0],
+            state: "failed",
+            error: "timed out",
+            assets: [],
+          },
+        ],
+      };
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx")) {
+          return Response.json({ model: MODEL });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ submissions: [failed] });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const written: string[] = [];
+      Object.defineProperty(navigator, "clipboard", {
+        value: {
+          writeText: (text: string) => {
+            written.push(text);
+            return Promise.resolve();
+          },
+        },
+        configurable: true,
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+      const copyButton = await view.findByRole("button", {
+        name: "Copy Generation id",
+      });
+      await userEvent.click(copyButton);
+
+      expect(written).toEqual(["g1"]);
+    });
+
+    test("Dismiss posts dismiss-removed and removes the card", async () => {
+      const removed = {
+        ...ENDED_SUBMISSION,
+        generations: [
+          {
+            ...ENDED_SUBMISSION.generations[0],
+            removedAt: "2026-01-02T00:00:00.000Z",
+          },
+        ],
+      };
+      let dismissed = false;
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx")) {
+          return Response.json({ model: MODEL });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ submissions: [removed] });
+        }
+        if (call.url.endsWith("/api/generations/g1/dismiss-removed")) {
+          dismissed = true;
+          return Response.json({ ok: true });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+      await view.findByText("Removed by an administrator");
+      await userEvent.click(view.getByRole("button", { name: "Dismiss" }));
+
+      await waitFor(() => expect(dismissed).toBe(true));
+      expect(view.queryByText("Removed by an administrator")).toBeNull();
+      expect(view.getByText("Nothing yet.")).toBeTruthy();
+    });
+
+    test("the card's inline Delete confirms before posting DELETE", async () => {
+      let deleteCalls = 0;
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx")) {
+          return Response.json({ model: MODEL });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ submissions: [ENDED_SUBMISSION] });
+        }
+        if (
+          call.url.endsWith("/api/generations/g1") &&
+          call.method === "DELETE"
+        ) {
+          deleteCalls += 1;
+          return Response.json({ ok: true });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+      await userEvent.click(
+        await view.findByRole("button", { name: "Delete this Generation" }),
+      );
+
+      expect(await view.findByText("Delete this Generation?")).toBeTruthy();
+      expect(deleteCalls).toBe(0);
+
+      await userEvent.click(view.getByRole("button", { name: "Keep" }));
+      expect(view.queryByText("Delete this Generation?")).toBeNull();
+      expect(deleteCalls).toBe(0);
+
+      await userEvent.click(
+        await view.findByRole("button", { name: "Delete this Generation" }),
+      );
+      await userEvent.click(view.getByRole("button", { name: "Delete" }));
+
+      await waitFor(() => expect(deleteCalls).toBe(1));
+    });
+
+    test("the notifications offer renders inside the newly created Submission's block", async () => {
+      const FakeNotification = {
+        permission: "default" as NotificationPermission,
+        requestPermission() {
+          return Promise.resolve("granted" as NotificationPermission);
+        },
+      };
+      const globals = globalThis as unknown as {
+        Notification: unknown;
+        matchMedia: unknown;
+      };
+      const previousNotification = globals.Notification;
+      const previousMatchMedia = globals.matchMedia;
+      globals.Notification = FakeNotification;
+      globals.matchMedia = (query: string) => ({
+        matches: query.includes("pointer: fine"),
+        media: query,
+        addEventListener() {},
+        removeEventListener() {},
+      });
+      localStorage.removeItem("ai-content-studio:notifications-prompted");
+      localStorage.removeItem("ai-content-studio:notifications");
+
+      try {
+        mockFetch((call) => {
+          if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
+            return Response.json({ model: MODEL });
+          }
+          if (
+            call.url.endsWith("/api/models/ltx/generations") &&
+            call.method === "GET"
+          ) {
+            return Response.json({ submissions: [] });
+          }
+          if (
+            call.url.endsWith("/api/models/ltx/generations") &&
+            call.method === "POST"
+          ) {
+            return Response.json(
+              {
+                generations: [
+                  { ...ENDED_SUBMISSION.generations[0], state: "queued" },
+                ],
+                prompt: null,
+              },
+              { status: 201 },
+            );
+          }
+          throw new Error(`unexpected fetch ${call.url}`);
+        });
+
+        const view = renderWorkbench();
+        const { default: userEvent } = await import(
+          "@testing-library/user-event"
+        );
+        const generateButton = await view.findByRole("button", {
+          name: "Generate",
+        });
+        await userEvent.click(generateButton);
+
+        expect(
+          await view.findByText("Get notified when this finishes?"),
+        ).toBeTruthy();
+      } finally {
+        globals.Notification = previousNotification;
+        globals.matchMedia = previousMatchMedia;
+      }
     });
   });
 });

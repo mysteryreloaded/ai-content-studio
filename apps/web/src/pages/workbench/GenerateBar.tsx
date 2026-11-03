@@ -48,7 +48,7 @@ export function GenerateBar({
         )}
         <GenerateButton
           submitState={submitState}
-          count={count}
+          count={hasSeedInput ? count : 1}
           disabled={!selectedModeId || paused}
           onClick={handleGenerate}
         />

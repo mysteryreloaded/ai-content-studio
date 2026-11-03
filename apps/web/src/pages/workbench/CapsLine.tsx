@@ -35,8 +35,8 @@ export function CapsLine({ status }: { status: CapsStatus }) {
       {" more at once"}
       {nextSlot && (
         <>
-          {" · "}
-          {nextSlot}
+          {" "}
+          <span className="text-faint">·</span> {nextSlot}
         </>
       )}
     </p>

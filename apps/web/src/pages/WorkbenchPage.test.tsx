@@ -3306,5 +3306,94 @@ describe("WorkbenchPage", () => {
         await view.findByText("Check the highlighted fields."),
       ).toBeTruthy();
     });
+
+    test("a trim fetch that rejects (network failure) puts a generic message, not the raw error, on the Upload's own field", async () => {
+      const VIDEO_INPUT_ID = "88888888-8888-4888-8888-888888888888";
+      const UPLOAD_ID = "99999999-9999-4999-8999-999999999999";
+      const VIDEO_MODEL = {
+        ...MODEL,
+        modes: [
+          {
+            id: "mode-video",
+            name: "Default",
+            description: "",
+            inputs: [
+              {
+                id: VIDEO_INPUT_ID,
+                kind: "video_upload",
+                group: "describe",
+                label: "Clip",
+                help: "",
+                placeholder: null,
+                maxSizeMb: 50,
+                maxLongSide: null,
+                minDurationMs: 0,
+                maxDurationMs: 10_000,
+                trimmable: true,
+              },
+            ],
+          },
+        ],
+      };
+      mockFetch(async (call) => {
+        if (call.url.endsWith("/api/models/ltx")) {
+          return Response.json({ model: VIDEO_MODEL });
+        }
+        if (
+          call.url.endsWith("/api/models/ltx/generations") &&
+          call.method === "GET"
+        ) {
+          return Response.json({ submissions: [] });
+        }
+        if (call.url === "/api/uploads") {
+          return Response.json(
+            { upload: { id: UPLOAD_ID, chunkSize: 16 * 1024 * 1024 } },
+            { status: 201 },
+          );
+        }
+        if (call.url.startsWith(`/api/uploads/${UPLOAD_ID}/chunk`)) {
+          return Response.json({ offset: 4 });
+        }
+        if (call.url === `/api/uploads/${UPLOAD_ID}/complete`) {
+          return Response.json({
+            upload: { id: UPLOAD_ID, durationMs: 2000, browserPlayable: true },
+          });
+        }
+        if (call.url === `/api/uploads/${UPLOAD_ID}/trim`) {
+          throw new TypeError("Failed to fetch");
+        }
+        throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await view.findByLabelText("Clip");
+      await userEvent.upload(
+        view.getByLabelText("Clip"),
+        new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
+      );
+      const startHandle = await view.findByRole("slider", {
+        name: "Trim start",
+      });
+      startHandle.focus();
+      for (let i = 0; i < 5; i++) {
+        await userEvent.keyboard("{ArrowRight}");
+      }
+
+      await userEvent.click(view.getByRole("button", { name: "Generate" }));
+
+      expect(
+        await view.findByText(
+          "Your Upload couldn't be processed. Try another file.",
+        ),
+      ).toBeTruthy();
+      expect(view.queryByText("Failed to fetch")).toBeFalsy();
+      expect(
+        await view.findByText("Check the highlighted fields."),
+      ).toBeTruthy();
+    });
   });
 });

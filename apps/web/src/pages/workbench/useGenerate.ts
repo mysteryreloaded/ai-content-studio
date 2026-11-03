@@ -4,7 +4,7 @@ import { upsertGeneration } from "../../components/generations/submissionCache.j
 import type { GenerationSummary } from "../../components/generations/types.js";
 import type { MediaUploadInput } from "../../components/inputs/types.js";
 import { ApiError, api, ok } from "../../lib/api.js";
-import { trimUpload } from "../../lib/chunkedUpload.js";
+import { UploadError, trimUpload } from "../../lib/chunkedUpload.js";
 import { carryValuesFor, liveIssuesFor, valuesPayload } from "./formValues.js";
 import type {
   InputIssue,
@@ -152,7 +152,7 @@ export function useGenerate({
             } catch (err) {
               throw new TrimFailure(
                 input.id,
-                err instanceof Error
+                err instanceof UploadError && err.fromServer
                   ? err.message
                   : "Your Upload couldn't be processed. Try another file.",
               );
@@ -220,8 +220,8 @@ export function useGenerate({
       }
 
       if (err.status === 409) {
-        const body = err.body as {
-          error: string;
+        const body = (err.body ?? {}) as {
+          error?: string;
           model?: WorkbenchModel;
           cap?: number;
           remaining?: number;

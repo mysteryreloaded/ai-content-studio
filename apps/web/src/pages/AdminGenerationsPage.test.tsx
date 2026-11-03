@@ -180,12 +180,13 @@ describe("AdminGenerationsPage (issue #68, #209)", () => {
   });
 
   test("shows the filtered user's name", async () => {
+    const USER_ID = "0193b2a4-1111-7000-8000-000000000001";
     mockFetch((call) => {
       if (call.url.endsWith("/api/admin/models")) {
         return Response.json({ models: [] });
       }
-      if (call.url.includes("/api/admin/users/u1")) {
-        return Response.json({ id: "u1", name: "Alice", email: "a@x.com" });
+      if (call.url.includes(`/api/admin/users/${USER_ID}`)) {
+        return Response.json({ id: USER_ID, name: "Alice", email: "a@x.com" });
       }
       if (isGenerationsList(call.url)) {
         return Response.json({ generations: [], hasMore: false });
@@ -193,8 +194,47 @@ describe("AdminGenerationsPage (issue #68, #209)", () => {
       throw new Error(`unexpected fetch ${call.method} ${call.url}`);
     });
 
-    renderPage("/admin/generations?user=u1");
+    renderPage(`/admin/generations?user=${USER_ID}`);
 
     expect(await screen.findByText("Filtered to Alice ×")).toBeTruthy();
+  });
+
+  test("typing a full user id key by key filters by it, shows the chip, and × clears it", async () => {
+    const USER_ID = "0193b2a4-2222-7000-8000-000000000002";
+    const userQueries: string[] = [];
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/admin/models")) {
+        return Response.json({ models: [] });
+      }
+      if (call.url.includes(`/api/admin/users/${USER_ID}`)) {
+        return Response.json({ id: USER_ID, name: "Bob", email: "b@x.com" });
+      }
+      if (isGenerationsList(call.url)) {
+        userQueries.push(
+          new URL(call.url, "http://x").searchParams.get("user") ?? "",
+        );
+        return Response.json({ generations: [], hasMore: false });
+      }
+      throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+    });
+
+    renderPage();
+    await screen.findByText("No Generations match these filters.");
+
+    const { default: userEvent } = await import("@testing-library/user-event");
+    const input = screen.getByLabelText("User id") as HTMLInputElement;
+    await userEvent.type(input, USER_ID);
+
+    expect(input.value).toBe(USER_ID);
+    await waitFor(() => expect(userQueries).toContain(USER_ID));
+    expect(await screen.findByText("Filtered to Bob ×")).toBeTruthy();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Filtered to Bob ×" }),
+    );
+    expect(screen.queryByText("Filtered to Bob ×")).toBeNull();
+    expect((screen.getByLabelText("User id") as HTMLInputElement).value).toBe(
+      "",
+    );
   });
 });

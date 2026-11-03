@@ -10,6 +10,7 @@ import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { AdminPageHeader } from "../components/admin/AdminPageHeader.js";
 import { AdminSection } from "../components/admin/AdminSection.js";
+import { EmptyState } from "../components/admin/EmptyState.js";
 import {
   GenerationStatePill,
   TestPill,
@@ -148,9 +149,9 @@ export function AdminGenerationDetailPage() {
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
         <div className="flex flex-col gap-3">
           {detail.deletedAt ? (
-            <p className="rounded-md bg-muted px-[11px] py-[9px] text-muted-foreground">
+            <EmptyState>
               This Generation was deleted by its owner; nothing is left to show.
-            </p>
+            </EmptyState>
           ) : detail.removedAt ? (
             <div
               role="alert"
@@ -159,7 +160,17 @@ export function AdminGenerationDetailPage() {
               Removed {formatWhen(detail.removedAt)} — {detail.removedReason}
             </div>
           ) : (
-            <GenerationMediaPanel detail={detail} />
+            <>
+              {detail.state === "failed" && detail.error && (
+                <div
+                  role="alert"
+                  className="rounded-r-md border border-l-[3px] border-border border-l-err bg-card px-3 py-[9px] text-err"
+                >
+                  {detail.error}
+                </div>
+              )}
+              <GenerationMediaPanel detail={detail} />
+            </>
           )}
 
           {!detail.deletedAt && detail.settings.length > 0 && (

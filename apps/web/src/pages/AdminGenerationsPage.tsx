@@ -77,6 +77,9 @@ interface AdminModeOption {
   name: string;
 }
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 const STATE_OPTIONS: { value: string; label: string }[] = [
   { value: "queued", label: "Queued" },
   { value: "starting", label: "Starting" },
@@ -120,6 +123,7 @@ export function AdminGenerationsPage() {
   const navigate = useNavigate();
   const [jumpId, setJumpId] = useState("");
   const [jumpError, setJumpError] = useState<string | null>(null);
+  const [userDraft, setUserDraft] = useState(searchParams.get("user") ?? "");
   const [olderRows, setOlderRows] = useState<AdminGenerationRow[]>([]);
   const [olderHasMore, setOlderHasMore] = useState<boolean | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -153,12 +157,16 @@ export function AdminGenerationsPage() {
 
   const { data: userData } = useQuery({
     queryKey: ["admin", "user", userId],
-    enabled: !!userId,
+    enabled: UUID_RE.test(userId),
     queryFn: () =>
       ok<{ name: string }>(
         api.api.admin.users[":id"].$get({ param: { id: userId } }),
       ),
   });
+
+  useEffect(() => {
+    setUserDraft(userId);
+  }, [userId]);
 
   const {
     data: listData,
@@ -324,23 +332,39 @@ export function AdminGenerationsPage() {
         </FormField>
 
         <FormField label="User id" htmlFor="admin-generations-user">
-          {userId ? (
-            <Button
-              type="button"
-              variant="outline"
-              className="w-full justify-between"
-              onClick={() => setFilter("user", "")}
-            >
-              Filtered to {userData?.name ?? userId} ×
-            </Button>
-          ) : (
+          <div className="flex flex-col gap-1.5">
             <Input
               id="admin-generations-user"
               placeholder="User id"
-              value={userId}
-              onChange={(event) => setFilter("user", event.target.value)}
+              value={userDraft}
+              onChange={(event) => {
+                const value = event.target.value;
+                setUserDraft(value);
+                if (UUID_RE.test(value)) setFilter("user", value);
+              }}
+              onBlur={() => {
+                if (UUID_RE.test(userDraft)) setFilter("user", userDraft);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && UUID_RE.test(userDraft)) {
+                  setFilter("user", userDraft);
+                }
+              }}
             />
-          )}
+            {userId && (
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full justify-between"
+                onClick={() => {
+                  setFilter("user", "");
+                  setUserDraft("");
+                }}
+              >
+                Filtered to {userData?.name ?? userId} ×
+              </Button>
+            )}
+          </div>
         </FormField>
 
         <FormField label="State" htmlFor="admin-generations-status">

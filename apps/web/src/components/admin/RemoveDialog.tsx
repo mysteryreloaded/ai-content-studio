@@ -76,12 +76,17 @@ export function RemoveDialog({
     }
   }
 
+  function close() {
+    reset();
+    onOpenChange(false);
+  }
+
   return (
     <Dialog
       open={open}
       onOpenChange={(next) => {
-        if (!next) reset();
-        onOpenChange(next);
+        if (!next) close();
+        else onOpenChange(next);
       }}
     >
       <DialogContent className="sm:max-w-[520px]">
@@ -126,11 +131,7 @@ export function RemoveDialog({
           )}
 
           <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => onOpenChange(false)}
-            >
+            <Button type="button" variant="outline" onClick={close}>
               Cancel
             </Button>
             <Button

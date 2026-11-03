@@ -137,6 +137,27 @@ export interface ModelDetail {
   inputs: InputDefinition[];
 }
 
+/**
+ * The whole editor draft (issue #218): one Save, one revision, one
+ * audit entry, whatever sections changed. `workflow` is only present
+ * when the editor's Workflow was re-uploaded; its `rebind` repoints
+ * node ids in `modes`/`inputs` the same way a plain Workflow replace
+ * does, applied to the Modes/Inputs submitted in this same draft.
+ */
+export interface ModelDraftInput {
+  details: ModelDetailsInput;
+  terms: {
+    termsBody: string;
+    licenseUrl: string;
+    attribution: string;
+    askAgain: boolean;
+  };
+  workflow?: { json: unknown; rebind?: RebindEntry[] };
+  inputs: InputDefinition[];
+  modes: ModeInput[];
+  disable: boolean;
+}
+
 type ModeRow = typeof modes.$inferSelect;
 
 function toModeRecord(row: ModeRow): ModeRecord {
@@ -1512,6 +1533,350 @@ export class ModelRepository {
 
       return { record: toRecord(row), inputs: input };
     });
+  }
+
+  /**
+   * Saves the whole editor draft as one revision and one audit entry
+   * (issue #218): Details, Workflow (if re-uploaded), Inputs and Modes,
+   * and Terms/Attribution, whatever subset actually changed. Reuses
+   * each section's own validation (`validateModelDetails`,
+   * `resolveModeOutputNodes`, `validateInputDefinition`,
+   * `parseApiFormatWorkflow`, ...) rather than new rules — only the
+   * write orchestration is new, replacing the header Save's old chain
+   * of separate per-section PUTs (#213), each of which made its own
+   * revision.
+   *
+   * A re-uploaded Workflow's `rebind` repoints node ids directly on the
+   * Modes/Inputs submitted in *this* draft (not on the previously-saved
+   * ones): the editor only lets a Workflow be picked while every other
+   * draft is clean, so the two are the same Modes/Inputs whenever a
+   * rebind is actually in play.
+   */
+  async saveDraft(
+    id: string,
+    input: ModelDraftInput,
+    expectedVersion: number,
+    actor: AuditActor,
+    fieldSpecs?: ReadonlyMap<string, Record<string, ComfyFieldSpec>>,
+    maxUploadMb?: number,
+  ): Promise<ModelDetail> {
+    const errors: ValidationError[] = [];
+
+    for (const e of validateModelDetails(input.details)) {
+      errors.push({ field: `details.${e.field}`, message: e.message });
+    }
+
+    let parsedWorkflow: Workflow | null = null;
+    let newWorkflowSize = 0;
+    if (input.workflow) {
+      newWorkflowSize = Buffer.byteLength(JSON.stringify(input.workflow.json));
+      if (newWorkflowSize > MAX_WORKFLOW_BYTES) {
+        errors.push({
+          field: "workflow",
+          message: "must be 10 MB or smaller",
+        });
+      }
+      const parsed = parseApiFormatWorkflow(input.workflow.json);
+      if (!parsed.ok) {
+        errors.push({ field: "workflow", message: parsed.error });
+      } else {
+        parsedWorkflow = parsed.workflow;
+        const missing = findMissingLinkTargets(parsedWorkflow);
+        if (missing.length > 0) {
+          errors.push({
+            field: "workflow",
+            message: `links to missing nodes: ${missing.join(", ")}`,
+          });
+        }
+        for (const note of findOutsideServiceNotes(parsedWorkflow)) {
+          if (note.keySet) {
+            errors.push({
+              field: "workflow",
+              message: `${note.classType} (node ${note.nodeId}) still has a key set; clear it before uploading`,
+            });
+          }
+        }
+      }
+    }
+
+    try {
+      return await this.db.transaction(async (tx) => {
+        const [before] = await tx
+          .select()
+          .from(models)
+          .where(and(eq(models.id, id), isNull(models.deletedAt)));
+        if (!before) throw new NotFound();
+
+        const [currentRevision] = await tx
+          .select()
+          .from(modelRevisions)
+          .where(
+            and(
+              eq(modelRevisions.modelId, id),
+              eq(modelRevisions.revisionNumber, before.currentRevision),
+            ),
+          );
+        if (!currentRevision) throw new Error("current revision missing");
+
+        const beforeModes = await listModesForRevision(tx, currentRevision.id);
+        const beforeInputs = currentRevision.inputs as InputDefinition[];
+
+        let workflowHash = currentRevision.workflowHash;
+        let workflow: Workflow;
+        let outsideServiceNotes: OutsideServiceNote[] = [];
+        if (parsedWorkflow) {
+          workflow = parsedWorkflow;
+          workflowHash = hashWorkflow(parsedWorkflow);
+          outsideServiceNotes = findOutsideServiceNotes(parsedWorkflow);
+        } else {
+          const [workflowRow] = await tx
+            .select()
+            .from(workflows)
+            .where(eq(workflows.hash, currentRevision.workflowHash));
+          if (!workflowRow) throw new Error("Workflow missing for revision");
+          workflow = workflowRow.json as Workflow;
+        }
+
+        // Issue #71's rebind, applied to this draft's own Modes/Inputs
+        // before anything resolves against the (possibly new) Workflow.
+        const rebindMap = new Map(
+          (input.workflow?.rebind ?? []).map((r) => [r.nodeId, r.newNodeId]),
+        );
+        const modesInput: ModeInput[] =
+          rebindMap.size === 0
+            ? input.modes
+            : input.modes.map((mode) => ({
+                ...mode,
+                outputNodeIds: mode.outputNodeIds.map(
+                  (nodeId) => rebindMap.get(nodeId) ?? nodeId,
+                ),
+              }));
+        const inputsInput: InputDefinition[] =
+          rebindMap.size === 0
+            ? input.inputs
+            : input.inputs.map((def) => ({
+                ...def,
+                bindings: def.bindings.map((b) => ({
+                  ...b,
+                  nodeId: rebindMap.get(b.nodeId) ?? b.nodeId,
+                })),
+              }));
+
+        // Modes, resolved against the final Workflow (same checks
+        // `updateModes` runs).
+        const modeNamesSoFar: string[] = [];
+        const resolvedModes: Array<{
+          name: string;
+          description: string;
+          outputNodes: ResolvedOutputNode[];
+          inputSettings: ModeInputSetting[];
+        }> = [];
+        modesInput.forEach((modeInput, index) => {
+          const nameError = validateModeName(modeInput.name, modeNamesSoFar);
+          if (nameError) {
+            errors.push({ field: `modes.${index}.name`, message: nameError });
+          }
+          modeNamesSoFar.push(modeInput.name);
+
+          const inputSettings = modeInput.inputSettings ?? [];
+          const settingsErrors = validateModeInputSettings(
+            inputSettings,
+            inputsInput,
+          );
+          for (const message of settingsErrors) {
+            errors.push({
+              field: `modes.${index}.inputSettings`,
+              message,
+            });
+          }
+
+          const outcome = resolveModeOutputNodes(
+            workflow,
+            modeInput.outputNodeIds,
+          );
+          if (!outcome.ok) {
+            for (const message of outcome.errors) {
+              errors.push({ field: `modes.${index}.outputNodes`, message });
+            }
+            return;
+          }
+          resolvedModes.push({
+            name: modeInput.name,
+            description: modeInput.description,
+            outputNodes: outcome.outputNodes,
+            inputSettings,
+          });
+        });
+
+        // Inputs, validated against the final Workflow and the
+        // resolved Modes' output nodes (same checks `updateInputs` runs).
+        const outputNodeIds = new Set(
+          resolvedModes.flatMap((mode) =>
+            mode.outputNodes.map((node) => node.nodeId),
+          ),
+        );
+        const usedFields = new Set<string>();
+        const labelsSoFar: string[] = [];
+        const idsSoFar: string[] = [];
+        inputsInput.forEach((def, index) => {
+          const ctx: BindingValidationContext = {
+            workflow,
+            outputNodeIds,
+            usedFields,
+            fieldSpecs,
+            maxUploadMb,
+          };
+          const defErrors = validateInputDefinition(
+            def,
+            labelsSoFar,
+            ctx,
+            idsSoFar,
+            inputsInput,
+          );
+          for (const message of defErrors) {
+            errors.push({ field: `inputs.${index}`, message });
+          }
+          labelsSoFar.push(def.label);
+          idsSoFar.push(def.id);
+          for (const binding of def.bindings) {
+            usedFields.add(fieldKey(binding.nodeId, binding.field));
+          }
+        });
+
+        const seedCount = inputsInput.filter(
+          (def) => def.kind === "seed",
+        ).length;
+        if (seedCount > 1) {
+          errors.push({
+            field: "inputs",
+            message: "a Model can have at most one Seed Input",
+          });
+        }
+        if (before.state === "enabled") {
+          for (const def of inputsInput) {
+            if (def.kind === "seed" && def.max === null) {
+              errors.push({
+                field: "inputs",
+                message: `Seed Input "${def.label}" needs a max while the Model is enabled`,
+              });
+            }
+          }
+        }
+
+        if (errors.length > 0) throw new ValidationFailed(errors);
+
+        const now = this.clock.now();
+        const termsBody = input.terms.termsBody.trim();
+        let termsVersion = before.termsVersion;
+        let termsVersionCreatedAt = before.termsVersionCreatedAt;
+        const wasBlank = before.termsBody === "";
+        if (termsBody !== "" && (wasBlank || input.terms.askAgain)) {
+          termsVersion = (before.termsVersion ?? 0) + 1;
+          termsVersionCreatedAt = now;
+        }
+
+        if (parsedWorkflow) {
+          await tx
+            .insert(workflows)
+            .values({
+              hash: workflowHash,
+              json: parsedWorkflow,
+              nodeCount: Object.keys(parsedWorkflow).length,
+              size: newWorkflowSize,
+            })
+            .onConflictDoNothing();
+        }
+
+        const newRevisionNumber = before.currentRevision + 1;
+        const [row] = await tx
+          .update(models)
+          .set({
+            name: input.details.name,
+            slug: input.details.slug,
+            description: input.details.description,
+            maxRunTimeMinutes: input.details.maxRunTimeMinutes,
+            termsBody,
+            licenseUrl: input.terms.licenseUrl,
+            attribution: input.terms.attribution,
+            termsVersion,
+            termsVersionCreatedAt,
+            termsRevision: before.termsRevision + 1,
+            currentRevision: newRevisionNumber,
+            version: before.version + 1,
+            state: input.disable ? "disabled" : before.state,
+            updatedAt: now,
+          })
+          .where(and(eq(models.id, id), eq(models.version, expectedVersion)))
+          .returning();
+        if (!row) throw new StaleVersion();
+
+        const [newRevision] = await tx
+          .insert(modelRevisions)
+          .values({
+            modelId: id,
+            revisionNumber: newRevisionNumber,
+            workflowHash,
+            inputs: inputsInput,
+          })
+          .returning();
+        if (!newRevision) throw new Error("insert returned no row");
+
+        if (resolvedModes.length > 0) {
+          await tx.insert(modes).values(
+            resolvedModes.map((mode, index) => ({
+              revisionId: newRevision.id,
+              sortOrder: index,
+              name: mode.name,
+              description: mode.description,
+              outputNodes: mode.outputNodes,
+              inputSettings: mode.inputSettings,
+            })),
+          );
+        }
+
+        const afterModes = await listModesForRevision(tx, newRevision.id);
+
+        await recordAuditEntry(tx, this.clock, {
+          actor,
+          targetType: "model",
+          targetId: id,
+          action: "save_draft",
+          before: {
+            ...snapshot(before, currentRevision.workflowHash),
+            termsBody: before.termsBody,
+            licenseUrl: before.licenseUrl,
+            attribution: before.attribution,
+            termsVersion: before.termsVersion,
+            inputs: beforeInputs,
+            modes: beforeModes,
+          },
+          after: {
+            ...snapshot(row, workflowHash),
+            termsBody: row.termsBody,
+            licenseUrl: row.licenseUrl,
+            attribution: row.attribution,
+            termsVersion: row.termsVersion,
+            inputs: inputsInput,
+            modes: afterModes,
+          },
+        });
+
+        return {
+          model: toRecord(row),
+          revisionId: newRevision.id,
+          workflowHash,
+          workflow,
+          nodes: nodesFrom(workflow),
+          outsideServiceNotes: parsedWorkflow ? outsideServiceNotes : [],
+          modes: afterModes,
+          inputs: inputsInput,
+        };
+      });
+    } catch (err) {
+      if (isUniqueViolation(err, "models_name_unique")) throw new NameTaken();
+      if (isUniqueViolation(err, "models_slug_unique")) throw new SlugTaken();
+      throw err;
+    }
   }
 
   async setState(

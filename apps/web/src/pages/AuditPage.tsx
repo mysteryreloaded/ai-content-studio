@@ -1,5 +1,37 @@
-import { type FormEvent, useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+// The Admin Audit page (issue #210): every recorded change, newest
+// first, filterable by actor, target type, target, action and date, with
+// a one-line summary that expands to a before/after diff.
+
+import { useQuery } from "@tanstack/react-query";
+import { cn } from "cn";
+import { ChevronRight } from "lucide-react";
+import { type FormEvent, useEffect, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
+import { AdminPageHeader } from "../components/admin/AdminPageHeader.js";
+import { AdminTable, adminHeadCell } from "../components/admin/AdminTable.js";
+import { EmptyState } from "../components/admin/EmptyState.js";
+import { FilterBar } from "../components/admin/FilterBar.js";
+import { FormField } from "../components/admin/FormField.js";
+import { LoadError } from "../components/admin/LoadError.js";
+import { LoadMoreButton } from "../components/admin/LoadMoreButton.js";
+import { Button } from "../components/ui/button.js";
+import { Input } from "../components/ui/input.js";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../components/ui/select.js";
+import {
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "../components/ui/table.js";
+import { api, ok } from "../lib/api.js";
+import { formatBytes, formatWhen } from "../lib/format.js";
 
 interface AuditImage {
   key: string;
@@ -44,6 +76,130 @@ const BLANK_FILTERS: FilterState = {
   to: "",
 };
 
+const TARGET_TYPE_OPTIONS: { value: string; label: string }[] = [
+  { value: "model", label: "Model" },
+  { value: "backend", label: "Backend" },
+  { value: "user", label: "User" },
+  { value: "site_settings", label: "Site settings" },
+  { value: "generation", label: "Generation" },
+  { value: "upload", label: "Upload" },
+];
+
+const TARGET_TYPE_LABELS: Record<string, string> = Object.fromEntries(
+  TARGET_TYPE_OPTIONS.map((option) => [option.value, option.label]),
+);
+
+// The action keys actually recorded (grep for `action: "..."` under
+// apps/server/src): a mix of snake_case, kebab-case and single words, not
+// all matching issue #210's own action list verbatim.
+const ACTION_OPTIONS = [
+  "create",
+  "update",
+  "soft_delete",
+  "admin-delete",
+  "self-delete",
+  "approve",
+  "promote",
+  "demote",
+  "disable",
+  "enable",
+  "unblock",
+  "caps",
+  "pause",
+  "resume",
+  "remove",
+  "import",
+  "reorder",
+  "upload_workflow",
+  "update_inputs",
+  "update_modes",
+  "update_terms",
+  "update-terms",
+  "update-blocked-words",
+  "update-caps",
+  "update-notice",
+  "update-privacy",
+  "attach_backend",
+  "detach_backend",
+  "restore_revision",
+  "admin-emails-sync",
+  "tampered",
+];
+
+const ACTION_LABELS: Record<string, string> = {
+  soft_delete: "deleted",
+  "admin-delete": "deleted",
+  "self-delete": "deleted their account",
+  attach_backend: "attached a Backend",
+  detach_backend: "detached a Backend",
+  pause: "paused generating",
+  resume: "resumed generating",
+  upload_workflow: "uploaded a Workflow",
+  restore_revision: "restored a revision",
+  caps: "updated caps",
+  // Terms are updated on both a Model (`update_terms`) and Site settings
+  // (`update-terms`, the hyphenated spelling site-settings-store.ts uses).
+  update_terms: "updated terms",
+  "update-terms": "updated terms",
+  "update-caps": "updated default caps",
+  "update-blocked-words": "updated blocked words",
+  "update-notice": "updated the pause notice",
+  "update-privacy": "updated the Privacy page",
+  "admin-emails-sync": "synced admin access",
+};
+
+/** A readable verb for an action key, per issue #210's agreed mapping. */
+function actionLabel(action: string): string {
+  const known = ACTION_LABELS[action];
+  if (known) return known;
+  if (action.includes("_") || action.includes("-")) {
+    return action.replace(/[_-]/g, " ");
+  }
+  if (action.endsWith("ed")) return action;
+  if (action.endsWith("e")) return `${action}d`;
+  return `${action}ed`;
+}
+
+function actorLabel(
+  entry: Pick<AuditEntry, "actorType" | "actorName">,
+): string {
+  if (entry.actorType === "system") return "System";
+  return entry.actorName ?? "Deleted user";
+}
+
+function targetTypeLabel(targetType: string): string {
+  return TARGET_TYPE_LABELS[targetType] ?? targetType;
+}
+
+/** "User Bob", "Backend 3f9a1c2e", "Site settings" alone for the singleton. */
+function targetLabel(
+  entry: Pick<AuditEntry, "targetType" | "targetId" | "targetName">,
+): string {
+  if (entry.targetType === "site_settings") return "Site settings";
+  const typeLabel = targetTypeLabel(entry.targetType);
+  if (entry.targetName) return `${typeLabel} ${entry.targetName}`;
+  return `${typeLabel} ${entry.targetId.slice(0, 8)}`;
+}
+
+function targetHref(
+  entry: Pick<AuditEntry, "targetType" | "targetId">,
+): string | null {
+  switch (entry.targetType) {
+    case "model":
+      return `/admin/models/${entry.targetId}`;
+    case "backend":
+      return "/admin/backends";
+    case "user":
+      return `/admin/users/${entry.targetId}`;
+    case "generation":
+      return `/admin/generations/${entry.targetId}`;
+    case "site_settings":
+      return "/admin/settings";
+    default:
+      return null;
+  }
+}
+
 /** `datetime-local` wants "YYYY-MM-DDTHH:mm" in local time; the server's filter is an ISO string. */
 function isoToLocalInputValue(iso: string): string {
   const date = new Date(iso);
@@ -63,8 +219,8 @@ function filtersFromParams(params: URLSearchParams): FilterState {
   };
 }
 
-function queryStringFrom(filters: FilterState): string {
-  const params = new URLSearchParams();
+function queryParamsFrom(filters: FilterState): Record<string, string> {
+  const params: Record<string, string> = {};
   for (const [key, value] of Object.entries(filters)) {
     if (!value) continue;
     if (key === "from" || key === "to") {
@@ -72,25 +228,12 @@ function queryStringFrom(filters: FilterState): string {
       // skip it rather than let toISOString() throw.
       const date = new Date(value);
       if (Number.isNaN(date.getTime())) continue;
-      params.set(key, date.toISOString());
+      params[key] = date.toISOString();
     } else {
-      params.set(key, value);
+      params[key] = value;
     }
   }
-  return params.toString();
-}
-
-function actorLabel(entry: AuditEntry): string {
-  if (entry.actorType === "system") return "System";
-  return entry.actorName ?? "Deleted user";
-}
-
-/** AC: a user target shows by id plus the live-looked-up name. */
-function targetLabel(entry: AuditEntry): string {
-  if (entry.targetType === "user") {
-    return `${entry.targetId} (${entry.targetName ?? "Deleted user"})`;
-  }
-  return entry.targetId;
+  return params;
 }
 
 function formatValue(value: unknown): string {
@@ -133,110 +276,187 @@ function diffRows(before: unknown, after: unknown): DiffRow[] {
 }
 
 function EntryDiff({ entry }: { entry: AuditEntry }) {
+  const [showUnchanged, setShowUnchanged] = useState(false);
   const rows = diffRows(entry.before, entry.after);
+  const changedRows = rows.filter((row) => row.changed);
+  const unchangedRows = rows.filter((row) => !row.changed);
+  const visibleRows = showUnchanged ? rows : changedRows;
+  const hasImages = entry.images && entry.images.length > 0;
+
+  if (rows.length === 0 && !hasImages) {
+    return <EmptyState>No fields recorded.</EmptyState>;
+  }
 
   return (
-    <>
-      <table>
-        <thead>
-          <tr>
-            <th>Field</th>
-            <th>Before</th>
-            <th>After</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr key={row.field}>
-              <td>{row.field}</td>
-              <td>{row.before}</td>
-              <td>{row.changed ? row.after : "(unchanged)"}</td>
-            </tr>
-          ))}
-          {rows.length === 0 && (
-            <tr>
-              <td colSpan={3}>No fields recorded.</td>
-            </tr>
-          )}
-        </tbody>
-      </table>
-      {entry.images && entry.images.length > 0 && (
-        <ul>
-          {entry.images.map((image) => (
-            <li key={image.key}>
-              {image.key}: hash {image.hash}, {image.size} bytes
+    <div className="flex flex-col gap-2">
+      {visibleRows.length > 0 && (
+        <AdminTable>
+          <TableHeader>
+            <TableRow>
+              <TableHead className={adminHeadCell}>Field</TableHead>
+              <TableHead className={adminHeadCell}>Before</TableHead>
+              <TableHead className={adminHeadCell}>After</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {visibleRows.map((row) => (
+              <TableRow key={row.field}>
+                <TableCell>{row.field}</TableCell>
+                <TableCell
+                  className={cn(
+                    "font-mono text-[12.5px] break-all whitespace-pre-wrap",
+                    row.changed && "bg-err-soft",
+                  )}
+                >
+                  {row.before}
+                </TableCell>
+                <TableCell
+                  className={cn(
+                    "font-mono text-[12.5px] break-all whitespace-pre-wrap",
+                    row.changed && "bg-ok-soft",
+                  )}
+                >
+                  {row.changed ? row.after : row.before}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </AdminTable>
+      )}
+      {!showUnchanged && unchangedRows.length > 0 && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => setShowUnchanged(true)}
+          className="self-start"
+        >
+          Show {unchangedRows.length} unchanged fields
+        </Button>
+      )}
+      {hasImages && (
+        <ul className="flex flex-col gap-1">
+          {entry.images?.map((image) => (
+            <li key={image.key} className="font-mono text-[12.5px] break-all">
+              {image.key} · {image.hash.slice(0, 12)} ·{" "}
+              {formatBytes(image.size)}
             </li>
           ))}
         </ul>
       )}
-    </>
+    </div>
   );
 }
 
-/** The Admin Audit page: every recorded change, newest first, with filters and a diff (issue #38). */
+function EntryRow({ entry }: { entry: AuditEntry }) {
+  const [expanded, setExpanded] = useState(false);
+  const href = targetHref(entry);
+
+  return (
+    <div>
+      <button
+        type="button"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((current) => !current)}
+        className="flex w-full items-start gap-2 border-b border-border px-2.5 py-[7px] text-left text-[13px] last:border-b-0 hover:bg-muted"
+      >
+        <ChevronRight
+          className={cn(
+            "mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform",
+            expanded && "rotate-90",
+          )}
+        />
+        <span className="min-w-0 flex-1 break-words">
+          {actorLabel(entry)} · {actionLabel(entry.action)} ·{" "}
+          {targetLabel(entry)}
+        </span>
+        <span className="shrink-0 text-[12.5px] text-muted-foreground tabular-nums">
+          {formatWhen(entry.createdAt)}
+        </span>
+      </button>
+      {expanded && (
+        <div className="flex flex-col gap-2 border-b border-border bg-background px-3 py-2.5 last:border-b-0">
+          {href && (
+            <Link
+              to={href}
+              className="self-start text-primary underline-offset-4 hover:underline"
+            >
+              View {targetTypeLabel(entry.targetType)}
+            </Link>
+          )}
+          <EntryDiff entry={entry} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The Admin Audit page: every recorded change, newest first, with filters and a diff (issue #210). */
 export function AuditPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   // The URL is the source of truth for the applied filters, so Back/
   // Forward and the nav "Audit" link (which clears the query string)
   // re-fetch instead of leaving the page showing a stale, filtered list.
-  const applied = useMemo(
-    () => filtersFromParams(searchParams),
-    [searchParams],
-  );
+  const appliedKey = searchParams.toString();
+  const applied = filtersFromParams(searchParams);
   const [draft, setDraft] = useState<FilterState>(applied);
-  const [entries, setEntries] = useState<AuditEntry[]>([]);
-  const [hasMore, setHasMore] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [loaded, setLoaded] = useState(false);
+  const [olderEntries, setOlderEntries] = useState<AuditEntry[]>([]);
+  const [olderHasMore, setOlderHasMore] = useState<boolean | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: applied is derived from appliedKey, the actual dependency
   useEffect(() => {
     setDraft(applied);
-  }, [applied]);
+  }, [appliedKey]);
 
-  function fetchPage(cursor?: { createdAt: string; id: string }) {
-    const params = new URLSearchParams(queryStringFrom(applied));
-    if (cursor) {
-      params.set("beforeCreatedAt", cursor.createdAt);
-      params.set("beforeId", cursor.id);
-    }
-    const qs = params.toString();
-    return fetch(`/api/admin/audit${qs ? `?${qs}` : ""}`).then((res) => {
-      if (!res.ok) throw new Error(`unexpected status ${res.status}`);
-      return res.json() as Promise<AuditResponse>;
-    });
-  }
+  // biome-ignore lint/correctness/useExhaustiveDependencies: appliedKey is the actual dependency
+  useEffect(() => {
+    setOlderEntries([]);
+    setOlderHasMore(null);
+    setLoadMoreError(null);
+  }, [appliedKey]);
 
-  function loadFirstPage() {
-    fetchPage()
-      .then((body) => {
-        setEntries(body.entries);
-        setHasMore(body.hasMore);
-        setLoadError(null);
-      })
-      .catch(() => setLoadError("could not load the Audit trail"))
-      .finally(() => setLoaded(true));
-  }
+  const { data, isPending, isError, refetch, isFetching } = useQuery({
+    queryKey: ["admin-audit", appliedKey],
+    queryFn: () =>
+      ok<AuditResponse>(
+        api.api.admin.audit.$get({ query: queryParamsFrom(applied) }),
+      ),
+  });
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: loadFirstPage is re-created each render, applied is the actual dependency
-  useEffect(loadFirstPage, [applied]);
+  const entries = [...(data?.entries ?? []), ...olderEntries];
+  const hasMore = olderHasMore ?? data?.hasMore ?? false;
 
   function loadMore() {
     const last = entries[entries.length - 1];
     if (!last) return;
     setLoadingMore(true);
-    fetchPage({ createdAt: last.createdAt, id: last.id })
+    setLoadMoreError(null);
+    ok<AuditResponse>(
+      api.api.admin.audit.$get({
+        query: {
+          ...queryParamsFrom(applied),
+          beforeCreatedAt: last.createdAt,
+          beforeId: last.id,
+        },
+      }),
+    )
       .then((body) => {
-        setEntries((current) => [...current, ...body.entries]);
-        setHasMore(body.hasMore);
+        setOlderEntries((current) => [...current, ...body.entries]);
+        setOlderHasMore(body.hasMore);
       })
-      .catch(() => setLoadError("could not load older Audit entries"))
+      .catch(() => setLoadMoreError("could not load older Audit entries"))
       .finally(() => setLoadingMore(false));
+  }
+
+  function applyFilters() {
+    setSearchParams(queryParamsFrom(draft));
   }
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
-    setSearchParams(queryStringFrom(draft));
+    applyFilters();
   }
 
   function handleClear() {
@@ -244,104 +464,156 @@ export function AuditPage() {
     setSearchParams({});
   }
 
+  const historyTargetId = searchParams.get("targetId");
+  const historyTargetType = searchParams.get("targetType");
+  const historyEntry = entries.find(
+    (entry) =>
+      entry.targetId === historyTargetId &&
+      entry.targetType === historyTargetType,
+  );
+
   return (
-    <section>
-      <h2>Audit</h2>
+    <div className="flex flex-col gap-sections">
+      <AdminPageHeader
+        title="Audit"
+        description="Every change Admins (or the system) made, newest first. Kept forever."
+      />
+
+      {historyTargetId && historyTargetType && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-muted px-[11px] py-[9px] text-muted-foreground">
+          <span>
+            Showing History for{" "}
+            {historyEntry
+              ? targetLabel(historyEntry)
+              : `${targetTypeLabel(historyTargetType)} ${historyTargetId.slice(0, 8)}`}
+          </span>
+          <Button type="button" variant="ghost" size="sm" onClick={handleClear}>
+            Show everything
+          </Button>
+        </div>
+      )}
 
       <form onSubmit={handleSubmit}>
-        <label htmlFor="audit-actor">Actor</label>
-        <input
-          id="audit-actor"
-          placeholder="Admin email, id, or 'system'"
-          value={draft.actor}
-          onChange={(event) =>
-            setDraft({ ...draft, actor: event.target.value })
-          }
-        />
+        <FilterBar
+          onClear={handleClear}
+          onApply={applyFilters}
+          onRefresh={() => refetch()}
+        >
+          <FormField label="Actor" htmlFor="audit-actor">
+            <Input
+              id="audit-actor"
+              placeholder="Admin email, user id, or system"
+              value={draft.actor}
+              onChange={(event) =>
+                setDraft({ ...draft, actor: event.target.value })
+              }
+            />
+          </FormField>
 
-        <label htmlFor="audit-target-type">Target type</label>
-        <input
-          id="audit-target-type"
-          placeholder="e.g. site_settings, backend, user"
-          value={draft.targetType}
-          onChange={(event) =>
-            setDraft({ ...draft, targetType: event.target.value })
-          }
-        />
+          <FormField label="Target type" htmlFor="audit-target-type">
+            <Select
+              value={draft.targetType || "any"}
+              onValueChange={(value) =>
+                setDraft({ ...draft, targetType: value === "any" ? "" : value })
+              }
+            >
+              <SelectTrigger id="audit-target-type" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="any">Any</SelectItem>
+                {TARGET_TYPE_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FormField>
 
-        <label htmlFor="audit-target-id">Target</label>
-        <input
-          id="audit-target-id"
-          placeholder="Target id"
-          value={draft.targetId}
-          onChange={(event) =>
-            setDraft({ ...draft, targetId: event.target.value })
-          }
-        />
+          <FormField label="Target" htmlFor="audit-target-id">
+            <Input
+              id="audit-target-id"
+              className="font-mono"
+              placeholder="Target id"
+              value={draft.targetId}
+              onChange={(event) =>
+                setDraft({ ...draft, targetId: event.target.value })
+              }
+            />
+          </FormField>
 
-        <label htmlFor="audit-action">Action</label>
-        <input
-          id="audit-action"
-          value={draft.action}
-          onChange={(event) =>
-            setDraft({ ...draft, action: event.target.value })
-          }
-        />
+          <FormField label="Action" htmlFor="audit-action">
+            <Input
+              id="audit-action"
+              list="audit-action-options"
+              value={draft.action}
+              onChange={(event) =>
+                setDraft({ ...draft, action: event.target.value })
+              }
+            />
+            <datalist id="audit-action-options">
+              {ACTION_OPTIONS.map((action) => (
+                <option key={action} value={action} />
+              ))}
+            </datalist>
+          </FormField>
 
-        <label htmlFor="audit-from">From</label>
-        <input
-          id="audit-from"
-          type="datetime-local"
-          value={draft.from}
-          onChange={(event) => setDraft({ ...draft, from: event.target.value })}
-        />
+          <FormField label="From" htmlFor="audit-from">
+            <Input
+              id="audit-from"
+              type="datetime-local"
+              value={draft.from}
+              onChange={(event) =>
+                setDraft({ ...draft, from: event.target.value })
+              }
+            />
+          </FormField>
 
-        <label htmlFor="audit-to">To</label>
-        <input
-          id="audit-to"
-          type="datetime-local"
-          value={draft.to}
-          onChange={(event) => setDraft({ ...draft, to: event.target.value })}
-        />
-
-        <button type="submit">Apply</button>
-        <button type="button" onClick={handleClear}>
-          Clear
-        </button>
-        <button type="button" onClick={loadFirstPage}>
-          Refresh
-        </button>
+          <FormField label="To" htmlFor="audit-to">
+            <Input
+              id="audit-to"
+              type="datetime-local"
+              value={draft.to}
+              onChange={(event) =>
+                setDraft({ ...draft, to: event.target.value })
+              }
+            />
+          </FormField>
+        </FilterBar>
       </form>
 
-      {loadError && <p role="alert">{loadError}</p>}
-      {!loaded && !loadError && <p>Loading…</p>}
+      {isError && (
+        <LoadError
+          message="could not load the Audit trail"
+          onRetry={() => refetch()}
+        />
+      )}
+      {loadMoreError && (
+        <LoadError message={loadMoreError} onRetry={loadMore} />
+      )}
 
-      {loaded && entries.length === 0 && (
-        <p>No Audit entries match these filters.</p>
+      {isPending && <p className="text-muted-foreground">Loading…</p>}
+
+      {!isPending && !isError && entries.length === 0 && (
+        <EmptyState>No Audit entries match these filters.</EmptyState>
       )}
 
       {entries.length > 0 && (
-        <ul>
+        <div className="rounded-xl border border-border bg-card">
           {entries.map((entry) => (
-            <li key={entry.id}>
-              <details>
-                <summary>
-                  {new Date(entry.createdAt).toLocaleString()} —{" "}
-                  {actorLabel(entry)} {entry.action} {entry.targetType}{" "}
-                  {targetLabel(entry)}
-                </summary>
-                <EntryDiff entry={entry} />
-              </details>
-            </li>
+            <EntryRow key={entry.id} entry={entry} />
           ))}
-        </ul>
+        </div>
       )}
 
       {hasMore && (
-        <button type="button" onClick={loadMore} disabled={loadingMore}>
-          Load older
-        </button>
+        <LoadMoreButton
+          label="Load older"
+          isLoading={loadingMore || isFetching}
+          onClick={loadMore}
+        />
       )}
-    </section>
+    </div>
   );
 }

@@ -108,6 +108,28 @@
      for popovers, dropdowns and select menus, `shadow-lg` for the sheet. */
   --shadow-md: var(--shadow);
   --shadow-lg: var(--shadow);
+
+  /* A running Generation card's media shimmer and its indeterminate
+     progress bar (issue #195). */
+  --animate-shimmer: shimmer 2.4s linear infinite;
+  --animate-indet: indet 1.3s ease-in-out infinite;
+
+  @keyframes shimmer {
+    from {
+      background-position: 120% 0;
+    }
+    to {
+      background-position: -120% 0;
+    }
+  }
+  @keyframes indet {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(300%);
+    }
+  }
 }
 
 /*

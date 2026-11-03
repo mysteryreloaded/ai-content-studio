@@ -18,7 +18,10 @@ export function AdminSection({
   children: ReactNode;
 }) {
   return (
-    <section id={id} className="flex flex-col gap-content">
+    <section
+      id={id}
+      className="flex flex-col gap-content rounded-xl border border-border bg-card p-4"
+    >
       <div className="flex flex-wrap items-baseline gap-2.5">
         <h2>{title}</h2>
         {description && (

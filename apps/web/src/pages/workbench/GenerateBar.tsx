@@ -4,7 +4,6 @@ import type { SubmitState } from "./types.js";
 
 export function GenerateBar({
   capsStatus,
-  activeCount,
   submitState,
   cancelWaiting,
   paused,
@@ -13,7 +12,6 @@ export function GenerateBar({
   selectedModeId,
 }: {
   capsStatus: CapsStatus | null;
-  activeCount: number;
   submitState: SubmitState;
   cancelWaiting: () => void;
   paused: boolean;
@@ -27,9 +25,6 @@ export function GenerateBar({
         <span className="workbench-caps">
           {capsFooterText(capsStatus, new Date())}
         </span>
-      )}
-      {activeCount > 0 && (
-        <span className="workbench-chip">{activeCount} under way</span>
       )}
       {submitState.status === "waiting" ? (
         <>

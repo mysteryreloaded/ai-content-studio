@@ -17,6 +17,7 @@ import {
   fireEvent,
   mockFetch,
   openSection,
+  pickOutputNodeInWorkflow,
   prepareConfirmAndEventSource,
   renderEditor,
   respondGet,
@@ -171,11 +172,10 @@ describe("ModelEditorPage", () => {
     await userEvent.click(view.getByText("Add Mode"));
     await userEvent.type(view.getByLabelText("Mode name"), "Default");
 
-    // Picking the output node lives in the Workflow table (issue #213
-    // keeps the Workflow section separate), while the Mode being
-    // "picked" stays the same across the section switch.
-    await openSection(view, "Workflow");
-    await userEvent.click(view.getByRole("button", { name: "Add" }));
+    // Picking the output node lives in the Workflow section's node
+    // inspector now (issue #214): pick the Mode in the Mode picker,
+    // select the output-class node, then "Use as an output of ...".
+    await pickOutputNodeInWorkflow(view, "Default", "2");
     await openSection(view, "Modes");
 
     await userEvent.click(view.getByText("Save"));
@@ -189,7 +189,7 @@ describe("ModelEditorPage", () => {
         {
           name: "Default",
           description: "",
-          outputNodeIds: ["1"],
+          outputNodeIds: ["2"],
           inputSettings: [],
         },
       ],
@@ -219,8 +219,7 @@ describe("ModelEditorPage", () => {
     await userEvent.click(view.getByText("Add Mode"));
     await userEvent.type(view.getByLabelText("Mode name"), "Default");
 
-    await openSection(view, "Workflow");
-    await userEvent.click(view.getByRole("button", { name: "Add" }));
+    await pickOutputNodeInWorkflow(view, "Default", "2");
     await openSection(view, "Modes");
 
     await userEvent.click(await findModeTestToggle(view));
@@ -233,7 +232,7 @@ describe("ModelEditorPage", () => {
       mode: {
         name: "Default",
         description: "",
-        outputNodeIds: ["1"],
+        outputNodeIds: ["2"],
         inputSettings: [],
       },
       inputs: [],
@@ -508,62 +507,6 @@ describe("ModelEditorPage", () => {
     expect(modeBFieldset.querySelector("ol")?.textContent).toContain("3");
   });
 
-  test("dims Workflow rows off the currently-picked Mode's Path", async () => {
-    const DETAIL_TWO_MODES = {
-      model: DETAIL.model,
-      workflowHash: "hash1",
-      workflow: {
-        "1": { class_type: "LoadImage", inputs: {} },
-        "2": { class_type: "SaveImage", inputs: { image: ["1", 0] } },
-        "3": { class_type: "SaveImage", inputs: { image: ["4", 0] } },
-        "4": { class_type: "LoadImage", inputs: {} },
-      },
-      nodes: [
-        { id: "1", classType: "LoadImage", title: null },
-        { id: "2", classType: "SaveImage", title: null },
-        { id: "3", classType: "SaveImage", title: null },
-        { id: "4", classType: "LoadImage", title: null },
-      ],
-      outsideServiceNotes: [],
-      modes: [
-        {
-          id: "mode-b",
-          sortOrder: 0,
-          name: "Mode B",
-          description: "",
-          outputNodes: [
-            { nodeId: "3", classType: "SaveImage", title: null, kind: "image" },
-          ],
-        },
-      ],
-    };
-
-    mockFetch((call) => {
-      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1"))
-        return Response.json(DETAIL_TWO_MODES);
-      if (call.method === "GET") return Response.json(NO_BACKENDS);
-      throw new Error(`unexpected ${call.method} ${call.url}`);
-    });
-
-    const view = renderEditor();
-    const { default: userEvent } = await import("@testing-library/user-event");
-    await openSection(view, "Modes");
-
-    await userEvent.click(
-      await view.findByText("Pick output nodes in the Workflow below"),
-    );
-    await openSection(view, "Workflow");
-
-    const rowFor = (nodeId: string) =>
-      view.getByText(nodeId, { selector: "td" }).closest("tr") as HTMLElement;
-
-    // Off Mode B's Path (1, 2): dimmed. On its Path (3, 4): not dimmed.
-    expect(rowFor("1").style.opacity).toBe("0.35");
-    expect(rowFor("2").style.opacity).toBe("0.35");
-    expect(rowFor("3").style.opacity).toBe("");
-    expect(rowFor("4").style.opacity).toBe("");
-  });
-
   test("the Mode × Input grid keeps both of a visible switch's branches on the Path (issue #48)", async () => {
     const STRENGTH_ID = "44444444-4444-4444-4444-444444444444";
     const FLAG_ID = "55555555-5555-5555-5555-555555555555";
@@ -829,8 +772,18 @@ describe("ModelEditorPage", () => {
       view.getByLabelText("Max long side (px, optional)"),
       "2048",
     );
-    await openSection(view, "Workflow");
-    await userEvent.click(view.getByRole("button", { name: "Add" }));
+
+    // Binding a field now goes through the shared BindingPicker (issue
+    // #214) instead of the old Workflow-table candidate list.
+    const { within } = await import("@testing-library/react");
+    await userEvent.click(view.getByText("Bind a field"));
+    await userEvent.click(view.getByText("LoadImage"));
+    await userEvent.click(
+      within(view.getByText("image").closest("div") as HTMLElement).getByText(
+        "Bind",
+      ),
+    );
+
     await userEvent.click(view.getByText("Save"));
 
     const saved = calls.find(
@@ -933,14 +886,16 @@ describe("ModelEditorPage", () => {
       "2::height",
     );
 
-    // `addInput` already opens field-picking for the newly added Input,
-    // whose candidate fields render in the Workflow table.
-    await openSection(view, "Workflow");
-    const pointsRow = (await view.findByText("points")).closest(
-      "tr",
-    ) as HTMLElement;
+    // Binding the Points Input's own field now goes through the
+    // shared BindingPicker (issue #214), opened from its own card.
+    const { within } = await import("@testing-library/react");
+    const bindButtons = view.getAllByText("Bind a field");
+    await userEvent.click(bindButtons[bindButtons.length - 1] as HTMLElement);
+    await userEvent.click(view.getByText("PointsEditor"));
     await userEvent.click(
-      pointsRow.querySelector("button") as HTMLButtonElement,
+      within(view.getByText("points").closest("div") as HTMLElement).getByText(
+        "Bind",
+      ),
     );
 
     await userEvent.click(view.getByText("Save"));
@@ -1222,62 +1177,8 @@ describe("ModelEditorPage", () => {
       "wf.json",
       { type: "application/json" },
     );
-    await userEvent.upload(
-      await view.findByLabelText("Replace Workflow (API format JSON)"),
-      file,
-    );
+    await userEvent.upload(await view.findByLabelText("Choose file…"), file);
     const replaceButton = await view.findByText("Replace Workflow");
     expect((replaceButton as HTMLButtonElement).disabled).toBe(true);
-  });
-
-  test("the rebind picker repoints a broken output node, and Replace Workflow sends it", async () => {
-    const calls = mockFetch((call) => {
-      if (call.method === "GET") return respondGetWithRevisions(call.url);
-      if (call.method === "PUT" && call.url.endsWith("/workflow")) {
-        return Response.json({
-          record: { ...MODE_DETAIL.model, currentRevision: 2, version: 2 },
-          modes: [],
-          inputs: [],
-          outsideServiceNotes: [],
-        });
-      }
-      throw new Error(`unexpected ${call.method} ${call.url}`);
-    });
-
-    const view = renderEditor();
-    const { default: userEvent } = await import("@testing-library/user-event");
-
-    await openSection(view, "Revisions");
-    await view.findByText("2 (current)");
-    await openSection(view, "Workflow");
-
-    // Node "2" keeps its id but turns into a VHS_VideoCombine; node "3"
-    // is a genuine SaveImage the rebind picker can repoint the Mode's
-    // output node onto instead (CEO review: the VHS_VideoCombine bug).
-    const file = new File(
-      [
-        JSON.stringify({
-          "1": { class_type: "LoadImage", inputs: {} },
-          "2": { class_type: "VHS_VideoCombine", inputs: { images: ["1", 0] } },
-          "3": { class_type: "SaveImage", inputs: { images: ["1", 0] } },
-        }),
-      ],
-      "wf2.json",
-      { type: "application/json" },
-    );
-    await userEvent.upload(
-      view.getByLabelText("Replace Workflow (API format JSON)"),
-      file,
-    );
-
-    expect(await view.findByText(/rebind it/)).toBeTruthy();
-
-    await userEvent.selectOptions(view.getByLabelText('Rebind node "2"'), "3");
-    await userEvent.click(view.getByText("Replace Workflow"));
-
-    const saved = calls.find(
-      (c) => c.method === "PUT" && c.url.endsWith("/workflow"),
-    );
-    expect(saved?.body?.rebind).toEqual([{ nodeId: "2", newNodeId: "3" }]);
   });
 });

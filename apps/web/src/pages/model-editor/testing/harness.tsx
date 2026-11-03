@@ -52,8 +52,12 @@ export const DETAIL = {
   workflowHash: "hash1",
   workflow: {
     "1": { class_type: "LoadImage", inputs: {} },
+    "2": { class_type: "SaveImage", inputs: { images: ["1", 0] } },
   },
-  nodes: [{ id: "1", classType: "LoadImage", title: null }],
+  nodes: [
+    { id: "1", classType: "LoadImage", title: null },
+    { id: "2", classType: "SaveImage", title: null },
+  ],
   outsideServiceNotes: [],
   modes: [],
 };
@@ -112,6 +116,34 @@ export function renderEditor(): RenderResult & { queryClient: QueryClient } {
       { path: "/admin/models", element: <p>Models list</p> },
     ],
   });
+}
+
+/**
+ * Issue #214's new flow for picking a Mode's output node: open the
+ * Workflow section, pick the Mode in the Mode picker, select the node
+ * row, then check "Use as an output of <mode>" in its inspector.
+ */
+export async function pickOutputNodeInWorkflow(
+  view: RenderResult,
+  modeName: string,
+  nodeId: string,
+) {
+  const { default: userEvent } = await import("@testing-library/user-event");
+  await openSection(view, "Workflow");
+  const modePill = view.getByRole("button", {
+    name: new RegExp(`^${modeName}`),
+  });
+  // Adding a Mode already picks it (editingModeIndex), so the pill may
+  // already be pressed; only click it when it isn't.
+  if (modePill.getAttribute("aria-pressed") !== "true") {
+    await userEvent.click(modePill);
+  }
+  await userEvent.click(
+    view.getByText(`#${nodeId}`).closest("button") as HTMLElement,
+  );
+  await userEvent.click(
+    view.getByLabelText(new RegExp(`^Use as an output of ${modeName}`)),
+  );
 }
 
 /** Issue #74: the editor opens the same per-user Generations stream the Workbench/Gallery do, to keep a Test's progress live. */

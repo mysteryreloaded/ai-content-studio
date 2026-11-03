@@ -1,4 +1,8 @@
 import {
+  OUTSIDE_SERVICE_NODE_CLASSES,
+  PREVIEW_NODE_CLASSES,
+  SAVE_NODE_KINDS,
+  VIDEO_LOADER_CLASS_TYPES,
   applyModeFixedValues,
   visibleModeBoundFields,
 } from "@ai-content-studio/shared";
@@ -162,4 +166,56 @@ export function toCheckModelBackends(
       Object.entries(backend.fieldSpecs),
     ) as CheckModelBackend["fieldSpecs"],
   }));
+}
+
+/** Issue #214's node groups, in the agreed order. */
+export const GROUP_ORDER = [
+  "Upload loaders",
+  "Values and switches",
+  "Prompts and conditioning",
+  "Outputs",
+  "Outside services",
+  "Models and LoRAs",
+  "Sampling and the rest",
+] as const;
+
+export type NodeGroup = (typeof GROUP_ORDER)[number];
+
+const AUDIO_LOADER_RE = /load.*audio|audio.*load/i;
+
+/** Which of the agreed groups a node's class falls into (issue #214). */
+export function nodeGroup(classType: string): NodeGroup {
+  if (
+    classType === "LoadImage" ||
+    VIDEO_LOADER_CLASS_TYPES.has(classType) ||
+    AUDIO_LOADER_RE.test(classType)
+  ) {
+    return "Upload loaders";
+  }
+  if (
+    classType.startsWith("Primitive") ||
+    classType === "INTConstant" ||
+    classType === "mxSlider" ||
+    classType === "ResolutionSelector" ||
+    classType === "ComfySwitchNode" ||
+    classType === "MathExpression"
+  ) {
+    return "Values and switches";
+  }
+  if (
+    classType.startsWith("CLIPTextEncode") ||
+    classType.includes("Conditioning")
+  ) {
+    return "Prompts and conditioning";
+  }
+  if (classType in SAVE_NODE_KINDS || PREVIEW_NODE_CLASSES.has(classType)) {
+    return "Outputs";
+  }
+  if (OUTSIDE_SERVICE_NODE_CLASSES.includes(classType)) {
+    return "Outside services";
+  }
+  if (classType.includes("Loader") || classType.includes("LoRA")) {
+    return "Models and LoRAs";
+  }
+  return "Sampling and the rest";
 }

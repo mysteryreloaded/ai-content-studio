@@ -1,26 +1,21 @@
 import {
-  type InputDefinition,
-  type Workflow,
-  isSeedInput,
-  modeMenuGroup,
   relevantInputs,
   resolveModeInputs,
   toWorkbenchInput,
+  visibleModeBoundFields,
 } from "@ai-content-studio/shared";
+import type { InputDefinition, Workflow } from "@ai-content-studio/shared";
 import { useState } from "react";
 import { CountPicker } from "../../../components/inputs/CountPicker.js";
 import { InputGroups } from "../../../components/inputs/InputGroups.js";
 import { Button } from "../../../components/ui/button.js";
-import type { WorkbenchMode } from "../../workbench/types.js";
-import { visibleBoundFieldsFor, workflowForMode } from "../helpers/workflow.js";
 import type { DraftMode } from "../types.js";
 
 /**
- * The Mode sheet's "What users see" column (issue #216, variant C): a
- * live preview of the Workbench form this Mode would show right now,
- * built from the real `components/inputs/` controls. `interactive`
- * (false here) lets #217 reuse this same component, enabled, as the
- * Test form.
+ * "What users see" (issue #216, variant C): a live, read-only-by-default
+ * render of a Mode's Workbench form, built from the real Input controls
+ * in `components/inputs/`. `interactive` lets #217 reuse this unchanged
+ * as the Test form.
  */
 export function UserFormPreview({
   modelName,
@@ -38,53 +33,52 @@ export function UserFormPreview({
   interactive?: boolean;
 }) {
   const [values, setValues] = useState<Record<string, string>>({});
-  const unresolvable = visibleBoundFieldsFor(mode, inputs);
-  const workflowApplied = workflowForMode(mode, inputs, workflow);
+
+  const unresolvable = visibleModeBoundFields(mode.inputSettings ?? [], inputs);
   const relevant =
     mode.outputNodeIds.length === 0
       ? []
-      : relevantInputs(
-          inputs,
-          workflowApplied,
-          mode.outputNodeIds,
-          unresolvable,
-        );
+      : relevantInputs(inputs, workflow, mode.outputNodeIds, unresolvable);
   const { formInputs, requiredIds } = resolveModeInputs(
     relevant,
-    mode.inputSettings,
+    mode.inputSettings ?? [],
   );
   const workbenchInputs = formInputs.map((input) =>
-    toWorkbenchInput(
-      input,
-      workflowApplied,
-      requiredIds.has(input.id),
-      formInputs,
-    ),
+    toWorkbenchInput(input, workflow, requiredIds.has(input.id), formInputs),
   );
-  const hasSeed = relevant.some(isSeedInput);
-  const workbenchMode: WorkbenchMode = {
+
+  const seedInput = inputs.find((input) => input.kind === "seed");
+  const showsCountPicker = Boolean(
+    seedInput && relevant.some((input) => input.id === seedInput.id),
+  );
+
+  const workbenchMode = {
     id: mode.key,
     name: mode.name,
     description: mode.description,
     inputs: workbenchInputs,
-    menuGroup: modeMenuGroup(relevant, mode.inputSettings),
-    hasSeed,
+    menuGroup: "prompt" as const,
+    hasSeed: showsCountPicker,
   };
 
   return (
-    <div className="flex flex-col gap-3 rounded-2xl border border-border bg-background p-3.5">
-      <h3 className="font-heading text-base font-semibold">{modelName}</h3>
-      {attribution && (
-        <p className="text-[12.5px] text-muted-foreground">{attribution}</p>
-      )}
-      <p className="text-[13px] text-muted-foreground">
-        {mode.name || "Mode"}
-        {mode.description ? ` · ${mode.description}` : ""}
-      </p>
-
-      <fieldset disabled={!interactive} className="contents">
+    <div className="flex flex-col gap-3.5 rounded-2xl border border-border bg-background p-3.5">
+      <div>
+        <h3 className="text-base font-semibold">{modelName}</h3>
+        {attribution && (
+          <p className="text-[12px] text-muted-foreground">{attribution}</p>
+        )}
+        <p className="text-[13px] text-muted-foreground">
+          {mode.name || "this Mode"}
+          {mode.description ? ` · ${mode.description}` : ""}
+        </p>
+      </div>
+      <fieldset
+        disabled={!interactive}
+        className="m-0 flex flex-col gap-3.5 border-0 p-0"
+      >
         {workbenchInputs.length === 0 ? (
-          <p className="text-muted-foreground">
+          <p className="text-[13px] text-muted-foreground">
             This Mode shows no Inputs. Users only press Generate.
           </p>
         ) : (
@@ -103,7 +97,9 @@ export function UserFormPreview({
             }
           />
         )}
-        {hasSeed && <CountPicker count={1} onChange={() => {}} maxCount={4} />}
+        {showsCountPicker && (
+          <CountPicker count={1} onChange={() => {}} maxCount={4} />
+        )}
         <Button type="button" disabled>
           Generate
         </Button>

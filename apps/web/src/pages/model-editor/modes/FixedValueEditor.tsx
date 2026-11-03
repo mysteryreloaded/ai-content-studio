@@ -1,14 +1,5 @@
 import type { InputDefinition } from "@ai-content-studio/shared";
 
-/** A fixed value's own display text (issue #216): a select's option label, everything else as-is. */
-export function fixedValueDisplay(
-  input: InputDefinition,
-  value: string | number | boolean | null,
-): string | number | boolean | null {
-  if (input.kind !== "select" || typeof value !== "string") return value;
-  return input.options.find((option) => option.id === value)?.label ?? value;
-}
-
 /** One grid cell's fixed-value editor, matching the Input's own kind (issue #48: "fixed values respect options and ranges"). */
 export function FixedValueEditor({
   input,

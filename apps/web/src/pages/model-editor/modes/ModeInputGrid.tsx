@@ -1,9 +1,10 @@
-import { computeModePath, modeInputSetting } from "@ai-content-studio/shared";
-import type {
-  InputDefinition,
-  ModeInputSetting,
-  ModelIssue,
-  Workflow,
+import {
+  type InputDefinition,
+  type ModeInputSetting,
+  type ModelIssue,
+  type Workflow,
+  computeModePath,
+  modeInputSetting,
 } from "@ai-content-studio/shared";
 import { cn } from "cn";
 import {
@@ -12,27 +13,21 @@ import {
   workflowForMode,
 } from "../helpers/workflow.js";
 import type { DraftMode } from "../types.js";
-import { IssueCount } from "../ui/ChecksList.js";
 import { StateChip } from "../ui/StateChip.js";
 import { TypeDot, typeDotKindFor } from "../ui/TypeDot.js";
 import { CellPopover } from "./CellPopover.js";
-import { fixedValueDisplay } from "./FixedValueEditor.js";
 
-const UPLOAD_KINDS = new Set(["image_upload", "video_upload", "audio_upload"]);
-
-const HEAD_CELL =
-  "sticky top-0 z-[3] min-w-[112px] max-w-[132px] border-b border-r border-border bg-card px-1.5 py-[5px] align-bottom text-left font-semibold";
-const BODY_CELL = "border-b border-r border-border bg-card px-1.5 py-[5px]";
-const ROW_HEAD =
-  "sticky left-0 z-[2] min-w-[190px] border-b border-r border-border bg-card px-1.5 py-[5px] text-left font-medium";
-const CELL_BUTTON =
-  "block w-full min-h-[22px] rounded-sm text-left hover:outline hover:outline-1 hover:outline-offset-1 hover:outline-primary focus-visible:outline-2";
+const UPLOAD_KINDS = new Set<InputDefinition["kind"]>([
+  "image_upload",
+  "video_upload",
+  "audio_upload",
+]);
 
 /**
- * The Input × Mode grid (issue #216, variant A): a state chip per cell,
- * a popover the only way to edit one, an output row and per-Mode error
- * counts and Upload dots. Off-Path cells dim by class; error cells get
- * an inset outline.
+ * The Input x Mode grid (issue #216, variant A): a state chip per cell,
+ * opened for editing in a popover (no row menus, no multi-select). One
+ * row per Input in the Model's order, plus a leading "Output (main
+ * Asset)" row per Mode.
  */
 export function ModeInputGrid({
   modes,
@@ -43,8 +38,7 @@ export function ModeInputGrid({
   onApplyToEveryEligibleMode,
   onOpenMode,
   onOpenInput,
-  openCellKey,
-  onOpenCellKeyChange,
+  openCell,
 }: {
   modes: DraftMode[];
   inputs: InputDefinition[];
@@ -59,40 +53,25 @@ export function ModeInputGrid({
     modeIndex: number,
     input: InputDefinition,
   ) => void;
-  onOpenMode: (modeId: string) => void;
+  onOpenMode: (mode: DraftMode) => void;
   onOpenInput: (inputId: string) => void;
-  openCellKey: { modeId: string; inputId: string } | null;
-  onOpenCellKeyChange: (
-    key: { modeId: string; inputId: string } | null,
-  ) => void;
+  openCell?: { modeKey: string; inputId: string } | null;
 }) {
-  if (modes.length === 0) return null;
-
-  const pathByMode = modes.map((mode) =>
-    computeModePath(
-      workflowForMode(mode, inputs, workflow),
-      mode.outputNodeIds,
-      visibleBoundFieldsFor(mode, inputs),
-    ),
+  // The corner, Mode column heads and the output row always render (a
+  // Mode's name opens its sheet even before the Model has any Inputs);
+  // only the per-Input rows below need at least one Input.
+  const pathByMode = new Map(
+    modes.map((mode) => [
+      mode.key,
+      mode.outputNodeIds.length > 0
+        ? computeModePath(
+            workflowForMode(mode, inputs, workflow),
+            mode.outputNodeIds,
+            visibleBoundFieldsFor(mode, inputs),
+          )
+        : null,
+    ]),
   );
-
-  function errorsFor(modeId: string, inputId?: string): number {
-    return modelIssues.filter(
-      (issue) =>
-        issue.severity === "error" &&
-        issue.modeId === modeId &&
-        (inputId === undefined || issue.inputId === inputId),
-    ).length;
-  }
-
-  function hasCellError(modeId: string, inputId: string): boolean {
-    return modelIssues.some(
-      (issue) =>
-        issue.severity === "error" &&
-        issue.modeId === modeId &&
-        issue.inputId === inputId,
-    );
-  }
 
   return (
     <div className="flex flex-col gap-2">
@@ -100,38 +79,49 @@ export function ModeInputGrid({
         <table className="border-separate border-spacing-0 text-[12.5px]">
           <thead>
             <tr>
-              <th className={cn(HEAD_CELL, "sticky left-0 z-[4]")}>
-                <span className="text-[11px] font-normal text-muted-foreground">
-                  Input ↓ · Mode →
-                </span>
+              <th className="sticky top-0 left-0 z-[4] min-w-[190px] border-b border-r border-border bg-card px-1.5 py-[5px] text-left align-bottom text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground">
+                Input ↓ · Mode →
               </th>
-              {modes.map((mode, modeIndex) => {
-                const path = pathByMode[modeIndex];
-                const uploadInputs = inputs.filter(
-                  (input) =>
-                    UPLOAD_KINDS.has(input.kind) &&
-                    [...boundNodeIds(input)].some((id) =>
-                      path?.nodeIds.has(id),
-                    ),
-                );
-                const errorCount = errorsFor(mode.key);
+              {modes.map((mode, i) => {
+                const path = pathByMode.get(mode.key) ?? null;
+                const uploadKinds = inputs
+                  .filter(
+                    (input) =>
+                      UPLOAD_KINDS.has(input.kind) &&
+                      path &&
+                      [...boundNodeIds(input)].some((id) =>
+                        path.nodeIds.has(id),
+                      ),
+                  )
+                  .map((input) => ({
+                    id: input.id,
+                    kind: typeDotKindFor(input.kind),
+                  }));
+                const errorCount = modelIssues.filter(
+                  (issue) =>
+                    issue.modeId === mode.key && issue.severity === "error",
+                ).length;
                 return (
-                  <th key={mode.key} className={HEAD_CELL}>
+                  <th
+                    key={mode.key}
+                    className="sticky top-0 z-[3] min-w-[112px] max-w-[132px] border-b border-r border-border bg-card px-1.5 py-[5px] text-left align-bottom font-semibold"
+                  >
                     <button
                       type="button"
-                      className="text-left font-semibold hover:underline"
-                      onClick={() => onOpenMode(mode.key)}
+                      className="break-words text-left underline-offset-2 hover:underline"
+                      onClick={() => onOpenMode(mode)}
                     >
-                      {mode.name || `Mode ${modeIndex + 1}`}
+                      {mode.name || `Mode ${i + 1}`}
                     </button>
                     <div className="mt-1 flex items-center gap-1">
-                      {uploadInputs.map((input, i) => (
-                        <TypeDot
-                          key={`${input.id}-${i}`}
-                          kind={typeDotKindFor(input.kind)}
-                        />
+                      {uploadKinds.map(({ id, kind }) => (
+                        <TypeDot key={id} kind={kind} />
                       ))}
-                      <IssueCount count={errorCount} tone="err" />
+                      {errorCount > 0 && (
+                        <span className="text-[11px] font-semibold text-err">
+                          {errorCount} error{errorCount === 1 ? "" : "s"}
+                        </span>
+                      )}
                     </div>
                   </th>
                 );
@@ -140,77 +130,105 @@ export function ModeInputGrid({
           </thead>
           <tbody>
             <tr>
-              <th scope="row" className={cn(ROW_HEAD, "bg-muted")}>
+              <th
+                scope="row"
+                className="sticky left-0 z-[2] min-w-[190px] border-r border-border bg-muted px-1.5 py-[5px] text-left font-medium"
+              >
                 Output (main Asset)
               </th>
-              {modes.map((mode, modeIndex) => {
-                const mainId = mode.outputNodeIds[0];
-                const extra = mode.outputNodeIds.length - 1;
-                const missing = mainId !== undefined && !workflow[mainId];
+              {modes.map((mode) => {
+                const [main, ...extra] = mode.outputNodeIds;
+                const missing =
+                  main !== undefined && !workflow[main] ? main : null;
                 return (
-                  <td key={mode.key} className={cn(BODY_CELL, "bg-muted")}>
-                    {mainId === undefined ? (
+                  <td
+                    key={mode.key}
+                    className="border-r border-border bg-muted px-1.5 py-[5px] font-mono text-[11.5px]"
+                  >
+                    {main === undefined ? (
                       <span className="text-err">none</span>
+                    ) : missing ? (
+                      <span className="text-err">#{missing} missing</span>
                     ) : (
-                      <span className={missing ? "text-err" : undefined}>
-                        <span className="font-mono">#{mainId}</span>
-                        {missing && " missing"}
-                        {!missing && extra > 0 && ` +${extra}`}
-                      </span>
+                      <>
+                        #{main}
+                        {extra.length > 0 && (
+                          <span className="ml-1 text-muted-foreground">
+                            +{extra.length}
+                          </span>
+                        )}
+                      </>
                     )}
                   </td>
                 );
               })}
             </tr>
-
             {inputs.map((input) => (
               <tr key={input.id}>
-                <th scope="row" className={ROW_HEAD}>
+                <th
+                  scope="row"
+                  className="sticky left-0 z-[2] min-w-[190px] border-b border-r border-border bg-card px-1.5 py-[5px] text-left font-medium"
+                >
                   <button
                     type="button"
-                    className="flex w-full items-center gap-1.5 text-left hover:bg-muted"
+                    className="flex w-full items-center gap-1.5 rounded-sm px-1 py-0.5 text-left hover:bg-muted"
                     onClick={() => onOpenInput(input.id)}
                   >
                     <TypeDot kind={typeDotKindFor(input.kind)} />
-                    {input.label || "Untitled Input"}
+                    <span className="truncate">
+                      {input.label || "Untitled Input"}
+                    </span>
                   </button>
                 </th>
                 {modes.map((mode, modeIndex) => {
-                  const path = pathByMode[modeIndex];
-                  const onPath =
-                    mode.outputNodeIds.length > 0 &&
-                    [...boundNodeIds(input)].some((id) =>
-                      path?.nodeIds.has(id),
-                    );
+                  const path = pathByMode.get(mode.key);
+                  const onPath = Boolean(
+                    path &&
+                      [...boundNodeIds(input)].some((id) =>
+                        path.nodeIds.has(id),
+                      ),
+                  );
                   const setting = modeInputSetting(
                     mode.inputSettings,
                     input.id,
                   );
-                  const cellErr = hasCellError(mode.key, input.id);
+                  const hasErr = modelIssues.some(
+                    (issue) =>
+                      issue.modeId === mode.key &&
+                      issue.inputId === input.id &&
+                      issue.severity === "error",
+                  );
+                  const label = `${input.label || "this Input"} in ${mode.name || "this Mode"}`;
+                  const fixedDisplayValue =
+                    input.kind === "select" &&
+                    typeof setting.fixedValue === "string"
+                      ? (input.options.find(
+                          (option) => option.id === setting.fixedValue,
+                        )?.label ?? setting.fixedValue)
+                      : setting.fixedValue;
+                  const stateLabel =
+                    setting.state === "fixed"
+                      ? `Fixed${fixedDisplayValue !== null && fixedDisplayValue !== "" ? ` (${fixedDisplayValue})` : ""}`
+                      : setting.state.charAt(0).toUpperCase() +
+                        setting.state.slice(1);
                   return (
                     <td
                       key={mode.key}
                       className={cn(
-                        BODY_CELL,
+                        "border-b border-r border-border bg-card px-1.5 py-[5px] align-top",
                         !onPath && "opacity-40",
-                        cellErr && "shadow-[inset_0_0_0_2px_var(--err)]",
+                        hasErr && "shadow-[inset_0_0_0_2px_var(--err)]",
                       )}
                     >
                       <CellPopover
                         input={input}
-                        modeName={mode.name || `Mode ${modeIndex + 1}`}
+                        mode={mode}
                         setting={setting}
-                        open={
-                          openCellKey?.modeId === mode.key &&
-                          openCellKey.inputId === input.id
+                        defaultOpen={
+                          openCell?.modeKey === mode.key &&
+                          openCell.inputId === input.id
                         }
-                        onOpenChange={(nextOpen) =>
-                          onOpenCellKeyChange(
-                            nextOpen
-                              ? { modeId: mode.key, inputId: input.id }
-                              : null,
-                          )
-                        }
+                        ariaLabel={`${label}: ${stateLabel}`}
                         onChange={(patch) =>
                           onChange(modeIndex, input.id, patch)
                         }
@@ -218,24 +236,15 @@ export function ModeInputGrid({
                           onApplyToEveryEligibleMode(modeIndex, input)
                         }
                       >
-                        <button
-                          type="button"
-                          className={CELL_BUTTON}
-                          aria-label={`${input.label || "Untitled Input"} in ${mode.name || `Mode ${modeIndex + 1}`}: ${setting.state}`}
-                        >
-                          <StateChip
-                            state={setting.state}
-                            fixedValue={fixedValueDisplay(
-                              input,
-                              setting.fixedValue,
-                            )}
-                          />
-                          {setting.label && (
-                            <div className="truncate text-[11px] text-muted-foreground">
-                              {setting.label}
-                            </div>
-                          )}
-                        </button>
+                        <StateChip
+                          state={setting.state}
+                          fixedValue={fixedDisplayValue}
+                        />
+                        {setting.label !== "" && (
+                          <span className="block max-w-[110px] truncate text-[11px] text-muted-foreground">
+                            {setting.label}
+                          </span>
+                        )}
                       </CellPopover>
                     </td>
                   );

@@ -5,6 +5,9 @@ import type { ReactNode } from "react";
  * #200): a small "Admin / Section" breadcrumb, the page title with
  * optional status pills beside it, an optional description and a
  * right-aligned actions row that wraps under the title on phones.
+ * `crumb`, `title` and `description` take `ReactNode` (issue #207):
+ * the Users pages link the breadcrumb's section word and lead the
+ * title with the 48px shared `Avatar`.
  */
 export function AdminPageHeader({
   crumb,
@@ -14,9 +17,9 @@ export function AdminPageHeader({
   actions,
 }: {
   crumb?: ReactNode;
-  title: string;
+  title: ReactNode;
   pills?: ReactNode;
-  description?: string;
+  description?: ReactNode;
   actions?: ReactNode;
 }) {
   return (

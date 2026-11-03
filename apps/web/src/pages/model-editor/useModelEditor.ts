@@ -499,7 +499,7 @@ export function useModelEditor() {
     loadObjectInfo();
   }
 
-  /** Adds "Mode N" (N = count + 1), returning its key so the caller (issue #216: "+ Mode") can open its sheet. */
+  /** "+ Mode" (issue #216): adds "Mode N" (N = count + 1) with no outputs, returning its key so the caller opens its sheet right away. */
   function addMode(): string | null {
     if (!modesDraft) return null;
     const key = crypto.randomUUID();
@@ -513,7 +513,6 @@ export function useModelEditor() {
         inputSettings: [],
       },
     ]);
-    setEditingModeIndex(modesDraft.length);
     return key;
   }
 
@@ -530,7 +529,7 @@ export function useModelEditor() {
     );
   }
 
-  /** Duplicates Mode `index` right after it, as a fresh (unsaved) Mode (issue #48), returning its key so the caller can open its sheet. */
+  /** Duplicates Mode `index` right after it, as a fresh (unsaved) Mode (issue #48), returning the copy's key so the caller opens its sheet right away (issue #216). */
   function duplicateMode(index: number): string | null {
     if (!modesDraft) return null;
     const mode = modesDraft[index];
@@ -609,30 +608,6 @@ export function useModelEditor() {
       ? mode.outputNodeIds.filter((id) => id !== nodeId)
       : [...mode.outputNodeIds, nodeId];
     updateMode(editingModeIndex, { outputNodeIds });
-  }
-
-  /** Adds `nodeId` to Mode `index`'s output-node list (issue #216's "+ Output" picker), as the new last output. */
-  function addOutputNode(index: number, nodeId: string) {
-    if (!modesDraft) return;
-    const mode = modesDraft[index];
-    if (!mode || mode.outputNodeIds.includes(nodeId)) return;
-    updateMode(index, { outputNodeIds: [...mode.outputNodeIds, nodeId] });
-  }
-
-  /** Swaps a missing output node for a freshly picked one, in place (issue #216's "Pick again"). */
-  function replaceOutputNode(
-    index: number,
-    oldNodeId: string,
-    newNodeId: string,
-  ) {
-    if (!modesDraft) return;
-    const mode = modesDraft[index];
-    if (!mode) return;
-    updateMode(index, {
-      outputNodeIds: mode.outputNodeIds.map((id) =>
-        id === oldNodeId ? newNodeId : id,
-      ),
-    });
   }
 
   /** Removes `nodeId` from Mode `index`'s own output-node list, regardless of which Mode is currently being picked. */
@@ -1324,8 +1299,6 @@ export function useModelEditor() {
     setModeInputSetting,
     applySettingToEveryEligibleMode,
     toggleOutputNodeInEditingMode,
-    addOutputNode,
-    replaceOutputNode,
     removeOutputNode,
     moveOutputNode,
     toggleTestForm,

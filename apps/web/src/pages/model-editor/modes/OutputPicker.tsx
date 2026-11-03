@@ -1,7 +1,9 @@
 import {
   PREVIEW_NODE_CLASSES,
+  SAVE_NODE_KINDS,
   inferOutputNodeKind,
 } from "@ai-content-studio/shared";
+import type { Workflow } from "@ai-content-studio/shared";
 import { useState } from "react";
 import { Button } from "../../../components/ui/button.js";
 import { Checkbox } from "../../../components/ui/checkbox.js";
@@ -11,108 +13,101 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../../../components/ui/dialog.js";
-import { Label } from "../../../components/ui/label.js";
 import { Pill } from "../../../components/ui/pill.js";
-import type { ModelNode } from "../types.js";
-import { TypeDot, type TypeDotKind } from "../ui/TypeDot.js";
+import { TypeDot, typeDotKindForValueType } from "../ui/TypeDot.js";
 
-/** The kind pill's label (issue #216): the asset kind, or "unknown kind" when `inferOutputNodeKind` can't tell. */
-function kindLabel(classType: string): string {
-  const kind = inferOutputNodeKind(classType);
-  return kind ?? "unknown kind";
-}
-
-function kindDotKind(classType: string): TypeDotKind | null {
-  const kind = inferOutputNodeKind(classType);
-  if (kind === "video" || kind === "image" || kind === "audio") return kind;
-  return null;
-}
-
-/** The "Pick an output node" dialog (issue #216): a save-node class or a preview node by default, every node with "Show every node". Preview rows and ones already used refuse `onPick`. */
+/** issue #216's "+ Output" dialog: Preview nodes can't be picked. */
 export function OutputPicker({
   open,
   onOpenChange,
-  nodes,
-  existingOutputNodeIds,
+  workflow,
+  alreadyUsed,
   onPick,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  nodes: ModelNode[];
-  existingOutputNodeIds: string[];
+  workflow: Workflow;
+  alreadyUsed: Set<string>;
   onPick: (nodeId: string) => void;
 }) {
-  const [showAll, setShowAll] = useState(false);
-  const candidates = nodes.filter(
-    (node) =>
-      showAll ||
-      inferOutputNodeKind(node.classType) !== null ||
-      PREVIEW_NODE_CLASSES.has(node.classType),
-  );
+  const [showEvery, setShowEvery] = useState(false);
+
+  const nodeIds = Object.keys(workflow).sort((a, b) => {
+    const diff = Number(a) - Number(b);
+    return Number.isNaN(diff) ? a.localeCompare(b) : diff;
+  });
+
+  const shown = nodeIds.filter((nodeId) => {
+    if (showEvery) return true;
+    const classType = workflow[nodeId]?.class_type ?? "";
+    return classType in SAVE_NODE_KINDS || PREVIEW_NODE_CLASSES.has(classType);
+  });
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(next) => {
-        if (!next) setShowAll(false);
-        onOpenChange(next);
-      }}
-    >
-      <DialogContent className="sm:max-w-[560px]">
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-[640px]">
         <DialogHeader>
           <DialogTitle>Pick an output node</DialogTitle>
         </DialogHeader>
-        <p className="text-muted-foreground">
-          An output node saves a file. Preview nodes don't, so they can't be
-          outputs.
-        </p>
-        <Label className="flex items-center gap-2 text-[13px] font-normal">
-          <Checkbox
-            checked={showAll}
-            onCheckedChange={(checked) => setShowAll(checked === true)}
-          />
-          Show every node (for custom save nodes)
-        </Label>
-        <ul className="flex max-h-[50vh] flex-col gap-1 overflow-y-auto">
-          {candidates.map((node) => {
-            const isPreview = PREVIEW_NODE_CLASSES.has(node.classType);
-            const alreadyUsed = existingOutputNodeIds.includes(node.id);
-            const dotKind = kindDotKind(node.classType);
-            return (
-              <li
-                key={node.id}
-                className="flex items-center justify-between gap-2 rounded-md px-2.5 py-1.5"
-              >
-                <div className="flex min-w-0 flex-col gap-0.5">
-                  <span className="flex items-center gap-1.5 font-medium">
-                    {node.title ?? node.classType}
-                    <Pill>
-                      {dotKind && <TypeDot kind={dotKind} />}
-                      {kindLabel(node.classType)}
+        <div className="flex flex-col gap-3">
+          <p className="text-[12.5px] text-muted-foreground">
+            An output node saves a file. Preview nodes don't, so they can't be
+            outputs.
+          </p>
+          <label
+            htmlFor="output-picker-show-every"
+            className="flex items-center gap-2 text-[13px]"
+          >
+            <Checkbox
+              id="output-picker-show-every"
+              checked={showEvery}
+              onCheckedChange={(checked) => setShowEvery(checked === true)}
+            />
+            Show every node (for custom save nodes)
+          </label>
+          <div className="flex max-h-[56vh] flex-col gap-1 overflow-y-auto">
+            {shown.map((nodeId) => {
+              const node = workflow[nodeId];
+              if (!node) return null;
+              const isPreview = PREVIEW_NODE_CLASSES.has(node.class_type);
+              const kind = inferOutputNodeKind(node.class_type);
+              const used = alreadyUsed.has(nodeId);
+              return (
+                <div
+                  key={nodeId}
+                  className="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-[13px]"
+                >
+                  {kind && (
+                    <Pill tone="neutral" className="gap-1">
+                      <TypeDot kind={typeDotKindForValueType("string")} />
+                      {kind}
                     </Pill>
+                  )}
+                  <span className="flex-1 truncate">
+                    {node._meta?.title ?? node.class_type}
                   </span>
                   <span className="font-mono text-[12.5px] text-muted-foreground">
-                    {node.classType} · #{node.id}
+                    #{nodeId}
                   </span>
-                  {isPreview && (
-                    <span className="text-[12.5px] text-err">
+                  {isPreview ? (
+                    <span className="text-[12.5px] text-muted-foreground">
                       Preview node: it saves nothing, so it can't be an output.
                     </span>
-                  )}
+                  ) : null}
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="ml-auto"
+                    disabled={isPreview || used}
+                    onClick={() => onPick(nodeId)}
+                  >
+                    Use
+                  </Button>
                 </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={isPreview || alreadyUsed}
-                  onClick={() => onPick(node.id)}
-                >
-                  Use
-                </Button>
-              </li>
-            );
-          })}
-        </ul>
+              );
+            })}
+          </div>
+        </div>
       </DialogContent>
     </Dialog>
   );

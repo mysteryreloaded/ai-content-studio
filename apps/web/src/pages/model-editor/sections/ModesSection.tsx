@@ -1,16 +1,9 @@
 import type { ModelIssue } from "@ai-content-studio/shared";
 import { useEffect, useState } from "react";
 import { Button } from "../../../components/ui/button.js";
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "../../../components/ui/sheet.js";
 import type { EditorNavigation } from "../hooks/useEditorNavigation.js";
 import { ModeInputGrid } from "../modes/ModeInputGrid.js";
-import { ModeSheetContent } from "../modes/ModeSheetContent.js";
+import { ModeSheet } from "../modes/ModeSheet.js";
 import type { ModelDetail } from "../types.js";
 import { Section } from "../ui/Section.js";
 import type { ModelEditor } from "../useModelEditor.js";
@@ -27,16 +20,14 @@ export function ModesSection({
   const {
     addMode,
     applySettingToEveryEligibleMode,
-    inputsDraft,
     modesDraft,
     modesHeadingRef,
     modelIssues,
     setModeInputSetting,
   } = editor;
-
   const [openModeKey, setOpenModeKey] = useState<string | null>(null);
-  const [openCellKey, setOpenCellKey] = useState<{
-    modeId: string;
+  const [openCellTarget, setOpenCellTarget] = useState<{
+    modeKey: string;
     inputId: string;
   } | null>(null);
 
@@ -49,29 +40,24 @@ export function ModesSection({
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: consumes nav's one-shot "open this cell" signal, not every nav change
   useEffect(() => {
-    if (!nav.pendingOpenCellKey) return;
-    setOpenCellKey(nav.pendingOpenCellKey);
+    if (!nav.pendingOpenCell) return;
+    setOpenCellTarget({
+      modeKey: nav.pendingOpenCell.modeId,
+      inputId: nav.pendingOpenCell.inputId,
+    });
     nav.clearPendingOpenCell();
-  }, [nav.pendingOpenCellKey]);
+  }, [nav.pendingOpenCell]);
 
   const modes = modesDraft ?? [];
-  const inputs = inputsDraft ?? detail.inputs ?? [];
   const openIndex = modes.findIndex((mode) => mode.key === openModeKey);
-  const openMode = openIndex >= 0 ? modes[openIndex] : null;
+  const openMode = openIndex >= 0 ? (modes[openIndex] ?? null) : null;
 
-  function jumpWithinSheet(issue: ModelIssue) {
-    if (issue.backendId) {
-      nav.focusBackend(issue.backendId);
-      return;
-    }
+  function jump(issue: ModelIssue) {
     if (issue.inputId && issue.modeId) {
-      setOpenModeKey(null);
-      setOpenCellKey({ modeId: issue.modeId, inputId: issue.inputId });
+      setOpenCellTarget({ modeKey: issue.modeId, inputId: issue.inputId });
       return;
     }
-    if (issue.inputId) {
-      nav.openInput(issue.inputId);
-    }
+    if (issue.modeId) setOpenModeKey(issue.modeId);
   }
 
   return (
@@ -81,7 +67,6 @@ export function ModesSection({
       actions={
         <Button
           type="button"
-          variant="outline"
           onClick={() => {
             const key = addMode();
             if (key) setOpenModeKey(key);
@@ -96,56 +81,38 @@ export function ModesSection({
       </h3>
 
       {modes.length === 0 ? (
-        <p className="text-muted-foreground">
+        <p className="text-[13px] text-muted-foreground">
           No Modes yet. A Model needs at least one; name its output node to
           define its Path.
         </p>
       ) : (
         <ModeInputGrid
           modes={modes}
-          inputs={inputs}
+          inputs={detail.inputs ?? []}
           workflow={detail.workflow}
           modelIssues={modelIssues}
           onChange={setModeInputSetting}
           onApplyToEveryEligibleMode={applySettingToEveryEligibleMode}
-          onOpenMode={setOpenModeKey}
-          onOpenInput={nav.openInput}
-          openCellKey={openCellKey}
-          onOpenCellKeyChange={setOpenCellKey}
+          onOpenMode={(mode) => setOpenModeKey(mode.key)}
+          onOpenInput={(inputId) => nav.openInput(inputId)}
+          openCell={openCellTarget}
         />
       )}
 
-      <Sheet
+      <ModeSheet
         open={openMode !== null}
         onOpenChange={(open) => {
           if (!open) setOpenModeKey(null);
         }}
-      >
-        <SheetContent className="w-full gap-0 p-0 data-[side=right]:w-full sm:max-w-[960px] data-[side=right]:sm:max-w-[960px]">
-          {openMode && (
-            <>
-              <SheetHeader className="border-b border-border px-4 py-3">
-                <SheetDescription className="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
-                  Mode
-                </SheetDescription>
-                <SheetTitle>{openMode.name || "Untitled Mode"}</SheetTitle>
-              </SheetHeader>
-              <div className="flex-1 overflow-y-auto p-4">
-                <ModeSheetContent
-                  mode={openMode}
-                  modeIndex={openIndex}
-                  detail={detail}
-                  editor={editor}
-                  modelIssues={modelIssues}
-                  onJumpToIssue={jumpWithinSheet}
-                  onClose={() => setOpenModeKey(null)}
-                  onDuplicated={(newKey) => setOpenModeKey(newKey)}
-                />
-              </div>
-            </>
-          )}
-        </SheetContent>
-      </Sheet>
+        mode={openMode}
+        modeIndex={openIndex}
+        detail={detail}
+        editor={editor}
+        modelIssues={modelIssues}
+        onJump={jump}
+        onDuplicated={(key) => setOpenModeKey(key)}
+        onDeleted={() => setOpenModeKey(null)}
+      />
     </Section>
   );
 }

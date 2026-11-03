@@ -1,6 +1,7 @@
 // See ../test/happy-dom-setup.ts for why this is registered once, here,
 // before @testing-library/react is imported, and never unregistered.
 import { afterEach, describe, expect, test } from "bun:test";
+import { formatWhen } from "../lib/format.js";
 import { BUN_FETCH } from "../test/happy-dom-setup.js";
 
 const { cleanup, screen, waitFor } = await import("@testing-library/react");
@@ -49,6 +50,24 @@ function targetUser(overrides: Partial<Record<string, unknown>> = {}) {
   };
 }
 
+/**
+ * The action endpoints' (approve, promote, demote, enable, disable)
+ * response shape: the server's `respondForAction` returns the user's
+ * six core fields and nothing else — no createdAt, caps, pinned or
+ * disabled fields — so the page merges it into the cached user.
+ */
+function actionResponse(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: "u1",
+    email: "user@example.com",
+    name: "A User",
+    picture: null,
+    role: "user",
+    status: "active",
+    ...overrides,
+  };
+}
+
 function mockFetch(
   handler: (call: FetchCall) => Response | Promise<Response> | undefined,
 ) {
@@ -79,6 +98,43 @@ function renderPage() {
 }
 
 describe("UserPage", () => {
+  test("the facts line reads Created · Last sign-in · Last seen, with — for a never-signed-in account (issue #208)", async () => {
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/admin/users/u1") && call.method === "GET") {
+        return Response.json(targetUser());
+      }
+      return undefined;
+    });
+
+    const { container } = renderPage();
+    await screen.findByText("A User");
+
+    expect(container.textContent).toContain(
+      `Created ${formatWhen("2026-01-02T00:00:00.000Z")} · Last sign-in — · Last seen —`,
+    );
+  });
+
+  test("the facts line shows the sign-in and seen times once the user has one", async () => {
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/admin/users/u1") && call.method === "GET") {
+        return Response.json(
+          targetUser({
+            lastSignInAt: "2026-02-03T10:00:00.000Z",
+            lastSeenAt: "2026-02-04T11:00:00.000Z",
+          }),
+        );
+      }
+      return undefined;
+    });
+
+    const { container } = renderPage();
+    await screen.findByText("A User");
+
+    expect(container.textContent).toContain(
+      `Created ${formatWhen("2026-01-02T00:00:00.000Z")} · Last sign-in ${formatWhen("2026-02-03T10:00:00.000Z")} · Last seen ${formatWhen("2026-02-04T11:00:00.000Z")}`,
+    );
+  });
+
   test("disable sends the typed reason and reloads as disabled", async () => {
     let disabled = false;
     const calls = mockFetch((call) => {
@@ -89,7 +145,8 @@ describe("UserPage", () => {
       }
       if (call.url.endsWith("/disable")) {
         disabled = true;
-        return Response.json(targetUser({ status: "disabled" }));
+        // The server's six-field action response, not the full user.
+        return Response.json(actionResponse({ status: "disabled" }));
       }
       return undefined;
     });
@@ -110,6 +167,137 @@ describe("UserPage", () => {
     expect(disableCall?.body).toEqual({ reason: "Abusive prompts" });
   });
 
+  test("disable asks in a dialog and sends the reason", async () => {
+    const calls = mockFetch((call) => {
+      if (call.url.endsWith("/disable")) {
+        // The server's six-field action response, not the full user.
+        return Response.json(actionResponse({ status: "disabled" }));
+      }
+      return undefined;
+    });
+
+    renderPage();
+    await screen.findByText("A User");
+
+    await userEvent.click(screen.getByText("Disable"));
+
+    // A dialog asks — it is not an inline form — and nothing is sent
+    // until it is confirmed.
+    expect(
+      await screen.findByRole("heading", { name: "Disable A User?" }),
+    ).toBeTruthy();
+    expect(screen.getByText(/Their sessions end now/)).toBeTruthy();
+    expect(calls.find((c) => c.url.endsWith("/disable"))).toBeUndefined();
+
+    await userEvent.type(
+      screen.getByLabelText("Reason (optional, Admin-only)"),
+      "Abusive prompts",
+    );
+    await userEvent.click(screen.getByText("Confirm disable"));
+
+    await waitFor(() => {
+      const disableCall = calls.find((c) => c.url.endsWith("/disable"));
+      expect(disableCall?.body).toEqual({ reason: "Abusive prompts" });
+    });
+  });
+
+  test("a failed disable keeps the dialog open and shows the error", async () => {
+    mockFetch((call) => {
+      if (call.url.endsWith("/disable")) {
+        return Response.json({ error: "boom" }, { status: 500 });
+      }
+      return undefined;
+    });
+
+    renderPage();
+    await screen.findByText("A User");
+
+    await userEvent.click(screen.getByText("Disable"));
+    await userEvent.type(
+      screen.getByLabelText("Reason (optional, Admin-only)"),
+      "Abusive prompts",
+    );
+    await userEvent.click(screen.getByText("Confirm disable"));
+
+    // The original page's error line, inside the open dialog, which
+    // stays open for a retry.
+    expect(await screen.findByText("could not disable this user")).toBeTruthy();
+    expect(
+      screen.getByRole("heading", { name: "Disable A User?" }),
+    ).toBeTruthy();
+  });
+
+  test("a fresh dialog does not surface a stale action error", async () => {
+    mockFetch((call) => {
+      if (call.url.endsWith("/approve")) {
+        return Response.json({ error: "boom" }, { status: 500 });
+      }
+      if (call.url.endsWith("/api/admin/users/u1") && call.method === "GET") {
+        return Response.json(targetUser({ status: "pending" }));
+      }
+      return undefined;
+    });
+
+    renderPage();
+    await screen.findByText("A User");
+
+    // A failed action shows its error beside the actions...
+    await userEvent.click(screen.getByText("Approve"));
+    expect(await screen.findByText("could not approve this user")).toBeTruthy();
+
+    // ...and a new dialog opens from a clean line: the stale error does
+    // not surface in it before any new attempt there.
+    await userEvent.click(screen.getByText("Disable"));
+    expect(
+      screen.getByRole("heading", { name: "Disable A User?" }),
+    ).toBeTruthy();
+    expect(screen.queryByText("could not approve this user")).toBeNull();
+  });
+
+  test("an action's response merges into the cached user: Joined and caps survive", async () => {
+    let getFetches = 0;
+    mockFetch((call) => {
+      if (call.url.endsWith("/promote")) {
+        // The server's six-field action response: no createdAt, caps or
+        // pinned in it to replace the cached user with.
+        return Response.json(actionResponse({ role: "admin" }));
+      }
+      if (call.url.endsWith("/api/admin/users/u1") && call.method === "GET") {
+        getFetches += 1;
+        if (getFetches > 1) {
+          // Hold the invalidation's refetch open, so the assertions see
+          // the page as the merge left it, not a refetched full user.
+          return new Promise<Response>(() => {});
+        }
+        return Response.json(
+          targetUser({ dailyCapOverride: 3, concurrentCapOverride: 5 }),
+        );
+      }
+      return undefined;
+    });
+
+    renderPage();
+    await screen.findByText("A User");
+
+    const daily = screen.getByLabelText("Daily cap override");
+    const concurrent = screen.getByLabelText("Concurrent cap override");
+    await userEvent.click(screen.getByText("Promote to Admin"));
+
+    // The role comes from the six-field response...
+    await screen.findByText("Demote to user");
+    // ...and the fields it does not carry survive the merge: the Joined
+    // date keeps formatting (a replacement by the response would read
+    // "NaN undefined NaN:NaN"), and the Cap inputs keep the saved
+    // overrides (a replacement would reset them to "undefined", wiping
+    // unsaved edits).
+    expect(
+      screen.getAllByText(formatWhen("2026-01-02T00:00:00.000Z")).length,
+    ).toBe(1);
+    expect(screen.queryByText(/NaN/)).toBeNull();
+    expect((daily as HTMLInputElement).value).toBe("3");
+    expect((concurrent as HTMLInputElement).value).toBe("5");
+  });
+
   test("enable is offered for a disabled user and clears the status", async () => {
     let status = "disabled";
     mockFetch((call) => {
@@ -118,7 +306,8 @@ describe("UserPage", () => {
       }
       if (call.url.endsWith("/enable")) {
         status = "active";
-        return Response.json(targetUser({ status: "active" }));
+        // The server's six-field action response, not the full user.
+        return Response.json(actionResponse({ status: "active" }));
       }
       return undefined;
     });
@@ -178,6 +367,23 @@ describe("UserPage", () => {
       dailyCapOverride: 0,
       concurrentCapOverride: 2,
     });
+  });
+
+  test("a 0 Cap override is flagged as blocked", async () => {
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/admin/users/u1") && call.method === "GET") {
+        return Response.json(targetUser({ dailyCapOverride: 0 }));
+      }
+      return undefined;
+    });
+
+    renderPage();
+    await screen.findByText("A User");
+
+    // A saved 0 fills the Daily input and is flagged as a block.
+    const daily = screen.getByLabelText("Daily cap override");
+    expect((daily as HTMLInputElement).value).toBe("0");
+    expect(screen.getAllByText("Blocked from generating").length).toBe(1);
   });
 
   test("actions are hidden for a pinned row and the acting Admin's own row", async () => {

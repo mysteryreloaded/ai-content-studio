@@ -595,8 +595,8 @@ describe("WorkflowSection (issue #214)", () => {
     await openSection(view, "Modes");
 
     await view.findByText("LTX 2.5");
-    await userEvent.click(view.getByText("+ Mode"));
-    const nameField = view.getByLabelText("Name") as HTMLInputElement;
+    await userEvent.click(view.getByRole("button", { name: "+ Mode" }));
+    const nameField = await view.findByLabelText("Name");
     await userEvent.clear(nameField);
     await userEvent.type(nameField, "Default");
     await userEvent.click(view.getByRole("button", { name: "Close" }));

@@ -3,44 +3,53 @@ import type {
   ModeInputSetting,
 } from "@ai-content-studio/shared";
 import type { ReactNode } from "react";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "../../../components/ui/button.js";
 import { Input } from "../../../components/ui/input.js";
 import {
   Popover,
   PopoverContent,
-  PopoverTitle,
   PopoverTrigger,
 } from "../../../components/ui/popover.js";
+import type { DraftMode } from "../types.js";
 import { Field } from "../ui/Field.js";
+import type { InputState } from "../ui/StateChip.js";
 import { StateEditor } from "../ui/StateEditor.js";
 
 /**
- * The grid's only edit surface (issue #216): State (`StateEditor`), a
- * per-Mode label override, and "Apply to every Mode whose Path holds
- * this Input's fields" — the grid's sole bulk edit, no row menus, no
- * multi-select. Closes on Escape, an outside click (Radix's own
- * defaults) and on scroll.
+ * The grid's only edit surface (issue #216): a popover with State, the
+ * fixed-value editor when Fixed, "Label in this Mode", and "Apply to
+ * every Mode whose Path holds this Input's fields". No row menus, no
+ * multi-select.
  */
 export function CellPopover({
   input,
-  modeName,
+  mode,
   setting,
-  open,
-  onOpenChange,
+  defaultOpen,
+  ariaLabel,
   onChange,
   onApplyToEveryEligibleMode,
   children,
 }: {
   input: InputDefinition;
-  modeName: string;
+  mode: DraftMode;
   setting: ModeInputSetting;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
+  defaultOpen?: boolean;
+  ariaLabel: string;
   onChange: (patch: Partial<ModeInputSetting>) => void;
   onApplyToEveryEligibleMode: () => void;
   children: ReactNode;
 }) {
+  const [open, setOpen] = useState(Boolean(defaultOpen));
+
+  // The checks rail's "jump to this cell" (issue #216's `openCell`) can
+  // target a cell well after this popover first mounted, so it's not
+  // enough to seed `open` from `defaultOpen` once.
+  useEffect(() => {
+    if (defaultOpen) setOpen(true);
+  }, [defaultOpen]);
+
   // The prototype closes the popover on scroll, not just Escape and an
   // outside click (Radix's own defaults for those two) — but not a
   // scroll inside the popover itself (e.g. a long label or hint text
@@ -71,25 +80,33 @@ export function CellPopover({
       if (top === lastTop && left === lastLeft) return;
       lastTop = top;
       lastLeft = left;
-      onOpenChange(false);
+      setOpen(false);
     }
     window.addEventListener("scroll", onScroll, true);
     return () => window.removeEventListener("scroll", onScroll, true);
-  }, [open, onOpenChange]);
+  }, [open]);
 
   return (
-    <Popover open={open} onOpenChange={onOpenChange}>
-      <PopoverTrigger asChild>{children}</PopoverTrigger>
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-label={ariaLabel}
+          className="block min-h-[22px] w-full rounded-sm text-left hover:outline hover:outline-1 hover:outline-offset-1 hover:outline-primary focus-visible:outline-2"
+        >
+          {children}
+        </button>
+      </PopoverTrigger>
       <PopoverContent className="w-auto min-w-60 p-2.5">
-        <PopoverTitle>
-          <strong>{input.label || "Untitled Input"}</strong> in {modeName}
-        </PopoverTitle>
-
+        <p className="text-[13px]">
+          <strong>{input.label || "this Input"}</strong> in{" "}
+          {mode.name || "this Mode"}
+        </p>
         <StateEditor
           input={input}
           state={setting.state}
           fixedValue={setting.fixedValue}
-          onStateChange={(state) =>
+          onStateChange={(state: InputState) =>
             onChange({
               state,
               fixedValue: state === "fixed" ? setting.fixedValue : null,
@@ -97,29 +114,24 @@ export function CellPopover({
           }
           onFixedValueChange={(fixedValue) => onChange({ fixedValue })}
         />
-
         <Field
           label="Label in this Mode"
+          htmlFor={`cell-label-${mode.key}-${input.id}`}
           hint="Blank uses the Input's label."
-          htmlFor={`cell-label-${input.id}`}
         >
           <Input
-            id={`cell-label-${input.id}`}
+            id={`cell-label-${mode.key}-${input.id}`}
             value={setting.label}
             placeholder={input.label}
             maxLength={60}
             onChange={(event) => onChange({ label: event.target.value })}
           />
         </Field>
-
         <Button
           type="button"
           variant="outline"
           size="sm"
-          onClick={() => {
-            onApplyToEveryEligibleMode();
-            onOpenChange(false);
-          }}
+          onClick={onApplyToEveryEligibleMode}
         >
           Apply to every Mode whose Path holds this Input's fields
         </Button>

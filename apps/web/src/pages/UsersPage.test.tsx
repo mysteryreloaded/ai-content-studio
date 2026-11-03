@@ -1,11 +1,34 @@
 // See ../test/happy-dom-setup.ts for why this is registered once, here,
 // before @testing-library/react is imported, and never unregistered.
 import { afterEach, describe, expect, test } from "bun:test";
+import { useQuery } from "@tanstack/react-query";
+import { adminBadgeKeys } from "../components/admin/AdminNav.js";
+import { api, ok } from "../lib/api.js";
+import { formatWhen } from "../lib/format.js";
 import { BUN_FETCH } from "../test/happy-dom-setup.js";
 
 const { cleanup, screen, waitFor } = await import("@testing-library/react");
+const { default: userEvent } = await import("@testing-library/user-event");
 const { UsersPage } = await import("./UsersPage.js");
 const { renderWithProviders } = await import("../test/render.js");
+
+/**
+ * The nav's pending badge, exactly the query AdminNav runs (see
+ * AdminNav.tsx) — the query the page's row actions invalidate (issue
+ * #207's AC: approving refreshes the badge).
+ */
+function PendingBadgeProbe() {
+  const { data } = useQuery({
+    queryKey: adminBadgeKeys.pending,
+    queryFn: () =>
+      ok<{ count: number }>(api.api.admin.users["pending-count"].$get()),
+  });
+  return (
+    <span data-testid="pending-badge">
+      {data ? `${data.count} pending` : ""}
+    </span>
+  );
+}
 
 afterEach(() => {
   cleanup();
@@ -56,6 +79,24 @@ function userRow(overrides: Partial<Record<string, unknown>> = {}) {
   };
 }
 
+/**
+ * The action endpoints' (approve, promote, demote) response shape: the
+ * server's `respondForAction` returns the user's six core fields and
+ * nothing else — no createdAt or caps — so the page merges it into its
+ * row instead of replacing it.
+ */
+function actionResponse(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: "pending-1",
+    email: "user@example.com",
+    name: "A User",
+    picture: null,
+    role: "user",
+    status: "active",
+    ...overrides,
+  };
+}
+
 function renderPage() {
   return renderWithProviders(<UsersPage />, { route: "/admin/users" });
 }
@@ -72,6 +113,31 @@ describe("UsersPage", () => {
     renderPage();
 
     expect(await screen.findByText("Approve")).toBeTruthy();
+  });
+
+  test("Last seen shows — for a never-signed-in account, and the formatted time once set (issue #208)", async () => {
+    mockFetch(() =>
+      Response.json({
+        users: [
+          userRow({ id: "u1", lastSeenAt: null }),
+          userRow({
+            id: "u2",
+            name: "Seen User",
+            email: "seen@example.com",
+            lastSeenAt: "2026-02-03T10:00:00.000Z",
+          }),
+        ],
+        hasMore: false,
+      }),
+    );
+
+    const { container } = renderPage();
+    await screen.findByText("A User");
+
+    expect(container.textContent).toContain("Last seen —");
+    expect(container.textContent).toContain(
+      formatWhen("2026-02-03T10:00:00.000Z"),
+    );
   });
 
   test("action buttons are hidden on a pinned row", async () => {
@@ -120,8 +186,6 @@ describe("UsersPage", () => {
 
     await screen.findByText("First User");
     const loadOlder = screen.getByText("Load older");
-
-    const { default: userEvent } = await import("@testing-library/user-event");
     await userEvent.click(loadOlder);
 
     expect(await screen.findByText("Second User")).toBeTruthy();
@@ -154,5 +218,209 @@ describe("UsersPage", () => {
       name: "Blocked accounts",
     });
     expect(link.getAttribute("href")).toBe("/admin/blocked-accounts");
+  });
+
+  test("filters are read from the URL", async () => {
+    const calls = mockFetch(() =>
+      Response.json({ users: [userRow()], hasMore: false }),
+    );
+
+    renderWithProviders(<UsersPage />, {
+      route: "/admin/users?q=alice&status=pending&role=admin",
+    });
+
+    await screen.findByText("A User");
+
+    const listCall = calls[0];
+    expect(listCall?.url).toContain("q=alice");
+    expect(listCall?.url).toContain("status=pending");
+    expect(listCall?.url).toContain("role=admin");
+  });
+
+  test("a failed approve shows exactly one alert, not one per row", async () => {
+    mockFetch((call) => {
+      if (call.url.includes("/approve")) {
+        return Response.json({ error: "boom" }, { status: 400 });
+      }
+      return Response.json({
+        users: [
+          userRow({ id: "pending-1", name: "One Pending", status: "pending" }),
+          userRow({ id: "pending-2", name: "Two Pending", status: "pending" }),
+        ],
+        hasMore: false,
+      });
+    });
+
+    renderPage();
+
+    await screen.findByText("One Pending");
+    const approveButtons = await screen.findAllByText("Approve");
+    const firstApprove = approveButtons[0];
+    if (firstApprove === undefined) throw new Error("no Approve button");
+    await userEvent.click(firstApprove);
+
+    // The original page showed one error line; one failed action must
+    // not put an alert on every actionable row.
+    expect(await screen.findByText("could not approve this user")).toBeTruthy();
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+  });
+
+  test("the 'Any' option drops a single filter without clearing the others", async () => {
+    const calls = mockFetch(() =>
+      Response.json({ users: [userRow()], hasMore: false }),
+    );
+
+    // Both filters are applied in the URL.
+    renderWithProviders(<UsersPage />, {
+      route: "/admin/users?status=pending&role=admin",
+    });
+
+    await screen.findByText("A User");
+
+    // The old page's native selects had an "Any" item; the shared Select
+    // keeps it as a sentinel, so one filter can be dropped on its own.
+    await userEvent.click(screen.getByRole("combobox", { name: "Status" }));
+    await userEvent.click(screen.getByRole("option", { name: "Any" }));
+    await userEvent.click(screen.getByText("Apply"));
+
+    await waitFor(() => {
+      const listCalls = calls.filter((c) => !c.url.includes("beforeCreatedAt"));
+      const last = listCalls.at(-1);
+      expect(last?.url).toContain("role=admin");
+      expect(last?.url).not.toContain("status=");
+    });
+  });
+
+  test("a row action updates an appended older row from the response", async () => {
+    mockFetch((call) => {
+      if (call.url.includes("/approve")) {
+        // The server's action response: the six core fields only — no
+        // createdAt — so the merged row must keep its own.
+        return Response.json(
+          actionResponse({ id: "u2", name: "Second User", status: "active" }),
+        );
+      }
+      if (call.url.includes("beforeCreatedAt")) {
+        // The older page's refetch may still return the stale row; the
+        // appended list must not depend on it.
+        return Response.json({
+          users: [
+            userRow({
+              id: "u2",
+              name: "Second User",
+              status: "pending",
+              createdAt: "2025-12-01T00:00:00.000Z",
+            }),
+          ],
+          hasMore: false,
+        });
+      }
+      return Response.json({
+        users: [userRow({ id: "u1", name: "First User", status: "pending" })],
+        hasMore: true,
+      });
+    });
+
+    renderPage();
+
+    await screen.findByText("First User");
+    await userEvent.click(screen.getByText("Load older"));
+    await screen.findByText("Second User");
+
+    const approveButtons = screen.getAllByText("Approve");
+    const olderApprove = approveButtons.at(-1);
+    if (olderApprove === undefined) {
+      throw new Error("no Approve on the appended row");
+    }
+    await userEvent.click(olderApprove);
+
+    // The appended row takes the mutation's result, even though the
+    // older page's refetch still returns the stale pending row.
+    await waitFor(() => {
+      expect(screen.getAllByText("Approve").length).toBe(1);
+    });
+    // The response carries no createdAt: the merge keeps the row's own,
+    // so its Created cell keeps formatting (a replacement by the
+    // response would read NaN, and as the last row it would break the
+    // next Load-older cursor too).
+    expect(
+      screen.getAllByText(formatWhen("2025-12-01T00:00:00.000Z")).length,
+    ).toBe(1);
+  });
+
+  test("a failed older page shows an error with a retry, not a hidden button", async () => {
+    let olderFails = true;
+    mockFetch((call) => {
+      if (call.url.includes("beforeCreatedAt")) {
+        if (olderFails) {
+          return Response.json({ error: "boom" }, { status: 500 });
+        }
+        return Response.json({
+          users: [userRow({ id: "u2", name: "Second User" })],
+          hasMore: false,
+        });
+      }
+      return Response.json({
+        users: [userRow({ id: "u1", name: "First User" })],
+        hasMore: true,
+      });
+    });
+
+    renderPage();
+
+    await screen.findByText("First User");
+    await userEvent.click(screen.getByText("Load older"));
+
+    // The original page's "could not load older users" line, with a
+    // retry — not a silently hidden button.
+    expect(await screen.findByText("could not load older users")).toBeTruthy();
+    expect(screen.queryByText("Load older")).toBeNull();
+
+    olderFails = false;
+    await userEvent.click(screen.getByText("Try again"));
+    expect(await screen.findByText("Second User")).toBeTruthy();
+  });
+
+  test("approve invalidates the pending badge", async () => {
+    let approved = false;
+    let pendingCountFetches = 0;
+    mockFetch((call) => {
+      if (call.url.includes("/pending-count")) {
+        pendingCountFetches += 1;
+        return Response.json({ count: approved ? 0 : 1 });
+      }
+      if (call.url.includes("/approve")) {
+        approved = true;
+        // The server's six-field action response.
+        return Response.json(actionResponse());
+      }
+      return Response.json({
+        users: [
+          userRow({
+            id: "pending-1",
+            status: approved ? "active" : "pending",
+          }),
+        ],
+        hasMore: false,
+      });
+    });
+
+    renderWithProviders(
+      <>
+        <UsersPage />
+        <PendingBadgeProbe />
+      </>,
+      { route: "/admin/users" },
+    );
+
+    // The badge, as the nav runs it, loads on mount.
+    await screen.findByText("1 pending");
+
+    await userEvent.click(screen.getByText("Approve"));
+
+    // Approve invalidates the badge's query, and the refetched count
+    // (now 0) replaces it.
+    await screen.findByText("0 pending");
+    expect(pendingCountFetches).toBeGreaterThanOrEqual(2);
   });
 });

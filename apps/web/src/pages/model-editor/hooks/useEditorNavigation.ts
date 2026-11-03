@@ -66,17 +66,11 @@ export function useEditorNavigation({
     setPendingOpenInputId(null);
   }
 
-  // Issue #216: like `pendingOpenInputId` above, these remember which
-  // Mode's sheet (or which Mode/Input's grid cell popover) to open once
-  // the Modes section has mounted — from a check, a Mode's name, or the
-  // grid itself.
+  // Issue #216: mirrors `pendingOpenInputId` above — the Modes section
+  // (once mounted) opens that Mode's sheet, or that cell's popover.
   const [pendingOpenModeId, setPendingOpenModeId] = useState<string | null>(
     null,
   );
-  const [pendingOpenCellKey, setPendingOpenCellKey] = useState<{
-    modeId: string;
-    inputId: string;
-  } | null>(null);
 
   function openMode(modeId: string) {
     setSection("modes");
@@ -87,13 +81,18 @@ export function useEditorNavigation({
     setPendingOpenModeId(null);
   }
 
+  const [pendingOpenCell, setPendingOpenCell] = useState<{
+    modeId: string;
+    inputId: string;
+  } | null>(null);
+
   function openCell(modeId: string, inputId: string) {
     setSection("modes");
-    setPendingOpenCellKey({ modeId, inputId });
+    setPendingOpenCell({ modeId, inputId });
   }
 
   function clearPendingOpenCell() {
-    setPendingOpenCellKey(null);
+    setPendingOpenCell(null);
   }
 
   // The only jump this ticket makes real: open Backends, then — once
@@ -129,7 +128,7 @@ export function useEditorNavigation({
     pendingOpenModeId,
     clearPendingOpenMode,
     openCell,
-    pendingOpenCellKey,
+    pendingOpenCell,
     clearPendingOpenCell,
     focusBackend,
   };

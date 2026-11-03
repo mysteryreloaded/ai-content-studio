@@ -10,6 +10,7 @@ import {
   DETAIL,
   cleanup,
   finishFile,
+  fireEvent,
   mockFetch,
   openSection,
   prepareConfirmAndEventSource,
@@ -501,6 +502,65 @@ describe("ModesSection", () => {
       name: "Prompt in Mode 1: required",
     });
     expect(within(cell).getByText("Caption")).toBeTruthy();
+  });
+
+  test("a scroll inside the cell popover doesn't close it, but a scroll outside it does", async () => {
+    const DETAIL_TEXT = {
+      ...DETAIL,
+      modes: [
+        {
+          id: "mode-1",
+          sortOrder: 0,
+          name: "Mode 1",
+          description: "",
+          outputNodes: [
+            { nodeId: "2", classType: "SaveImage", title: null, kind: "image" },
+          ],
+          inputSettings: [],
+        },
+      ],
+      inputs: [
+        {
+          id: "prompt-input",
+          kind: "text",
+          group: "describe",
+          label: "Prompt",
+          help: "",
+          multiline: false,
+          maxLength: 200,
+          default: "",
+          bindings: [
+            { nodeId: "1", field: "text", classType: "LoadImage", title: null },
+          ],
+        },
+      ],
+    };
+
+    mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1")) {
+        return Response.json(DETAIL_TEXT);
+      }
+      if (call.method === "GET") return respondGet(call.url);
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await openSection(view, "Modes");
+
+    await userEvent.click(
+      view.getByRole("button", { name: "Prompt in Mode 1: optional" }),
+    );
+    const popover = view
+      .getByText("Label in this Mode")
+      .closest('[data-slot="popover-content"]') as HTMLElement;
+    expect(popover).toBeTruthy();
+
+    fireEvent.scroll(popover, { bubbles: false });
+    expect(view.queryByText("Label in this Mode")).toBeTruthy();
+
+    fireEvent.scroll(window, { bubbles: false });
+    expect(view.queryByText("Label in this Mode")).toBeNull();
   });
 
   test("Apply to every Mode whose Path holds this Input's fields copies the cell to eligible Modes only", async () => {

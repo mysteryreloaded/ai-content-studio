@@ -46,7 +46,7 @@ export function ModeSheetContent({
   const inputs = inputsDraft ?? detail.inputs ?? [];
 
   return (
-    <div className="grid grid-cols-[minmax(0,1fr)_340px] gap-4 @max-[760px]:grid-cols-1">
+    <div className="grid grid-cols-1 gap-4 min-[760px]:grid-cols-[minmax(0,1fr)_340px]">
       <div className="flex flex-col gap-5">
         <Field label="Name" htmlFor={`mode-name-${mode.key}`}>
           <Input
@@ -115,7 +115,10 @@ export function ModeSheetContent({
         </div>
       </div>
 
-      <section aria-label="What users see" className="sticky top-4 self-start">
+      <section
+        aria-label="What users see"
+        className="min-[760px]:sticky min-[760px]:top-4 min-[760px]:self-start"
+      >
         <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
           What users see
         </div>

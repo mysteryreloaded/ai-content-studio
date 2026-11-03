@@ -80,7 +80,7 @@ export function ModelEditorPage() {
             )}
             {nav.section === "test" && (
               <p className="text-muted-foreground">
-                Run a Test from a Mode's sheet, in Modes.
+                Testing a Mode isn't here yet.
               </p>
             )}
             {nav.section === "revisions" && (

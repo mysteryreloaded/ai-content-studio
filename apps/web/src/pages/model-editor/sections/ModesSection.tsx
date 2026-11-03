@@ -121,7 +121,7 @@ export function ModesSection({
           if (!open) setOpenModeKey(null);
         }}
       >
-        <SheetContent className="w-full gap-0 p-0 sm:max-w-[960px]">
+        <SheetContent className="w-full gap-0 p-0 data-[side=right]:w-full sm:max-w-[960px] data-[side=right]:sm:max-w-[960px]">
           {openMode && (
             <>
               <SheetHeader className="border-b border-border px-4 py-3">

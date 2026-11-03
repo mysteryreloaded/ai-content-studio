@@ -173,6 +173,22 @@ export const routes: Route[] = [
     path: "/admin/models/{model.draft.id}",
     as: "alice",
   },
+  {
+    name: "admin-editor-modes-popover",
+    path: "/admin/models/{model.video.id}?section=modes",
+    as: "alice",
+    actions: [{ role: "button", name: "Seed in Text to video: optional" }],
+    ready: "text=Apply to every Mode whose Path holds this Input's fields",
+    prototype: "editor-a",
+  },
+  {
+    name: "admin-editor-mode-sheet",
+    path: "/admin/models/{model.video.id}?section=modes",
+    as: "alice",
+    actions: [{ role: "button", name: "Text to video" }],
+    ready: "text=What users see",
+    prototype: "editor-c",
+  },
   { name: "admin-generations", path: "/admin/generations", as: "alice" },
   {
     name: "admin-generation",

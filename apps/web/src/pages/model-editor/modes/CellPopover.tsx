@@ -42,10 +42,19 @@ export function CellPopover({
   children: ReactNode;
 }) {
   // The prototype closes the popover on scroll, not just Escape and an
-  // outside click (Radix's own defaults for those two).
+  // outside click (Radix's own defaults for those two) — but not a
+  // scroll inside the popover itself (e.g. a long label or hint text
+  // scrolling its own field), which isn't "the page moved under it".
   useEffect(() => {
     if (!open) return;
-    function onScroll() {
+    function onScroll(event: Event) {
+      const target = event.target;
+      if (
+        target instanceof Element &&
+        target.closest('[data-slot="popover-content"]')
+      ) {
+        return;
+      }
       onOpenChange(false);
     }
     window.addEventListener("scroll", onScroll, true);

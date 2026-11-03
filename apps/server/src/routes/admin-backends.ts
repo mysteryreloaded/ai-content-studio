@@ -128,6 +128,8 @@ export function adminBackendsRoute(
         backends: list.map((backend) => ({
           ...backend,
           health: service.healthFor(backend.id),
+          unreachableSince:
+            service.unreachableSince(backend.id)?.toISOString() ?? null,
         })),
         disabledBanner: service.disabledBanner,
       });

@@ -7,13 +7,11 @@ import {
   useParams,
   useSearchParams,
 } from "react-router-dom";
-import type { SubmissionSummary } from "../components/generations/types.js";
 import { UPLOAD_KINDS } from "../components/inputs/types.js";
 import { api, ok } from "../lib/api.js";
 import { usePauseNotice } from "../usePauseNotice.js";
 import { useSession } from "../useSession.js";
 import { GenerateBar } from "./workbench/GenerateBar.js";
-import { GenerationDetailDialog } from "./workbench/GenerationDetailDialog.js";
 import { ModelIntro } from "./workbench/ModelIntro.js";
 import { ModelTermsDialog } from "./workbench/ModelTermsDialog.js";
 import { WorkbenchFeed } from "./workbench/WorkbenchFeed.js";
@@ -84,8 +82,9 @@ export function WorkbenchPage() {
     },
     [updateValues],
   );
-  const [selectedSubmission, setSelectedSubmission] =
-    useState<SubmissionSummary | null>(null);
+  const [lastOwnSubmissionId, setLastOwnSubmissionId] = useState<string | null>(
+    null,
+  );
   const maxUploadMb =
     session.status === "signed-in" ? (session.user.maxUploadMb ?? null) : null;
   const selectedMode =
@@ -125,6 +124,7 @@ export function WorkbenchPage() {
     setBanner,
     refreshCaps,
     setSubmissions: feedApi.setSubmissions,
+    setLastOwnSubmissionId,
   });
   const selectMode = useCallback(
     (mode: WorkbenchMode) => {
@@ -211,12 +211,6 @@ export function WorkbenchPage() {
           onBackToModels={() => navigate("/models")}
         />
       )}
-      {selectedSubmission && (
-        <GenerationDetailDialog
-          detail={{ submission: selectedSubmission, model }}
-          onClose={() => setSelectedSubmission(null)}
-        />
-      )}
       <WorkbenchLayout
         modelName={model.name}
         body={
@@ -258,8 +252,9 @@ export function WorkbenchPage() {
         feed={
           <WorkbenchFeed
             {...feedApi}
+            model={model}
             paused={paused}
-            onOpen={setSelectedSubmission}
+            lastOwnSubmissionId={lastOwnSubmissionId}
           />
         }
       />

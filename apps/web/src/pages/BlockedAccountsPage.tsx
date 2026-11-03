@@ -1,6 +1,6 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AdminPageHeader } from "../components/admin/AdminPageHeader.js";
 import { AdminSection } from "../components/admin/AdminSection.js";
 import { AdminTable, adminHeadCell } from "../components/admin/AdminTable.js";
@@ -68,7 +68,9 @@ export function BlockedAccountsPage() {
       ),
     onSuccess: () => {
       setClearing(null);
-      void queryClient.invalidateQueries({ queryKey: ["admin", "blocked-accounts"] });
+      void queryClient.invalidateQueries({
+        queryKey: ["admin", "blocked-accounts"],
+      });
     },
   });
 
@@ -124,7 +126,9 @@ export function BlockedAccountsPage() {
                     {row.disabledAt ? formatWhen(row.disabledAt) : "—"}
                   </TableCell>
                   <TableCell>{formatWhen(row.createdAt)}</TableCell>
-                  <TableCell className="max-w-80">{row.reason || "—"}</TableCell>
+                  <TableCell className="max-w-80">
+                    {row.reason || "—"}
+                  </TableCell>
                   <TableCell>
                     <Button
                       variant="outline"

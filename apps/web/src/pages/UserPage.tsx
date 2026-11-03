@@ -2,12 +2,13 @@ import {
   USER_CAP_OVERRIDE_MAX,
   USER_CAP_OVERRIDE_MIN,
 } from "@ai-content-studio/shared";
-import { useEffect, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRightIcon, LockIcon } from "lucide-react";
+import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { z } from "zod";
+import { Avatar } from "../components/Avatar.js";
 import { adminBadgeKeys } from "../components/admin/AdminNav.js";
 import { AdminPageHeader } from "../components/admin/AdminPageHeader.js";
 import { AdminSection } from "../components/admin/AdminSection.js";
@@ -15,7 +16,6 @@ import { EmptyState } from "../components/admin/EmptyState.js";
 import { FormField } from "../components/admin/FormField.js";
 import { HistoryLink } from "../components/admin/HistoryLink.js";
 import { LoadError } from "../components/admin/LoadError.js";
-import { Avatar } from "../components/Avatar.js";
 import { Button } from "../components/ui/button.js";
 import {
   Dialog,
@@ -28,7 +28,7 @@ import {
 import { Input } from "../components/ui/input.js";
 import { Pill } from "../components/ui/pill.js";
 import { Textarea } from "../components/ui/textarea.js";
-import { api, type ApiError, ok } from "../lib/api.js";
+import { type ApiError, api, ok } from "../lib/api.js";
 import { mapApiError, zodResolver } from "../lib/form.js";
 import { formatWhen } from "../lib/format.js";
 import { useSession } from "../useSession.js";
@@ -123,7 +123,10 @@ export function UserPage() {
     enabled: id !== "",
     queryFn: ({ signal }) =>
       ok<AdminUser>(
-        api.api.admin.users[":id"].$get({ param: { id } }, { init: { signal } }),
+        api.api.admin.users[":id"].$get(
+          { param: { id } },
+          { init: { signal } },
+        ),
       ),
   });
 
@@ -136,8 +139,7 @@ export function UserPage() {
   const siteConcurrent = siteCapsQuery.data?.concurrentCap;
 
   const user = userQuery.data;
-  const isSelf =
-    session.status === "signed-in" && session.user.id === user?.id;
+  const isSelf = session.status === "signed-in" && session.user.id === user?.id;
   // A "Deleted user" row (deletedAt set) offers no action: the server
   // refuses all of them, the same as a pinned or self-targeted row.
   const canAct = user ? !user.pinned && !isSelf && !user.deletedAt : false;
@@ -166,7 +168,9 @@ export function UserPage() {
         ? ok<AdminUser>(
             api.api.admin.users[":id"].promote.$post({ param: { id } }),
           )
-        : ok<AdminUser>(api.api.admin.users[":id"].demote.$post({ param: { id } })),
+        : ok<AdminUser>(
+            api.api.admin.users[":id"].demote.$post({ param: { id } }),
+          ),
     onSuccess: (data) => {
       queryClient.setQueryData(["admin", "users", id], data);
       invalidateUserAndBadge();
@@ -175,9 +179,7 @@ export function UserPage() {
 
   const enableMutation = useMutation({
     mutationFn: () =>
-      ok<AdminUser>(
-        api.api.admin.users[":id"].enable.$post({ param: { id } }),
-      ),
+      ok<AdminUser>(api.api.admin.users[":id"].enable.$post({ param: { id } })),
     onSuccess: (data) => {
       queryClient.setQueryData(["admin", "users", id], data);
       invalidateUserAndBadge();
@@ -220,20 +222,20 @@ export function UserPage() {
   });
 
   // The inputs start from the saved overrides, and settle back on them
-  // after a save (the original page re-populated from the reload).
+  // after a save (the original page re-populated from the reload). The
+  // narrow overrides (not the whole user object) are the real
+  // dependencies, so a refetch with equal values does not re-populate.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the overrides are the effect's real dependencies, not the whole user object
   useEffect(() => {
     if (!user) return;
     capsForm.reset({
       dailyCapOverride:
-        user.dailyCapOverride === null
-          ? ""
-          : String(user.dailyCapOverride),
+        user.dailyCapOverride === null ? "" : String(user.dailyCapOverride),
       concurrentCapOverride:
         user.concurrentCapOverride === null
           ? ""
           : String(user.concurrentCapOverride),
     });
-    // biome-ignore lint/correctness/useExhaustiveDependencies: the values are the effect's real dependency
   }, [user?.dailyCapOverride, user?.concurrentCapOverride]);
 
   const capsMutation = useMutation({
@@ -480,7 +482,9 @@ export function UserPage() {
             onSubmit={capsForm.handleSubmit((values) => {
               void capsMutation.mutate({
                 dailyCapOverride: parseOverride(values.dailyCapOverride),
-                concurrentCapOverride: parseOverride(values.concurrentCapOverride),
+                concurrentCapOverride: parseOverride(
+                  values.concurrentCapOverride,
+                ),
               });
             })}
           >
@@ -489,7 +493,8 @@ export function UserPage() {
                 label="Daily cap override"
                 htmlFor="daily-cap-override"
                 error={
-                  capsForm.formState.errors.dailyCapOverride?.message || undefined
+                  capsForm.formState.errors.dailyCapOverride?.message ||
+                  undefined
                 }
               >
                 <Input
@@ -536,11 +541,7 @@ export function UserPage() {
               ) : null}
             </div>
             <div className="flex items-center gap-3 sm:col-span-2">
-              <Button
-                type="submit"
-                size="sm"
-                disabled={capsMutation.isPending}
-              >
+              <Button type="submit" size="sm" disabled={capsMutation.isPending}>
                 Save
               </Button>
               {capsMutation.isSuccess ? (
@@ -568,14 +569,20 @@ export function UserPage() {
             className="flex items-center justify-between gap-2 px-3 py-2 text-sm hover:bg-muted"
           >
             Generations
-            <ChevronRightIcon className="size-4 text-muted-foreground" aria-hidden="true" />
+            <ChevronRightIcon
+              className="size-4 text-muted-foreground"
+              aria-hidden="true"
+            />
           </Link>
           <Link
             to={`/admin/users/${user.id}/uploads`}
             className="flex items-center justify-between gap-2 border-t border-border px-3 py-2 text-sm hover:bg-muted"
           >
             Uploads
-            <ChevronRightIcon className="size-4 text-muted-foreground" aria-hidden="true" />
+            <ChevronRightIcon
+              className="size-4 text-muted-foreground"
+              aria-hidden="true"
+            />
           </Link>
         </div>
       </AdminSection>
@@ -586,8 +593,8 @@ export function UserPage() {
             <DialogTitle>{`Disable ${displayName}?`}</DialogTitle>
             <DialogDescription>
               Their sessions end now and queued or running Generations are
-              cancelled; files stay for review. It lasts until an Admin
-              enables the account again.
+              cancelled; files stay for review. It lasts until an Admin enables
+              the account again.
             </DialogDescription>
           </DialogHeader>
           <FormField
@@ -606,10 +613,7 @@ export function UserPage() {
             {disableReason.length} / {DISABLE_REASON_MAX_LENGTH}
           </p>
           <DialogFooter>
-            <Button
-              variant="ghost"
-              onClick={() => setDisableOpen(false)}
-            >
+            <Button variant="ghost" onClick={() => setDisableOpen(false)}>
               Cancel
             </Button>
             <Button
@@ -658,7 +662,9 @@ export function UserPage() {
             <Button
               variant="danger"
               disabled={deleteMutation.isPending}
-              onClick={() => void deleteMutation.mutate({ reason: deleteReason })}
+              onClick={() =>
+                void deleteMutation.mutate({ reason: deleteReason })
+              }
             >
               Confirm delete
             </Button>

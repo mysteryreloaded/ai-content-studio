@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { LockIcon } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { Avatar } from "../components/Avatar.js";
 import { adminBadgeKeys } from "../components/admin/AdminNav.js";
 import { AdminPageHeader } from "../components/admin/AdminPageHeader.js";
 import {
@@ -15,9 +16,9 @@ import { FilterBar } from "../components/admin/FilterBar.js";
 import { FormField } from "../components/admin/FormField.js";
 import { LoadError } from "../components/admin/LoadError.js";
 import { LoadMoreButton } from "../components/admin/LoadMoreButton.js";
-import { Avatar } from "../components/Avatar.js";
 import { Button } from "../components/ui/button.js";
 import { Input } from "../components/ui/input.js";
+import { Pill } from "../components/ui/pill.js";
 import {
   Select,
   SelectContent,
@@ -25,7 +26,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../components/ui/select.js";
-import { Pill } from "../components/ui/pill.js";
 import {
   TableBody,
   TableCell,
@@ -158,7 +158,9 @@ export function UsersPage() {
       ),
   });
 
-  // A new filter starts the list over, page and all.
+  // A new filter starts the list over, page and all. The setters are
+  // stable; the filters are the effect's real trigger.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the setters are stable; filterKey is the effect's real trigger
   useEffect(() => {
     setOlder([]);
     setCursor(null);
@@ -185,7 +187,9 @@ export function UsersPage() {
   const actionMutation = useMutation({
     mutationFn: ({ id, action }: { id: string; action: ListAction }) =>
       action === "approve"
-        ? ok<AdminUser>(api.api.admin.users[":id"].approve.$post({ param: { id } }))
+        ? ok<AdminUser>(
+            api.api.admin.users[":id"].approve.$post({ param: { id } }),
+          )
         : action === "promote"
           ? ok<AdminUser>(
               api.api.admin.users[":id"].promote.$post({ param: { id } }),
@@ -202,7 +206,8 @@ export function UsersPage() {
   const hasMore = cursor
     ? (olderQuery.data?.hasMore ?? false)
     : (listQuery.data?.hasMore ?? false);
-  const loadingOlder = cursor !== null && (olderQuery.isPending || olderQuery.isFetching);
+  const loadingOlder =
+    cursor !== null && (olderQuery.isPending || olderQuery.isFetching);
 
   return (
     <>
@@ -319,11 +324,15 @@ export function UsersPage() {
                         to={`/admin/users/${user.id}`}
                         className="min-w-0 truncate font-medium hover:underline"
                       >
-                        {user.deletedAt ? "Deleted user" : user.name || user.email}
+                        {user.deletedAt
+                          ? "Deleted user"
+                          : user.name || user.email}
                       </Link>
                     </div>
                   </TableCell>
-                  <TableCell className="max-w-60 truncate">{user.email}</TableCell>
+                  <TableCell className="max-w-60 truncate">
+                    {user.email}
+                  </TableCell>
                   <TableCell>
                     <div className="flex flex-wrap items-center gap-1.5">
                       {user.role === "admin" ? (
@@ -374,7 +383,9 @@ export function UsersPage() {
                           Approve
                         </Button>
                       ) : null}
-                      {canAct && user.role === "user" && user.status === "active" ? (
+                      {canAct &&
+                      user.role === "user" &&
+                      user.status === "active" ? (
                         <Button
                           variant="outline"
                           size="sm"
@@ -428,4 +439,3 @@ export function UsersPage() {
     </>
   );
 }
-

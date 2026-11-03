@@ -8,15 +8,10 @@ import { AdminUploadsPage } from "./AdminUploadsPage.js";
 import { AuditPage } from "./AuditPage.js";
 import { BackendsPage } from "./BackendsPage.js";
 import { BlockedAccountsPage } from "./BlockedAccountsPage.js";
-import { BlockedWordsForm } from "./BlockedWordsForm.js";
-import { CapsForm } from "./CapsForm.js";
 import { LogsPage } from "./LogsPage.js";
 import { ModelsPage } from "./ModelsPage.js";
 import { OverviewPage } from "./OverviewPage.js";
-import { PauseNoticeForm } from "./PauseNoticeForm.js";
-import { SitePrivacyForm } from "./SitePrivacyForm.js";
-import { SiteSettingsForm } from "./SiteSettingsForm.js";
-import { SiteTermsForm } from "./SiteTermsForm.js";
+import { SiteSettingsPage } from "./SiteSettingsPage.js";
 import { UserPage } from "./UserPage.js";
 import { UsersPage } from "./UsersPage.js";
 import { ModelEditorPage } from "./model-editor/ModelEditorPage.js";
@@ -55,19 +50,7 @@ export function AdminShell() {
               </AdminPage>
             }
           />
-          <Route
-            path="settings"
-            element={
-              <AdminPage>
-                <SiteSettingsForm />
-                <PauseNoticeForm />
-                <SiteTermsForm />
-                <SitePrivacyForm />
-                <BlockedWordsForm />
-                <CapsForm />
-              </AdminPage>
-            }
-          />
+          <Route path="settings" element={<SiteSettingsPage />} />
           <Route
             path="backends"
             element={

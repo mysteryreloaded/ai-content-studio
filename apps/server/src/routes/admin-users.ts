@@ -71,6 +71,8 @@ function userJson(
     disabledReason: user.disabledReason,
     disabledAt: user.disabledAt,
     deletedAt: user.deletedAt,
+    lastSignInAt: user.lastSignInAt,
+    lastSeenAt: user.lastSeenAt,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
   };

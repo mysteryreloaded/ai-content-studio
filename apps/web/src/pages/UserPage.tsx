@@ -51,6 +51,9 @@ interface AdminUser {
   disabledAt: string | null;
   deletedAt: string | null;
   createdAt: string;
+  /** Issue #208: null until this user's first sign-in. */
+  lastSignInAt: string | null;
+  lastSeenAt: string | null;
 }
 
 /** The Site's default Caps, from Site settings (the caps' placeholders). */
@@ -502,6 +505,16 @@ export function UserPage() {
         </EmptyState>
       ) : null}
 
+      {/* Issue #208: the studio's own activity fields, bumped by the
+          session rather than edited here, so they read as one muted
+          line rather than another Profile field. */}
+      <p className="text-muted-foreground">
+        Created <span>{formatWhen(user.createdAt)}</span> · Last sign-in{" "}
+        <span>{user.lastSignInAt ? formatWhen(user.lastSignInAt) : "—"}</span> ·
+        Last seen{" "}
+        <span>{user.lastSeenAt ? formatWhen(user.lastSeenAt) : "—"}</span>
+      </p>
+
       <AdminSection title="Profile">
         <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div className="flex flex-col gap-1">
@@ -520,10 +533,6 @@ export function UserPage() {
           <div className="flex flex-col gap-1">
             <dt className="text-muted-foreground">Status</dt>
             <dd>{user.deletedAt ? "Deleted user" : user.status}</dd>
-          </div>
-          <div className="flex flex-col gap-1">
-            <dt className="text-muted-foreground">Joined</dt>
-            <dd>{formatWhen(user.createdAt)}</dd>
           </div>
           {user.status === "disabled" && !user.deletedAt ? (
             <>

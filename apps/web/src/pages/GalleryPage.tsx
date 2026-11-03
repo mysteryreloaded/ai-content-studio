@@ -72,13 +72,13 @@ function GalleryFilters({
           size="sm"
           spacing={0}
           aria-label="Model"
-          value={modelFilter ?? ""}
+          value={modelFilter ?? "all"}
           onValueChange={(value) => {
-            if (!value && modelFilter === null) return;
-            onModelChange(value || null);
+            if (!value) return;
+            onModelChange(value === "all" ? null : value);
           }}
         >
-          <ToggleGroupItem value="" className={itemClassName}>
+          <ToggleGroupItem value="all" className={itemClassName}>
             All Models
           </ToggleGroupItem>
           {models.map((model) => (

@@ -130,6 +130,11 @@ export function GenerationCard({
                     </span>
                   )
                 )}
+                {generation.state === "failed" && (
+                  <span className="line-clamp-4 text-[13px]">
+                    {generation.error}
+                  </span>
+                )}
               </div>
             </div>
           )}

@@ -134,11 +134,6 @@ export function dayLabel(date: Date, now: Date): string {
     : `${label} ${date.getFullYear()}`;
 }
 
-/** The Gallery's clock time ("14:05"-style, issue #198), in the browser's own locale. */
-export function timeLabel(date: Date): string {
-  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
-
 export interface DayGroup {
   label: string;
   submissions: SubmissionSummary[];

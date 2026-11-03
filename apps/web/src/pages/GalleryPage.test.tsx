@@ -792,6 +792,123 @@ describe("GalleryPage", () => {
     expect(await view.findByText("Done")).toBeTruthy();
     expect(view.queryByRole("link", { name: "LTX 2.5" })).toBeTruthy();
   });
+
+  test("the desktop Model filter always has one item pressed (CEO review round 1, point 1)", async () => {
+    const globals = globalThis as unknown as { matchMedia: unknown };
+    const previousMatchMedia = globals.matchMedia;
+    globals.matchMedia = (query: string) => ({
+      matches: true,
+      media: query,
+      addEventListener() {},
+      removeEventListener() {},
+    });
+
+    try {
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/gallery/models")) {
+          return Response.json({
+            models: [
+              { id: "m1", slug: "ltx", name: "LTX 2.5", deleted: false },
+            ],
+          });
+        }
+        if (call.url.includes("/api/gallery?")) {
+          return Response.json({ submissions: [], hasMore: false });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderGallery();
+      await view.findByText("Nothing here yet");
+      expect(
+        view
+          .getByRole("radio", { name: "All Models" })
+          .getAttribute("aria-checked"),
+      ).toBe("true");
+      expect(
+        view
+          .getByRole("radio", { name: "LTX 2.5" })
+          .getAttribute("aria-checked"),
+      ).toBe("false");
+    } finally {
+      globals.matchMedia = previousMatchMedia;
+    }
+  });
+
+  test("the desktop Model filter presses the selected Model, not All Models, when ?model= is set", async () => {
+    const globals = globalThis as unknown as { matchMedia: unknown };
+    const previousMatchMedia = globals.matchMedia;
+    globals.matchMedia = (query: string) => ({
+      matches: true,
+      media: query,
+      addEventListener() {},
+      removeEventListener() {},
+    });
+
+    try {
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/gallery/models")) {
+          return Response.json({
+            models: [
+              { id: "m1", slug: "ltx", name: "LTX 2.5", deleted: false },
+            ],
+          });
+        }
+        if (call.url.includes("/api/gallery?")) {
+          return Response.json({ submissions: [], hasMore: false });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderGallery("/gallery?model=m1");
+      await view.findByText("No Generations match.");
+      expect(
+        view
+          .getByRole("radio", { name: "LTX 2.5" })
+          .getAttribute("aria-checked"),
+      ).toBe("true");
+      expect(
+        view
+          .getByRole("radio", { name: "All Models" })
+          .getAttribute("aria-checked"),
+      ).toBe("false");
+    } finally {
+      globals.matchMedia = previousMatchMedia;
+    }
+  });
+
+  test("a Failed thumbnail card shows the error message (CEO review round 1, point 2)", async () => {
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/gallery/models")) {
+        return Response.json({ models: [] });
+      }
+      if (call.url.includes("/api/gallery?")) {
+        return Response.json({
+          submissions: [
+            {
+              ...SUBMISSION_1,
+              generations: [
+                {
+                  ...SUBMISSION_1.generations[0],
+                  state: "failed",
+                  error: "ComfyUI ran out of memory",
+                  assets: [],
+                },
+              ],
+            },
+          ],
+          hasMore: false,
+        });
+      }
+      throw new Error(`unexpected fetch ${call.url}`);
+    });
+
+    const view = renderGallery();
+    const thumbnailButton = await view.findByRole("button", {
+      name: `Open Generation ${SUBMISSION_1.generations[0]?.id}`,
+    });
+    expect(thumbnailButton.textContent).toContain("ComfyUI ran out of memory");
+  });
 });
 
 describe("dayLabel", () => {

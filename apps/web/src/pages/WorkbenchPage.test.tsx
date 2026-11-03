@@ -2112,6 +2112,88 @@ describe("WorkbenchPage", () => {
         globals.matchMedia = previousMatchMedia;
       }
     });
+
+    test("keeps syncing the right Model's Submissions after navigating to another Model without a remount (CEO review, round 3)", async () => {
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx")) {
+          return Response.json({ model: MODEL });
+        }
+        if (call.url.endsWith("/api/models/other")) {
+          return Response.json({
+            model: {
+              ...MODEL,
+              slug: "other",
+              name: "Other Model",
+              modes: [
+                {
+                  id: "mode2",
+                  name: "Other Mode",
+                  description: "",
+                  inputs: [],
+                },
+              ],
+            },
+          });
+        }
+        if (
+          call.url.endsWith("/api/models/ltx/generations") ||
+          call.url.endsWith("/api/models/other/generations")
+        ) {
+          return Response.json({ submissions: [] });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      (globalThis as unknown as { EventSource: unknown }).EventSource =
+        FakeEventSource;
+      FakeEventSource.instances = [];
+
+      const { Link } = await import("react-router-dom");
+      const view = renderWithProviders(null, {
+        route: "/models/ltx",
+        routes: [
+          {
+            path: "/models/:slug",
+            element: (
+              <>
+                <Link to="/models/other">Other Model</Link>
+                <WorkbenchPage />
+              </>
+            ),
+          },
+        ],
+      });
+
+      await view.findByRole("heading", { name: "LTX 2.5" });
+
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+      await userEvent.click(view.getByRole("link", { name: "Other Model" }));
+      await view.findByRole("heading", { name: "Other Model" });
+
+      // Same `WorkbenchPage` instance throughout (`/models/:slug` never
+      // remounts on a param change) — the SSE handlers bound at the LTX
+      // mount must still land this change under the now-current slug.
+      await waitFor(() => FakeEventSource.generationsStream());
+      const source = FakeEventSource.generationsStream();
+      source.emit("change", {
+        id: "g9",
+        modelId: "m2",
+        modelSlug: "other",
+        modelName: "Other Model",
+        modeId: "mode2",
+        modeName: "Other Mode",
+        submissionId: "s9",
+        state: "queued",
+        tries: 0,
+        submittedAt: "2026-01-01T00:00:00.000Z",
+      });
+
+      expect(
+        await view.findByText("Other Mode", { selector: "strong" }),
+      ).toBeTruthy();
+    });
   });
   describe("Restyled Workbench (issue #194)", () => {
     const PROMPT_INPUT = {

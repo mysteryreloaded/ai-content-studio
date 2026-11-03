@@ -39,7 +39,7 @@ function PromptLine({ prompt }: { prompt: string | null | undefined }) {
   return (
     <p
       className={cn(
-        "max-w-[80ch] truncate text-[13px]",
+        "line-clamp-2 max-w-[80ch] text-[13px]",
         isDefault ? "text-faint" : "text-muted-foreground",
       )}
       title={prompt}

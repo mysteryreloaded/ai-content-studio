@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { upsertGeneration } from "../../components/generations/submissionCache.js";
 import {
   DONE_STATES,
@@ -44,7 +44,20 @@ export function useWorkbenchFeed({
   refreshCaps: () => void;
 }) {
   const queryClient = useQueryClient();
-  const queryKey = ["workbench-submissions", slug] as const;
+  const queryKey = useMemo(
+    () => ["workbench-submissions", slug] as const,
+    [slug],
+  );
+  // `useEventStream`'s handlers are bound once per mount (issue #195 QA
+  // round 3): a Workbench that's reused across a slug change (AppHeader's
+  // Model links don't remount `/models/:slug`) would otherwise keep
+  // writing a stale slug's query key from the handlers' first-render
+  // closure. Reading the latest slug/key through a ref at call time fixes
+  // that without needing the stream itself to re-subscribe.
+  const slugRef = useRef(slug);
+  slugRef.current = slug;
+  const queryKeyRef = useRef(queryKey);
+  queryKeyRef.current = queryKey;
 
   const { data } = useQuery({
     queryKey,
@@ -63,20 +76,25 @@ export function useWorkbenchFeed({
         | SubmissionSummary[]
         | ((current: SubmissionSummary[]) => SubmissionSummary[]),
     ) => {
-      queryClient.setQueryData<SubmissionsPage>(queryKey, (current) => {
-        const currentSubmissions = current?.submissions ?? [];
-        const next =
-          typeof update === "function" ? update(currentSubmissions) : update;
-        return { submissions: next, hasMore: current?.hasMore ?? false };
-      });
+      queryClient.setQueryData<SubmissionsPage>(
+        queryKeyRef.current,
+        (current) => {
+          const currentSubmissions = current?.submissions ?? [];
+          const next =
+            typeof update === "function" ? update(currentSubmissions) : update;
+          return { submissions: next, hasMore: current?.hasMore ?? false };
+        },
+      );
     },
-    [queryClient, queryKey],
+    [queryClient],
   );
 
   useEventStream("/api/generations/stream", {
     snapshot: (_qc, raw) => {
       const body = raw as { generations: GenerationSummary[] };
-      const forThisModel = body.generations.filter((g) => g.modelSlug === slug);
+      const forThisModel = body.generations.filter(
+        (g) => g.modelSlug === slugRef.current,
+      );
       setSubmissions((current) =>
         forThisModel.reduce(upsertGeneration, current),
       );
@@ -86,7 +104,7 @@ export function useWorkbenchFeed({
       // A Generation finishing (or starting) moves the concurrent Cap's own
       // count, so the foot's "more at once" needs a fresh read.
       if (DONE_STATES.has(generation.state)) refreshCaps();
-      if (generation.modelSlug !== slug) return;
+      if (generation.modelSlug !== slugRef.current) return;
       setSubmissions((current) => upsertGeneration(current, generation));
     },
     progress: (qc, raw) => {

@@ -1,6 +1,6 @@
 // See ModelEditorPage.test.tsx's header comment: this file registers its
 // own happy-dom instance (bun test --isolate gives it a clean process).
-import { afterAll, afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, jest, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
 await GlobalRegistrator.register();
@@ -8,10 +8,17 @@ await GlobalRegistrator.register();
 // happy-dom never fires a <video>/<audio> element's loadedmetadata or
 // error event for a blob: URL, so `readMediaDuration` (chunkedUpload.ts)
 // would hang forever reading a picked file's own duration. Firing
-// `error` (as a real browser would for a file it truly can't decode)
-// resolves it to `null`, which is exactly how the client already
-// handles "the browser couldn't tell": skip the client-side duration
-// check and let the server's own probe at complete decide.
+// `loadedmetadata` (as a real browser would for any file it can at
+// least demux) resolves it with happy-dom's own duration (0, since it
+// doesn't decode media), which is enough for every fixture here (all
+// `minDurationMs`/`maxLongSide` tolerate 0). `unplayableNextMediaLoad`
+// (below) makes the *next* load behave like a file this browser truly
+// can't read at all (issue #197's AC), firing `error` instead so it
+// resolves to `null` just this once.
+let forceNextMediaLoadUnplayable = false;
+function unplayableNextMediaLoad() {
+  forceNextMediaLoadUnplayable = true;
+}
 {
   const descriptor = Object.getOwnPropertyDescriptor(
     HTMLMediaElement.prototype,
@@ -24,12 +31,59 @@ await GlobalRegistrator.register();
     },
     set(value: string) {
       descriptor?.set?.call(this, value);
-      queueMicrotask(() => this.dispatchEvent(new Event("error")));
+      fireMediaLoadEvent(this);
     },
   });
 }
+// happy-dom also leaves videoWidth/videoHeight undefined (it doesn't
+// decode media either), which turns PointsField's own crop math into
+// NaN comparisons that silently refuse every click. A fixed 640x480
+// (the trim/points tests' own `clip.mp4`) is close enough to real for
+// every fixture here.
+Object.defineProperty(HTMLVideoElement.prototype, "videoWidth", {
+  configurable: true,
+  get: () => 640,
+});
+Object.defineProperty(HTMLVideoElement.prototype, "videoHeight", {
+  configurable: true,
+  get: () => 480,
+});
+// happy-dom's own `readyState` never advances past 0, so a PointsField
+// re-reading the frame after the trim start moves (its own `<video>`'s
+// src is unchanged, so `loadedmetadata` never fires again) never finds
+// `readyState >= 1` true and is stuck at "Getting the first frame…"
+// forever. Once an element has loaded at least once, a real browser's
+// `readyState` stays >= HAVE_METADATA; this mirrors that.
+const mediaLoadedOnce = new WeakSet<HTMLMediaElement>();
+Object.defineProperty(HTMLMediaElement.prototype, "readyState", {
+  configurable: true,
+  get() {
+    return mediaLoadedOnce.has(this) ? 1 : 0;
+  },
+});
+function fireMediaLoadEvent(media: HTMLMediaElement) {
+  const unplayable = forceNextMediaLoadUnplayable;
+  forceNextMediaLoadUnplayable = false;
+  queueMicrotask(() => {
+    if (!unplayable) mediaLoadedOnce.add(media);
+    media.dispatchEvent(new Event(unplayable ? "error" : "loadedmetadata"));
+  });
+}
+// React sets a host element's `src` via `setAttribute`, not the property
+// setter above (which only matters for `readMediaDuration`'s own direct
+// `element.src = …`), so `PointsField`/`Trimmer`'s own JSX `<video src=…>`
+// needs its own hook here too.
+{
+  const originalSetAttribute = HTMLMediaElement.prototype.setAttribute;
+  HTMLMediaElement.prototype.setAttribute = function (name, value) {
+    originalSetAttribute.call(this, name, value);
+    if (name === "src") fireMediaLoadEvent(this);
+  };
+}
 
-const { cleanup, waitFor } = await import("@testing-library/react");
+const { act, cleanup, fireEvent, waitFor, within } = await import(
+  "@testing-library/react"
+);
 const { WorkbenchPage } = await import("./WorkbenchPage.js");
 const { drainMacrotasks, renderWithProviders } = await import(
   "../test/render.js"
@@ -137,6 +191,16 @@ const DEFAULT_CAPS_STATUS = {
   oldestCountedSubmittedAt: null,
 };
 
+/** The Caps line's bold numbers break its text up across elements, so `findByText` needs the exact-`textContent` element, not an ancestor whose own direct text also happens to contain it. */
+function withExactTextContent(text: string) {
+  return (_content: string, element: Element | null) => {
+    if (!element || element.textContent !== text) return false;
+    return Array.from(element.children).every(
+      (child) => child.textContent !== text,
+    );
+  };
+}
+
 function mockFetch(handler: (call: FetchCall) => Response | Promise<Response>) {
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
@@ -232,9 +296,36 @@ describe("WorkbenchPage", () => {
 
     await waitFor(() => FakeEventSource.generationsStream());
     const source = FakeEventSource.generationsStream();
-    source.emit("snapshot", { generations: [{ id: "g1" }, { id: "g2" }] });
+    source.emit("snapshot", {
+      generations: [
+        {
+          id: "g1",
+          modelId: "m1",
+          modelSlug: "ltx",
+          modelName: "LTX 2.5",
+          modeId: "mode1",
+          modeName: "Default",
+          submissionId: "s1",
+          state: "queued",
+          deletedAt: null,
+          removedAt: null,
+        },
+        {
+          id: "g2",
+          modelId: "m1",
+          modelSlug: "ltx",
+          modelName: "LTX 2.5",
+          modeId: "mode1",
+          modeName: "Default",
+          submissionId: "s1",
+          state: "running",
+          deletedAt: null,
+          removedAt: null,
+        },
+      ],
+    });
 
-    expect(await view.findByText("2 under way")).toBeTruthy();
+    expect(await view.findAllByText("2 under way")).toHaveLength(2);
   });
 
   test("reloads the Model and shows a message on 409 model_changed", async () => {
@@ -268,7 +359,9 @@ describe("WorkbenchPage", () => {
     await view.findByRole("button", { name: "Generate" });
     await userEvent.click(view.getByRole("button", { name: "Generate" }));
 
-    expect(await view.findByText(/This Model changed; reloaded/)).toBeTruthy();
+    expect(
+      await view.findByText("This Model was updated, check your settings."),
+    ).toBeTruthy();
   });
 
   describe("Value carrying across Modes and model_changed (issue #48 AC6)", () => {
@@ -331,7 +424,8 @@ describe("WorkbenchPage", () => {
 
       const promptField = await view.findByLabelText("Prompt");
       await userEvent.type(promptField, "a dog");
-      await userEvent.click(view.getByRole("radio", { name: "Other" }));
+      await userEvent.click(view.getByRole("combobox", { name: "Mode" }));
+      await userEvent.click(view.getByRole("option", { name: /Other/ }));
 
       expect((view.getByLabelText("Prompt") as HTMLInputElement).value).toBe(
         "a dog",
@@ -418,17 +512,18 @@ describe("WorkbenchPage", () => {
       );
 
       await userEvent.type(await view.findByLabelText("Prompt"), "a dog");
-      await userEvent.selectOptions(view.getByLabelText("Aspect"), "wide");
+      await userEvent.click(view.getByRole("combobox", { name: "Aspect" }));
+      await userEvent.click(await view.findByRole("option", { name: "Wide" }));
 
       await userEvent.click(view.getByRole("button", { name: "Generate" }));
-      await view.findByText(/This Model changed; reloaded/);
+      await view.findByText("This Model was updated, check your settings.");
 
       expect((view.getByLabelText("Prompt") as HTMLInputElement).value).toBe(
         "a dog",
       );
-      expect((view.getByLabelText("Aspect") as HTMLSelectElement).value).toBe(
-        "",
-      );
+      expect(
+        view.getByRole("combobox", { name: "Aspect" }).textContent,
+      ).not.toContain("Wide");
     });
   });
 
@@ -445,7 +540,7 @@ describe("WorkbenchPage", () => {
 
     const view = renderWorkbench();
     await view.findByRole("heading", { name: "LTX 2.5" });
-    expect(view.getByText("No Submissions yet.")).toBeTruthy();
+    expect(view.getByText("Nothing yet.")).toBeTruthy();
 
     await waitFor(() => FakeEventSource.generationsStream());
     const source = FakeEventSource.generationsStream();
@@ -462,9 +557,9 @@ describe("WorkbenchPage", () => {
       submittedAt: "2026-01-01T00:00:00.000Z",
     });
 
-    expect(await view.findByText("Waiting for a GPU…")).toBeTruthy();
+    expect(await view.findByText("waiting for a free GPU")).toBeTruthy();
     expect(view.getByText("Default", { selector: "strong" })).toBeTruthy();
-    expect(view.queryByText("No Submissions yet.")).toBeNull();
+    expect(view.queryByText("Nothing yet.")).toBeNull();
   });
 
   test("shows a removed Generation as a dismissable-looking card, not its own state (issue #68's AC)", async () => {
@@ -533,7 +628,7 @@ describe("WorkbenchPage", () => {
       ],
     };
 
-    test("posts to the cancel route and disables the button meanwhile", async () => {
+    test("posts to the card's own cancel route and disables the button meanwhile", async () => {
       let cancelCalls = 0;
       mockFetch((call) => {
         if (call.url.endsWith("/api/models/ltx")) {
@@ -542,7 +637,7 @@ describe("WorkbenchPage", () => {
         if (call.url.endsWith("/api/models/ltx/generations")) {
           return Response.json({ submissions: [QUEUED_SUBMISSION] });
         }
-        if (call.url.endsWith("/api/submissions/s1/cancel")) {
+        if (call.url.endsWith("/api/generations/g1/cancel")) {
           cancelCalls += 1;
           return new Response(null, { status: 204 });
         }
@@ -567,13 +662,20 @@ describe("WorkbenchPage", () => {
       );
     });
 
-    test("shows an error and leaves the button enabled when the cancel request fails", async () => {
+    test("'Cancel all' shows an error and leaves the button enabled when the request fails", async () => {
+      const twoActive = {
+        ...QUEUED_SUBMISSION,
+        generations: [
+          QUEUED_SUBMISSION.generations[0],
+          { ...QUEUED_SUBMISSION.generations[0], id: "g2" },
+        ],
+      };
       mockFetch((call) => {
         if (call.url.endsWith("/api/models/ltx")) {
           return Response.json({ model: MODEL });
         }
         if (call.url.endsWith("/api/models/ltx/generations")) {
-          return Response.json({ submissions: [QUEUED_SUBMISSION] });
+          return Response.json({ submissions: [twoActive] });
         }
         if (call.url.endsWith("/api/submissions/s1/cancel")) {
           return new Response(null, { status: 500 });
@@ -585,16 +687,16 @@ describe("WorkbenchPage", () => {
       const { default: userEvent } = await import(
         "@testing-library/user-event"
       );
-      const cancelButton = await view.findByRole("button", {
-        name: "Cancel",
+      const cancelAllButton = await view.findByRole("button", {
+        name: "Cancel all",
       });
-      await userEvent.click(cancelButton);
+      await userEvent.click(cancelAllButton);
 
       expect(
         await view.findByText("Could not cancel. Please try again."),
       ).toBeTruthy();
       expect(
-        (view.getByRole("button", { name: "Cancel" }) as HTMLButtonElement)
+        (view.getByRole("button", { name: "Cancel all" }) as HTMLButtonElement)
           .disabled,
       ).toBe(false);
     });
@@ -723,7 +825,7 @@ describe("WorkbenchPage", () => {
     const view = renderWorkbench();
     await view.findByRole("heading", { name: "LTX 2.5" });
 
-    expect(view.queryByLabelText("How many (1-4)")).toBeNull();
+    expect(view.queryByRole("group", { name: "Generations" })).toBeNull();
   });
 
   test("sends the picked count in the POST when the Mode has a bound Seed Input (issue #47)", async () => {
@@ -754,12 +856,60 @@ describe("WorkbenchPage", () => {
     const view = renderWorkbench();
     const { default: userEvent } = await import("@testing-library/user-event");
 
-    await view.findByLabelText("How many (1-4)");
-    await userEvent.selectOptions(view.getByLabelText("How many (1-4)"), "3");
-    await userEvent.click(view.getByRole("button", { name: "Generate" }));
+    await view.findByRole("group", { name: "Generations" });
+    await userEvent.click(view.getByRole("radio", { name: "3" }));
+    await userEvent.click(view.getByRole("button", { name: "Generate 3" }));
 
     await waitFor(() => expect(posts.length).toBe(1));
     expect(posts[0]?.count).toBe(3);
+  });
+
+  test("sends the picked count even when the Mode hides its Seed Input (issue #196 regression)", async () => {
+    const MODEL_HIDDEN_SEED = {
+      ...MODEL,
+      modes: [
+        {
+          id: "mode1",
+          name: "Default",
+          description: "",
+          inputs: [],
+          hasSeed: true,
+        },
+      ],
+    };
+    const posts: Array<Record<string, unknown> | null> = [];
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
+        return Response.json({ model: MODEL_HIDDEN_SEED });
+      }
+      if (
+        call.url.endsWith("/api/models/ltx/generations") &&
+        call.method === "GET"
+      ) {
+        return Response.json({ submissions: [] });
+      }
+      if (
+        call.url.endsWith("/api/models/ltx/generations") &&
+        call.method === "POST"
+      ) {
+        posts.push(call.body);
+        return Response.json(
+          { generations: [], prompt: null },
+          { status: 201 },
+        );
+      }
+      throw new Error(`unexpected fetch ${call.url}`);
+    });
+
+    const view = renderWorkbench();
+    const { default: userEvent } = await import("@testing-library/user-event");
+
+    await view.findByRole("group", { name: "Generations" });
+    await userEvent.click(view.getByRole("radio", { name: "2" }));
+    await userEvent.click(view.getByRole("button", { name: "Generate 2" }));
+
+    await waitFor(() => expect(posts.length).toBe(1));
+    expect(posts[0]?.count).toBe(2);
   });
 
   test("shows a Submission's prompt, prefixed when it's the Workflow's own unset value", async () => {
@@ -838,7 +988,7 @@ describe("WorkbenchPage", () => {
       );
 
       await view.findByText("Be nice.");
-      await userEvent.click(view.getByRole("button", { name: "Accept" }));
+      await userEvent.click(view.getByRole("button", { name: "I agree" }));
 
       await waitFor(() => expect(view.queryByText("Be nice.")).toBeNull());
       expect(view.getByRole("button", { name: "Model terms" })).toBeTruthy();
@@ -879,7 +1029,7 @@ describe("WorkbenchPage", () => {
       // Generate; the server still reports the version unaccepted, as a
       // re-ask would, so submitting re-opens the dialog.
       await view.findByText("Be nice.");
-      await userEvent.click(view.getByRole("button", { name: "Accept" }));
+      await userEvent.click(view.getByRole("button", { name: "I agree" }));
       await waitFor(() => expect(view.queryByText("Be nice.")).toBeNull());
 
       await userEvent.click(view.getByRole("button", { name: "Generate" }));
@@ -909,7 +1059,9 @@ describe("WorkbenchPage", () => {
       const view = renderWorkbench();
 
       expect(
-        await view.findByText("22 of 30 left today · 2 more at once"),
+        await view.findByText(
+          withExactTextContent("22 of 30 left today · 2 more at once"),
+        ),
       ).toBeTruthy();
     });
 
@@ -1072,7 +1224,7 @@ describe("WorkbenchPage", () => {
 
       await userEvent.click(view.getByRole("button", { name: "Generate" }));
       expect(
-        await view.findByText("Waiting for your files to finish…"),
+        await view.findByRole("button", { name: "Waiting for Uploads…" }),
       ).toBeTruthy();
       expect(view.getByRole("button", { name: "Don't start" })).toBeTruthy();
       expect(server.posts).toHaveLength(0);
@@ -1099,6 +1251,7 @@ describe("WorkbenchPage", () => {
         new File(["PNG!"], "frame.png", { type: "image/png" }),
       );
       await userEvent.click(view.getByRole("button", { name: "Generate" }));
+      await view.findByRole("button", { name: "Waiting for Uploads…" });
       await userEvent.click(
         await view.findByRole("button", { name: "Don't start" }),
       );
@@ -1129,6 +1282,48 @@ describe("WorkbenchPage", () => {
         await view.findByText("anim.gif isn't a PNG, JPEG or WebP image."),
       ).toBeTruthy();
       expect(server.calls).toEqual([]);
+    });
+
+    test("dropping a file on the drop zone starts the upload", async () => {
+      const server = uploadServer();
+      const view = renderWorkbench();
+
+      await view.findByText("Your files");
+      const dropZone = view.getByLabelText("Start frame").closest("div");
+      if (!dropZone) throw new Error("no drop zone");
+      const file = new File(["PNG!"], "frame.png", { type: "image/png" });
+      fireEvent.drop(dropZone, { dataTransfer: { files: [file] } });
+
+      expect(
+        await view.findByRole("progressbar", { name: "Uploading frame.png" }),
+      ).toBeTruthy();
+      server.release();
+      await waitFor(() => expect(server.calls).toContain("complete"));
+    });
+
+    test("Remove clears the Upload so the field can be picked again", async () => {
+      const server = uploadServer();
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await view.findByText("Your files");
+      await userEvent.upload(
+        view.getByLabelText("Start frame"),
+        new File(["PNG!"], "frame.png", { type: "image/png" }),
+      );
+      server.release();
+      await view.findByText("frame.png");
+
+      await userEvent.click(
+        view.getByRole("button", { name: "Remove Start frame" }),
+      );
+
+      expect(view.queryByText("frame.png")).toBeNull();
+      expect(
+        view.getByRole("button", { name: /Choose an image/ }),
+      ).toBeTruthy();
     });
   });
 
@@ -1223,15 +1418,19 @@ describe("WorkbenchPage", () => {
         "@testing-library/user-event"
       );
 
-      await view.findByText("Your media");
+      await view.findByLabelText("Clip");
       await userEvent.upload(
         view.getByLabelText("Clip"),
         new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
       );
 
-      const startInput = await view.findByLabelText("Start (s)");
-      await userEvent.clear(startInput);
-      await userEvent.type(startInput, "0.5");
+      const startHandle = await view.findByRole("slider", {
+        name: "Trim start",
+      });
+      startHandle.focus();
+      for (let i = 0; i < 5; i++) {
+        await userEvent.keyboard("{ArrowRight}");
+      }
 
       await userEvent.click(view.getByRole("button", { name: "Generate" }));
 
@@ -1255,12 +1454,12 @@ describe("WorkbenchPage", () => {
         "@testing-library/user-event"
       );
 
-      await view.findByText("Your media");
+      await view.findByLabelText("Clip");
       await userEvent.upload(
         view.getByLabelText("Clip"),
         new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
       );
-      await view.findByLabelText("Start (s)");
+      await view.findByRole("slider", { name: "Trim start" });
 
       await userEvent.click(view.getByRole("button", { name: "Generate" }));
 
@@ -1279,15 +1478,19 @@ describe("WorkbenchPage", () => {
         "@testing-library/user-event"
       );
 
-      await view.findByText("Your media");
+      await view.findByLabelText("Clip");
       await userEvent.upload(
         view.getByLabelText("Clip"),
         new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
       );
 
-      const startInput = await view.findByLabelText("Start (s)");
-      await userEvent.clear(startInput);
-      await userEvent.type(startInput, "0.5");
+      const startHandle = await view.findByRole("slider", {
+        name: "Trim start",
+      });
+      startHandle.focus();
+      for (let i = 0; i < 5; i++) {
+        await userEvent.keyboard("{ArrowRight}");
+      }
       await userEvent.click(view.getByRole("button", { name: "Generate" }));
 
       await waitFor(() => expect(server.trimCalls).toHaveLength(1));
@@ -1296,8 +1499,10 @@ describe("WorkbenchPage", () => {
         values: { [VIDEO_INPUT_ID]: TRIMMED_ID },
       });
 
-      await userEvent.clear(startInput);
-      await userEvent.type(startInput, "0");
+      startHandle.focus();
+      for (let i = 0; i < 5; i++) {
+        await userEvent.keyboard("{ArrowLeft}");
+      }
       await userEvent.click(view.getByRole("button", { name: "Generate" }));
 
       await waitFor(() => expect(server.posts).toHaveLength(2));
@@ -1305,6 +1510,227 @@ describe("WorkbenchPage", () => {
       expect(server.posts[1]?.body).toMatchObject({
         values: { [VIDEO_INPUT_ID]: UPLOAD_ID },
       });
+    });
+
+    test("the trim end can't be dragged below the min length past the start", async () => {
+      const server = videoServer();
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await view.findByLabelText("Clip");
+      await userEvent.upload(
+        view.getByLabelText("Clip"),
+        new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
+      );
+
+      const endHandle = await view.findByRole("slider", { name: "Trim end" });
+      endHandle.focus();
+      for (let i = 0; i < 30; i++) {
+        await userEvent.keyboard("{ArrowLeft}");
+      }
+
+      // The 2s clip's min length is max(0.5s, minDurationMs=0) = 0.5s, so
+      // the end handle stops at 0.5s no matter how many more ArrowLefts.
+      expect(endHandle.getAttribute("aria-valuenow")).toBe("0.5");
+      void server;
+    });
+
+    test("a clip longer than the Input's max starts pre-trimmed to [0, max]", async () => {
+      const LONG_VIDEO_INPUT_ID = "cccccccc-1111-4111-8111-111111111111";
+      const LONG_UPLOAD_ID = "dddddddd-1111-4111-8111-111111111111";
+      const LONG_TRIMMED_ID = "eeeeeeee-1111-4111-8111-111111111111";
+      const LONG_MODEL = {
+        ...MODEL,
+        modes: [
+          {
+            id: "mode-long",
+            name: "Default",
+            description: "",
+            inputs: [
+              {
+                id: LONG_VIDEO_INPUT_ID,
+                kind: "video_upload",
+                group: "describe",
+                label: "Clip",
+                help: "",
+                placeholder: null,
+                maxSizeMb: 50,
+                maxLongSide: null,
+                minDurationMs: 0,
+                maxDurationMs: 2_000,
+                trimmable: true,
+              },
+            ],
+          },
+        ],
+      };
+      const trimCalls: FetchCall[] = [];
+      mockFetch(async (call) => {
+        if (call.url.endsWith("/api/models/ltx")) {
+          return Response.json({ model: LONG_MODEL });
+        }
+        if (
+          call.url.endsWith("/api/models/ltx/generations") &&
+          call.method === "GET"
+        ) {
+          return Response.json({ submissions: [] });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ generation: { id: "g1" } }, { status: 201 });
+        }
+        if (call.url === "/api/uploads") {
+          return Response.json(
+            { upload: { id: LONG_UPLOAD_ID, chunkSize: 16 * 1024 * 1024 } },
+            { status: 201 },
+          );
+        }
+        if (call.url.startsWith(`/api/uploads/${LONG_UPLOAD_ID}/chunk`)) {
+          return Response.json({ offset: 4 });
+        }
+        if (call.url === `/api/uploads/${LONG_UPLOAD_ID}/complete`) {
+          return Response.json({
+            upload: {
+              id: LONG_UPLOAD_ID,
+              durationMs: 5000,
+              browserPlayable: true,
+            },
+          });
+        }
+        if (call.url === `/api/uploads/${LONG_UPLOAD_ID}/trim`) {
+          trimCalls.push(call);
+          return Response.json(
+            {
+              upload: {
+                id: LONG_TRIMMED_ID,
+                durationMs: 2000,
+                browserPlayable: true,
+              },
+            },
+            { status: 201 },
+          );
+        }
+        throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await view.findByLabelText("Clip");
+      await userEvent.upload(
+        view.getByLabelText("Clip"),
+        new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
+      );
+
+      expect(await view.findByText(/Using 0:00\.0–0:02\.0/)).toBeTruthy();
+
+      await userEvent.click(view.getByRole("button", { name: "Generate" }));
+      await waitFor(() => expect(trimCalls).toHaveLength(1));
+      expect(trimCalls[0]?.body).toEqual({ startMs: 0, endMs: 2000 });
+    });
+
+    test("a trimmable video this browser can't read any metadata from is refused on pick, nothing sent", async () => {
+      const server = videoServer();
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await view.findByLabelText("Clip");
+      unplayableNextMediaLoad();
+      await userEvent.upload(
+        view.getByLabelText("Clip"),
+        new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
+      );
+
+      expect(
+        await view.findByText(
+          "This video can't be shown in your browser. Convert it to H.264 MP4 or try another browser.",
+        ),
+      ).toBeTruthy();
+      expect(server.posts).toHaveLength(0);
+    });
+
+    test("a non-trimmable video this browser can't read any metadata from, with no Points Input, is accepted untrimmed", async () => {
+      const FIT_INPUT_ID = "88888888-ffff-4fff-8fff-ffffffffffff";
+      const FIT_UPLOAD_ID = "99999999-ffff-4fff-8fff-ffffffffffff";
+      const FIT_MODEL = {
+        ...MODEL,
+        modes: [
+          {
+            id: "mode-fit",
+            name: "Default",
+            description: "",
+            inputs: [
+              {
+                id: FIT_INPUT_ID,
+                kind: "video_upload",
+                group: "describe",
+                label: "Clip",
+                help: "",
+                placeholder: null,
+                maxSizeMb: 50,
+                maxLongSide: null,
+                minDurationMs: 0,
+                maxDurationMs: 10_000,
+                trimmable: false,
+              },
+            ],
+          },
+        ],
+      };
+      mockFetch(async (call) => {
+        if (call.url.endsWith("/api/models/ltx")) {
+          return Response.json({ model: FIT_MODEL });
+        }
+        if (
+          call.url.endsWith("/api/models/ltx/generations") &&
+          call.method === "GET"
+        ) {
+          return Response.json({ submissions: [] });
+        }
+        if (call.url === "/api/uploads") {
+          return Response.json(
+            { upload: { id: FIT_UPLOAD_ID, chunkSize: 16 * 1024 * 1024 } },
+            { status: 201 },
+          );
+        }
+        if (call.url.startsWith(`/api/uploads/${FIT_UPLOAD_ID}/chunk`)) {
+          return Response.json({ offset: 4 });
+        }
+        if (call.url === `/api/uploads/${FIT_UPLOAD_ID}/complete`) {
+          return Response.json({
+            upload: {
+              id: FIT_UPLOAD_ID,
+              durationMs: 2000,
+              browserPlayable: false,
+            },
+          });
+        }
+        throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await view.findByLabelText("Clip");
+      unplayableNextMediaLoad();
+      await userEvent.upload(
+        view.getByLabelText("Clip"),
+        new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
+      );
+
+      expect(await view.findByText("clip.mp4")).toBeTruthy();
+      expect(
+        view.queryByText(
+          "This video can't be shown in your browser. Convert it to H.264 MP4 or try another browser.",
+        ),
+      ).toBeNull();
     });
   });
 
@@ -1474,8 +1900,8 @@ describe("WorkbenchPage", () => {
       pointsServer(pointsModelWithDefaultSize());
       const view = renderWorkbench();
 
-      await view.findByText("Points");
-      expect(view.getByText("Pick a video above first.")).toBeTruthy();
+      await view.findByLabelText("Clip");
+      expect(view.getByText(/Add the clip first/)).toBeTruthy();
     });
 
     test("shows the point counter once a video is uploaded and a target size is known", async () => {
@@ -1485,14 +1911,16 @@ describe("WorkbenchPage", () => {
         "@testing-library/user-event"
       );
 
-      await view.findByText("Your media");
+      await view.findByLabelText("Clip");
       await userEvent.upload(
         view.getByLabelText("Clip"),
         new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
       );
-      await view.findByLabelText("Start (s)");
+      await view.findByRole("slider", { name: "Trim start" });
 
-      expect(await view.findByText(/0\/10 points picked/)).toBeTruthy();
+      expect(
+        await view.findByText(/No points yet.*frame at 0:00\.0/),
+      ).toBeTruthy();
     });
 
     test("resolves the crop's target size from a bound Number Input, not just the literal default", async () => {
@@ -1502,16 +1930,18 @@ describe("WorkbenchPage", () => {
         "@testing-library/user-event"
       );
 
-      await view.findByText("Your media");
+      await view.findByLabelText("Clip");
       await userEvent.upload(
         view.getByLabelText("Clip"),
         new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
       );
-      await view.findByLabelText("Start (s)");
+      await view.findByRole("slider", { name: "Trim start" });
 
       // No literal `defaultWidth` on this fixture: the picker only shows
       // once *some* target width is known, here from the Width Input.
-      expect(await view.findByText(/0\/10 points picked/)).toBeTruthy();
+      expect(
+        await view.findByText(/No points yet.*frame at 0:00\.0/),
+      ).toBeTruthy();
     });
 
     test("resolves the crop's target size from a bound Select Input's chosen option value, not Number() of its option id", async () => {
@@ -1521,17 +1951,164 @@ describe("WorkbenchPage", () => {
         "@testing-library/user-event"
       );
 
-      await view.findByText("Your media");
+      await view.findByLabelText("Clip");
       await userEvent.upload(
         view.getByLabelText("Clip"),
         new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
       );
-      await view.findByLabelText("Start (s)");
+      await view.findByRole("slider", { name: "Trim start" });
 
       // `Size` defaults to the Big option: `Number(optionId)` is NaN,
       // so before the fix this fell back to `defaultWidth` (null here),
       // showing "Set a size first." instead of the picker.
-      expect(await view.findByText(/0\/10 points picked/)).toBeTruthy();
+      expect(
+        await view.findByText(/No points yet.*frame at 0:00\.0/),
+      ).toBeTruthy();
+    });
+
+    /** happy-dom never lays elements out, so `getBoundingClientRect` is always 0×0; this fakes the frame's box so a real click can land inside the (centered, so (0.5, 0.5) is always inside) crop. */
+    function clickCenterOfFrame(view: ReturnType<typeof renderWorkbench>) {
+      const frameEl = view.getByRole("application", {
+        name: "First frame: click the person to replace",
+      });
+      frameEl.getBoundingClientRect = () =>
+        ({
+          left: 0,
+          top: 0,
+          width: 200,
+          height: 200,
+          right: 200,
+          bottom: 200,
+          x: 0,
+          y: 0,
+          toJSON() {},
+        }) as DOMRect;
+      fireEvent.click(frameEl, { clientX: 100, clientY: 100 });
+    }
+
+    /** Each `/api/uploads` call gets its own fresh id, so a Replace's second pick doesn't collide with the first. */
+    function multiUploadPointsServer(model: unknown) {
+      let nextId = 0;
+      mockFetch(async (call) => {
+        if (call.url.endsWith("/api/models/ltx")) {
+          return Response.json({ model });
+        }
+        if (
+          call.url.endsWith("/api/models/ltx/generations") &&
+          call.method === "GET"
+        ) {
+          return Response.json({ submissions: [] });
+        }
+        if (call.url === "/api/uploads") {
+          nextId += 1;
+          return Response.json(
+            {
+              upload: {
+                id: `99999999-9999-4999-8999-99999999999${nextId}`,
+                chunkSize: 16 * 1024 * 1024,
+              },
+            },
+            { status: 201 },
+          );
+        }
+        const chunkMatch = call.url.match(/^\/api\/uploads\/([^/]+)\/chunk/);
+        if (chunkMatch) return Response.json({ offset: 4 });
+        const completeMatch = call.url.match(
+          /^\/api\/uploads\/([^/]+)\/complete$/,
+        );
+        if (completeMatch) {
+          return Response.json({
+            upload: {
+              id: completeMatch[1],
+              durationMs: 2000,
+              browserPlayable: true,
+            },
+          });
+        }
+        throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+      });
+    }
+
+    test("Replace clears existing points, noting the video changed", async () => {
+      multiUploadPointsServer(pointsModelWithDefaultSize());
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await view.findByLabelText("Clip");
+      await userEvent.upload(
+        view.getByLabelText("Clip"),
+        new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
+      );
+      await view.findByText(/No points yet/);
+      await act(async () => clickCenterOfFrame(view));
+      await view.findByText(/^1 point/);
+
+      await userEvent.click(view.getByRole("button", { name: "Replace" }));
+      await userEvent.upload(
+        view.getByLabelText("Clip"),
+        new File(["MP4!"], "clip2.mp4", { type: "video/mp4" }),
+      );
+
+      expect(
+        await view.findByText("Points cleared: the video changed."),
+      ).toBeTruthy();
+      expect(await view.findByText(/No points yet/)).toBeTruthy();
+    });
+
+    test("Remove clears the points too", async () => {
+      multiUploadPointsServer(pointsModelWithDefaultSize());
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await view.findByLabelText("Clip");
+      await userEvent.upload(
+        view.getByLabelText("Clip"),
+        new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
+      );
+      await view.findByText(/No points yet/);
+      await act(async () => clickCenterOfFrame(view));
+      await view.findByText(/^1 point/);
+
+      await userEvent.click(view.getByRole("button", { name: "Remove Clip" }));
+
+      expect(await view.findByText(/Add the clip first/)).toBeTruthy();
+      expect(
+        await view.findByText("Points cleared: the video changed."),
+      ).toBeTruthy();
+    });
+
+    test("moving the trim start clears the points, noting the first frame changed", async () => {
+      multiUploadPointsServer(pointsModelWithDefaultSize());
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await view.findByLabelText("Clip");
+      await userEvent.upload(
+        view.getByLabelText("Clip"),
+        new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
+      );
+      await view.findByText(/No points yet/);
+      await act(async () => clickCenterOfFrame(view));
+      await view.findByText(/^1 point/);
+
+      const startHandle = await view.findByRole("slider", {
+        name: "Trim start",
+      });
+      startHandle.focus();
+      await userEvent.keyboard("{ArrowRight}");
+
+      expect(
+        await view.findByText(
+          "Points cleared: the trim start moved, so the first frame changed.",
+        ),
+      ).toBeTruthy();
+      expect(await view.findByText(/No points yet/)).toBeTruthy();
     });
   });
 
@@ -1703,6 +2280,1120 @@ describe("WorkbenchPage", () => {
         ),
       ).toBeTruthy();
       await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+  });
+
+  describe("Generations column restyle (issue #195)", () => {
+    const ENDED_SUBMISSION = {
+      submissionId: "s1",
+      modeId: "mode1",
+      modeName: "Default",
+      submittedAt: "2026-01-01T00:00:00.000Z",
+      generations: [
+        {
+          id: "g1",
+          modelId: "m1",
+          modelSlug: "ltx",
+          modelName: "LTX 2.5",
+          modeId: "mode1",
+          modeName: "Default",
+          submissionId: "s1",
+          state: "succeeded",
+          tries: 0,
+          error: null,
+          submittedAt: "2026-01-01T00:00:00.000Z",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          endedAt: "2026-01-01T00:01:00.000Z",
+          assets: [
+            {
+              id: "a1",
+              nodeId: "n1",
+              sortOrder: 0,
+              kind: "image",
+              contentType: "image/png",
+              size: 100,
+              width: 512,
+              height: 512,
+              durationMs: null,
+            },
+          ],
+          removedAt: null,
+        },
+      ],
+    };
+
+    test("the pill ignores another Model's Generations", async () => {
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx")) {
+          return Response.json({ model: MODEL });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ submissions: [] });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      await view.findByRole("heading", { name: "LTX 2.5" });
+
+      await waitFor(() => FakeEventSource.generationsStream());
+      FakeEventSource.generationsStream().emit("snapshot", {
+        generations: [
+          {
+            id: "g1",
+            modelId: "m1",
+            modelSlug: "ltx",
+            modelName: "LTX 2.5",
+            modeId: "mode1",
+            modeName: "Default",
+            submissionId: "s1",
+            state: "queued",
+            deletedAt: null,
+            removedAt: null,
+          },
+          {
+            id: "g2",
+            modelId: "m2",
+            modelSlug: "other",
+            modelName: "Other Model",
+            modeId: "mode2",
+            modeName: "Other",
+            submissionId: "s2",
+            state: "queued",
+            deletedAt: null,
+            removedAt: null,
+          },
+        ],
+      });
+
+      expect(await view.findAllByText("1 under way")).toHaveLength(2);
+      expect(view.queryByText("2 under way")).toBeNull();
+    });
+
+    test("per-card Cancel posts to the Generation's own route and leaves its sibling running", async () => {
+      const twoQueued = {
+        ...ENDED_SUBMISSION,
+        generations: [
+          {
+            ...ENDED_SUBMISSION.generations[0],
+            id: "g1",
+            state: "queued",
+            assets: [],
+          },
+          {
+            ...ENDED_SUBMISSION.generations[0],
+            id: "g2",
+            state: "queued",
+            assets: [],
+          },
+        ],
+      };
+      const cancelled: string[] = [];
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx")) {
+          return Response.json({ model: MODEL });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ submissions: [twoQueued] });
+        }
+        if (
+          call.url.endsWith("/cancel") &&
+          call.url.includes("/generations/")
+        ) {
+          cancelled.push(call.url);
+          return new Response(null, { status: 204 });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+      const cancelButtons = await view.findAllByRole("button", {
+        name: "Cancel",
+      });
+      expect(cancelButtons).toHaveLength(2);
+      await userEvent.click(cancelButtons[0] as HTMLElement);
+
+      await waitFor(() =>
+        expect(cancelled).toEqual(["/api/generations/g1/cancel"]),
+      );
+      // The sibling Generation's own Cancel is untouched.
+      expect(
+        await view.findAllByRole("button", { name: "Cancel" }),
+      ).toHaveLength(2);
+    });
+
+    test("Copy writes the full Generation id", async () => {
+      const failed = {
+        ...ENDED_SUBMISSION,
+        generations: [
+          {
+            ...ENDED_SUBMISSION.generations[0],
+            state: "failed",
+            error: "timed out",
+            assets: [],
+          },
+        ],
+      };
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx")) {
+          return Response.json({ model: MODEL });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ submissions: [failed] });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const written: string[] = [];
+      Object.defineProperty(navigator, "clipboard", {
+        value: {
+          writeText: (text: string) => {
+            written.push(text);
+            return Promise.resolve();
+          },
+        },
+        configurable: true,
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+      const copyButton = await view.findByRole("button", {
+        name: "Copy Generation id",
+      });
+      await userEvent.click(copyButton);
+
+      expect(written).toEqual(["g1"]);
+    });
+
+    test("Dismiss posts dismiss-removed and removes the card", async () => {
+      const removed = {
+        ...ENDED_SUBMISSION,
+        generations: [
+          {
+            ...ENDED_SUBMISSION.generations[0],
+            removedAt: "2026-01-02T00:00:00.000Z",
+          },
+        ],
+      };
+      let dismissed = false;
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx")) {
+          return Response.json({ model: MODEL });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ submissions: [removed] });
+        }
+        if (call.url.endsWith("/api/generations/g1/dismiss-removed")) {
+          dismissed = true;
+          return Response.json({ ok: true });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+      await view.findByText("Removed by an administrator");
+      await userEvent.click(view.getByRole("button", { name: "Dismiss" }));
+
+      await waitFor(() => expect(dismissed).toBe(true));
+      expect(view.queryByText("Removed by an administrator")).toBeNull();
+      expect(view.getByText("Nothing yet.")).toBeTruthy();
+    });
+
+    test("the card's inline Delete confirms before posting DELETE", async () => {
+      let deleteCalls = 0;
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx")) {
+          return Response.json({ model: MODEL });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ submissions: [ENDED_SUBMISSION] });
+        }
+        if (
+          call.url.endsWith("/api/generations/g1") &&
+          call.method === "DELETE"
+        ) {
+          deleteCalls += 1;
+          return Response.json({ ok: true });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+      await userEvent.click(
+        await view.findByRole("button", { name: "Delete this Generation" }),
+      );
+
+      expect(await view.findByText("Delete this Generation?")).toBeTruthy();
+      expect(deleteCalls).toBe(0);
+
+      await userEvent.click(view.getByRole("button", { name: "Keep" }));
+      expect(view.queryByText("Delete this Generation?")).toBeNull();
+      expect(deleteCalls).toBe(0);
+
+      await userEvent.click(
+        await view.findByRole("button", { name: "Delete this Generation" }),
+      );
+      await userEvent.click(view.getByRole("button", { name: "Delete" }));
+
+      await waitFor(() => expect(deleteCalls).toBe(1));
+    });
+
+    test("a Submission's relative time advances on the 30s tick, not just at page-load (QA regression)", async () => {
+      jest.useFakeTimers({ now: new Date("2026-01-01T00:00:00.000Z") });
+      try {
+        mockFetch((call) => {
+          if (call.url.endsWith("/api/models/ltx")) {
+            return Response.json({ model: MODEL });
+          }
+          if (call.url.endsWith("/api/models/ltx/generations")) {
+            return Response.json({
+              submissions: [
+                {
+                  ...ENDED_SUBMISSION,
+                  submittedAt: "2026-01-01T00:00:00.000Z",
+                },
+              ],
+            });
+          }
+          throw new Error(`unexpected fetch ${call.url}`);
+        });
+
+        const view = renderWorkbench();
+        await view.findByText("just now");
+
+        await act(async () => {
+          jest.advanceTimersByTime(60_000);
+        });
+
+        expect(await view.findByText("1 min ago")).toBeTruthy();
+        expect(view.queryByText("just now")).toBeNull();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    test("the notifications offer renders inside the newly created Submission's block", async () => {
+      const FakeNotification = {
+        permission: "default" as NotificationPermission,
+        requestPermission() {
+          return Promise.resolve("granted" as NotificationPermission);
+        },
+      };
+      const globals = globalThis as unknown as {
+        Notification: unknown;
+        matchMedia: unknown;
+      };
+      const previousNotification = globals.Notification;
+      const previousMatchMedia = globals.matchMedia;
+      globals.Notification = FakeNotification;
+      globals.matchMedia = (query: string) => ({
+        matches: query.includes("pointer: fine"),
+        media: query,
+        addEventListener() {},
+        removeEventListener() {},
+      });
+      localStorage.removeItem("ai-content-studio:notifications-prompted");
+      localStorage.removeItem("ai-content-studio:notifications");
+
+      try {
+        mockFetch((call) => {
+          if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
+            return Response.json({ model: MODEL });
+          }
+          if (
+            call.url.endsWith("/api/models/ltx/generations") &&
+            call.method === "GET"
+          ) {
+            return Response.json({ submissions: [] });
+          }
+          if (
+            call.url.endsWith("/api/models/ltx/generations") &&
+            call.method === "POST"
+          ) {
+            return Response.json(
+              {
+                generations: [
+                  { ...ENDED_SUBMISSION.generations[0], state: "queued" },
+                ],
+                prompt: null,
+              },
+              { status: 201 },
+            );
+          }
+          throw new Error(`unexpected fetch ${call.url}`);
+        });
+
+        const view = renderWorkbench();
+        const { default: userEvent } = await import(
+          "@testing-library/user-event"
+        );
+        const generateButton = await view.findByRole("button", {
+          name: "Generate",
+        });
+        await userEvent.click(generateButton);
+
+        expect(
+          await view.findByText("Get notified when this finishes?"),
+        ).toBeTruthy();
+      } finally {
+        globals.Notification = previousNotification;
+        globals.matchMedia = previousMatchMedia;
+      }
+    });
+
+    test("keeps syncing the right Model's Submissions after navigating to another Model without a remount (CEO review, round 3)", async () => {
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx")) {
+          return Response.json({ model: MODEL });
+        }
+        if (call.url.endsWith("/api/models/other")) {
+          return Response.json({
+            model: {
+              ...MODEL,
+              slug: "other",
+              name: "Other Model",
+              modes: [
+                {
+                  id: "mode2",
+                  name: "Other Mode",
+                  description: "",
+                  inputs: [],
+                },
+              ],
+            },
+          });
+        }
+        if (
+          call.url.endsWith("/api/models/ltx/generations") ||
+          call.url.endsWith("/api/models/other/generations")
+        ) {
+          return Response.json({ submissions: [] });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      (globalThis as unknown as { EventSource: unknown }).EventSource =
+        FakeEventSource;
+      FakeEventSource.instances = [];
+
+      const { Link } = await import("react-router-dom");
+      const view = renderWithProviders(null, {
+        route: "/models/ltx",
+        routes: [
+          {
+            path: "/models/:slug",
+            element: (
+              <>
+                <Link to="/models/other">Other Model</Link>
+                <WorkbenchPage />
+              </>
+            ),
+          },
+        ],
+      });
+
+      await view.findByRole("heading", { name: "LTX 2.5" });
+
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+      await userEvent.click(view.getByRole("link", { name: "Other Model" }));
+      await view.findByRole("heading", { name: "Other Model" });
+
+      // Same `WorkbenchPage` instance throughout (`/models/:slug` never
+      // remounts on a param change) — the SSE handlers bound at the LTX
+      // mount must still land this change under the now-current slug.
+      await waitFor(() => FakeEventSource.generationsStream());
+      const source = FakeEventSource.generationsStream();
+      source.emit("change", {
+        id: "g9",
+        modelId: "m2",
+        modelSlug: "other",
+        modelName: "Other Model",
+        modeId: "mode2",
+        modeName: "Other Mode",
+        submissionId: "s9",
+        state: "queued",
+        tries: 0,
+        submittedAt: "2026-01-01T00:00:00.000Z",
+      });
+
+      expect(
+        await view.findByText("Other Mode", { selector: "strong" }),
+      ).toBeTruthy();
+    });
+  });
+  describe("Restyled Workbench (issue #194)", () => {
+    const PROMPT_INPUT = {
+      id: "re-prompt",
+      group: "describe" as const,
+      label: "Prompt",
+      help: "",
+      required: false,
+      placeholder: null,
+      kind: "text" as const,
+      multiline: false,
+      maxLength: 2000,
+      default: "",
+    };
+
+    const START_FRAME_INPUT = {
+      id: "re-start-frame",
+      group: "describe" as const,
+      label: "Start frame",
+      help: "",
+      required: true,
+      placeholder: null,
+      kind: "image_upload" as const,
+      maxSizeMb: 20,
+      maxLongSide: null,
+    };
+
+    test('the Mode menu groups Modes and shows ModeUses ("Prompt only"; an image Upload\'s icon + label)', async () => {
+      const model = {
+        ...MODEL,
+        revision: 301,
+        modes: [
+          {
+            id: "rm-prompt",
+            name: "Prompt mode",
+            description: "Write a prompt",
+            inputs: [PROMPT_INPUT],
+            menuGroup: "prompt" as const,
+          },
+          {
+            id: "rm-image",
+            name: "Image mode",
+            description: "Start from an image",
+            inputs: [START_FRAME_INPUT],
+            menuGroup: "images" as const,
+          },
+        ],
+      };
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
+          return Response.json({ model });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ submissions: [] });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await userEvent.click(
+        await view.findByRole("combobox", { name: "Mode" }),
+      );
+
+      expect(view.getByText("From a prompt")).toBeTruthy();
+      expect(view.getByText("From images")).toBeTruthy();
+      const promptOption = view.getByRole("option", { name: /Prompt mode/ });
+      expect(within(promptOption).getByText("Prompt only")).toBeTruthy();
+      const imageOption = view.getByRole("option", { name: /Image mode/ });
+      expect(within(imageOption).getByText("Start frame")).toBeTruthy();
+      expect(imageOption.querySelector("svg.lucide-image")).toBeTruthy();
+    });
+
+    test("a one-Mode Model shows the eyebrow, the Mode's name as a heading, and its description", async () => {
+      const model = {
+        ...MODEL,
+        revision: 302,
+        modes: [
+          {
+            id: "om-mode",
+            name: "Wan 2.2",
+            description: "Image to video",
+            inputs: [],
+            menuGroup: "prompt" as const,
+          },
+        ],
+      };
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
+          return Response.json({ model });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ submissions: [] });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+
+      expect(await view.findByText("Mode")).toBeTruthy();
+      expect(
+        await view.findByRole("heading", { name: "Wan 2.2" }),
+      ).toBeTruthy();
+      expect(view.getByText("Image to video")).toBeTruthy();
+    });
+
+    test('an optional Input shows "Optional"; a required one does not', async () => {
+      const requiredInput = {
+        ...PROMPT_INPUT,
+        id: "re-required",
+        label: "Required text",
+        required: true,
+      };
+      const model = {
+        ...MODEL,
+        revision: 303,
+        modes: [
+          {
+            id: "opt-mode",
+            name: "Default",
+            description: "",
+            inputs: [PROMPT_INPUT, requiredInput],
+            menuGroup: "prompt" as const,
+          },
+        ],
+      };
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
+          return Response.json({ model });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ submissions: [] });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      await view.findByLabelText("Prompt");
+
+      expect(view.getByText("Optional")).toBeTruthy();
+      expect(view.queryByText("(required)")).toBeNull();
+    });
+
+    test("the text counter shows len / max", async () => {
+      const model = {
+        ...MODEL,
+        revision: 304,
+        modes: [
+          {
+            id: "counter-mode",
+            name: "Default",
+            description: "",
+            inputs: [PROMPT_INPUT],
+            menuGroup: "prompt" as const,
+          },
+        ],
+      };
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
+          return Response.json({ model });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ submissions: [] });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+      const field = await view.findByLabelText("Prompt");
+      await userEvent.type(field, "hi");
+
+      expect(view.getByText("2 / 2000")).toBeTruthy();
+    });
+
+    test('the seed\'s "Random" button clears a typed seed', async () => {
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
+          return Response.json({ model: MODEL_WITH_SEED });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ submissions: [] });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+      const seedField = await view.findByLabelText("Seed");
+      await userEvent.type(seedField, "42");
+      expect((seedField as HTMLInputElement).value).toBe("42");
+
+      await userEvent.click(view.getByRole("button", { name: "Random" }));
+      expect((seedField as HTMLInputElement).value).toBe("");
+    });
+
+    test("groups Inputs by kind, ignoring the Admin-set input.group", async () => {
+      const numberMisgrouped = {
+        id: "re-number",
+        group: "describe" as const,
+        label: "Steps",
+        help: "",
+        required: false,
+        placeholder: null,
+        kind: "number" as const,
+        numberMode: "integer" as const,
+        min: 1,
+        max: 50,
+        step: 1,
+        default: 20,
+      };
+      const model = {
+        ...MODEL,
+        revision: 306,
+        modes: [
+          {
+            id: "group-mode",
+            name: "Default",
+            description: "",
+            inputs: [PROMPT_INPUT, numberMisgrouped],
+            menuGroup: "prompt" as const,
+          },
+        ],
+      };
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
+          return Response.json({ model });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ submissions: [] });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      await view.findByLabelText("Prompt");
+
+      const settingsGroup = view.getByText("Settings").closest("fieldset");
+      const describeGroup = view.getByText("Describe it").closest("fieldset");
+      expect(settingsGroup).toBeTruthy();
+      expect(describeGroup).toBeTruthy();
+      expect(
+        within(settingsGroup as HTMLElement).getByLabelText("Steps"),
+      ).toBeTruthy();
+      expect(
+        within(describeGroup as HTMLElement).queryByLabelText("Steps"),
+      ).toBeNull();
+    });
+
+    test("the blocking terms dialog ignores Escape", async () => {
+      const model = {
+        ...MODEL,
+        revision: 307,
+        attribution: "By Example Corp",
+        terms: {
+          version: 1,
+          body: "Be nice.",
+          licenseUrl: "https://example.com/license",
+          accepted: false,
+        },
+      };
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
+          return Response.json({ model });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ submissions: [] });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+      await view.findByText("Before you use LTX 2.5");
+
+      await userEvent.keyboard("{Escape}");
+
+      expect(view.getByText("Before you use LTX 2.5")).toBeTruthy();
+    });
+
+    test("only the chosen Mode's shown Inputs are sent", async () => {
+      const promptA = { ...PROMPT_INPUT, id: "mode-a-prompt" };
+      const promptB = {
+        ...PROMPT_INPUT,
+        id: "mode-b-prompt",
+        label: "Caption",
+      };
+      const model = {
+        ...MODEL,
+        revision: 308,
+        modes: [
+          {
+            id: "mode-a",
+            name: "A",
+            description: "",
+            inputs: [promptA],
+            menuGroup: "prompt" as const,
+          },
+          {
+            id: "mode-b",
+            name: "B",
+            description: "",
+            inputs: [promptB],
+            menuGroup: "prompt" as const,
+          },
+        ],
+      };
+      const posts: FetchCall[] = [];
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
+          return Response.json({ model });
+        }
+        if (
+          call.url.endsWith("/api/models/ltx/generations") &&
+          call.method === "GET"
+        ) {
+          return Response.json({ submissions: [] });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          posts.push(call);
+          return Response.json(
+            { generations: [], prompt: null },
+            { status: 201 },
+          );
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await userEvent.click(
+        await view.findByRole("combobox", { name: "Mode" }),
+      );
+      await userEvent.click(view.getByRole("option", { name: /^B/ }));
+      await userEvent.type(await view.findByLabelText("Caption"), "hi");
+      await userEvent.click(view.getByRole("button", { name: "Generate" }));
+
+      await waitFor(() => expect(posts).toHaveLength(1));
+      expect(posts[0]?.body?.values).toEqual({ "mode-b-prompt": "hi" });
+    });
+  });
+
+  describe("Restyled foot (issue #196)", () => {
+    test('the Generate button is labelled "Generate 2" once the count is picked', async () => {
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
+          return Response.json({ model: MODEL_WITH_SEED });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ submissions: [] });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await view.findByRole("group", { name: "Generations" });
+      await userEvent.click(view.getByRole("radio", { name: "2" }));
+
+      expect(
+        await view.findByRole("button", { name: "Generate 2" }),
+      ).toBeTruthy();
+    });
+
+    test('shows "Sending…", disabled with a spinner, while the POST is pending', async () => {
+      const postGate: { resolve: (() => void) | null } = { resolve: null };
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
+          return Response.json({ model: MODEL });
+        }
+        if (
+          call.url.endsWith("/api/models/ltx/generations") &&
+          call.method === "GET"
+        ) {
+          return Response.json({ submissions: [] });
+        }
+        if (
+          call.url.endsWith("/api/models/ltx/generations") &&
+          call.method === "POST"
+        ) {
+          return new Promise<Response>((resolve) => {
+            postGate.resolve = () =>
+              resolve(
+                Response.json(
+                  { generations: [], prompt: null },
+                  { status: 201 },
+                ),
+              );
+          });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+      await view.findByRole("button", { name: "Generate" });
+      await userEvent.click(view.getByRole("button", { name: "Generate" }));
+
+      const button = await view.findByRole("button", { name: "Sending…" });
+      expect(button.getAttribute("aria-busy")).toBe("true");
+      expect((button as HTMLButtonElement).disabled).toBe(true);
+
+      postGate.resolve?.();
+      await waitFor(() =>
+        expect(view.getByRole("button", { name: "Generate" })).toBeTruthy(),
+      );
+    });
+
+    test("shows a pending-Uploads note before Generate is pressed", async () => {
+      const UPLOAD_INPUT_ID = "66666666-6666-4666-8666-666666666666";
+      const UPLOAD_MODEL = {
+        ...MODEL,
+        modes: [
+          {
+            id: "mode-upload",
+            name: "Default",
+            description: "",
+            inputs: [
+              {
+                id: UPLOAD_INPUT_ID,
+                kind: "image_upload",
+                group: "describe",
+                label: "Start frame",
+                help: "",
+                placeholder: null,
+                maxSizeMb: 5,
+                maxLongSide: null,
+              },
+            ],
+          },
+        ],
+      };
+      const chunkGate = new Promise<void>(() => {});
+      mockFetch(async (call) => {
+        if (call.url.endsWith("/api/models/ltx")) {
+          return Response.json({ model: UPLOAD_MODEL });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ submissions: [] });
+        }
+        if (call.url === "/api/uploads") {
+          return Response.json(
+            { upload: { id: "u1", chunkSize: 16 * 1024 * 1024 } },
+            { status: 201 },
+          );
+        }
+        if (call.url.startsWith("/api/uploads/u1/chunk")) {
+          await chunkGate;
+          return Response.json({ offset: 4 });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+      await view.findByText("Your files");
+      await userEvent.upload(
+        view.getByLabelText("Start frame"),
+        new File(["PNG!"], "frame.png", { type: "image/png" }),
+      );
+
+      expect(
+        await view.findByText(
+          "1 Upload still in progress. You can keep filling the form, or press Generate now.",
+        ),
+      ).toBeTruthy();
+    });
+
+    test("a trim failure puts the server's message on the Upload's own field", async () => {
+      const VIDEO_INPUT_ID = "88888888-8888-4888-8888-888888888888";
+      const UPLOAD_ID = "99999999-9999-4999-8999-999999999999";
+      const VIDEO_MODEL = {
+        ...MODEL,
+        modes: [
+          {
+            id: "mode-video",
+            name: "Default",
+            description: "",
+            inputs: [
+              {
+                id: VIDEO_INPUT_ID,
+                kind: "video_upload",
+                group: "describe",
+                label: "Clip",
+                help: "",
+                placeholder: null,
+                maxSizeMb: 50,
+                maxLongSide: null,
+                minDurationMs: 0,
+                maxDurationMs: 10_000,
+                trimmable: true,
+              },
+            ],
+          },
+        ],
+      };
+      mockFetch(async (call) => {
+        if (call.url.endsWith("/api/models/ltx")) {
+          return Response.json({ model: VIDEO_MODEL });
+        }
+        if (
+          call.url.endsWith("/api/models/ltx/generations") &&
+          call.method === "GET"
+        ) {
+          return Response.json({ submissions: [] });
+        }
+        if (call.url === "/api/uploads") {
+          return Response.json(
+            { upload: { id: UPLOAD_ID, chunkSize: 16 * 1024 * 1024 } },
+            { status: 201 },
+          );
+        }
+        if (call.url.startsWith(`/api/uploads/${UPLOAD_ID}/chunk`)) {
+          return Response.json({ offset: 4 });
+        }
+        if (call.url === `/api/uploads/${UPLOAD_ID}/complete`) {
+          return Response.json({
+            upload: { id: UPLOAD_ID, durationMs: 2000, browserPlayable: true },
+          });
+        }
+        if (call.url === `/api/uploads/${UPLOAD_ID}/trim`) {
+          return Response.json(
+            { error: "storage_full", message: "storage is full, try later" },
+            { status: 507 },
+          );
+        }
+        throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await view.findByLabelText("Clip");
+      await userEvent.upload(
+        view.getByLabelText("Clip"),
+        new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
+      );
+      const startHandle = await view.findByRole("slider", {
+        name: "Trim start",
+      });
+      startHandle.focus();
+      for (let i = 0; i < 5; i++) {
+        await userEvent.keyboard("{ArrowRight}");
+      }
+
+      await userEvent.click(view.getByRole("button", { name: "Generate" }));
+
+      expect(await view.findByText("storage is full, try later")).toBeTruthy();
+      expect(
+        await view.findByText("Check the highlighted fields."),
+      ).toBeTruthy();
+    });
+
+    test("a trim fetch that rejects (network failure) puts a generic message, not the raw error, on the Upload's own field", async () => {
+      const VIDEO_INPUT_ID = "88888888-8888-4888-8888-888888888888";
+      const UPLOAD_ID = "99999999-9999-4999-8999-999999999999";
+      const VIDEO_MODEL = {
+        ...MODEL,
+        modes: [
+          {
+            id: "mode-video",
+            name: "Default",
+            description: "",
+            inputs: [
+              {
+                id: VIDEO_INPUT_ID,
+                kind: "video_upload",
+                group: "describe",
+                label: "Clip",
+                help: "",
+                placeholder: null,
+                maxSizeMb: 50,
+                maxLongSide: null,
+                minDurationMs: 0,
+                maxDurationMs: 10_000,
+                trimmable: true,
+              },
+            ],
+          },
+        ],
+      };
+      mockFetch(async (call) => {
+        if (call.url.endsWith("/api/models/ltx")) {
+          return Response.json({ model: VIDEO_MODEL });
+        }
+        if (
+          call.url.endsWith("/api/models/ltx/generations") &&
+          call.method === "GET"
+        ) {
+          return Response.json({ submissions: [] });
+        }
+        if (call.url === "/api/uploads") {
+          return Response.json(
+            { upload: { id: UPLOAD_ID, chunkSize: 16 * 1024 * 1024 } },
+            { status: 201 },
+          );
+        }
+        if (call.url.startsWith(`/api/uploads/${UPLOAD_ID}/chunk`)) {
+          return Response.json({ offset: 4 });
+        }
+        if (call.url === `/api/uploads/${UPLOAD_ID}/complete`) {
+          return Response.json({
+            upload: { id: UPLOAD_ID, durationMs: 2000, browserPlayable: true },
+          });
+        }
+        if (call.url === `/api/uploads/${UPLOAD_ID}/trim`) {
+          throw new TypeError("Failed to fetch");
+        }
+        throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await view.findByLabelText("Clip");
+      await userEvent.upload(
+        view.getByLabelText("Clip"),
+        new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
+      );
+      const startHandle = await view.findByRole("slider", {
+        name: "Trim start",
+      });
+      startHandle.focus();
+      for (let i = 0; i < 5; i++) {
+        await userEvent.keyboard("{ArrowRight}");
+      }
+
+      await userEvent.click(view.getByRole("button", { name: "Generate" }));
+
+      expect(
+        await view.findByText(
+          "Your Upload couldn't be processed. Try another file.",
+        ),
+      ).toBeTruthy();
+      expect(view.queryByText("Failed to fetch")).toBeFalsy();
+      expect(
+        await view.findByText("Check the highlighted fields."),
+      ).toBeTruthy();
     });
   });
 });

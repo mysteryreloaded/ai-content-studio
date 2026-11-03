@@ -1,13 +1,16 @@
 import {
+  BYTES_PER_MB,
   checkModel,
   computeModePath,
+  findOutsideServiceNotes,
   hasBlockingErrors,
+  isValidModelLicenseUrl,
   modeInputSetting,
+  parseApiFormatWorkflow,
   renderMarkdown,
 } from "@ai-content-studio/shared";
 import type {
   AudioUploadInputDefinition,
-  BindableField,
   InputDefinition,
   ModeInputSetting,
   ModelIssue,
@@ -22,24 +25,21 @@ import type {
   ImageUploadInput as WorkbenchImageUploadInput,
   MediaUploadInput as WorkbenchMediaUploadInput,
 } from "../../components/inputs/types.js";
+import { ApiError } from "../../lib/api.js";
 import {
   httpUploadApi,
   trimUpload,
   uploadResumable,
 } from "../../lib/chunkedUpload.js";
 import { useSession } from "../../useSession.js";
-import { candidateFieldsFor, toggleBinding } from "./helpers/bindings.js";
 import {
-  detailsFrom,
   draftsFrom,
   messageFrom,
   readFileAsJson,
-  sameDetails,
   sameInputs,
   sameModes,
   sameTerms,
   termsFrom,
-  withoutKey,
 } from "./helpers/drafts.js";
 import {
   newAudioUploadInput,
@@ -62,11 +62,14 @@ import {
   visibleBoundFieldsFor,
   workflowForMode,
 } from "./helpers/workflow.js";
+import { useModelChecks } from "./hooks/useModelChecks.js";
+import { useModelDetail } from "./hooks/useModelDetail.js";
+import { useModelDraft } from "./hooks/useModelDraft.js";
+import { useReplaceWorkflowMutation } from "./hooks/useWorkflowSection.js";
 import type {
   AdminBackendSummary,
   AttachedBackendEntry,
   BrokenNodeRef,
-  DetailsForm,
   DraftMode,
   ModelDetail,
   ModelNode,
@@ -84,11 +87,11 @@ export function useModelEditor() {
   const maxUploadMb =
     session.status === "signed-in" ? session.user.maxUploadMb : undefined;
 
-  const [detail, setDetail] = useState<ModelDetail | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [form, setForm] = useState<DetailsForm | null>(null);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+  // Issue #213: the Model's own load is a `useQuery` through the typed
+  // `api` client now, not a bare `fetch` kept in local state.
+  const detailQuery = useModelDetail(id);
+  const detail = detailQuery.data ?? null;
+  const loadError = detailQuery.isError ? "could not load this Model" : null;
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [nodeFilter, setNodeFilter] = useState("");
   const [attachedBackends, setAttachedBackends] = useState<
@@ -111,24 +114,15 @@ export function useModelEditor() {
   const [attachError, setAttachError] = useState<string | null>(null);
   const [modesDraft, setModesDraft] = useState<DraftMode[] | null>(null);
   const [editingModeIndex, setEditingModeIndex] = useState<number | null>(null);
-  const [modesSaveError, setModesSaveError] = useState<string | null>(null);
-  const [savingModes, setSavingModes] = useState(false);
   const [inputsDraft, setInputsDraft] = useState<InputDefinition[] | null>(
-    null,
-  );
-  const [editingInputIndex, setEditingInputIndex] = useState<number | null>(
     null,
   );
   const [newInputKind, setNewInputKind] =
     useState<InputDefinition["kind"]>("text");
-  const [inputsSaveError, setInputsSaveError] = useState<string | null>(null);
-  const [savingInputs, setSavingInputs] = useState(false);
   const [stateError, setStateError] = useState<string[] | null>(null);
   const [togglingState, setTogglingState] = useState(false);
   const [termsForm, setTermsForm] = useState<TermsForm | null>(null);
   const [askAgain, setAskAgain] = useState(false);
-  const [savingTerms, setSavingTerms] = useState(false);
-  const [termsSaveError, setTermsSaveError] = useState<string | null>(null);
   // Issue #71: a re-uploaded Workflow file lives only in the editor
   // (parsed client-side) until "Replace Workflow" sends it in one PUT —
   // there's no separate server-side draft.
@@ -192,37 +186,34 @@ export function useModelEditor() {
   // its first Mode's sheet expanded. Only the first load of a given
   // Model decides this — a reload after Save shouldn't yank the page
   // back or collapse what the Admin has open.
-  const didInitialOpenRef = useRef(false);
   const inputsHeadingRef = useRef<HTMLHeadingElement>(null);
   const modesHeadingRef = useRef<HTMLHeadingElement>(null);
 
-  function load() {
-    if (!id) return;
-    fetch(`/api/admin/models/${id}`)
-      .then((res) => {
-        if (!res.ok) throw new Error(`unexpected status ${res.status}`);
-        return res.json() as Promise<ModelDetail>;
-      })
-      .then((body) => {
-        setDetail(body);
-        setForm(detailsFrom(body));
-        setModesDraft(draftsFrom(body));
-        setEditingModeIndex(null);
-        setModesSaveError(null);
-        setInputsDraft(body.inputs);
-        setEditingInputIndex(null);
-        setInputsSaveError(null);
-        setStateError(null);
-        setLoadError(null);
-        setTermsForm(termsFrom(body));
-        setAskAgain(false);
-        setTermsSaveError(null);
-      })
-      .catch(() => setLoadError("could not load this Model"));
-  }
+  // Issue #241 CEO review: this used to re-derive the Modes/Inputs/Terms
+  // drafts from every `detail` change, including a refetch after one
+  // save step (or after enable/disable, Replace Workflow, ...) — so if
+  // Details saved and Modes was then refused, the still-dirty Modes
+  // edits got silently wiped by this effect, not by anything that
+  // actually saved them. It now only seeds the drafts once per Model
+  // (the first time `detail` loads for a given id); `useModelDraft`'s
+  // own `discard()`/`discardFor()` reset all four explicitly on
+  // Discard, Reload and an id change.
+  const draftsInitializedForRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!detail) return;
+    if (draftsInitializedForRef.current === detail.model.id) return;
+    draftsInitializedForRef.current = detail.model.id;
+    setModesDraft(draftsFrom(detail));
+    setEditingModeIndex(null);
+    setInputsDraft(detail.inputs);
+    setStateError(null);
+    setTermsForm(termsFrom(detail));
+    setAskAgain(false);
+  }, [detail]);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: reload only when the route's :id changes
-  useEffect(load, [id]);
+  function load() {
+    void detailQuery.refetch();
+  }
 
   // Issue #74's AC: "the last 5 tests are listed" — loaded once up
   // front so they're there even before the SSE stream below (re)) opens.
@@ -257,22 +248,6 @@ export function useModelEditor() {
     });
     return () => source.close();
   }, [id]);
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: a different :id gets its own "open on" decision
-  useEffect(() => {
-    didInitialOpenRef.current = false;
-  }, [id]);
-
-  useEffect(() => {
-    if (!detail || didInitialOpenRef.current) return;
-    didInitialOpenRef.current = true;
-    if ((detail.inputs ?? []).length === 0) {
-      inputsHeadingRef.current?.scrollIntoView({ block: "start" });
-    } else {
-      setEditingModeIndex(detail.modes.length > 0 ? 0 : null);
-      modesHeadingRef.current?.scrollIntoView({ block: "start" });
-    }
-  }, [detail]);
 
   function loadAttachedBackends() {
     if (!id) return;
@@ -343,6 +318,22 @@ export function useModelEditor() {
     loadRevisions();
   }, [id]);
 
+  /** The agreed browser-side refusals (issue #214), run before a picked file ever becomes `pendingWorkflow`. */
+  function refuseWorkflowFile(file: File, parsed: unknown): string | null {
+    if (file.size > 10 * BYTES_PER_MB) {
+      return "This file is over 10 MB. Export the Workflow with Export (API).";
+    }
+    const result = parseApiFormatWorkflow(parsed);
+    if (!result.ok) return result.error;
+    for (const note of findOutsideServiceNotes(result.workflow)) {
+      if (!note.keySet) continue;
+      const node = result.workflow[note.nodeId];
+      const name = node?._meta?.title ?? note.classType;
+      return `${name} holds an API key; clear it in ComfyUI and export again`;
+    }
+    return null;
+  }
+
   async function handlePickWorkflowFile(file: File | null) {
     setWorkflowUploadError(null);
     setRebindMap({});
@@ -351,14 +342,32 @@ export function useModelEditor() {
       setPendingWorkflowFileName(null);
       return;
     }
+    let parsed: unknown;
     try {
-      setPendingWorkflow(await readFileAsJson(file));
-      setPendingWorkflowFileName(file.name);
+      parsed = await readFileAsJson(file);
     } catch {
       setPendingWorkflow(null);
       setPendingWorkflowFileName(null);
-      setWorkflowUploadError("that file isn't valid JSON");
+      setWorkflowUploadError("That file isn't valid JSON.");
+      return;
     }
+    const refusal = refuseWorkflowFile(file, parsed);
+    if (refusal) {
+      setPendingWorkflow(null);
+      setPendingWorkflowFileName(null);
+      setWorkflowUploadError(refusal);
+      return;
+    }
+    setPendingWorkflow(parsed);
+    setPendingWorkflowFileName(file.name);
+  }
+
+  /** Issue #241 CEO review: Discard and Reload must drop a picked-but-unsaved Workflow file, its name and the rebind picker too, not just the four section drafts. */
+  function resetWorkflowPicker() {
+    setPendingWorkflow(null);
+    setPendingWorkflowFileName(null);
+    setRebindMap({});
+    setWorkflowUploadError(null);
   }
 
   function setRebind(nodeId: string, newNodeId: string) {
@@ -372,6 +381,28 @@ export function useModelEditor() {
     });
   }
 
+  /** The server's own refusal (issue #214: "Show a server refusal's own text if one still comes back"): `errors` (`ValidationFailed`, e.g. uploadWorkflow's own structural checks) takes the same shape `messageFrom` reads for every other section's save. */
+  function workflowErrorMessage(err: unknown): string {
+    if (err instanceof ApiError) {
+      const body = err.body as {
+        error?: string;
+        errors?: { field: string; message: string }[];
+        reasons?: string[];
+      } | null;
+      const issues = body?.errors
+        ?.map((e) => `${e.field}: ${e.message}`)
+        .join(", ");
+      if (issues) return issues;
+      if (body?.reasons && body.reasons.length > 0) {
+        return body.reasons.join(", ");
+      }
+      return body?.error ?? "upload failed";
+    }
+    return "upload failed";
+  }
+
+  const replaceWorkflowMutation = useReplaceWorkflowMutation(id);
+
   async function handleReplaceWorkflow() {
     if (!detail || pendingWorkflow === null) return;
     setUploadingWorkflow(true);
@@ -383,27 +414,25 @@ export function useModelEditor() {
     }));
 
     try {
-      const res = await fetch(`/api/admin/models/${detail.model.id}/workflow`, {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          version: detail.model.version,
-          workflow: pendingWorkflow,
-          ...(rebind.length > 0 ? { rebind } : {}),
-          ...(mustDisableToSaveWorkflow ? { disable: true } : {}),
-        }),
+      await replaceWorkflowMutation.mutateAsync({
+        version: detail.model.version,
+        workflow: pendingWorkflow,
+        ...(rebind.length > 0 ? { rebind } : {}),
+        ...(mustDisableToSaveWorkflow ? { disable: true } : {}),
       });
-
-      if (!res.ok) {
-        setWorkflowUploadError(await messageFrom(res, "upload failed"));
-        return;
-      }
 
       setPendingWorkflow(null);
       setPendingWorkflowFileName(null);
       setRebindMap({});
-      load();
+      // Issue #241 CEO review: this replaces the saved Workflow, so the
+      // Modes/Inputs/Terms drafts must be reseeded from the fresh Model,
+      // not just refetched underneath the once-per-id seeding effect.
+      // Replace Workflow only runs while every draft is clean, so
+      // `draft.reload()` (a refetch + full reseed) is safe here.
+      await draft.reload();
       loadRevisions();
+    } catch (err) {
+      setWorkflowUploadError(workflowErrorMessage(err));
     } finally {
       setUploadingWorkflow(false);
     }
@@ -440,7 +469,11 @@ export function useModelEditor() {
         return;
       }
 
-      load();
+      // Issue #241 CEO review: restoring a revision replaces the saved
+      // Modes/Inputs/Terms, so they need a full reseed, not just a
+      // refetch under the once-per-id seeding effect. Restore only runs
+      // while every draft is clean, so `draft.reload()` is safe here.
+      await draft.reload();
       loadRevisions();
     } finally {
       setRestoringRevision(null);
@@ -621,40 +654,8 @@ export function useModelEditor() {
     updateMode(index, { outputNodeIds });
   }
 
-  async function handleSaveModes() {
-    if (!detail || !modesDraft) return;
-    setSavingModes(true);
-    setModesSaveError(null);
-
-    try {
-      const currentInputIds = new Set(
-        (detail.inputs ?? []).map((input) => input.id),
-      );
-      const res = await fetch(`/api/admin/models/${detail.model.id}/modes`, {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          version: detail.model.version,
-          ...(mustDisableToSave ? { disable: true } : {}),
-          modes: modesDraft.map(withoutKey).map((mode) => ({
-            ...mode,
-            inputSettings: mode.inputSettings.filter((s) =>
-              currentInputIds.has(s.inputId),
-            ),
-          })),
-        }),
-      });
-
-      if (!res.ok) {
-        setModesSaveError(await messageFrom(res, "save failed"));
-        return;
-      }
-
-      load();
-    } finally {
-      setSavingModes(false);
-    }
-  }
+  // issue #213: the per-section "Save Modes" is gone — Modes now save
+  // through the header's one Save, via `useModelDraft`.
 
   /** Opens (or closes) a Mode's test form, resetting its draft values and Backend pick. */
   function toggleTestForm(mode: DraftMode) {
@@ -682,6 +683,10 @@ export function useModelEditor() {
     testRunningUploadsRef.current.get(input.id)?.controller.abort();
     testRunningUploadsRef.current.delete(input.id);
     setTestValues((v) => ({ ...v, [input.id]: "" }));
+    setTestUploads((u) => {
+      const { [input.id]: _, ...rest } = u;
+      return rest;
+    });
     setTestTrimRangeByInputId((ranges) => {
       const { [input.id]: _, ...rest } = ranges;
       return rest;
@@ -696,14 +701,22 @@ export function useModelEditor() {
           [input.id]: {
             status: "error",
             name: file.name,
-            message: `${file.name} ${issue}.`,
+            message: issue.prefixed
+              ? `${file.name} ${issue.message}.`
+              : issue.message,
           },
         }));
         return;
       }
       setTestUploads((u) => ({
         ...u,
-        [input.id]: { status: "uploading", name: file.name, progress: 0 },
+        [input.id]: {
+          status: "uploading",
+          name: file.name,
+          progress: 0,
+          size: file.size,
+          file,
+        },
       }));
       return uploadResumable(file, httpUploadApi(), {
         hint: { modelId: detail?.model.id ?? "", inputId: input.id },
@@ -712,7 +725,13 @@ export function useModelEditor() {
           if (controller.signal.aborted) return;
           setTestUploads((u) => ({
             ...u,
-            [input.id]: { status: "uploading", name: file.name, progress },
+            [input.id]: {
+              status: "uploading",
+              name: file.name,
+              progress,
+              size: file.size,
+              file,
+            },
           }));
         },
       })
@@ -727,12 +746,23 @@ export function useModelEditor() {
               uploadId: done.id,
               durationMs: done.durationMs,
               browserPlayable: done.browserPlayable,
+              size: file.size,
+              width: done.width,
+              height: done.height,
             },
           }));
           if (done.durationMs !== null) {
+            const maxDurationMs =
+              input.kind === "image_upload" ? null : input.maxDurationMs;
             setTestTrimRangeByInputId((ranges) => ({
               ...ranges,
-              [input.id]: { startMs: 0, endMs: done.durationMs as number },
+              [input.id]: {
+                startMs: 0,
+                endMs:
+                  maxDurationMs !== null
+                    ? Math.min(done.durationMs as number, maxDurationMs)
+                    : (done.durationMs as number),
+              },
             }));
           }
         })
@@ -749,6 +779,23 @@ export function useModelEditor() {
         });
     });
     testRunningUploadsRef.current.set(input.id, { promise, controller });
+  }
+
+  /** Mirrors WorkbenchPage's own `clearUpload` (issue #197), scoped to the Test form. */
+  function clearTestUpload(
+    input: WorkbenchImageUploadInput | WorkbenchMediaUploadInput,
+  ) {
+    testRunningUploadsRef.current.get(input.id)?.controller.abort();
+    testRunningUploadsRef.current.delete(input.id);
+    setTestValues((v) => ({ ...v, [input.id]: "" }));
+    setTestUploads((u) => {
+      const { [input.id]: _, ...rest } = u;
+      return rest;
+    });
+    setTestTrimRangeByInputId((ranges) => {
+      const { [input.id]: _, ...rest } = ranges;
+      return rest;
+    });
   }
 
   /** The Test submit payload (issue #74 CEO review, mirrors WorkbenchPage's valuesPayload): blank values are left out, a number/seed is parsed, not sent as the raw typed string. */
@@ -914,13 +961,11 @@ export function useModelEditor() {
                     ? newPointsInput()
                     : newSelectInput();
     setInputsDraft([...inputsDraft, created]);
-    setEditingInputIndex(inputsDraft.length);
   }
 
   function removeInput(index: number) {
     if (!inputsDraft) return;
     setInputsDraft(inputsDraft.filter((_, i) => i !== index));
-    if (editingInputIndex === index) setEditingInputIndex(null);
   }
 
   function updateInput(index: number, next: InputDefinition) {
@@ -928,40 +973,7 @@ export function useModelEditor() {
     setInputsDraft(inputsDraft.map((input, i) => (i === index ? next : input)));
   }
 
-  /** Toggles `field` in and out of the currently *picking* Input's bindings. */
-  function toggleFieldInEditingInput(field: BindableField) {
-    if (editingInputIndex === null || !inputsDraft) return;
-    const input = inputsDraft[editingInputIndex];
-    if (!input) return;
-    updateInput(editingInputIndex, toggleBinding(input, field));
-  }
-
-  async function handleSaveInputs() {
-    if (!detail || !inputsDraft) return;
-    setSavingInputs(true);
-    setInputsSaveError(null);
-
-    try {
-      const res = await fetch(`/api/admin/models/${detail.model.id}/inputs`, {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          version: detail.model.version,
-          ...(mustDisableToSave ? { disable: true } : {}),
-          inputs: inputsDraft,
-        }),
-      });
-
-      if (!res.ok) {
-        setInputsSaveError(await messageFrom(res, "save failed"));
-        return;
-      }
-
-      load();
-    } finally {
-      setSavingInputs(false);
-    }
-  }
+  // issue #213: ditto for "Save Inputs".
 
   async function handleToggleState() {
     if (!detail) return;
@@ -995,10 +1007,6 @@ export function useModelEditor() {
     }
   }
 
-  const dirty = Boolean(
-    detail && form && !sameDetails(detailsFrom(detail), form),
-  );
-
   const modesDirty = Boolean(
     detail && modesDraft && !sameModes(draftsFrom(detail), modesDraft),
   );
@@ -1013,41 +1021,34 @@ export function useModelEditor() {
       (!sameTerms(termsFrom(detail), termsForm) || askAgain),
   );
 
-  // Issue #71 CEO review: `load()` after Replace Workflow/Restore wipes
-  // every draft back to the server's own state, silently discarding
-  // whatever's unsaved in another section — so both stay disabled while
-  // any section is dirty, the same way a risky action elsewhere would.
-  const anyDraftDirty = dirty || modesDirty || inputsDirty || termsDirty;
-
   const termsPreviewHtml = termsForm ? renderMarkdown(termsForm.termsBody) : "";
 
-  async function handleSaveTerms(event: FormEvent) {
-    event.preventDefault();
-    if (!detail || !termsForm) return;
-    setSavingTerms(true);
-    setTermsSaveError(null);
+  // issue #213's hook layout: the Details draft (react-hook-form +
+  // zod) and the one Save sequence, chaining `version` across Details
+  // -> Inputs -> Modes -> Terms. The other three drafts still live
+  // here (their own sections' tickets own that markup); this hook
+  // just takes them, and how to reset them, as arguments.
+  const draft = useModelDraft({
+    id,
+    detail: detail ?? undefined,
+    inputsDraft,
+    inputsDirty,
+    modesDraft,
+    modesDirty,
+    termsForm,
+    termsDirty,
+    askAgain,
+    resetInputsDraft: setInputsDraft,
+    resetModesDraft: (fresh) => setModesDraft(draftsFrom(fresh)),
+    resetTermsForm: (fresh) => {
+      setTermsForm(termsFrom(fresh));
+      setAskAgain(false);
+    },
+    resetWorkflowPicker,
+  });
 
-    try {
-      const res = await fetch(`/api/admin/models/${detail.model.id}/terms`, {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          revision: detail.model.termsRevision,
-          ...termsForm,
-          askAgain,
-        }),
-      });
-
-      if (!res.ok) {
-        setTermsSaveError(await messageFrom(res, "save failed"));
-        return;
-      }
-
-      load();
-    } finally {
-      setSavingTerms(false);
-    }
-  }
+  // issue #213: ditto for "Save Terms" — Terms now saves through the
+  // header's one Save too (`useModelDraft`'s `save`, below).
 
   // issue #49: checkModel runs live, client-side, against whatever's in
   // the drafts right now — the rail updates on every edit, before Save.
@@ -1072,10 +1073,6 @@ export function useModelEditor() {
       checkModelBackends,
     );
   }, [detail, modesDraft, inputsDraft, checkModelBackends]);
-  const modelHasErrors = hasBlockingErrors(modelIssues);
-  // An enabled Model with errors can only be saved by disabling it (issue
-  // #49): Modes/Inputs then offer "Save and disable" instead of Save.
-  const mustDisableToSave = detail?.model.state === "enabled" && modelHasErrors;
 
   // Issue #71: the same rail, run against the picked-but-not-yet-saved
   // Workflow file plus the Model's currently *saved* Modes/Inputs (what
@@ -1102,6 +1099,19 @@ export function useModelEditor() {
   const mustDisableToSaveWorkflow =
     detail?.model.state === "enabled" &&
     hasBlockingErrors(pendingWorkflowIssues);
+
+  const termsErrorCount =
+    termsForm && !isValidModelLicenseUrl(termsForm.licenseUrl) ? 1 : 0;
+
+  const { issuesBySection, modelHasErrors, mustDisableToSave } = useModelChecks(
+    {
+      modelIssues,
+      pendingWorkflowIssues,
+      detailsErrorCount: Object.keys(draft.form.formState.errors).length,
+      termsErrorCount,
+      enabled: detail?.model.state === "enabled",
+    },
+  );
 
   /** Issue #71's rebind picker: every broken Mode output/Input binding, each repointable to a node of the picked file. */
   const brokenNodeRefs: BrokenNodeRef[] = useMemo(() => {
@@ -1132,70 +1142,40 @@ export function useModelEditor() {
         )
       : null;
 
-  const editingInput =
-    editingInputIndex !== null
-      ? (inputsDraft?.[editingInputIndex] ?? null)
-      : null;
-  const editingInputCandidates =
-    detail && editingInput && inputsDraft
-      ? candidateFieldsFor(detail.workflow, editingInput, inputsDraft)
-      : null;
-
   useEffect(() => {
-    if (!dirty && !modesDirty && !inputsDirty && !termsDirty) return;
+    if (!draft.anyDraftDirty) return;
     const handler = (event: BeforeUnloadEvent) => {
       event.preventDefault();
     };
     window.addEventListener("beforeunload", handler);
     return () => window.removeEventListener("beforeunload", handler);
-  }, [dirty, modesDirty, inputsDirty, termsDirty]);
+  }, [draft.anyDraftDirty]);
 
-  // Catches every in-app navigation away from the editor while dirty: the
-  // "Back to Models" button, AdminShell's nav links, and the browser's
-  // own Back/Forward (issue #40 follow-up: beforeunload alone misses all
-  // three since they never unload the page).
-  useBlocker(({ currentLocation, nextLocation }) => {
+  // Catches every in-app navigation away from the editor while dirty:
+  // the "Admin / Models" link, AdminShell's nav links, and the
+  // browser's own Back/Forward (issue #40 follow-up: beforeunload
+  // alone misses all three since they never unload the page). Issue
+  // #213: a `Dialog` ("Discard unsaved changes?", Stay/Discard) now
+  // drives `blocker.reset()`/`blocker.proceed()` instead of
+  // `window.confirm` — rendered by `ModelEditorPage` from this
+  // `blocker`.
+  const blocker = useBlocker(({ currentLocation, nextLocation }) => {
     if (
       bypassBlockerRef.current ||
-      (!dirty && !modesDirty && !inputsDirty && !termsDirty) ||
+      !draft.anyDraftDirty ||
       currentLocation.pathname === nextLocation.pathname
     ) {
       return false;
     }
-    return !window.confirm("Discard unsaved changes?");
+    return true;
   });
 
   function goBack() {
     navigate("/admin/models");
   }
 
-  async function handleSubmit(event: FormEvent) {
-    event.preventDefault();
-    if (!detail || !form) return;
-    setSaving(true);
-    setSaveError(null);
-
-    try {
-      const res = await fetch(`/api/admin/models/${detail.model.id}`, {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ...form, version: detail.model.version }),
-      });
-
-      if (!res.ok) {
-        setSaveError(await messageFrom(res, "save failed"));
-        return;
-      }
-
-      load();
-    } finally {
-      setSaving(false);
-    }
-  }
-
   async function handleDelete() {
     if (!detail) return;
-    if (!window.confirm("Delete this Model?")) return;
     setDeleteError(null);
 
     const res = await fetch(
@@ -1204,7 +1184,12 @@ export function useModelEditor() {
     );
 
     if (!res.ok) {
-      setDeleteError(await messageFrom(res, "delete failed"));
+      const payload: { error?: string } = await res.json().catch(() => ({}));
+      setDeleteError(
+        payload.error === "has unfinished Generations"
+          ? "This Model has unfinished Generations. Cancel or let them finish, then delete it."
+          : (payload.error ?? "delete failed"),
+      );
       return;
     }
 
@@ -1219,15 +1204,10 @@ export function useModelEditor() {
     session,
     maxUploadMb,
     detail,
-    setDetail,
     loadError,
-    setLoadError,
-    form,
-    setForm,
-    saveError,
-    setSaveError,
-    saving,
-    setSaving,
+    draft,
+    blocker,
+    issuesBySection,
     deleteError,
     setDeleteError,
     nodeFilter,
@@ -1248,20 +1228,10 @@ export function useModelEditor() {
     setModesDraft,
     editingModeIndex,
     setEditingModeIndex,
-    modesSaveError,
-    setModesSaveError,
-    savingModes,
-    setSavingModes,
     inputsDraft,
     setInputsDraft,
-    editingInputIndex,
-    setEditingInputIndex,
     newInputKind,
     setNewInputKind,
-    inputsSaveError,
-    setInputsSaveError,
-    savingInputs,
-    setSavingInputs,
     stateError,
     setStateError,
     togglingState,
@@ -1270,10 +1240,6 @@ export function useModelEditor() {
     setTermsForm,
     askAgain,
     setAskAgain,
-    savingTerms,
-    setSavingTerms,
-    termsSaveError,
-    setTermsSaveError,
     pendingWorkflow,
     setPendingWorkflow,
     pendingWorkflowFileName,
@@ -1311,7 +1277,6 @@ export function useModelEditor() {
     setTestTrimRangeByInputId,
     testMaxUploadMb,
     bypassBlockerRef,
-    didInitialOpenRef,
     inputsHeadingRef,
     modesHeadingRef,
     load,
@@ -1334,34 +1299,27 @@ export function useModelEditor() {
     toggleOutputNodeInEditingMode,
     removeOutputNode,
     moveOutputNode,
-    handleSaveModes,
     toggleTestForm,
     startTestUpload,
+    clearTestUpload,
     testValuesPayload,
     handleTestSubmit,
     addInput,
     removeInput,
     updateInput,
-    toggleFieldInEditingInput,
-    handleSaveInputs,
     handleToggleState,
-    dirty,
     modesDirty,
     inputsDirty,
     termsDirty,
-    anyDraftDirty,
+    anyDraftDirty: draft.anyDraftDirty,
     termsPreviewHtml,
-    handleSaveTerms,
     checkModelBackends,
     modelHasErrors,
     mustDisableToSave,
     mustDisableToSaveWorkflow,
     editingMode,
     editingPath,
-    editingInput,
-    editingInputCandidates,
     goBack,
-    handleSubmit,
     handleDelete,
     modelIssues,
     pendingWorkflowIssues,

@@ -350,8 +350,10 @@ export async function createApp(deps: AppDeps) {
       "/api/admin/models",
       adminModelsRoute(
         deps.db,
+        deps.clock,
         modelRepository,
         modelBackendsRepository,
+        backendRepository,
         backendsService,
         generationsRepository,
         routes,
@@ -427,6 +429,7 @@ export async function createApp(deps: AppDeps) {
         problemsRegistry,
         backendRepository,
         backendsService,
+        modelRepository,
         deps.env.DATA_DIR,
         deps.env.MIN_FREE_DISK_GB,
         APP_VERSION,

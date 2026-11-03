@@ -1,62 +1,66 @@
-import { capsFooterText } from "@ai-content-studio/shared";
-import type { CapsStatus } from "@ai-content-studio/shared";
+import {
+  type CapsStatus,
+  concurrentRemaining,
+  dailyRemaining,
+} from "@ai-content-studio/shared";
+import { CountPicker } from "../../components/inputs/CountPicker.js";
+import type { UploadState } from "../../components/inputs/types.js";
+import { CapsLine } from "./CapsLine.js";
+import { GenerateButton } from "./GenerateButton.js";
+import { SubmitNotes } from "./SubmitNotes.js";
 import type { SubmitState } from "./types.js";
 
+/** The Workbench's pinned foot (issue #196, prototype `.va-go`): the count picker and Generate button, then the submit notes and errors, then the Caps line. Sticky at the bottom of the screen on phones. */
 export function GenerateBar({
   capsStatus,
-  activeCount,
+  hasSeedInput,
+  count,
+  setCount,
   submitState,
   cancelWaiting,
+  uploads,
   paused,
   pauseNoticeText,
   handleGenerate,
   selectedModeId,
 }: {
   capsStatus: CapsStatus | null;
-  activeCount: number;
+  hasSeedInput: boolean;
+  count: number;
+  setCount: (count: number) => void;
   submitState: SubmitState;
   cancelWaiting: () => void;
+  uploads: Record<string, UploadState>;
   paused: boolean;
   pauseNoticeText: string | null;
   handleGenerate: () => void;
   selectedModeId: string | null;
 }) {
+  const maxCount = capsStatus
+    ? Math.min(4, dailyRemaining(capsStatus), concurrentRemaining(capsStatus))
+    : 4;
+
   return (
-    <footer className="workbench-generate-bar">
-      {capsStatus && (
-        <span className="workbench-caps">
-          {capsFooterText(capsStatus, new Date())}
-        </span>
-      )}
-      {activeCount > 0 && (
-        <span className="workbench-chip">{activeCount} under way</span>
-      )}
-      {submitState.status === "waiting" ? (
-        <>
-          <output>Waiting for your files to finish…</output>
-          <button type="button" onClick={cancelWaiting}>
-            Don't start
-          </button>
-        </>
-      ) : submitState.status === "trimming" ? (
-        <output>Trimming your video or audio…</output>
-      ) : (
-        <>
-          {paused && pauseNoticeText && (
-            // biome-ignore lint/a11y/useSemanticElements: <output> is for a form's calculated result, not this status message
-            <p role="status">{pauseNoticeText}</p>
-          )}
-          <button
-            type="button"
-            onClick={handleGenerate}
-            disabled={
-              !selectedModeId || submitState.status === "submitting" || paused
-            }
-          >
-            Generate
-          </button>
-        </>
-      )}
+    <footer className="flex flex-col gap-1.5 border-t border-border bg-card px-4.5 py-3 max-[860px]:sticky max-[860px]:bottom-0 max-[860px]:z-[5] max-[860px]:px-4 max-[860px]:pb-[max(12px,env(safe-area-inset-bottom))] max-[860px]:shadow-[0_-6px_16px_rgb(0_0_0/0.08)]">
+      <div className="flex items-center gap-2">
+        {hasSeedInput && (
+          <CountPicker count={count} onChange={setCount} maxCount={maxCount} />
+        )}
+        <GenerateButton
+          submitState={submitState}
+          count={hasSeedInput ? count : 1}
+          disabled={!selectedModeId || paused}
+          onClick={handleGenerate}
+        />
+      </div>
+      <SubmitNotes
+        submitState={submitState}
+        cancelWaiting={cancelWaiting}
+        uploads={uploads}
+        paused={paused}
+        pauseNoticeText={pauseNoticeText}
+      />
+      {capsStatus && <CapsLine status={capsStatus} />}
     </footer>
   );
 }

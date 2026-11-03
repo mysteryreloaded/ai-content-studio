@@ -2,10 +2,21 @@
 // History (issue #40).
 
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
+import { startFakeComfyUi } from "@ai-content-studio/fake-comfyui";
 import { FakeClock } from "@ai-content-studio/shared";
 import { createApp } from "../app.js";
 import { SESSION_COOKIE_NAME, createSession } from "../auth/session.js";
-import { modelRevisions, models, users, workflows } from "../db/schema.js";
+import {
+  backends,
+  generations,
+  modelBackends,
+  modelRevisions,
+  models,
+  modes,
+  users,
+  workflows,
+} from "../db/schema.js";
 import type { Env } from "../env.js";
 import type { Logger } from "../logger.js";
 import { createTestDatabase } from "../test/database.js";
@@ -52,9 +63,13 @@ describe("/api/admin/models", () => {
 
   beforeEach(async () => {
     const { db } = await testDb;
+    await db.delete(generations);
+    await db.delete(modelBackends);
+    await db.delete(modes);
     await db.delete(modelRevisions);
     await db.delete(models);
     await db.delete(workflows);
+    await db.delete(backends);
     await db.delete(users);
   });
 
@@ -69,6 +84,85 @@ describe("/api/admin/models", () => {
       webDistDir: new URL("../../../web", import.meta.url).pathname,
     });
     return app;
+  }
+
+  /** Issue #204's route test needs real health checks, unlike every other test here (`BACKENDS_ENABLED: false`). */
+  async function buildWithBackends() {
+    const { db, sql } = await testDb;
+    return createApp({
+      db,
+      sql,
+      clock,
+      logger: silentLogger,
+      env: { ...TEST_ENV, BACKENDS_ENABLED: true },
+      webDistDir: new URL("../../../web", import.meta.url).pathname,
+    });
+  }
+
+  async function flushMicrotasks() {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+
+  /** Inserts a Model with one Mode, bypassing the full upload/enable API so the fixture stays small (mirrors admin-overview.test.ts's own `buildModel`). */
+  async function buildModel(
+    db: Awaited<typeof testDb>["db"],
+    name: string,
+    sortOrder: number,
+  ) {
+    const workflowHash = `hash-${name}`;
+    await db.insert(workflows).values({
+      hash: workflowHash,
+      json: {},
+      nodeCount: 0,
+      size: 0,
+    });
+    const [model] = await db
+      .insert(models)
+      .values({ name, slug: name.toLowerCase(), sortOrder, state: "enabled" })
+      .returning();
+    if (!model) throw new Error("failed to insert model");
+    const [revision] = await db
+      .insert(modelRevisions)
+      .values({ modelId: model.id, revisionNumber: 1, workflowHash })
+      .returning();
+    if (!revision) throw new Error("failed to insert revision");
+    const [mode] = await db
+      .insert(modes)
+      .values({
+        revisionId: revision.id,
+        sortOrder: 0,
+        name: "Default",
+        outputNodes: [],
+      })
+      .returning();
+    if (!mode) throw new Error("failed to insert mode");
+    return { modelId: model.id, revisionId: revision.id, modeId: mode.id };
+  }
+
+  async function insertGeneration(
+    db: Awaited<typeof testDb>["db"],
+    fields: {
+      modelId: string;
+      revisionId: string;
+      modeId: string;
+      userId: string;
+      state: "queued" | "starting" | "running" | "saving" | "succeeded";
+      queuedAt: Date;
+    },
+  ) {
+    await db.insert(generations).values({
+      id: randomUUID(),
+      modelId: fields.modelId,
+      revisionId: fields.revisionId,
+      modeId: fields.modeId,
+      userId: fields.userId,
+      submissionId: randomUUID(),
+      state: fields.state,
+      builtPrompt: {},
+      nodeTypes: [],
+      queuedAt: fields.queuedAt,
+      submittedAt: fields.queuedAt,
+    });
   }
 
   async function makeUser(role: "user" | "admin", email: string) {
@@ -285,6 +379,96 @@ describe("/api/admin/models", () => {
       headers,
     });
     expect(getRes.status).toBe(404);
+  });
+
+  test("reports modeCount, backends, modesWithoutBackend, queued and running (issue #204)", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const { app, backendsService } = await buildWithBackends();
+      const { db } = await testDb;
+      const headers = await adminHeaders();
+      const [user] = await db
+        .insert(users)
+        .values({ googleSub: "sub-u204", email: "u204@example.com", name: "U" })
+        .returning();
+      if (!user) throw new Error("failed to insert test user");
+
+      // Created through the API so `BackendsService.watch` tracks it;
+      // advancing the clock past the monitor's 30s poll then lets it
+      // become reachable, for the "usable" count below.
+      const backendARes = await app.request("/api/admin/backends", {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "GPU A",
+          baseUrl: fake.url,
+          auth: "none",
+        }),
+      });
+      const backendA = (await backendARes.json()) as { id: string };
+      clock.advance(30_000);
+      await flushMicrotasks();
+
+      const [backendB] = await db
+        .insert(backends)
+        .values({
+          name: "GPU B",
+          baseUrl: "http://unused.invalid",
+          enabled: true,
+          draining: true,
+        })
+        .returning();
+      if (!backendB) throw new Error("failed to insert backend");
+
+      const usableModel = await buildModel(db, "UsableModel", 0);
+      await db
+        .insert(modelBackends)
+        .values({ modelId: usableModel.modelId, backendId: backendA.id });
+
+      const now = clock.now();
+      await insertGeneration(db, {
+        ...usableModel,
+        userId: user.id,
+        state: "queued",
+        queuedAt: now,
+      });
+
+      const drainingModel = await buildModel(db, "DrainingModel", 1);
+      await db
+        .insert(modelBackends)
+        .values({ modelId: drainingModel.modelId, backendId: backendB.id });
+
+      const res = await app.request("/api/admin/models", { headers });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        models: Array<{
+          id: string;
+          modeCount: number;
+          backends: { usable: number; attached: number };
+          modesWithoutBackend: string[];
+          queued: number;
+          running: number;
+        }>;
+      };
+
+      const usable = body.models.find((m) => m.id === usableModel.modelId);
+      expect(usable?.modeCount).toBe(1);
+      expect(usable?.backends).toEqual({ usable: 1, attached: 1 });
+      expect(usable?.modesWithoutBackend).toEqual([]);
+      expect(usable?.queued).toBe(1);
+      expect(usable?.running).toBe(0);
+
+      const draining = body.models.find((m) => m.id === drainingModel.modelId);
+      expect(draining?.modeCount).toBe(1);
+      expect(draining?.backends).toEqual({ usable: 0, attached: 1 });
+      expect(draining?.modesWithoutBackend).toEqual(["Default"]);
+      expect(draining?.queued).toBe(0);
+      expect(draining?.running).toBe(0);
+
+      backendsService.stop();
+    } finally {
+      fake.stop();
+    }
   });
 
   describe("PUT /:id/terms (issue #61)", () => {

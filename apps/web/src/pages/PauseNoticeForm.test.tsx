@@ -2,18 +2,13 @@
 // before @testing-library/react is imported, and never unregistered.
 import { afterEach, describe, expect, test } from "bun:test";
 import { BUN_FETCH } from "../test/happy-dom-setup.js";
+import type { AdminSiteSettings } from "./site-settings-shared.js";
 
-const { cleanup, render, screen } = await import("@testing-library/react");
-const { MemoryRouter } = await import("react-router-dom");
-const { PauseNoticeForm } = await import("./PauseNoticeForm.js");
-
-function renderForm() {
-  return render(
-    <MemoryRouter>
-      <PauseNoticeForm />
-    </MemoryRouter>,
-  );
-}
+const { cleanup, screen, waitFor } = await import("@testing-library/react");
+const { PauseNoticeForm, PauseControl, NoticeForm } = await import(
+  "./PauseNoticeForm.js"
+);
+const { renderWithProviders } = await import("../test/render.js");
 
 afterEach(() => {
   cleanup();
@@ -22,17 +17,37 @@ afterEach(() => {
   globalThis.fetch = BUN_FETCH;
 });
 
-const RUNNING_SETTINGS = {
+const RUNNING_SETTINGS: AdminSiteSettings = {
+  version: 1,
+  title: "Studio",
+  landingText: "",
+  accent: "teal",
+  signUpMode: "approval" as const,
+  contact: "",
+  footerLinks: [],
+  logo: null,
+  background: null,
+  termsBody: "",
+  termsVersion: null,
+  termsVersionCreatedAt: null,
+  termsRevision: 1,
+  privacyBody: "",
+  privacyUpdatedAt: null,
+  privacyRevision: 1,
+  blockedWords: [],
+  blockedWordsRevision: 1,
   notice: "",
   noticeRevision: 1,
   paused: false,
   pausedAt: null,
   pausedByName: null,
+  dailyCap: 20,
+  concurrentCap: 4,
+  capsRevision: 1,
 };
 
 const PAUSED_SETTINGS = {
-  notice: "",
-  noticeRevision: 1,
+  ...RUNNING_SETTINGS,
   paused: true,
   pausedAt: "2026-01-02T03:04:00.000Z",
   pausedByName: "Dev User",
@@ -58,31 +73,30 @@ function mockFetch(handler: (call: FetchCall) => Response | Promise<Response>) {
   return calls;
 }
 
+function renderForm(settings = RUNNING_SETTINGS) {
+  return renderWithProviders(<PauseNoticeForm settings={settings} />);
+}
+
 describe("PauseNoticeForm", () => {
-  test("shows Generating is running normally and a Pause button when not Paused", async () => {
-    mockFetch(() => Response.json(RUNNING_SETTINGS));
+  test("shows Generating is running normally and a Pause button when not Paused", () => {
+    renderForm(RUNNING_SETTINGS);
 
-    renderForm();
-
-    expect(
-      await screen.findByText("Generating is running normally."),
-    ).toBeTruthy();
+    expect(screen.getByText("Generating is running normally.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Pause" })).toBeTruthy();
   });
 
-  test('shows "Paused since … by …" and a Resume button when Paused', async () => {
-    mockFetch(() => Response.json(PAUSED_SETTINGS));
+  test('shows "Paused since … by …" and a Resume button when Paused', () => {
+    renderForm(PAUSED_SETTINGS);
 
-    renderForm();
-
-    expect(
-      await screen.findByText((text) => text.startsWith("Paused since")),
-    ).toBeTruthy();
-    expect(await screen.findByText(/by Dev User/)).toBeTruthy();
+    expect(screen.getByText(/^Paused since/)).toBeTruthy();
+    expect(screen.getByText(/by Dev User/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Resume" })).toBeTruthy();
   });
 
   test("Pause posts to /pause and switches the button to Resume", async () => {
+    // No `settings` prop here: `PauseControl` must react to its own
+    // mutation's `setQueryData`, the same way it reacts to a parent
+    // page's query once that page re-renders it with fresh `settings`.
     const calls = mockFetch((call) => {
       if (call.url.endsWith("/api/admin/site-settings/pause")) {
         return Response.json(PAUSED_SETTINGS);
@@ -91,7 +105,7 @@ describe("PauseNoticeForm", () => {
     });
 
     const { default: userEvent } = await import("@testing-library/user-event");
-    renderForm();
+    renderWithProviders(<PauseNoticeForm />);
     await screen.findByRole("button", { name: "Pause" });
 
     await userEvent.click(screen.getByRole("button", { name: "Pause" }));
@@ -115,7 +129,7 @@ describe("PauseNoticeForm", () => {
     });
 
     const { default: userEvent } = await import("@testing-library/user-event");
-    renderForm();
+    renderWithProviders(<PauseNoticeForm />);
     await screen.findByRole("button", { name: "Resume" });
 
     await userEvent.click(screen.getByRole("button", { name: "Resume" }));
@@ -133,9 +147,74 @@ describe("PauseNoticeForm", () => {
   test("stays on Loading… (never crashes) when the GET isn't ok", async () => {
     mockFetch(() => new Response(null, { status: 500 }));
 
-    renderForm();
+    renderWithProviders(<PauseNoticeForm />);
 
     await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(screen.getByText("Loading…")).toBeTruthy();
+    expect(screen.getAllByText("Loading…").length).toBeGreaterThan(0);
+  });
+
+  test("PauseControl and NoticeForm render on their own", async () => {
+    const SETTINGS_WITH_NOTICE = {
+      ...RUNNING_SETTINGS,
+      notice: "Hello",
+      noticeRevision: 4,
+    };
+    const calls = mockFetch((call) => {
+      if (call.url.endsWith("/api/admin/site-settings/notice")) {
+        return Response.json({
+          ...SETTINGS_WITH_NOTICE,
+          notice: "Hello",
+          noticeRevision: 5,
+        });
+      }
+      return Response.json(SETTINGS_WITH_NOTICE);
+    });
+
+    const { default: userEvent } = await import("@testing-library/user-event");
+    renderWithProviders(
+      <>
+        <PauseControl />
+        <NoticeForm />
+      </>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByText("Generating is running normally.")).toBeTruthy(),
+    );
+    expect(await screen.findByDisplayValue("Hello")).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (call) =>
+            call.method === "PUT" &&
+            call.url.endsWith("/api/admin/site-settings/notice"),
+        ),
+      ).toBe(true),
+    );
+    const noticeCall = calls.find((call) =>
+      call.url.endsWith("/api/admin/site-settings/notice"),
+    );
+    expect(noticeCall?.body).toEqual({ revision: 4, text: "Hello" });
+  });
+
+  test("a non-409 error pausing shows a save-error message", async () => {
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/admin/site-settings/pause")) {
+        return Response.json({ error: "terms_required" }, { status: 403 });
+      }
+      return Response.json(RUNNING_SETTINGS);
+    });
+
+    const { default: userEvent } = await import("@testing-library/user-event");
+    renderWithProviders(<PauseControl />);
+    await screen.findByRole("button", { name: "Pause" });
+
+    await userEvent.click(screen.getByRole("button", { name: "Pause" }));
+
+    expect(await screen.findByText("terms_required")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Pause" })).toBeTruthy();
   });
 });

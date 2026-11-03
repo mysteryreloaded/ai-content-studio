@@ -5,6 +5,7 @@ import {
 } from "@ai-content-studio/shared";
 import { type Dispatch, type SetStateAction, useEffect } from "react";
 import type { SetURLSearchParams } from "react-router-dom";
+import { api, ok } from "../../lib/api.js";
 import type { WorkbenchMode, WorkbenchModel } from "./types.js";
 
 export function useReuseSettings({
@@ -33,17 +34,13 @@ export function useReuseSettings({
     if (!model || !reuseGenerationId) return;
     let cancelled = false;
 
-    fetch(`/api/generations/${reuseGenerationId}`)
-      .then((res) => {
-        if (!res.ok) throw new Error(`unexpected status ${res.status}`);
-        return res.json() as Promise<{
-          modelId: string;
-          modelDeleted: boolean;
-          modeId: string;
-          removedAt: string | null;
-          settings: GenerationInputSetting[];
-        }>;
-      })
+    ok<{
+      modelId: string;
+      modelDeleted: boolean;
+      modeId: string;
+      removedAt: string | null;
+      settings: GenerationInputSetting[];
+    }>(api.api.generations[":id"].$get({ param: { id: reuseGenerationId } }))
       .then((detail) => {
         if (cancelled) return;
         if (detail.removedAt) {

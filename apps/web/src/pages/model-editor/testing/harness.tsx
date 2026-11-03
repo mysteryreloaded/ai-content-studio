@@ -23,7 +23,7 @@ import type { RenderResult } from "@testing-library/react";
 
 await GlobalRegistrator.register();
 
-export const { cleanup, fireEvent, waitFor } = await import(
+export const { cleanup, fireEvent, waitFor, within } = await import(
   "@testing-library/react"
 );
 const { Link } = await import("react-router-dom");
@@ -52,8 +52,12 @@ export const DETAIL = {
   workflowHash: "hash1",
   workflow: {
     "1": { class_type: "LoadImage", inputs: {} },
+    "2": { class_type: "SaveImage", inputs: { images: ["1", 0] } },
   },
-  nodes: [{ id: "1", classType: "LoadImage", title: null }],
+  nodes: [
+    { id: "1", classType: "LoadImage", title: null },
+    { id: "2", classType: "SaveImage", title: null },
+  ],
   outsideServiceNotes: [],
   modes: [],
 };
@@ -114,6 +118,34 @@ export function renderEditor(): RenderResult & { queryClient: QueryClient } {
   });
 }
 
+/**
+ * Issue #214's new flow for picking a Mode's output node: open the
+ * Workflow section, pick the Mode in the Mode picker, select the node
+ * row, then check "Use as an output of <mode>" in its inspector.
+ */
+export async function pickOutputNodeInWorkflow(
+  view: RenderResult,
+  modeName: string,
+  nodeId: string,
+) {
+  const { default: userEvent } = await import("@testing-library/user-event");
+  await openSection(view, "Workflow");
+  const modePill = view.getByRole("button", {
+    name: new RegExp(`^${modeName}`),
+  });
+  // Adding a Mode already picks it (editingModeIndex), so the pill may
+  // already be pressed; only click it when it isn't.
+  if (modePill.getAttribute("aria-pressed") !== "true") {
+    await userEvent.click(modePill);
+  }
+  await userEvent.click(
+    view.getByText(`#${nodeId}`).closest("button") as HTMLElement,
+  );
+  await userEvent.click(
+    view.getByLabelText(new RegExp(`^Use as an output of ${modeName}`)),
+  );
+}
+
 /** Issue #74: the editor opens the same per-user Generations stream the Workbench/Gallery do, to keep a Test's progress live. */
 export class FakeEventSource {
   listeners: Record<string, Array<(event: { data: string }) => void>> = {};
@@ -136,6 +168,33 @@ export function prepareConfirmAndEventSource() {
 
 export function restoreConfirm() {
   window.confirm = originalConfirm;
+}
+
+/** Issue #213: sections render one at a time now, behind the section nav — tests switch to the one they need first. */
+export async function openSection(
+  view: RenderResult,
+  label:
+    | "Details"
+    | "Workflow"
+    | "Inputs"
+    | "Modes"
+    | "Backends"
+    | "Terms and attribution"
+    | "Test"
+    | "Revisions",
+) {
+  const button = await view.findByRole("button", {
+    name: new RegExp(`^${label}`),
+  });
+  fireEvent.click(button);
+}
+
+/** "Test" is ambiguous with the section nav's own "Test" item (issue #213): finds the Mode's own toggle inside the Modes section. */
+export async function findModeTestToggle(view: RenderResult) {
+  const matches = await view.findAllByText("Test");
+  const toggle = matches.find((el) => !el.closest("nav"));
+  if (!toggle) throw new Error("Mode's Test toggle not found");
+  return toggle;
 }
 
 export async function finishFile() {

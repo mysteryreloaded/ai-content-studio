@@ -153,6 +153,12 @@ export const routes: Route[] = [
     prototype: "editor-a",
   },
   {
+    name: "admin-editor-details",
+    path: "/admin/models/{model.video.id}?section=details",
+    as: "alice",
+    prototype: "editor-a",
+  },
+  {
     name: "admin-editor-new",
     path: "/admin/models/{model.draft.id}",
     as: "alice",

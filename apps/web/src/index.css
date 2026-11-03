@@ -77,6 +77,17 @@
   --color-info: var(--info);
   --color-media: var(--media);
 
+  /* Type-dot colours (issue #213): `bg-t-image` etc., used by `TypeDot`. */
+  --color-t-image: var(--t-image);
+  --color-t-video: var(--t-video);
+  --color-t-audio: var(--t-audio);
+  --color-t-string: var(--t-string);
+  --color-t-int: var(--t-int);
+  --color-t-float: var(--t-float);
+  --color-t-bool: var(--t-bool);
+  --color-t-combo: var(--t-combo);
+  --color-t-link: var(--t-link);
+
   --color-chart-1: var(--accent);
   --color-chart-2: var(--info);
   --color-chart-3: var(--ok);
@@ -146,6 +157,18 @@
 
   --accent-soft: color-mix(in srgb, var(--accent) 16%, var(--panel));
 
+  /* Type-dot colours (issue #213, prototype variant A): one per Input
+     kind, shown by `TypeDot`/`StateChip` in the Model editor. */
+  --t-image: #3d8fd1;
+  --t-video: #2b9e8f;
+  --t-audio: #a066c8;
+  --t-string: #6d8a3a;
+  --t-int: #2e7bb3;
+  --t-float: #b37a2e;
+  --t-bool: #c0504d;
+  --t-combo: #7a7f8a;
+  --t-link: #9aa5a0;
+
   --font-ui: "IBM Plex Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
   --font-head: "IBM Plex Sans Condensed", "IBM Plex Sans", "Arial Narrow", system-ui, sans-serif;
   --font-monospace: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
@@ -173,6 +196,15 @@
     --media-fg: #e4ebe7;
     --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px rgb(0 0 0 / 0.35);
     color-scheme: dark;
+    --t-image: #64b5f6;
+    --t-video: #4fd1bf;
+    --t-audio: #c597e8;
+    --t-string: #a4c46a;
+    --t-int: #6db3e6;
+    --t-float: #e5a85a;
+    --t-bool: #ef7d78;
+    --t-combo: #a4a9b4;
+    --t-link: #6f7e77;
   }
 }
 
@@ -197,6 +229,15 @@
   --media-fg: #e4ebe7;
   --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px rgb(0 0 0 / 0.35);
   color-scheme: dark;
+  --t-image: #64b5f6;
+  --t-video: #4fd1bf;
+  --t-audio: #c597e8;
+  --t-string: #a4c46a;
+  --t-int: #6db3e6;
+  --t-float: #e5a85a;
+  --t-bool: #ef7d78;
+  --t-combo: #a4a9b4;
+  --t-link: #6f7e77;
 }
 
 /* Base element styles, mirroring the prototype's global rules. */

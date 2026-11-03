@@ -18,18 +18,13 @@ export function ModesSection({
     attachedBackends,
     duplicateMode,
     editingModeIndex,
-    handleSaveModes,
     handleTestSubmit,
     inputsDraft,
-    modesDirty,
     modesDraft,
     modesHeadingRef,
-    modesSaveError,
     moveOutputNode,
-    mustDisableToSave,
     removeMode,
     removeOutputNode,
-    savingModes,
     setEditingModeIndex,
     setModeInputSetting,
     setTestBackendId,
@@ -165,15 +160,6 @@ export function ModesSection({
           onApplyToEveryEligibleMode={applySettingToEveryEligibleMode}
         />
       )}
-
-      <button
-        type="button"
-        disabled={savingModes || !modesDirty}
-        onClick={() => void handleSaveModes()}
-      >
-        {mustDisableToSave ? "Save and disable" : "Save Modes"}
-      </button>
-      {modesSaveError && <p role="alert">{modesSaveError}</p>}
 
       {testRuns.length > 0 && <RecentTests runs={testRuns} />}
     </section>

@@ -12,9 +12,11 @@ import {
   type FetchCall,
   NO_BACKENDS,
   cleanup,
+  findModeTestToggle,
   finishFile,
   fireEvent,
   mockFetch,
+  openSection,
   prepareConfirmAndEventSource,
   renderEditor,
   respondGet,
@@ -54,8 +56,9 @@ describe("ModelEditorPage", () => {
     const view = renderEditor();
 
     const { default: userEvent } = await import("@testing-library/user-event");
-    await view.findByLabelText("Slug");
-    await userEvent.type(view.getByLabelText("Slug"), "x");
+    await openSection(view, "Details");
+    await view.findByLabelText("URL slug");
+    await userEvent.type(view.getByLabelText("URL slug"), "x");
     await userEvent.click(view.getByText("Save"));
 
     expect(
@@ -79,8 +82,9 @@ describe("ModelEditorPage", () => {
     const view = renderEditor();
 
     const { default: userEvent } = await import("@testing-library/user-event");
-    await view.findByLabelText("Slug");
-    await userEvent.type(view.getByLabelText("Slug"), "x");
+    await openSection(view, "Details");
+    await view.findByLabelText("URL slug");
+    await userEvent.type(view.getByLabelText("URL slug"), "x");
     await userEvent.click(view.getByText("Save"));
 
     expect(
@@ -88,95 +92,11 @@ describe("ModelEditorPage", () => {
     ).toBeTruthy();
   });
 
-  test("clicking a nav link while dirty asks first, and staying cancels the navigation", async () => {
-    mockFetch((call) => {
-      if (call.method === "GET") return respondGet(call.url);
-      throw new Error(`unexpected ${call.method}`);
-    });
-    let confirmed = false;
-    window.confirm = () => {
-      confirmed = true;
-      return false;
-    };
-
-    const view = renderEditor();
-
-    const { default: userEvent } = await import("@testing-library/user-event");
-    await view.findByLabelText("Slug");
-    await userEvent.type(view.getByLabelText("Slug"), "x");
-    await userEvent.click(view.getByText("Models"));
-
-    expect(confirmed).toBe(true);
-    expect(view.queryByText("Models list")).toBeNull();
-  });
-
-  test("confirming the nav-link prompt navigates away", async () => {
-    mockFetch((call) => {
-      if (call.method === "GET") return respondGet(call.url);
-      throw new Error(`unexpected ${call.method}`);
-    });
-    window.confirm = () => true;
-
-    const view = renderEditor();
-
-    const { default: userEvent } = await import("@testing-library/user-event");
-    await view.findByLabelText("Slug");
-    await userEvent.type(view.getByLabelText("Slug"), "x");
-    await userEvent.click(view.getByText("Models"));
-
-    expect(await view.findByText("Models list")).toBeTruthy();
-  });
-
-  test("delete with unsaved Details changes confirms exactly once, not a second time for the navigation", async () => {
-    const calls = mockFetch((call) => {
-      if (call.method === "GET") return respondGet(call.url);
-      if (call.method === "DELETE") return new Response(null, { status: 204 });
-      throw new Error(`unexpected ${call.method}`);
-    });
-    let confirmCount = 0;
-    window.confirm = () => {
-      confirmCount += 1;
-      return true;
-    };
-
-    const view = renderEditor();
-
-    const { default: userEvent } = await import("@testing-library/user-event");
-    await view.findByLabelText("Slug");
-    await userEvent.type(view.getByLabelText("Slug"), "x");
-    await userEvent.click(view.getByText("Delete"));
-
-    expect(await view.findByText("Models list")).toBeTruthy();
-    expect(confirmCount).toBe(1);
-    await waitFor(() => {
-      const del = calls.find((c) => c.method === "DELETE");
-      expect(del?.url).toContain("version=1");
-    });
-  });
-
-  test("delete shows the server's error on a stale version and stays put", async () => {
-    mockFetch((call) => {
-      if (call.method === "GET") return respondGet(call.url);
-      if (call.method === "DELETE")
-        return Response.json(
-          { error: "changed by someone else, reload" },
-          { status: 409 },
-        );
-      throw new Error(`unexpected ${call.method}`);
-    });
-    window.confirm = () => true;
-
-    const view = renderEditor();
-
-    await view.findByText("LTX 2.5");
-    const { default: userEvent } = await import("@testing-library/user-event");
-    await userEvent.click(view.getByText("Delete"));
-
-    expect(
-      await view.findByText("changed by someone else, reload"),
-    ).toBeTruthy();
-    expect(view.queryByText("Models list")).toBeNull();
-  });
+  // issue #213: the leave prompt is a `Dialog` now (not `window.confirm`),
+  // and Delete moved into Details behind its own confirm `Dialog` — both
+  // moved to frame/EditorFrame.test.tsx ("the leave dialog stays or
+  // discards", "delete refused with unfinished Generations"). The
+  // success/stale-version delete cases live there too now.
 
   test("Backends section lists an attached Backend's missing node types, and attaches another one", async () => {
     const BACKEND_A = { id: "b1", name: "GPU 1", baseUrl: "http://gpu1" };
@@ -216,6 +136,7 @@ describe("ModelEditorPage", () => {
     });
 
     const view = renderEditor();
+    await openSection(view, "Backends");
 
     expect(await view.findByText("GPU 1")).toBeTruthy();
     expect(view.getByText("SomeNode")).toBeTruthy();
@@ -264,6 +185,7 @@ describe("ModelEditorPage", () => {
     });
 
     const view = renderEditor();
+    await openSection(view, "Backends");
 
     expect(await view.findByText("GPU 1")).toBeTruthy();
 
@@ -288,13 +210,20 @@ describe("ModelEditorPage", () => {
 
     const view = renderEditor();
     const { default: userEvent } = await import("@testing-library/user-event");
+    await openSection(view, "Modes");
 
     await view.findByText("LTX 2.5");
     await userEvent.click(view.getByText("Add Mode"));
     await userEvent.type(view.getByLabelText("Mode name"), "Default");
-    await userEvent.click(view.getByRole("button", { name: "Add" }));
 
-    await userEvent.click(view.getByText("Save Modes"));
+    // Picking the output node lives in the Workflow table (issue #213
+    // keeps the Workflow section separate), while the Mode being
+    // "picked" stays the same across the section switch.
+    await openSection(view, "Workflow");
+    await userEvent.click(view.getByRole("button", { name: "Add" }));
+    await openSection(view, "Modes");
+
+    await userEvent.click(view.getByText("Save"));
 
     const saved = calls.find(
       (c) => c.method === "PUT" && c.url.endsWith("/modes"),
@@ -329,13 +258,17 @@ describe("ModelEditorPage", () => {
 
     const view = renderEditor();
     const { default: userEvent } = await import("@testing-library/user-event");
+    await openSection(view, "Modes");
 
     await view.findByText("LTX 2.5");
     await userEvent.click(view.getByText("Add Mode"));
     await userEvent.type(view.getByLabelText("Mode name"), "Default");
-    await userEvent.click(view.getByRole("button", { name: "Add" }));
 
-    await userEvent.click(view.getByText("Test"));
+    await openSection(view, "Workflow");
+    await userEvent.click(view.getByRole("button", { name: "Add" }));
+    await openSection(view, "Modes");
+
+    await userEvent.click(await findModeTestToggle(view));
     await userEvent.click(view.getByText("Run test"));
 
     const sent = calls.find(
@@ -422,7 +355,7 @@ describe("ModelEditorPage", () => {
     const view = renderEditor();
     const { default: userEvent } = await import("@testing-library/user-event");
 
-    await userEvent.click(await view.findByText("Test"));
+    await userEvent.click(await findModeTestToggle(view));
     await userEvent.type(view.getByLabelText("Steps"), "5");
     await userEvent.click(view.getByText("Run test"));
 
@@ -518,7 +451,7 @@ describe("ModelEditorPage", () => {
     const view = renderEditor();
     const { default: userEvent } = await import("@testing-library/user-event");
 
-    await userEvent.click(await view.findByText("Test"));
+    await userEvent.click(await findModeTestToggle(view));
     expect(await view.findByText("Your files")).toBeTruthy();
     await userEvent.upload(
       view.getByLabelText("Start frame"),
@@ -547,7 +480,7 @@ describe("ModelEditorPage", () => {
     const view = renderEditor();
     const { default: userEvent } = await import("@testing-library/user-event");
 
-    await userEvent.click(await view.findByText("Enable"));
+    await userEvent.click(await view.findByRole("switch"));
 
     expect(await view.findByText("needs at least one Mode")).toBeTruthy();
   });
@@ -601,6 +534,7 @@ describe("ModelEditorPage", () => {
     const view = renderEditor();
     const { default: userEvent } = await import("@testing-library/user-event");
     const { within } = await import("@testing-library/react");
+    await openSection(view, "Modes");
 
     const modeAInput = await view.findByDisplayValue("Mode A");
     const modeAFieldset = modeAInput.closest("fieldset") as HTMLElement;
@@ -658,10 +592,12 @@ describe("ModelEditorPage", () => {
 
     const view = renderEditor();
     const { default: userEvent } = await import("@testing-library/user-event");
+    await openSection(view, "Modes");
 
     await userEvent.click(
       await view.findByText("Pick output nodes in the Workflow below"),
     );
+    await openSection(view, "Workflow");
 
     const rowFor = (nodeId: string) =>
       view.getByText(nodeId, { selector: "td" }).closest("tr") as HTMLElement;
@@ -886,6 +822,7 @@ describe("ModelEditorPage", () => {
 
     const view = renderEditor();
     const { default: userEvent } = await import("@testing-library/user-event");
+    await openSection(view, "Modes");
 
     await view.findByDisplayValue("Mode 1");
     await userEvent.click(view.getByText("Duplicate Mode"));
@@ -923,6 +860,7 @@ describe("ModelEditorPage", () => {
     const { default: userEvent } = await import("@testing-library/user-event");
 
     await view.findByText("LTX 2.5");
+    await openSection(view, "Inputs");
     await userEvent.selectOptions(
       view.getByLabelText("New Input kind"),
       "image_upload",
@@ -936,8 +874,9 @@ describe("ModelEditorPage", () => {
       view.getByLabelText("Max long side (px, optional)"),
       "2048",
     );
+    await openSection(view, "Workflow");
     await userEvent.click(view.getByRole("button", { name: "Add" }));
-    await userEvent.click(view.getByText("Save Inputs"));
+    await userEvent.click(view.getByText("Save"));
 
     const saved = calls.find(
       (c) => c.method === "PUT" && c.url.endsWith("/inputs"),
@@ -1014,6 +953,7 @@ describe("ModelEditorPage", () => {
     const { default: userEvent } = await import("@testing-library/user-event");
 
     await view.findByText("LTX 2.5");
+    await openSection(view, "Inputs");
     await userEvent.selectOptions(
       view.getByLabelText("New Input kind"),
       "points",
@@ -1038,7 +978,9 @@ describe("ModelEditorPage", () => {
       "2::height",
     );
 
-    // `addInput` already opens field-picking for the newly added Input.
+    // `addInput` already opens field-picking for the newly added Input,
+    // whose candidate fields render in the Workflow table.
+    await openSection(view, "Workflow");
     const pointsRow = (await view.findByText("points")).closest(
       "tr",
     ) as HTMLElement;
@@ -1046,7 +988,7 @@ describe("ModelEditorPage", () => {
       pointsRow.querySelector("button") as HTMLButtonElement,
     );
 
-    await userEvent.click(view.getByText("Save Inputs"));
+    await userEvent.click(view.getByText("Save"));
 
     const saved = calls.find(
       (c) => c.method === "PUT" && c.url.endsWith("/inputs"),
@@ -1130,62 +1072,9 @@ describe("ModelEditorPage", () => {
     expect(options).toContain("optional");
   });
 
-  test("Save Modes becomes 'Save and disable' and sends disable:true once checkModel has errors (issue #49 CEO review)", async () => {
-    const detail = {
-      ...DETAIL,
-      model: { ...DETAIL.model, state: "enabled" as const },
-      inputs: [],
-      modes: [
-        {
-          id: "mode-1",
-          sortOrder: 0,
-          name: "Default",
-          description: "",
-          outputNodes: [
-            { nodeId: "1", classType: "LoadImage", title: null, kind: "image" },
-          ],
-          inputSettings: [],
-        },
-      ],
-    };
-    // No attached Backend (respondGet's default NO_BACKENDS) means
-    // checkModel flags "needs at least one attached Backend" once
-    // object-info loads, so saving the enabled Model must disable it.
-    const calls = mockFetch((call) => {
-      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1")) {
-        return Response.json(detail);
-      }
-      if (call.method === "GET") return respondGet(call.url);
-      if (call.method === "PUT" && call.url.endsWith("/modes")) {
-        return Response.json({
-          record: { ...detail.model, state: "disabled", version: 2 },
-          modes: [],
-        });
-      }
-      throw new Error(`unexpected ${call.method} ${call.url}`);
-    });
-
-    const view = renderEditor();
-    const { default: userEvent } = await import("@testing-library/user-event");
-
-    await view.findByText("LTX 2.5");
-    await userEvent.click(await view.findByText("Duplicate Mode"));
-
-    // Both the Modes and Inputs sections read "Save and disable" once
-    // checkModel has errors; only the Modes one is enabled here (Modes is
-    // dirty, Inputs isn't).
-    const saveButtons = await view.findAllByText("Save and disable");
-    const saveButton = saveButtons.find(
-      (button) => !(button as HTMLButtonElement).disabled,
-    );
-    if (!saveButton) throw new Error("no enabled 'Save and disable' button");
-    await userEvent.click(saveButton);
-
-    const saved = calls.find(
-      (c) => c.method === "PUT" && c.url.endsWith("/modes"),
-    );
-    expect(saved?.body?.disable).toBe(true);
-  });
+  // issue #213: "Save Modes becomes 'Save and disable'..." moved to
+  // frame/EditorFrame.test.tsx ("Save and disable sends disable:true"),
+  // now against the header's one Save.
 
   test("Enable stays disabled once checkModel has errors, without asking the server", async () => {
     const detail = {
@@ -1204,9 +1093,9 @@ describe("ModelEditorPage", () => {
     const view = renderEditor();
     const { default: userEvent } = await import("@testing-library/user-event");
 
-    const enableButton = (await view.findByText("Enable")) as HTMLButtonElement;
-    await waitFor(() => expect(enableButton.disabled).toBe(true));
-    await userEvent.click(enableButton);
+    const enableSwitch = (await view.findByRole("switch")) as HTMLButtonElement;
+    await waitFor(() => expect(enableSwitch.disabled).toBe(true));
+    await userEvent.click(enableSwitch);
 
     expect(calls.some((c) => c.url.endsWith("/enable"))).toBe(false);
   });
@@ -1277,6 +1166,7 @@ describe("ModelEditorPage", () => {
 
     const view = renderEditor();
     const { default: userEvent } = await import("@testing-library/user-event");
+    await openSection(view, "Revisions");
 
     await view.findByText("2 (current)");
 
@@ -1325,6 +1215,7 @@ describe("ModelEditorPage", () => {
     });
 
     const view = renderEditor();
+    await openSection(view, "Revisions");
 
     await view.findByText("2 (current)");
     const restoreButtons = await view.findAllByText("Restore");
@@ -1360,19 +1251,24 @@ describe("ModelEditorPage", () => {
     const view = renderEditor();
     const { default: userEvent } = await import("@testing-library/user-event");
 
+    await openSection(view, "Revisions");
     await view.findByText("2 (current)");
-    await userEvent.type(view.getByLabelText("Slug"), "x");
 
+    await openSection(view, "Details");
+    await userEvent.type(await view.findByLabelText("URL slug"), "x");
+
+    await openSection(view, "Revisions");
     const restoreButtons = await view.findAllByText("Restore");
     expect((restoreButtons[1] as HTMLButtonElement).disabled).toBe(true);
 
+    await openSection(view, "Workflow");
     const file = new File(
       ['{"1":{"class_type":"LoadImage","inputs":{}}}'],
       "wf.json",
       { type: "application/json" },
     );
     await userEvent.upload(
-      view.getByLabelText("Replace Workflow (API format JSON)"),
+      await view.findByLabelText("Replace Workflow (API format JSON)"),
       file,
     );
     const replaceButton = await view.findByText("Replace Workflow");
@@ -1396,7 +1292,9 @@ describe("ModelEditorPage", () => {
     const view = renderEditor();
     const { default: userEvent } = await import("@testing-library/user-event");
 
+    await openSection(view, "Revisions");
     await view.findByText("2 (current)");
+    await openSection(view, "Workflow");
 
     // Node "2" keeps its id but turns into a VHS_VideoCombine; node "3"
     // is a genuine SaveImage the rebind picker can repoint the Mode's

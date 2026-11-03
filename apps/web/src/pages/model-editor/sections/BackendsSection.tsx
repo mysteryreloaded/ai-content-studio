@@ -67,7 +67,7 @@ export function BackendsSection({
                       })
                   : [];
               return (
-                <tr key={entry.backend.id}>
+                <tr key={entry.backend.id} data-backend-row={entry.backend.id}>
                   <td>{entry.backend.name}</td>
                   <td>{entry.backend.baseUrl}</td>
                   <td>

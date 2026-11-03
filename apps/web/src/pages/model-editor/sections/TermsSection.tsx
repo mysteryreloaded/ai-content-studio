@@ -13,21 +13,12 @@ export function TermsSection({
   editor: ModelEditor;
   detail: ModelDetail;
 }) {
-  const {
-    askAgain,
-    handleSaveTerms,
-    savingTerms,
-    setAskAgain,
-    setTermsForm,
-    termsDirty,
-    termsForm,
-    termsPreviewHtml,
-    termsSaveError,
-  } = editor;
+  const { askAgain, setAskAgain, setTermsForm, termsForm, termsPreviewHtml } =
+    editor;
   return (
     <>
       {termsForm && (
-        <form onSubmit={(event) => void handleSaveTerms(event)}>
+        <div>
           <h3>Terms and attribution</h3>
           <p>
             <a
@@ -90,18 +81,7 @@ export function TermsSection({
             />
             Ask everyone to accept again
           </label>
-          <button
-            type="submit"
-            disabled={
-              savingTerms ||
-              !termsDirty ||
-              !isValidModelLicenseUrl(termsForm.licenseUrl)
-            }
-          >
-            Save Terms
-          </button>
-          {termsSaveError && <p role="alert">{termsSaveError}</p>}
-        </form>
+        </div>
       )}
     </>
   );

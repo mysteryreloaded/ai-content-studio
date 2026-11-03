@@ -1,6 +1,6 @@
 import { fieldKey } from "@ai-content-studio/shared";
-import { ChecksRail } from "../frame/ChecksRail.js";
 import type { ModelDetail } from "../types.js";
+import { ChecksList } from "../ui/ChecksList.js";
 import type { ModelEditor } from "../useModelEditor.js";
 export function WorkflowSection({
   editor,
@@ -62,7 +62,13 @@ export function WorkflowSection({
           "Replace Workflow".
         </p>
       )}
-      <ChecksRail issues={pendingWorkflowIssues} />
+      {pendingWorkflowIssues.length > 0 && (
+        <ChecksList
+          issues={pendingWorkflowIssues}
+          title="Checks on the picked file"
+          onJump={() => {}}
+        />
+      )}
       {brokenNodeRefs.length > 0 && (
         <section aria-label="Rebind broken bindings and outputs">
           <h4>Rebind</h4>

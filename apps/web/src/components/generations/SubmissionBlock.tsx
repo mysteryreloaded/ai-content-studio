@@ -1,5 +1,6 @@
 import { cn } from "cn";
 import type { ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { Button } from "../ui/button.js";
 import { ConfirmDelete } from "./ConfirmDelete.js";
 import { GenerationCard } from "./GenerationCard.js";
@@ -28,6 +29,14 @@ function UsedUploads({ uploads }: { uploads: SubmissionUploadSummary[] }) {
       ))}
     </span>
   );
+}
+
+/** The Gallery's "14:05"-style clock time (issue #198), in the browser's own locale. */
+function clockTime(iso: string): string {
+  return new Date(iso).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function PromptLine({ prompt }: { prompt: string | null | undefined }) {
@@ -61,6 +70,10 @@ export function SubmissionBlock({
   cancellingGenerationIds,
   deletingGenerationIds,
   offer,
+  showModel = false,
+  timeStyle = "ago",
+  cardMedia = "player",
+  cardsClassName,
   onCancelSubmission,
   onDeleteSubmission,
   onCancelGeneration,
@@ -79,6 +92,14 @@ export function SubmissionBlock({
   cancellingGenerationIds: Set<string>;
   deletingGenerationIds: Set<string>;
   offer?: ReactNode;
+  /** Issue #198: the Gallery adds "· <Model>" (a link) after the Mode, since it spans every Model. */
+  showModel?: boolean;
+  /** Issue #198: the Gallery shows the clock time ("14:05") instead of the Workbench's relative "N min ago". */
+  timeStyle?: "clock" | "ago";
+  /** Issue #198: the Gallery's cards show a thumbnail with a play mark instead of playing in place. */
+  cardMedia?: "player" | "thumbnail";
+  /** Issue #198: the Gallery's card grid (2 columns below 640px, 4 from 640px) replaces the Workbench's own. */
+  cardsClassName?: string;
   onCancelSubmission: () => void;
   onDeleteSubmission: () => void;
   onCancelGeneration: (id: string) => void;
@@ -91,14 +112,23 @@ export function SubmissionBlock({
     (g) => !DONE_STATES.has(g.state) && g.state !== "cancelling",
   ).length;
   const allEnded = generations.every((g) => DONE_STATES.has(g.state));
+  const first = generations[0];
 
   return (
     <div className="flex min-w-0 flex-col gap-1.5 border-b border-border pb-3.5 last:border-b-0">
       <div className="flex min-w-0 flex-wrap items-center gap-2">
         <strong>{submission.modeName}</strong>
+        {showModel && first && (
+          <>
+            <span className="text-muted-foreground">·</span>
+            <Link to={`/models/${first.modelSlug}`}>{first.modelName}</Link>
+          </>
+        )}
         {submission.uploads && <UsedUploads uploads={submission.uploads} />}
         <span className="text-[12.5px] text-faint">
-          {ago(submission.submittedAt, now)}
+          {timeStyle === "clock"
+            ? clockTime(submission.submittedAt)
+            : ago(submission.submittedAt, now)}
           {generations.length > 1 ? ` · ${generations.length} Generations` : ""}
         </span>
         <span className="min-w-0 flex-1" />
@@ -131,11 +161,14 @@ export function SubmissionBlock({
       <PromptLine prompt={submission.prompt} />
       {offer}
       <div
-        className={cn(
-          "grid items-start gap-2.5 grid-cols-[repeat(auto-fit,minmax(min(100%,240px),1fr))] max-[560px]:grid-cols-1",
-          generations.length === 1 && "grid-cols-[minmax(0,520px)]",
-          generations.length === 2 && "max-w-[980px]",
-        )}
+        className={
+          cardsClassName ??
+          cn(
+            "grid items-start gap-2.5 grid-cols-[repeat(auto-fit,minmax(min(100%,240px),1fr))] max-[560px]:grid-cols-1",
+            generations.length === 1 && "grid-cols-[minmax(0,520px)]",
+            generations.length === 2 && "max-w-[980px]",
+          )
+        }
       >
         {generations.map((generation) => (
           <GenerationCard
@@ -143,6 +176,7 @@ export function SubmissionBlock({
             generation={generation}
             progress={progressById.get(generation.id)}
             paused={paused}
+            media={cardMedia}
             cancelPending={cancellingGenerationIds.has(generation.id)}
             deletePending={deletingGenerationIds.has(generation.id)}
             onCancel={onCancelGeneration}

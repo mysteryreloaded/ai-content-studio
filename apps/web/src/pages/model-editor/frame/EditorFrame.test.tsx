@@ -752,4 +752,180 @@ describe("Model editor frame (issue #213)", () => {
     await userEvent.click(within(dialog2).getByText("Discard"));
     expect(await view.findByText("Models list")).toBeTruthy();
   });
+
+  // Issue #241 CEO review round 2: Restore and Replace Workflow both
+  // replace the saved Modes/Inputs/Terms, but the drafts-seeding effect
+  // only seeds once per Model id now — so a plain `load()` refetch left
+  // the old drafts in place after a successful Restore/Replace. Both
+  // actions now fully reseed via `draft.reload()`.
+  test("restoring a revision reseeds the Modes draft from the restored revision", async () => {
+    const modeBeforeRestore = {
+      id: "mode-1",
+      sortOrder: 0,
+      name: "Default",
+      description: "",
+      outputNodes: [
+        {
+          nodeId: "1",
+          classType: "LoadImage",
+          title: null,
+          kind: "image" as const,
+        },
+      ],
+      inputSettings: [],
+    };
+    let restored = false;
+    mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1")) {
+        return Response.json({
+          ...DETAIL,
+          model: {
+            ...DETAIL.model,
+            currentRevision: restored ? 1 : 2,
+            version: restored ? 2 : 1,
+          },
+          modes: restored ? [] : [modeBeforeRestore],
+        });
+      }
+      if (call.url.endsWith("/api/admin/models/m1/revisions")) {
+        return Response.json({
+          revisions: [
+            {
+              revisionNumber: 1,
+              createdAt: new Date().toISOString(),
+              modeCount: 0,
+              inputCount: 0,
+            },
+            {
+              revisionNumber: 2,
+              createdAt: new Date().toISOString(),
+              modeCount: 1,
+              inputCount: 0,
+            },
+          ],
+        });
+      }
+      if (call.method === "GET") return respondGet(call.url);
+      if (call.method === "POST" && call.url.endsWith("/revisions/1/restore")) {
+        restored = true;
+        return Response.json({});
+      }
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+
+    await openSection(view, "Modes");
+    expect(await view.findByDisplayValue("Default")).toBeTruthy();
+
+    await openSection(view, "Revisions");
+    const restoreButtons = await view.findAllByRole("button", {
+      name: "Restore",
+    });
+    const restoreButton = restoreButtons.find(
+      (button) => !(button as HTMLButtonElement).disabled,
+    ) as HTMLButtonElement;
+    await userEvent.click(restoreButton);
+
+    await view.findByText("Saved · revision 1");
+
+    await openSection(view, "Modes");
+    expect(view.queryByDisplayValue("Default")).toBeNull();
+
+    const saveButton = view.getByText("Save") as HTMLButtonElement;
+    expect(saveButton.disabled).toBe(true);
+  });
+
+  test("Replace Workflow reseeds the Modes draft from the new revision", async () => {
+    const modeBeforeReplace = {
+      id: "mode-1",
+      sortOrder: 0,
+      name: "Default",
+      description: "",
+      outputNodes: [
+        {
+          nodeId: "1",
+          classType: "LoadImage",
+          title: null,
+          kind: "image" as const,
+        },
+      ],
+      inputSettings: [],
+    };
+    let replaced = false;
+    mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1")) {
+        return Response.json({
+          ...DETAIL,
+          model: {
+            ...DETAIL.model,
+            currentRevision: replaced ? 2 : 1,
+            version: replaced ? 2 : 1,
+          },
+          modes: replaced ? [] : [modeBeforeReplace],
+        });
+      }
+      if (call.method === "GET") return respondGet(call.url);
+      if (call.method === "PUT" && call.url.endsWith("/workflow")) {
+        replaced = true;
+        return Response.json({});
+      }
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+
+    await openSection(view, "Modes");
+    expect(await view.findByDisplayValue("Default")).toBeTruthy();
+
+    await openSection(view, "Workflow");
+    const file = new File(
+      [JSON.stringify({ "1": { class_type: "LoadImage", inputs: {} } })],
+      "replacement.json",
+      { type: "application/json" },
+    );
+    await userEvent.upload(
+      view.getByLabelText("Replace Workflow (API format JSON)"),
+      file,
+    );
+    await userEvent.click(await view.findByText("Replace Workflow"));
+
+    await view.findByText("Saved · revision 2");
+
+    await openSection(view, "Modes");
+    expect(view.queryByDisplayValue("Default")).toBeNull();
+
+    const saveButton = view.getByText("Save") as HTMLButtonElement;
+    expect(saveButton.disabled).toBe(true);
+  });
+
+  // Issue #241 CEO review round 2: Details' zod errors must appear live
+  // (the nav count updates as you type), not just after Save, and must
+  // clear once the field is fixed.
+  test("a bad slug shows the Details error count live, and fixing it clears it", async () => {
+    mockFetch((call) => {
+      if (call.method === "GET") return respondGet(call.url);
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+
+    await openSection(view, "Details");
+    const slugInput = await view.findByLabelText("URL slug");
+    await userEvent.clear(slugInput);
+    await userEvent.type(slugInput, "Not A Valid Slug!");
+
+    const detailsButton = (await view.findByRole("button", {
+      name: /^Details/,
+    })) as HTMLButtonElement;
+    await waitFor(() => expect(detailsButton.textContent).toContain("1"));
+
+    await userEvent.clear(slugInput);
+    await userEvent.type(slugInput, "valid-slug");
+
+    await waitFor(() => expect(detailsButton.textContent).not.toContain("1"));
+  });
 });

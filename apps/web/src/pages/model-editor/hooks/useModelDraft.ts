@@ -61,6 +61,9 @@ export function useModelDraft({
 
   const form = useForm<ModelDetailsFormValues>({
     resolver: zodResolver(modelDetailsSchema),
+    // Issue #241 CEO review: the Details nav count must be live, not
+    // just updated on Save — `onChange` revalidates on every keystroke.
+    mode: "onChange",
     values: detail
       ? {
           name: detail.model.name,

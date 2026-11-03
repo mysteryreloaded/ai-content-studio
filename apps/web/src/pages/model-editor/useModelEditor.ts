@@ -386,7 +386,12 @@ export function useModelEditor() {
       setPendingWorkflow(null);
       setPendingWorkflowFileName(null);
       setRebindMap({});
-      load();
+      // Issue #241 CEO review: this replaces the saved Workflow, so the
+      // Modes/Inputs/Terms drafts must be reseeded from the fresh Model,
+      // not just refetched underneath the once-per-id seeding effect.
+      // Replace Workflow only runs while every draft is clean, so
+      // `draft.reload()` (a refetch + full reseed) is safe here.
+      await draft.reload();
       loadRevisions();
     } finally {
       setUploadingWorkflow(false);
@@ -424,7 +429,11 @@ export function useModelEditor() {
         return;
       }
 
-      load();
+      // Issue #241 CEO review: restoring a revision replaces the saved
+      // Modes/Inputs/Terms, so they need a full reseed, not just a
+      // refetch under the once-per-id seeding effect. Restore only runs
+      // while every draft is clean, so `draft.reload()` is safe here.
+      await draft.reload();
       loadRevisions();
     } finally {
       setRestoringRevision(null);

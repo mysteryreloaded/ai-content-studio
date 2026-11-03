@@ -1,16 +1,13 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { Outlet, RouterProvider, createBrowserRouter } from "react-router-dom";
+import { RouterProvider, createBrowserRouter } from "react-router-dom";
 import "./index.css";
-import { Footer } from "./Footer.js";
 import { LandingPage } from "./LandingPage.js";
-import { NoticeBanner } from "./NoticeBanner.js";
 import { RequireActive } from "./RequireActive.js";
 import { RequireTermsAccepted } from "./RequireTermsAccepted.js";
-import { AppHeader } from "./components/AppHeader.js";
+import { RootLayout } from "./RootLayout.js";
 import { queryClient } from "./lib/query.js";
-import { useTabNotifier } from "./notifications/useTabNotifier.js";
 import { AccountPage } from "./pages/AccountPage.js";
 import { AdminShell } from "./pages/AdminShell.js";
 import { GalleryPage } from "./pages/GalleryPage.js";
@@ -22,27 +19,6 @@ import { WorkbenchPage } from "./pages/WorkbenchPage.js";
 
 const root = document.getElementById("root");
 if (!root) throw new Error("missing #root element");
-
-/**
- * The app shell (issue #173): the Notice/Pause banner (issue #59) on every
- * page, the `AppHeader` on signed-in pages (it self-hides otherwise), the
- * page container the routed page's content sits in, and the `Footer` on
- * every page. Also the tab title/favicon cue and Notification pipeline
- * (issue #58), mounted once here so they run regardless of which page is open.
- */
-function RootLayout() {
-  useTabNotifier();
-  return (
-    <>
-      <NoticeBanner />
-      <AppHeader />
-      <div className="mx-auto w-full max-w-320 px-4 py-[22px]">
-        <Outlet />
-      </div>
-      <Footer />
-    </>
-  );
-}
 
 // A data router (rather than <BrowserRouter>) so the Model editor can use
 // useBlocker to guard every in-app navigation away from unsaved changes,

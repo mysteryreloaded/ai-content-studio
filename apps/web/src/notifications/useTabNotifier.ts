@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef } from "react";
+import { useEventStream } from "../lib/sse.js";
 import { useSession } from "../useSession.js";
 import { useSiteSettings } from "../useSiteSettings.js";
 import {
@@ -63,12 +64,17 @@ function upsertTracked(
 }
 
 /**
- * Mounted once, globally (`main.tsx`'s `RootLayout`): the tab title/favicon
- * cue and the browser Notification pipeline for issue #58. It keeps its
- * own `/api/generations/stream` subscription — every open tab already
- * does this independently (`WorkbenchPage.tsx`, `GalleryPage.tsx`), so a
- * third independent one here follows the existing pattern rather than
- * plumbing a new shared context through both pages.
+ * Mounted once, globally (`RootLayout`): the tab title/favicon cue and the
+ * browser Notification pipeline for issue #58. Since issue #188 it no
+ * longer opens its own `/api/generations/stream` — it registers
+ * `snapshot`/`change` handlers on the shell's shared stream, the same
+ * `EventSource` per tab that `useActiveGenerations` (and the pages' own
+ * subscriptions, `WorkbenchPage.tsx` and `GalleryPage.tsx`) shares through
+ * `useEventStream` (#59). The shell adds no connection, and the tab
+ * title's N and the nav's live count always agree. The subscription is
+ * gated on the session: a pending user or a signed-out visitor opens no
+ * generations stream at all (issue #188's AC), and a disabled user no
+ * longer 403s into the peek's reconnect loop.
  */
 export function useTabNotifier(): void {
   const { session } = useSession();
@@ -230,75 +236,74 @@ export function useTabNotifier(): void {
     [refreshTabCue, recomputeAnyVisible],
   );
 
-  // The SSE subscription: snapshot on connect, then "change" events.
-  // Issue #58's AC: a Submission dropped from a snapshot without this tab
-  // having seen its own "change" event (a missed heartbeat, a frozen
-  // background tab) is resolved by fetching its own id.
-  useEffect(() => {
-    if (session.status !== "signed-in") return;
-    const source = new EventSource("/api/generations/stream");
+  // The shared-stream subscription (issue #188): `useEventStream` opens the
+  // tab's one `/api/generations/stream` `EventSource` and hands this hook
+  // each event's already-parsed data. The snapshot on connect, then
+  // "change" events. Issue #58's AC: a Submission dropped from a snapshot
+  // without this tab having seen its own "change" event (a missed
+  // heartbeat, a frozen background tab) is resolved by fetching its own
+  // id (the one remaining `fetch(` in the shell).
+  const enabled =
+    session.status === "signed-in" && session.user.status === "active";
+  useEventStream(
+    "/api/generations/stream",
+    {
+      snapshot: (_queryClient, data) => {
+        const body = data as { generations: GenerationSummary[] };
+        const nextIds = new Set(body.generations.map((g) => g.id));
+        const dropped = [...activeIdsRef.current].filter(
+          (id) => !nextIds.has(id),
+        );
+        activeIdsRef.current = nextIds;
 
-    source.addEventListener("snapshot", (event) => {
-      const body = JSON.parse((event as MessageEvent).data) as {
-        generations: GenerationSummary[];
-      };
-      const nextIds = new Set(body.generations.map((g) => g.id));
-      const dropped = [...activeIdsRef.current].filter(
-        (id) => !nextIds.has(id),
-      );
-      activeIdsRef.current = nextIds;
+        for (const generation of body.generations)
+          upsertTracked(trackedRef.current, generation);
 
-      for (const generation of body.generations)
-        upsertTracked(trackedRef.current, generation);
-
-      for (const id of dropped) {
-        void fetch(`/api/generations/${id}`)
-          .then((res) => (res.ok ? res.json() : null))
-          .then(
-            (
-              detail: {
-                state: GenerationState;
-                deletedAt: string | null;
-              } | null,
-            ) => {
-              for (const submission of trackedRef.current.values()) {
-                const generation = submission.generations.find(
-                  (g) => g.id === id,
-                );
-                if (!generation) continue;
-                if (detail) {
-                  generation.state = detail.state;
-                  generation.removed = detail.deletedAt !== null;
-                } else {
-                  generation.removed = true;
+        for (const id of dropped) {
+          void fetch(`/api/generations/${id}`)
+            .then((res) => (res.ok ? res.json() : null))
+            .then(
+              (
+                detail: {
+                  state: GenerationState;
+                  deletedAt: string | null;
+                } | null,
+              ) => {
+                for (const submission of trackedRef.current.values()) {
+                  const generation = submission.generations.find(
+                    (g) => g.id === id,
+                  );
+                  if (!generation) continue;
+                  if (detail) {
+                    generation.state = detail.state;
+                    generation.removed = detail.deletedAt !== null;
+                  } else {
+                    generation.removed = true;
+                  }
+                  resolveSubmissionEnd(submission.submissionId);
                 }
-                resolveSubmissionEnd(submission.submissionId);
-              }
-            },
-          )
-          .catch(() => {
-            // Leave its last known state; a later snapshot retries the diff.
-          });
-      }
+              },
+            )
+            .catch(() => {
+              // Leave its last known state; a later snapshot retries the diff.
+            });
+        }
 
-      refreshTabCue();
-    });
+        refreshTabCue();
+      },
+      change: (_queryClient, data) => {
+        const generation = data as GenerationSummary;
+        if (UNDERWAY_STATES.has(generation.state))
+          activeIdsRef.current.add(generation.id);
+        else activeIdsRef.current.delete(generation.id);
 
-    source.addEventListener("change", (event) => {
-      const generation = JSON.parse(
-        (event as MessageEvent).data,
-      ) as GenerationSummary;
-      if (UNDERWAY_STATES.has(generation.state))
-        activeIdsRef.current.add(generation.id);
-      else activeIdsRef.current.delete(generation.id);
-
-      upsertTracked(trackedRef.current, generation);
-      resolveSubmissionEnd(generation.submissionId);
-      refreshTabCue();
-    });
-
-    return () => source.close();
-  }, [session.status, refreshTabCue, resolveSubmissionEnd]);
+        upsertTracked(trackedRef.current, generation);
+        resolveSubmissionEnd(generation.submissionId);
+        refreshTabCue();
+      },
+    },
+    { enabled },
+  );
 
   // Own visibility + every other tab's, shared over BroadcastChannel, plus
   // the Notifier election over Web Locks (issue #58's AC).

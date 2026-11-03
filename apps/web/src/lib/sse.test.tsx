@@ -90,6 +90,35 @@ function SharedHarness({ url }: { url: string }) {
   );
 }
 
+function GatedProbe({ url, enabled }: { url: string; enabled: boolean }) {
+  const queryClient = useQueryClient();
+  useEventStream(
+    url,
+    {
+      tick: (client, data) => {
+        delivered.push({ client, data });
+      },
+    },
+    { enabled },
+  );
+  return null;
+}
+
+function GateHarness({ url }: { url: string }) {
+  const [enabled, setEnabled] = useState(false);
+  return (
+    <>
+      <button type="button" onClick={() => setEnabled(true)}>
+        enable
+      </button>
+      <button type="button" onClick={() => setEnabled(false)}>
+        disable
+      </button>
+      <GatedProbe url={url} enabled={enabled} />
+    </>
+  );
+}
+
 // The status peek runs as an async IIFE of microtasks (fetch +
 // body.cancel), so one macrotask turn lets it finish before the assertion.
 async function settlePeek() {
@@ -187,6 +216,21 @@ describe("useEventStream", () => {
     await settlePeek();
 
     expect(source.closed).toBeFalse();
+    view.unmount();
+  });
+
+  test("enabled: false opens no EventSource at all; enabling opens one, disabling closes it (issue #188)", () => {
+    const view = renderWithProviders(<GateHarness url="/sse/gated" />);
+    expect(FakeEventSource.instances).toHaveLength(0);
+
+    fireEvent.click(view.getByRole("button", { name: "enable" }));
+    expect(FakeEventSource.instances).toHaveLength(1);
+    expect((FakeEventSource.instances[0] as FakeEventSource).url).toBe(
+      "/sse/gated",
+    );
+
+    fireEvent.click(view.getByRole("button", { name: "disable" }));
+    expect((FakeEventSource.instances[0] as FakeEventSource).closed).toBeTrue();
     view.unmount();
   });
 });

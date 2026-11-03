@@ -11,6 +11,7 @@ import {
   NO_BACKENDS,
   cleanup,
   finishFile,
+  fireEvent,
   mockFetch,
   openSection,
   prepareConfirmAndEventSource,
@@ -254,6 +255,116 @@ describe("ModesSection", () => {
     expect(cell.closest("td")?.className).not.toContain("opacity-40");
   });
 
+  test("Mode sheet's Path node count agrees with the grid for a switch steered by a visible Input (issue #48/#216)", async () => {
+    const STRENGTH_ID = "44444444-4444-4444-4444-444444444444";
+    const FLAG_ID = "55555555-5555-5555-5555-555555555555";
+    const DETAIL_SWITCH = {
+      model: DETAIL.model,
+      workflowHash: "hash1",
+      workflow: {
+        prim: { class_type: "PrimitiveBoolean", inputs: { value: true } },
+        switch: {
+          class_type: "ComfySwitchNode",
+          inputs: {
+            switch: ["prim", 0],
+            on_true: ["a", 0],
+            on_false: ["b", 0],
+          },
+        },
+        a: { class_type: "LoadImage", inputs: {} },
+        b: { class_type: "LoadImage", inputs: { strength: 1 } },
+        out: { class_type: "SaveImage", inputs: { image: ["switch", 0] } },
+      },
+      nodes: [
+        { id: "prim", classType: "PrimitiveBoolean", title: null },
+        { id: "switch", classType: "ComfySwitchNode", title: null },
+        { id: "a", classType: "LoadImage", title: null },
+        { id: "b", classType: "LoadImage", title: null },
+        { id: "out", classType: "SaveImage", title: null },
+      ],
+      outsideServiceNotes: [],
+      modes: [
+        {
+          id: "mode-1",
+          sortOrder: 0,
+          name: "Mode 1",
+          description: "",
+          outputNodes: [
+            {
+              nodeId: "out",
+              classType: "SaveImage",
+              title: null,
+              kind: "image",
+            },
+          ],
+          inputSettings: [],
+        },
+      ],
+      inputs: [
+        {
+          id: FLAG_ID,
+          kind: "select",
+          group: "settings",
+          label: "Flag",
+          help: "",
+          default: null,
+          options: [
+            { id: "off", label: "Off", values: [false] },
+            { id: "on", label: "On", values: [true] },
+          ],
+          bindings: [
+            {
+              nodeId: "prim",
+              field: "value",
+              classType: "PrimitiveBoolean",
+              title: null,
+            },
+          ],
+        },
+        {
+          id: STRENGTH_ID,
+          kind: "number",
+          group: "settings",
+          label: "Strength",
+          help: "",
+          default: null,
+          numberMode: "integer",
+          min: 0,
+          max: 10,
+          step: 1,
+          bindings: [
+            {
+              nodeId: "b",
+              field: "strength",
+              classType: "LoadImage",
+              title: null,
+            },
+          ],
+        },
+      ],
+    };
+
+    mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1"))
+        return Response.json(DETAIL_SWITCH);
+      if (call.method === "GET") return Response.json(NO_BACKENDS);
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await openSection(view, "Modes");
+
+    await userEvent.click(view.getByRole("button", { name: "Mode 1" }));
+    const sheet = view.getByRole("dialog");
+
+    // The switch is steered by a field no visible Input hides, so both
+    // branches stay on the Path: all 5 nodes, same as the grid's own Path
+    // computation for this Mode (issue #48).
+    expect(await within(sheet).findByText("5")).toBeTruthy();
+    expect(within(sheet).getByText(/of 5 nodes are sent/)).toBeTruthy();
+  });
+
   test("the Input x Mode grid's cell popover never offers Fixed for a Video or Audio Upload Input (issue #51: always a real Upload id)", async () => {
     const DETAIL_UPLOADS = {
       ...DETAIL,
@@ -485,6 +596,71 @@ describe("ModesSection", () => {
       }),
     ).toBeTruthy();
     expect(await view.findByText("Describe the scene")).toBeTruthy();
+  });
+
+  test("cell popover closes on an outside scroll, but not on a scroll inside itself (issue #216)", async () => {
+    const DETAIL_ONE_MODE = {
+      ...DETAIL,
+      modes: [
+        {
+          id: "mode-1",
+          sortOrder: 0,
+          name: "Mode 1",
+          description: "",
+          outputNodes: [
+            { nodeId: "2", classType: "SaveImage", title: null, kind: "image" },
+          ],
+          inputSettings: [],
+        },
+      ],
+      inputs: [
+        {
+          id: "prompt-input",
+          kind: "text",
+          group: "describe",
+          label: "Prompt",
+          help: "",
+          multiline: false,
+          maxLength: 200,
+          default: "",
+          bindings: [
+            {
+              nodeId: "1",
+              field: "image",
+              classType: "LoadImage",
+              title: null,
+            },
+          ],
+        },
+      ],
+    };
+
+    mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1"))
+        return Response.json(DETAIL_ONE_MODE);
+      if (call.method === "GET") return Response.json(NO_BACKENDS);
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+
+    await userEvent.click(
+      await view.findByRole("button", { name: /^Prompt in Mode 1/ }),
+    );
+    const popoverContent = await view.findByText("Label in this Mode");
+
+    // A scroll that originates inside the popover's own content doesn't
+    // count as the page moving under it, so it stays open.
+    fireEvent.scroll(popoverContent);
+    expect(view.getByText("Label in this Mode")).toBeTruthy();
+
+    // Any other scroll (e.g. the grid's own scroll container, or the
+    // window) closes it.
+    fireEvent.scroll(window);
+    await waitFor(() =>
+      expect(view.queryByText("Label in this Mode")).toBeNull(),
+    );
   });
 
   test("Apply to every Mode whose Path holds this Input's fields copies the cell to eligible Modes only", async () => {

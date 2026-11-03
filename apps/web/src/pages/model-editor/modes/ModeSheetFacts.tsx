@@ -5,7 +5,11 @@ import {
 } from "@ai-content-studio/shared";
 import type { ModelIssue } from "@ai-content-studio/shared";
 import { Pill } from "../../../components/ui/pill.js";
-import { nodeGroup, workflowForMode } from "../helpers/workflow.js";
+import {
+  nodeGroup,
+  visibleBoundFieldsFor,
+  workflowForMode,
+} from "../helpers/workflow.js";
 import type { DraftMode, ModelDetail } from "../types.js";
 import { ChecksList } from "../ui/ChecksList.js";
 
@@ -41,7 +45,11 @@ export function ModeSheetFacts({
   }
 
   const workflow = workflowForMode(mode, inputs, detail.workflow);
-  const path = computeModePath(workflow, mode.outputNodeIds);
+  const path = computeModePath(
+    workflow,
+    mode.outputNodeIds,
+    visibleBoundFieldsFor(mode, inputs),
+  );
   const totalNodes = Object.keys(detail.workflow).length;
 
   const loaderPills = [...path.nodeIds]

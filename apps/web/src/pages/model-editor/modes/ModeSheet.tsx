@@ -196,7 +196,7 @@ export function ModeSheet({
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent className="w-full gap-0 p-0 sm:max-w-[960px]">
+      <SheetContent className="gap-0 p-0 data-[side=right]:w-full data-[side=right]:sm:max-w-[960px]">
         {mode && (
           <>
             <SheetHeader className="border-b border-border px-4 py-3">
@@ -205,7 +205,7 @@ export function ModeSheet({
               </SheetDescription>
               <SheetTitle>{mode.name || "Untitled Mode"}</SheetTitle>
             </SheetHeader>
-            <div className="grid grid-cols-[minmax(0,1fr)_340px] gap-4 overflow-y-auto p-4 @max-[760px]:grid-cols-1">
+            <div className="grid grid-cols-1 gap-4 overflow-y-auto p-4 md:grid-cols-[minmax(0,1fr)_340px]">
               <div className="flex min-w-0 flex-col gap-4">
                 <Field label="Name" htmlFor={`mode-name-${mode.key}`}>
                   <Input

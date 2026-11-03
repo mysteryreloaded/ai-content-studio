@@ -26,7 +26,7 @@ import { Label } from "../components/ui/label.js";
 import { RadioGroup, RadioGroupItem } from "../components/ui/radio-group.js";
 import { Textarea } from "../components/ui/textarea.js";
 import { ApiError, api, ok } from "../lib/api.js";
-import { mapApiError, zodResolver } from "../lib/form.js";
+import { describeSaveError, mapApiError, zodResolver } from "../lib/form.js";
 import {
   type AdminSiteSettings,
   siteSettingsQueryKey,
@@ -158,6 +158,11 @@ export function SiteSettingsForm({
   >(null);
   const [staleSave, setStaleSave] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  // The lock token this form sends on its own save: set on mount, on its
+  // own save and on its own Reload — never from the shared settings
+  // cache, which another admin's save can move out from under us.
+  const [version, setVersion] = useState(settings.version);
 
   const {
     register,
@@ -206,7 +211,7 @@ export function SiteSettingsForm({
   const { mutate, isPending } = useMutation({
     mutationFn: async (values: SiteSettingsFields) => {
       const body = new FormData();
-      body.set("version", String(settings.version));
+      body.set("version", String(version));
       body.set("title", values.title);
       body.set("landingText", values.landingText);
       body.set("accent", values.accent);
@@ -228,16 +233,20 @@ export function SiteSettingsForm({
       setLogoFile(null);
       setBackgroundFile(null);
       setStaleSave(false);
+      setSaveError(null);
+      setVersion(updated.version);
       setJustSaved(true);
     },
     onError: (error: unknown) => {
       if (error instanceof ApiError && error.status === 409) {
         setStaleSave(true);
+        setSaveError(null);
         return;
       }
       if (error instanceof ApiError) {
         mapApiError(setError, error);
       }
+      setSaveError(describeSaveError(error));
     },
   });
 
@@ -254,6 +263,7 @@ export function SiteSettingsForm({
   function onSubmit(values: FormValues) {
     if (logoError || backgroundError) return;
     setJustSaved(false);
+    setSaveError(null);
     mutate(siteSettingsFieldsSchema.parse(values));
   }
 
@@ -266,6 +276,8 @@ export function SiteSettingsForm({
       setLogoError(null);
       setBackgroundError(null);
       setStaleSave(false);
+      setSaveError(null);
+      setVersion(fresh.version);
     }
   }
 
@@ -639,6 +651,9 @@ export function SiteSettingsForm({
           </div>
 
           {staleSave && <StaleSaveAlert onReload={() => void handleReload()} />}
+          {!staleSave && (errors.root?.message || saveError) && (
+            <p className="text-err">{errors.root?.message ?? saveError}</p>
+          )}
 
           <div className="flex items-center justify-between gap-2">
             <span className="text-[12.5px] text-muted-foreground">

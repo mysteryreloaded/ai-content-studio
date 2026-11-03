@@ -3,7 +3,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { BUN_FETCH } from "../test/happy-dom-setup.js";
 
-const { cleanup, screen, waitFor } = await import("@testing-library/react");
+const { cleanup, fireEvent, screen, waitFor, within } = await import(
+  "@testing-library/react"
+);
 const { SiteSettingsPage } = await import("./SiteSettingsPage.js");
 const { renderWithProviders } = await import("../test/render.js");
 
@@ -103,6 +105,71 @@ describe("SiteSettingsPage", () => {
     // untouched text forms each fetching on their own = 5, not 6: the old
     // page fetched once per of its six panels.
     expect(siteSettingsGets.length).toBe(5);
+  });
+
+  test("after a caps save bumps the version in the cache, the branding PUT still sends the original version", async () => {
+    const puts: Array<{ url: string; init?: RequestInit }> = [];
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (method === "GET") return Response.json(FULL_SETTINGS);
+      puts.push({ url, init });
+      if (url === "/api/admin/site-settings/caps") {
+        // Another admin's caps save, seen through this page's one shared
+        // query cache: it bumps `version` too, simulating cache drift
+        // unrelated to this admin's own branding baseline.
+        return Response.json({
+          ...FULL_SETTINGS,
+          version: 99,
+          capsRevision: 2,
+          dailyCap: 30,
+        });
+      }
+      return Response.json({ ...FULL_SETTINGS, title: "New title" });
+    }) as typeof fetch;
+
+    renderPage();
+
+    await screen.findByDisplayValue("My Studio");
+
+    fireEvent.change(screen.getByLabelText("Daily cap"), {
+      target: { value: "30" },
+    });
+    const capsSection = screen
+      .getByRole("heading", { name: "Sign-up and Caps" })
+      .closest("section");
+    if (!capsSection) throw new Error("no Sign-up and Caps section found");
+    fireEvent.click(within(capsSection).getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(
+        puts.some((call) => call.url === "/api/admin/site-settings/caps"),
+      ).toBe(true),
+    );
+
+    fireEvent.change(screen.getByLabelText("Title"), {
+      target: { value: "New title" },
+    });
+    const contactSection = screen
+      .getByRole("heading", { name: "Contact and footer" })
+      .closest("section");
+    if (!contactSection) throw new Error("no Contact and footer section found");
+    fireEvent.click(
+      within(contactSection).getByRole("button", { name: "Save" }),
+    );
+
+    await waitFor(() =>
+      expect(puts.some((call) => call.url === "/api/admin/site-settings")).toBe(
+        true,
+      ),
+    );
+    const brandingPut = puts.find(
+      (call) => call.url === "/api/admin/site-settings",
+    );
+    const body = brandingPut?.init?.body as FormData;
+    expect(body.get("version")).toBe("3");
   });
 
   test("History links to the Site settings Audit entries", async () => {

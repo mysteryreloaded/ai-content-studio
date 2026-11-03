@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import type { FieldPath, FieldValues, UseFormSetError } from "react-hook-form";
-import type { ApiError } from "./api.js";
+import { ApiError } from "./api.js";
 
 export { zodResolver };
 
@@ -40,4 +40,18 @@ export function mapApiError<T extends FieldValues>(
 ): void {
   const body = error.body as { issues?: readonly ServerIssue[] } | null;
   if (body?.issues) mapServerIssues(setError, body.issues);
+}
+
+/**
+ * A message for a Save row after a failed mutation that isn't a 409
+ * (those get `StaleSaveAlert` instead): the server's `error` string for
+ * an `ApiError`, otherwise a generic fallback for a 401, a network
+ * failure, or any other thrown value.
+ */
+export function describeSaveError(error: unknown): string {
+  if (error instanceof ApiError) {
+    const body = error.body as { error?: string } | null;
+    return body?.error ?? "Save failed";
+  }
+  return "Save failed";
 }

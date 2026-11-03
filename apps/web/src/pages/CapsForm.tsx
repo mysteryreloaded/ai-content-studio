@@ -11,7 +11,7 @@ import { Button } from "../components/ui/button.js";
 import { Input } from "../components/ui/input.js";
 import { Label } from "../components/ui/label.js";
 import { ApiError, api, ok } from "../lib/api.js";
-import { mapApiError, zodResolver } from "../lib/form.js";
+import { describeSaveError, mapApiError, zodResolver } from "../lib/form.js";
 import {
   type AdminSiteSettings,
   siteSettingsQueryKey,
@@ -43,6 +43,11 @@ export function CapsForm({
   const queryClient = useQueryClient();
   const [staleSave, setStaleSave] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  // Set on mount, on its own save and on its own Reload — never from the
+  // shared settings cache, which another admin's branding save can move
+  // out from under us.
+  const [capsRevision, setCapsRevision] = useState(settings.capsRevision);
 
   const {
     register,
@@ -60,7 +65,7 @@ export function CapsForm({
       ok<AdminSiteSettings>(
         api.api.admin["site-settings"].caps.$put({
           json: {
-            revision: settings.capsRevision,
+            revision: capsRevision,
             dailyCap: values.dailyCap,
             concurrentCap: values.concurrentCap,
           },
@@ -70,16 +75,20 @@ export function CapsForm({
       queryClient.setQueryData(siteSettingsQueryKey, updated);
       reset(defaultValuesFrom(updated));
       setStaleSave(false);
+      setSaveError(null);
+      setCapsRevision(updated.capsRevision);
       setJustSaved(true);
     },
     onError: (error: unknown) => {
       if (error instanceof ApiError && error.status === 409) {
         setStaleSave(true);
+        setSaveError(null);
         return;
       }
       if (error instanceof ApiError) {
         mapApiError(setError, error);
       }
+      setSaveError(describeSaveError(error));
     },
   });
 
@@ -88,6 +97,8 @@ export function CapsForm({
     if (fresh) {
       reset(defaultValuesFrom(fresh));
       setStaleSave(false);
+      setSaveError(null);
+      setCapsRevision(fresh.capsRevision);
     }
   }
 
@@ -97,6 +108,7 @@ export function CapsForm({
       className="flex flex-col gap-fields border-t border-border pt-4"
       onSubmit={handleSubmit((values) => {
         setJustSaved(false);
+        setSaveError(null);
         mutate(values);
       })}
     >
@@ -147,6 +159,9 @@ export function CapsForm({
       </div>
 
       {staleSave && <StaleSaveAlert onReload={() => void handleReload()} />}
+      {!staleSave && (errors.root?.message || saveError) && (
+        <p className="text-err">{errors.root?.message ?? saveError}</p>
+      )}
 
       <div className="flex items-center justify-between gap-2">
         <span className="text-[12.5px]">

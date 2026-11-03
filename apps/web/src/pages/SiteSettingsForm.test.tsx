@@ -149,4 +149,17 @@ describe("SiteSettingsForm", () => {
     expect(body?.get("logo")).toBeNull();
     expect(body?.get("background")).toBeNull();
   });
+
+  test("a 500 shows a save error", async () => {
+    mockPut(() => Response.json({ error: "internal error" }, { status: 500 }));
+
+    renderForm();
+
+    fireEvent.change(screen.getByLabelText("Title"), {
+      target: { value: "New title" },
+    });
+    fireEvent.click(brandingSaveButton());
+
+    expect(await screen.findByText("internal error")).toBeTruthy();
+  });
 });

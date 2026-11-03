@@ -83,4 +83,17 @@ describe("CapsForm", () => {
     });
     expect(await screen.findByText("Saved.")).toBeTruthy();
   });
+
+  test("a 500 shows a save error", async () => {
+    mockPut(() => Response.json({ error: "internal error" }, { status: 500 }));
+
+    renderForm(() => Promise.resolve(undefined));
+
+    fireEvent.change(screen.getByLabelText("Daily cap"), {
+      target: { value: "50" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("internal error")).toBeTruthy();
+  });
 });

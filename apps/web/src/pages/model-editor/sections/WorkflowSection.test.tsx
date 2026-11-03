@@ -211,6 +211,42 @@ describe("WorkflowSection (issue #214)", () => {
     ).toBeTruthy();
   });
 
+  test("a preview node refuses to be a Mode's output", async () => {
+    const detail = {
+      ...DETAIL,
+      workflow: {
+        "1": { class_type: "LoadImage", inputs: {} },
+        "2": { class_type: "PreviewImage", inputs: { images: ["1", 0] } },
+      },
+      nodes: [
+        { id: "1", classType: "LoadImage", title: null },
+        { id: "2", classType: "PreviewImage", title: null },
+      ],
+      inputs: [],
+    };
+    mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1")) {
+        return Response.json(detail);
+      }
+      if (call.method === "GET") return Response.json(NO_BACKENDS);
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await openSection(view, "Workflow");
+
+    await userEvent.click(
+      view.getByText("#2").closest("button") as HTMLElement,
+    );
+
+    expect(
+      await view.findByText(
+        "A preview node saves no file, so it can't be a Mode's output.",
+      ),
+    ).toBeTruthy();
+  });
+
   test("a UI save is refused in the browser", async () => {
     mockFetch((call) => {
       if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1")) {

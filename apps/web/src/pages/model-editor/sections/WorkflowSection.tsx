@@ -618,7 +618,7 @@ function NodeInspector({
         </p>
       )}
 
-      {isOutputClass && (
+      {(isOutputClass || isPreview) && (
         <div className="rounded-xl border border-border bg-card p-3">
           <p className="font-medium">Output node</p>
           {isPreview ? (

@@ -60,11 +60,22 @@ function mockFetch(options: MockOptions) {
       return Response.json({
         problems: [],
         backends: [],
+        models: [],
         disabledBanner: null,
         disk: { freeGb: null, minFreeDiskGb: 0 },
         errors24h: 0,
         version: "test",
         uptimeSeconds: 0,
+      });
+    }
+    if (url.endsWith("/api/admin/site-settings")) {
+      return Response.json({
+        version: 1,
+        notice: "",
+        noticeRevision: 1,
+        paused: false,
+        pausedAt: null,
+        pausedByName: null,
       });
     }
     if (url.endsWith("/api/admin/backends")) {

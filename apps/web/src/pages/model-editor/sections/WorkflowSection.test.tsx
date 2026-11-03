@@ -172,9 +172,12 @@ describe("WorkflowSection (issue #214)", () => {
     await userEvent.click(view.getByText("Make it an Input"));
     await userEvent.click(view.getByText("New Input from this field"));
 
-    await openSection(view, "Inputs");
-    expect(await view.findByText("Kind: image_upload")).toBeTruthy();
-    expect(view.getByDisplayValue("Image")).toBeTruthy();
+    // Issue #215: creating an Input from the inspector opens its sheet
+    // directly (`nav.openInput`), so there's no need to switch sections.
+    expect(await view.findByDisplayValue("Image")).toBeTruthy();
+    expect((view.getByLabelText("Type") as HTMLSelectElement).value).toBe(
+      "image_upload",
+    );
   });
 
   test("a boolean field becomes a 2-option Select seeded Off/On, false/true", async () => {
@@ -204,14 +207,22 @@ describe("WorkflowSection (issue #214)", () => {
     await userEvent.click(view.getByText("Make it an Input"));
     await userEvent.click(view.getByText("New Input from this field"));
 
-    await openSection(view, "Inputs");
+    // Issue #215: creating an Input from the inspector opens its sheet
+    // directly (`nav.openInput`), so there's no need to switch sections.
     expect(await view.findByDisplayValue("Off")).toBeTruthy();
     expect(view.getByDisplayValue("On")).toBeTruthy();
-    const checkboxes = view.getAllByLabelText(
-      "1.add_noise",
-    ) as HTMLInputElement[];
-    expect(checkboxes[0]?.checked).toBe(false);
-    expect(checkboxes[1]?.checked).toBe(true);
+    const offGroup = view.getByRole("radiogroup", {
+      name: "Off value for 1.add_noise",
+    });
+    const onGroup = view.getByRole("radiogroup", {
+      name: "On value for 1.add_noise",
+    });
+    expect(
+      within(offGroup).getByText("false").getAttribute("aria-checked"),
+    ).toBe("true");
+    expect(within(onGroup).getByText("true").getAttribute("aria-checked")).toBe(
+      "true",
+    );
   });
 
   test("Make it an Input is hidden for a null-valued field", async () => {
@@ -329,12 +340,15 @@ describe("WorkflowSection (issue #214)", () => {
     await userEvent.selectOptions(promptSelect, "select1");
 
     await openSection(view, "Inputs");
-    const promptFields = view.getAllByLabelText(
-      "1.prompt",
-    ) as HTMLInputElement[];
-    expect(promptFields).toHaveLength(2);
-    expect(promptFields[0]?.value).toBe("hello");
-    expect(promptFields[1]?.value).toBe("hello");
+    await userEvent.click(view.getByText("Switch"));
+    const fieldA = view.getByLabelText(
+      "A value for 1.prompt",
+    ) as HTMLInputElement;
+    const fieldB = view.getByLabelText(
+      "B value for 1.prompt",
+    ) as HTMLInputElement;
+    expect(fieldA.value).toBe("hello");
+    expect(fieldB.value).toBe("hello");
   });
 
   test("the 'In <Mode>' column defaults an unset Input to Optional, not Hidden", async () => {

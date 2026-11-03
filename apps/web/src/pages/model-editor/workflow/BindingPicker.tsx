@@ -86,6 +86,8 @@ export function BindingPicker({
   savedBinding,
   onBind,
   onGoToNode,
+  restrictToValueType,
+  titleOverride,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -107,6 +109,10 @@ export function BindingPicker({
     value: string | number | boolean | null;
   }) => void;
   onGoToNode?: (nodeId: string) => void;
+  /** Issue #215's Points Width/Height pickers: only a number field is offered, regardless of `input.kind`. */
+  restrictToValueType?: "string" | "number" | "boolean";
+  /** Overrides the computed "Bind …" / "Rebind …" dialog title. */
+  titleOverride?: string;
 }) {
   const [search, setSearch] = useState("");
   const [showEmpty, setShowEmpty] = useState(false);
@@ -126,10 +132,14 @@ export function BindingPicker({
     [workflow],
   );
 
+  const accepts = (valueType: "string" | "number" | "boolean"): boolean =>
+    restrictToValueType
+      ? valueType === restrictToValueType
+      : acceptsValueType(input.kind, valueType);
+
   const hasAnyCompatibleField = (nodeId: string): boolean =>
     fieldsOf(workflow, nodeId).some(
-      (field) =>
-        field.valueType && acceptsValueType(input.kind, field.valueType),
+      (field) => field.valueType && accepts(field.valueType),
     );
 
   const needle = search.trim().toLowerCase();
@@ -161,9 +171,10 @@ export function BindingPicker({
       <DialogContent className="sm:max-w-[980px]">
         <DialogHeader>
           <DialogTitle>
-            {savedBinding
-              ? `Rebind "${input.label || "this Input"}" (was #${savedBinding.nodeId}.${savedBinding.field})`
-              : `Bind "${input.label || "this Input"}" to a Node field`}
+            {titleOverride ??
+              (savedBinding
+                ? `Rebind "${input.label || "this Input"}" (was #${savedBinding.nodeId}.${savedBinding.field})`
+                : `Bind "${input.label || "this Input"}" to a Node field`)}
           </DialogTitle>
         </DialogHeader>
         <div className="flex flex-col gap-3">
@@ -267,10 +278,7 @@ export function BindingPicker({
                               b.nodeId === nodeId && b.field === field.field,
                           ),
                         );
-                        const compatible = acceptsValueType(
-                          input.kind,
-                          valueType,
-                        );
+                        const compatible = accepts(valueType);
                         const taken = used.has(key);
                         const disabled = !compatible || taken;
                         const title = !compatible

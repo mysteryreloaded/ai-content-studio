@@ -70,7 +70,7 @@ export function newImageUploadInput(): ImageUploadInputDefinition {
   return {
     id: crypto.randomUUID(),
     kind: "image_upload",
-    group: "describe",
+    group: "settings",
     label: "",
     help: "",
     maxSizeMb: 20,
@@ -82,7 +82,7 @@ export function newVideoUploadInput(): VideoUploadInputDefinition {
   return {
     id: crypto.randomUUID(),
     kind: "video_upload",
-    group: "describe",
+    group: "settings",
     label: "",
     help: "",
     maxSizeMb: 50,
@@ -97,7 +97,7 @@ export function newAudioUploadInput(): AudioUploadInputDefinition {
   return {
     id: crypto.randomUUID(),
     kind: "audio_upload",
-    group: "describe",
+    group: "settings",
     label: "",
     help: "",
     maxSizeMb: 20,
@@ -111,13 +111,48 @@ export function newPointsInput(): PointsInputDefinition {
   return {
     id: crypto.randomUUID(),
     kind: "points",
-    group: "describe",
+    group: "settings",
     label: "",
     help: "",
     videoInputId: "",
     widthField: { nodeId: "", field: "" },
     heightField: { nodeId: "", field: "" },
     bindings: [],
+  };
+}
+
+/** A fresh Input of `kind`, with its defaults (issue #215's New Input menu and type-change). */
+export function newInputOfKind(kind: InputDefinition["kind"]): InputDefinition {
+  switch (kind) {
+    case "text":
+      return newTextInput();
+    case "number":
+      return newNumberInput();
+    case "seed":
+      return newSeedInput();
+    case "select":
+      return newSelectInput();
+    case "image_upload":
+      return newImageUploadInput();
+    case "video_upload":
+      return newVideoUploadInput();
+    case "audio_upload":
+      return newAudioUploadInput();
+    case "points":
+      return newPointsInput();
+  }
+}
+
+/** Changing an Input's type (issue #215): a fresh Input of `kind`, keeping its id, label and help. Only offered while the Input has no bindings. */
+export function changeInputKind(
+  input: InputDefinition,
+  kind: InputDefinition["kind"],
+): InputDefinition {
+  return {
+    ...newInputOfKind(kind),
+    id: input.id,
+    label: input.label,
+    help: input.help,
   };
 }
 

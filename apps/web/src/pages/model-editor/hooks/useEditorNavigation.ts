@@ -48,8 +48,22 @@ export function useEditorNavigation({
     setSection(hasInputs ? "modes" : "inputs");
   }, [modelId, hasInputs]);
 
-  function openInput(_inputId: string) {
+  // Issue #215: like `focusBackend`/`pendingFocusBackendId` below, this
+  // remembers the Input to open so the Inputs section (once it's
+  // mounted, which may be right after this `setSection`) can open that
+  // Input's own sheet, from a check, a grid row head or an inspector
+  // button.
+  const [pendingOpenInputId, setPendingOpenInputId] = useState<string | null>(
+    null,
+  );
+
+  function openInput(inputId: string) {
     setSection("inputs");
+    setPendingOpenInputId(inputId);
+  }
+
+  function clearPendingOpenInput() {
+    setPendingOpenInputId(null);
   }
 
   function openMode(_modeId: string) {
@@ -87,6 +101,8 @@ export function useEditorNavigation({
     section,
     setSection,
     openInput,
+    pendingOpenInputId,
+    clearPendingOpenInput,
     openMode,
     openCell,
     focusBackend,

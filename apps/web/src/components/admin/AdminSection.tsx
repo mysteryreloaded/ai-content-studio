@@ -18,9 +18,9 @@ export function AdminSection({
   children: ReactNode;
 }) {
   return (
-    <section id={id} className="flex flex-col gap-5">
+    <section id={id} className="flex flex-col gap-content">
       <div className="flex flex-wrap items-baseline gap-2.5">
-        <h2 className="text-lg font-semibold">{title}</h2>
+        <h2>{title}</h2>
         {description && (
           <p className="max-w-[66ch] text-muted-foreground">{description}</p>
         )}

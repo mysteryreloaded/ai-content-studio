@@ -171,4 +171,17 @@ describe("AdminShell (issue #200)", () => {
     const view = renderAt("/admin/backends");
     expect(await view.findByRole("heading", { name: "Backends" })).toBeTruthy();
   });
+
+  test("puts the routed content, not the nav, in the page's main landmark", async () => {
+    mockFetch({ user: ADMIN });
+    const view = renderAt("/admin/backends");
+
+    const main = await view.findByRole("main");
+    expect(
+      within(main).getByRole("heading", { name: "Backends" }),
+    ).toBeTruthy();
+    expect(
+      within(main).queryByRole("navigation", { name: "Admin" }),
+    ).toBeNull();
+  });
 });

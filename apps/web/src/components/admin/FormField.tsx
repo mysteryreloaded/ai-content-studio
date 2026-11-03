@@ -17,14 +17,12 @@ export function FormField({
 }) {
   return (
     <div className="flex min-w-0 flex-col gap-1">
-      <Label htmlFor={htmlFor} className="text-[13px] font-medium">
-        {label}
-      </Label>
+      <Label htmlFor={htmlFor}>{label}</Label>
       {children}
       {error ? (
-        <p className="text-[12.5px] text-err">{error}</p>
+        <p className="text-err">{error}</p>
       ) : hint ? (
-        <p className="text-[12.5px] text-muted-foreground">{hint}</p>
+        <p className="text-muted-foreground">{hint}</p>
       ) : null}
     </div>
   );

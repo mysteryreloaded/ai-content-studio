@@ -21,10 +21,10 @@ export function AdminPageHeader({
 }) {
   return (
     <div className="flex flex-col gap-2">
-      {crumb && <p className="text-[12.5px] text-muted-foreground">{crumb}</p>}
+      {crumb && <p className="text-muted-foreground">{crumb}</p>}
       <div className="flex flex-wrap items-baseline gap-2.5">
         <div className="flex flex-wrap items-center gap-2">
-          <h1 className="text-[22px] leading-tight font-semibold">{title}</h1>
+          <h1>{title}</h1>
           {pills}
         </div>
         {actions && (

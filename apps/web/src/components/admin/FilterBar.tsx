@@ -20,7 +20,7 @@ export function FilterBar({
 }) {
   return (
     <div className="rounded-xl border border-border bg-card px-3 py-2.5">
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3 max-[760px]:grid-cols-1">
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-fields max-[760px]:grid-cols-1">
         {children}
       </div>
       <div className="mt-3 flex flex-wrap items-center justify-end gap-2">

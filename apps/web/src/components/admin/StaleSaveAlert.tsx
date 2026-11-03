@@ -9,7 +9,7 @@ export function StaleSaveAlert({ onReload }: { onReload: () => void }) {
   return (
     <div
       role="alert"
-      className="flex flex-wrap items-center justify-between gap-2 rounded-r-md border border-l-[3px] border-border border-l-warn bg-card px-3 py-[9px] text-[13px]"
+      className="flex flex-wrap items-center justify-between gap-2 rounded-r-md border border-l-[3px] border-border border-l-warn bg-card px-3 py-[9px]"
     >
       <span>changed by someone else, reload</span>
       <Button type="button" variant="outline" size="sm" onClick={onReload}>

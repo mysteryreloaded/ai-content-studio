@@ -151,6 +151,42 @@ describe("/api/admin/models", () => {
     );
   });
 
+  // Issue #229: a node exported from a machine missing its custom node pack
+  // has no class_type, UNKNOWN input names and the pack in _meta — the error
+  // names the pack and says how to fix it.
+  test("names missing custom node packs and how to fix them", async () => {
+    const app = await build();
+    const headers = await adminHeaders();
+
+    const workflow = {
+      "196": {
+        inputs: { UNKNOWN: 10, UNKNOWN_1: 10, UNKNOWN_2: 0 },
+        _meta: {
+          title: "Clip Length ( in seconds )",
+          cnr_id: "comfyui-mxtoolkit",
+          aux_id: "Smirnov75/ComfyUI-mxToolkit",
+          ver: "0.9.92",
+        },
+      },
+    };
+    const res = await app.request("/api/admin/models", {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({ name: "LTX 2.5", workflow }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as {
+      errors: { field: string; message: string }[];
+    };
+    expect(body.errors).toEqual([
+      {
+        field: "workflow",
+        message:
+          '1 node has no node type because the ComfyUI this was exported from is missing its custom node pack: comfyui-mxtoolkit (node 196 "Clip Length ( in seconds )"). Install them in that ComfyUI (Manager → Install Missing Custom Nodes), restart it, open the Workflow again with no red nodes, and use Export (API) again. The GPU Backends that run this Model need the same packs.',
+      },
+    ]);
+  });
+
   test("edits Details and rejects a stale version with 409", async () => {
     const app = await build();
     const headers = await adminHeaders();

@@ -145,6 +145,35 @@ describe("sign-in flow against the mock OIDC issuer", () => {
     expect(row?.pinned).toBe(false);
   });
 
+  test("sign-in sets lastSignInAt and lastSeenAt, and both survive sign-out (issue #208)", async () => {
+    await server;
+    const { callback } = await signIn("activity@example.com");
+    const sessionCookie = cookieHeaderFrom(callback);
+
+    const { testDb } = await server;
+    const [afterSignIn] = await testDb.db
+      .select()
+      .from(users)
+      .where(eq(users.email, "activity@example.com"));
+    expect(afterSignIn?.lastSignInAt).not.toBeNull();
+    expect(afterSignIn?.lastSeenAt).not.toBeNull();
+
+    const signOut = await fetch(`${BASE_URL}/api/auth/signout`, {
+      method: "POST",
+      headers: { Cookie: sessionCookie, "Sec-Fetch-Site": "same-origin" },
+    });
+    expect(signOut.status).toBe(200);
+
+    const [afterSignOut] = await testDb.db
+      .select()
+      .from(users)
+      .where(eq(users.email, "activity@example.com"));
+    expect(afterSignOut?.lastSignInAt).toEqual(
+      afterSignIn?.lastSignInAt ?? null,
+    );
+    expect(afterSignOut?.lastSeenAt).toEqual(afterSignIn?.lastSeenAt ?? null);
+  });
+
   test("an ADMIN_EMAILS email is promoted and pinned at sign-in", async () => {
     await server;
     const { callback } = await signIn("admin@example.com");

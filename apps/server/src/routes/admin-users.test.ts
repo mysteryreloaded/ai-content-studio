@@ -197,6 +197,36 @@ describe("/api/admin/users", () => {
     expect(body.count).toBe(2);
   });
 
+  test("GET /:id returns null lastSignInAt/lastSeenAt for a never-signed-in user, and the list carries them too", async () => {
+    const { app } = await build();
+    const admin = await makeUser({ email: "admin@example.com", role: "admin" });
+    const target = await makeUser({ email: "dormant@example.com" });
+
+    const detailRes = await app.request(`/api/admin/users/${target.id}`, {
+      headers: { ...SAME_ORIGIN_HEADERS, Cookie: await cookieFor(admin.id) },
+    });
+    const detail = (await detailRes.json()) as {
+      lastSignInAt: string | null;
+      lastSeenAt: string | null;
+    };
+    expect(detail.lastSignInAt).toBeNull();
+    expect(detail.lastSeenAt).toBeNull();
+
+    const listRes = await app.request("/api/admin/users", {
+      headers: { ...SAME_ORIGIN_HEADERS, Cookie: await cookieFor(admin.id) },
+    });
+    const list = (await listRes.json()) as {
+      users: {
+        id: string;
+        lastSignInAt: string | null;
+        lastSeenAt: string | null;
+      }[];
+    };
+    const row = list.users.find((u) => u.id === target.id);
+    expect(row?.lastSignInAt).toBeNull();
+    expect(row?.lastSeenAt).toBeNull();
+  });
+
   test("GET /:id 404s for a missing user", async () => {
     const { app } = await build();
     const admin = await makeUser({ email: "admin@example.com", role: "admin" });

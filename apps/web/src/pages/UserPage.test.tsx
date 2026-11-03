@@ -98,6 +98,43 @@ function renderPage() {
 }
 
 describe("UserPage", () => {
+  test("the facts line reads Created · Last sign-in · Last seen, with — for a never-signed-in account (issue #208)", async () => {
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/admin/users/u1") && call.method === "GET") {
+        return Response.json(targetUser());
+      }
+      return undefined;
+    });
+
+    const { container } = renderPage();
+    await screen.findByText("A User");
+
+    expect(container.textContent).toContain(
+      `Created ${formatWhen("2026-01-02T00:00:00.000Z")} · Last sign-in — · Last seen —`,
+    );
+  });
+
+  test("the facts line shows the sign-in and seen times once the user has one", async () => {
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/admin/users/u1") && call.method === "GET") {
+        return Response.json(
+          targetUser({
+            lastSignInAt: "2026-02-03T10:00:00.000Z",
+            lastSeenAt: "2026-02-04T11:00:00.000Z",
+          }),
+        );
+      }
+      return undefined;
+    });
+
+    const { container } = renderPage();
+    await screen.findByText("A User");
+
+    expect(container.textContent).toContain(
+      `Created ${formatWhen("2026-01-02T00:00:00.000Z")} · Last sign-in ${formatWhen("2026-02-03T10:00:00.000Z")} · Last seen ${formatWhen("2026-02-04T11:00:00.000Z")}`,
+    );
+  });
+
   test("disable sends the typed reason and reloads as disabled", async () => {
     let disabled = false;
     const calls = mockFetch((call) => {

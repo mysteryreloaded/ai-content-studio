@@ -66,6 +66,39 @@ function formatDuration(ms: number): string {
   return `${minutes}m`;
 }
 
+/** The Workbench foot's own numbers (issue #196), for `capsFooterText` and `CapsLine` to render with its own markup (bold numbers, a faint separator). */
+export interface CapsFooterParts {
+  daily: number;
+  dailyCap: number;
+  concurrent: number;
+  /** The third clause naming when the next daily slot frees, or null when it doesn't apply. */
+  nextSlot: string | null;
+}
+
+export function capsFooterParts(
+  status: CapsStatus,
+  now: Date,
+): CapsFooterParts {
+  const daily = dailyRemaining(status);
+  const concurrent = concurrentRemaining(status);
+  let nextSlot: string | null = null;
+
+  if (
+    daily <= LOW_DAILY_REMAINING_THRESHOLD &&
+    status.oldestCountedSubmittedAt
+  ) {
+    const freesAt =
+      new Date(status.oldestCountedSubmittedAt).getTime() + DAY_MS;
+    const remainingMs = freesAt - now.getTime();
+    nextSlot =
+      remainingMs <= 0
+        ? "next slot free now"
+        : `next slot frees in ${formatDuration(remainingMs)}`;
+  }
+
+  return { daily, dailyCap: status.dailyCap, concurrent, nextSlot };
+}
+
 /**
  * The Workbench foot's own text (issue #53's AC: "22 of 30 left today · 2
  * more at once"), with a third clause naming when the next daily slot
@@ -75,22 +108,11 @@ function formatDuration(ms: number): string {
  * 24h rolling window.
  */
 export function capsFooterText(status: CapsStatus, now: Date): string {
-  const daily = dailyRemaining(status);
-  const concurrent = concurrentRemaining(status);
-  let text = `${daily} of ${status.dailyCap} left today · ${concurrent} more at once`;
-
-  if (
-    daily <= LOW_DAILY_REMAINING_THRESHOLD &&
-    status.oldestCountedSubmittedAt
-  ) {
-    const freesAt =
-      new Date(status.oldestCountedSubmittedAt).getTime() + DAY_MS;
-    const remainingMs = freesAt - now.getTime();
-    text +=
-      remainingMs <= 0
-        ? " · next slot free now"
-        : ` · next slot frees in ${formatDuration(remainingMs)}`;
-  }
-
+  const { daily, dailyCap, concurrent, nextSlot } = capsFooterParts(
+    status,
+    now,
+  );
+  let text = `${daily} of ${dailyCap} left today · ${concurrent} more at once`;
+  if (nextSlot) text += ` · ${nextSlot}`;
   return text;
 }

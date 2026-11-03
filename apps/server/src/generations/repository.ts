@@ -73,6 +73,11 @@ export interface AssetSummary {
   sortOrder: number;
   kind: string;
   contentType: string;
+  /** Issue #190: the media's shape and size, as the `assets` table stores them; null when finishing couldn't read the file's metadata. */
+  size: number;
+  width: number | null;
+  height: number | null;
+  durationMs: number | null;
 }
 
 export interface GenerationRecord {
@@ -105,6 +110,16 @@ export interface GenerationSummary extends GenerationRecord {
   modelName: string;
 }
 
+/** Issue #190: one Upload a Submission used, for a Submission list's thumbnails. */
+export interface SubmissionUploadSummary {
+  id: string;
+  kind: "image" | "video" | "audio";
+  /** Issue #68: a removed Upload's thumbnail file is gone, so nothing points at it any more. */
+  thumbnailKey: string | null;
+  /** Issue #68: set when an Admin removed this Upload for breaking the rules. */
+  removed: boolean;
+}
+
 export interface SubmissionSummary {
   submissionId: string;
   modeId: string;
@@ -112,6 +127,8 @@ export interface SubmissionSummary {
   submittedAt: Date;
   /** The Submission's prompt text, or null when the Model has no text Input to show (issue #47). */
   prompt: string | null;
+  /** Issue #190: the Uploads the Submission used, in the Mode's Input order, de-duplicated across its Generations. */
+  uploads: SubmissionUploadSummary[];
   generations: GenerationRecord[];
 }
 
@@ -138,6 +155,10 @@ export interface GallerySubmission {
   modeId: string;
   modeName: string;
   submittedAt: Date;
+  /** The Submission's prompt (issue #47's rule), or null when the Model has no text Input to show (issue #190). */
+  prompt: string | null;
+  /** Issue #190: the Uploads the Submission used, in the Mode's Input order, de-duplicated across its Generations. */
+  uploads: SubmissionUploadSummary[];
   generations: GenerationRecord[];
 }
 
@@ -325,7 +346,59 @@ function toAssetSummary(row: AssetRow): AssetSummary {
     sortOrder: row.sortOrder,
     kind: row.kind,
     contentType: row.contentType,
+    size: row.size,
+    width: row.width,
+    height: row.height,
+    durationMs: row.durationMs,
   };
+}
+
+type UploadRow = typeof uploads.$inferSelect;
+
+/** Issue #190: a list's thumbnail entry for one Upload; a removed one keeps its place, flagged, with no thumbnail. */
+function toUploadSummary(row: UploadRow): SubmissionUploadSummary {
+  return {
+    id: row.id,
+    kind: row.kind === "video" || row.kind === "audio" ? row.kind : "image",
+    thumbnailKey: row.removedAt ? null : row.thumbnailKey,
+    removed: row.removedAt !== null,
+  };
+}
+
+/** Issue #190: a page's Uploads in one query (not per row), keyed by id. */
+async function uploadsById(
+  db: Database,
+  uploadIds: readonly string[],
+): Promise<Map<string, SubmissionUploadSummary>> {
+  const byId = new Map<string, SubmissionUploadSummary>();
+  const unique = [...new Set(uploadIds)];
+  if (unique.length === 0) return byId;
+  const rows = await db
+    .select()
+    .from(uploads)
+    .where(inArray(uploads.id, unique));
+  for (const row of rows) {
+    byId.set(row.id, toUploadSummary(row));
+  }
+  return byId;
+}
+
+/** Issue #190: a Submission's Uploads, in the Mode's Input order, de-duplicated across its Generations (each Generation's `uploadIds` already carry that order, Set-deduped at submit). */
+function uploadsForSubmission(
+  perGeneration: readonly (readonly string[])[],
+  uploadSummariesById: Map<string, SubmissionUploadSummary>,
+): SubmissionUploadSummary[] {
+  const seen = new Set<string>();
+  const out: SubmissionUploadSummary[] = [];
+  for (const uploadIds of perGeneration) {
+    for (const id of uploadIds) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const upload = uploadSummariesById.get(id);
+      if (upload) out.push(upload);
+    }
+  }
+  return out;
 }
 
 function toRecord(
@@ -541,13 +614,13 @@ export class GenerationsRepository {
     });
   }
 
-  /** This Model's latest `limit` Submissions, this user's own (issue #43's right panel). */
+  /** This Model's latest `limit` Submissions, this user's own (issue #43's right panel), plus whether an older one exists (issue #190's "Older … in Gallery" button). */
   async listRecentSubmissionsForModel(
     modelId: string,
     userId: string,
     limit: number,
     promptBinding?: PromptBinding | null,
-  ): Promise<SubmissionSummary[]> {
+  ): Promise<{ submissions: SubmissionSummary[]; hasMore: boolean }> {
     const rows = await this.db
       .select({ generation: generations, mode: modes })
       .from(generations)
@@ -579,25 +652,57 @@ export class GenerationsRepository {
       this.db,
       rows.map((row) => row.generation.id),
     );
+    const uploadSummaryById = await uploadsById(
+      this.db,
+      rows.flatMap((row) => row.generation.uploadIds),
+    );
 
-    return orderedSubmissionIds.slice(0, limit).map((submissionId) => {
-      const submissionRows = bySubmission.get(submissionId) ?? [];
-      const first = submissionRows[0] as GenerationRow;
-      return {
-        submissionId,
-        modeId: first.modeId,
-        modeName: modeNameById.get(first.id) ?? "",
-        submittedAt: first.submittedAt,
-        prompt: promptFor(first.builtPrompt as Workflow, promptBinding),
-        generations: submissionRows.map((row) =>
-          toRecord(
-            row,
-            modeNameById.get(row.id) ?? "",
-            assetsById.get(row.id) ?? [],
+    const submissions = orderedSubmissionIds
+      .slice(0, limit)
+      .map((submissionId) => {
+        const submissionRows = bySubmission.get(submissionId) ?? [];
+        const first = submissionRows[0] as GenerationRow;
+        return {
+          submissionId,
+          modeId: first.modeId,
+          modeName: modeNameById.get(first.id) ?? "",
+          submittedAt: first.submittedAt,
+          prompt: promptFor(first.builtPrompt as Workflow, promptBinding),
+          uploads: uploadsForSubmission(
+            submissionRows.map((row) => row.uploadIds),
+            uploadSummaryById,
           ),
+          generations: submissionRows.map((row) =>
+            toRecord(
+              row,
+              modeNameById.get(row.id) ?? "",
+              assetsById.get(row.id) ?? [],
+            ),
+          ),
+        };
+      });
+
+    // Issue #190: `hasMore` — true only when an older Submission exists
+    // for this user and this Model beyond what this page shows. The scan
+    // above is capped, so count the user's whole set for this Model
+    // rather than trusting the window to have been full.
+    if (submissions.length === 0) return { submissions, hasMore: false };
+    const [countRow] = await this.db
+      .select({
+        count: sql<number>`count(distinct ${generations.submissionId})`,
+      })
+      .from(generations)
+      .where(
+        and(
+          eq(generations.modelId, modelId),
+          eq(generations.userId, userId),
+          isNull(generations.deletedAt),
         ),
-      };
-    });
+      );
+    return {
+      submissions,
+      hasMore: (countRow?.count ?? 0) > submissions.length,
+    };
   }
 
   /** This Model's last `limit` Tests, this Admin's own (issue #74's AC: "the last 5 tests are listed"). */
@@ -906,6 +1011,52 @@ export class GenerationsRepository {
       rows.map((row) => row.generation.id),
     );
 
+    // Issue #190: each page Model's current revision's text Input (issue
+    // #47's prompt rule) and the page's Uploads — one query each, not per row.
+    const modelIds = [...new Set(rows.map((row) => row.generation.modelId))];
+    const revisionRows = await this.db
+      .select({
+        modelId: models.id,
+        inputs: modelRevisions.inputs,
+        workflowHash: modelRevisions.workflowHash,
+      })
+      .from(modelRevisions)
+      .innerJoin(models, eq(modelRevisions.modelId, models.id))
+      .where(
+        and(
+          inArray(models.id, modelIds),
+          sql`${modelRevisions.revisionNumber} = ${models.currentRevision}`,
+        ),
+      );
+    const workflowRows =
+      revisionRows.length === 0
+        ? []
+        : await this.db
+            .select()
+            .from(workflows)
+            .where(
+              inArray(
+                workflows.hash,
+                revisionRows.map((row) => row.workflowHash),
+              ),
+            );
+    const workflowByHash = new Map(
+      workflowRows.map((row) => [row.hash, row.json as Workflow]),
+    );
+    const promptBindingByModel = new Map(
+      revisionRows.map((row) => [
+        row.modelId,
+        promptBindingFor(
+          row.inputs as InputDefinition[],
+          workflowByHash.get(row.workflowHash) ?? ({} as Workflow),
+        ),
+      ]),
+    );
+    const uploadSummaryById = await uploadsById(
+      this.db,
+      rows.flatMap((row) => row.generation.uploadIds),
+    );
+
     const bySubmission = new Map<string, typeof rows>();
     for (const row of rows) {
       const list = bySubmission.get(row.generation.submissionId) ?? [];
@@ -926,6 +1077,14 @@ export class GenerationsRepository {
         modeId: first.generation.modeId,
         modeName: first.mode.name,
         submittedAt: first.generation.submittedAt,
+        prompt: promptFor(
+          first.generation.builtPrompt as Workflow,
+          promptBindingByModel.get(first.generation.modelId),
+        ),
+        uploads: uploadsForSubmission(
+          submissionRows.map((row) => row.generation.uploadIds),
+          uploadSummaryById,
+        ),
         generations: submissionRows.map((row) =>
           toRecord(
             row.generation,
@@ -1350,6 +1509,10 @@ export class GenerationsRepository {
         trimmedFromName: upload.trimmedFromId
           ? (trimmedFromNameById.get(upload.trimmedFromId) ?? null)
           : null,
+        // Issue #190: the range kept is the trimmed Upload's own columns,
+        // so it stays set once the original it was trimmed from is gone.
+        trimStartMs: upload.trimStartMs,
+        trimEndMs: upload.trimEndMs,
         removed: upload.removedAt !== null,
       },
     }));

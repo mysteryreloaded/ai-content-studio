@@ -365,6 +365,12 @@ export async function finalizeSucceeded(
       sortOrder: asset.sortOrder,
       kind: asset.kind,
       contentType: asset.contentType,
+      // Issue #190: the media's shape and size, so the SSE `change`
+      // payload carries the same Asset facts every other response does.
+      size: asset.size,
+      width: asset.width,
+      height: asset.height,
+      durationMs: asset.durationMs,
     })),
   );
   await finalizePendingDeletion(deps, detail.id);

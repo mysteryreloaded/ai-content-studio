@@ -43,8 +43,10 @@ describe("Button", () => {
     const small = document.querySelector('button[data-size="sm"]');
     const icon = document.querySelector('button[data-size="icon"]');
 
+    // Issue #222's control scale: 40px default, 36px sm, 40px icon
+    // (docs/ui-sizes.md).
     expect(tiny?.className).toContain("h-6");
-    expect(small?.className).toContain("h-7");
-    expect(icon?.className).toContain("size-8");
+    expect(small?.className).toContain("h-9");
+    expect(icon?.className).toContain("size-10");
   });
 });

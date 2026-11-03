@@ -32,7 +32,11 @@ import {
   TableRow,
 } from "../components/ui/table.js";
 import { ApiError, api, ok } from "../lib/api.js";
-import { mapApiError, zodResolver } from "../lib/form.js";
+import {
+  type ServerFieldError,
+  mapApiError,
+  zodResolver,
+} from "../lib/form.js";
 
 const MODELS_QUERY_KEY = ["admin", "models"];
 
@@ -358,13 +362,21 @@ function NewModelDialog({
     },
     onError: (err: unknown) => {
       if (err instanceof ApiError) {
-        const body = err.body as { error?: string } | null;
+        const body = err.body as {
+          error?: string;
+          errors?: readonly ServerFieldError[];
+        } | null;
         if (err.status === 409) {
           setError("name", { message: body?.error ?? "save failed" });
           return;
         }
         if (err.status === 400) {
           mapApiError(setError, err);
+          // Only "name" has a registered form field; any other field
+          // (e.g. "workflow", from a server-side Workflow rejection) is
+          // shown under the Workflow file field instead.
+          const otherError = body?.errors?.find((e) => e.field !== "name");
+          if (otherError) setFileError(otherError.message);
           if (body?.error) setError("root", { message: body.error });
           return;
         }
@@ -499,7 +511,14 @@ function ImportModelDialog({
     },
     onError: (err: unknown) => {
       if (err instanceof ApiError) {
-        const body = err.body as { error?: string } | null;
+        const body = err.body as {
+          error?: string;
+          errors?: readonly ServerFieldError[];
+        } | null;
+        if (body?.errors?.length) {
+          setError(body.errors.map((e) => e.message).join("; "));
+          return;
+        }
         setError(body?.error ?? "import failed");
         return;
       }

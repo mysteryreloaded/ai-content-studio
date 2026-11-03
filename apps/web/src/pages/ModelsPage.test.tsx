@@ -14,13 +14,16 @@ const { cleanup, within, waitFor } = await import("@testing-library/react");
 const { default: userEvent } = await import("@testing-library/user-event");
 const { Toaster } = await import("../components/ui/sonner.js");
 const { ModelsPage } = await import("./ModelsPage.js");
-const { renderWithProviders } = await import("../test/render.js");
+const { drainMacrotasks, renderWithProviders } = await import(
+  "../test/render.js"
+);
 
 afterEach(() => {
   cleanup();
 });
 
 afterAll(async () => {
+  await drainMacrotasks();
   await GlobalRegistrator.unregister();
 });
 
@@ -145,6 +148,34 @@ describe("ModelsPage", () => {
     expect(
       await view.findByText("a Model with this name already exists"),
     ).toBeTruthy();
+  });
+
+  test("a server-side Workflow rejection is shown under the Workflow file field", async () => {
+    mockFetch((call) => {
+      if (call.method === "GET") return Response.json({ models: [] });
+      if (call.method === "POST" && call.url.endsWith("/api/admin/models")) {
+        return Response.json(
+          {
+            errors: [
+              { field: "workflow", message: "links to missing nodes: 9" },
+            ],
+          },
+          { status: 400 },
+        );
+      }
+      return undefined;
+    });
+
+    const view = renderPage();
+    await openNewModelDialog(view);
+    await userEvent.type(view.getByLabelText("Name"), "LTX 2.5");
+    await userEvent.upload(
+      view.getByLabelText("Workflow file"),
+      jsonFile("wf.json", API_WORKFLOW),
+    );
+    await userEvent.click(view.getByText("Create"));
+
+    expect(await view.findByText("links to missing nodes: 9")).toBeTruthy();
   });
 
   test("creating navigates to the new Model's editor", async () => {

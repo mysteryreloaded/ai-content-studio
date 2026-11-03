@@ -22,6 +22,14 @@ export interface Route {
   path: string;
   as: Identity;
   actions?: RouteAction[];
+  /**
+   * Re-run `actions` on every theme instead of reusing the URL the
+   * first theme's run landed on: for an action that opens client-side
+   * state (a popover, a sheet) rather than navigating, the URL never
+   * changes, so the cached-URL reuse would just reopen the plain page
+   * with nothing clicked.
+   */
+  repeatActions?: boolean;
   /** A selector to wait for (up to 5s) before capturing. */
   ready?: string;
   widths?: number[];
@@ -178,6 +186,7 @@ export const routes: Route[] = [
     path: "/admin/models/{model.video.id}?section=modes",
     as: "alice",
     actions: [{ role: "button", name: "Seed in Text to video: optional" }],
+    repeatActions: true,
     ready: "text=Apply to every Mode whose Path holds this Input's fields",
     prototype: "editor-a",
   },
@@ -186,6 +195,7 @@ export const routes: Route[] = [
     path: "/admin/models/{model.video.id}?section=modes",
     as: "alice",
     actions: [{ role: "button", name: "Text to video" }],
+    repeatActions: true,
     ready: "text=What users see",
     prototype: "editor-c",
   },

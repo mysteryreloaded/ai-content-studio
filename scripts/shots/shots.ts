@@ -331,7 +331,9 @@ async function shootRoute(
   const page = await context.newPage();
   const errors: { width: number; error: string }[] = [];
   try {
-    const alreadyActioned = actionedUrls.get(route.name);
+    const alreadyActioned = route.repeatActions
+      ? undefined
+      : actionedUrls.get(route.name);
     const url = new URL(alreadyActioned ?? resolvePath(route.path, seed), base);
     await page.goto(url.toString());
 

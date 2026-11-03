@@ -499,19 +499,22 @@ export function useModelEditor() {
     loadObjectInfo();
   }
 
-  function addMode() {
-    if (!modesDraft) return;
+  /** Adds "Mode N" (N = count + 1), returning its key so the caller (issue #216: "+ Mode") can open its sheet. */
+  function addMode(): string | null {
+    if (!modesDraft) return null;
+    const key = crypto.randomUUID();
     setModesDraft([
       ...modesDraft,
       {
-        key: crypto.randomUUID(),
-        name: "",
+        key,
+        name: `Mode ${modesDraft.length + 1}`,
         description: "",
         outputNodeIds: [],
         inputSettings: [],
       },
     ]);
     setEditingModeIndex(modesDraft.length);
+    return key;
   }
 
   function removeMode(index: number) {
@@ -527,11 +530,11 @@ export function useModelEditor() {
     );
   }
 
-  /** Duplicates Mode `index` right after it, as a fresh (unsaved) Mode (issue #48). */
-  function duplicateMode(index: number) {
-    if (!modesDraft) return;
+  /** Duplicates Mode `index` right after it, as a fresh (unsaved) Mode (issue #48), returning its key so the caller can open its sheet. */
+  function duplicateMode(index: number): string | null {
+    if (!modesDraft) return null;
     const mode = modesDraft[index];
-    if (!mode) return;
+    if (!mode) return null;
     const copy: DraftMode = {
       ...mode,
       key: crypto.randomUUID(),
@@ -542,6 +545,7 @@ export function useModelEditor() {
       copy,
       ...modesDraft.slice(index + 1),
     ]);
+    return copy.key;
   }
 
   /** Sets Mode `modeIndex`'s setting for `inputId` (issue #48's grid cell). */
@@ -605,6 +609,30 @@ export function useModelEditor() {
       ? mode.outputNodeIds.filter((id) => id !== nodeId)
       : [...mode.outputNodeIds, nodeId];
     updateMode(editingModeIndex, { outputNodeIds });
+  }
+
+  /** Adds `nodeId` to Mode `index`'s output-node list (issue #216's "+ Output" picker), as the new last output. */
+  function addOutputNode(index: number, nodeId: string) {
+    if (!modesDraft) return;
+    const mode = modesDraft[index];
+    if (!mode || mode.outputNodeIds.includes(nodeId)) return;
+    updateMode(index, { outputNodeIds: [...mode.outputNodeIds, nodeId] });
+  }
+
+  /** Swaps a missing output node for a freshly picked one, in place (issue #216's "Pick again"). */
+  function replaceOutputNode(
+    index: number,
+    oldNodeId: string,
+    newNodeId: string,
+  ) {
+    if (!modesDraft) return;
+    const mode = modesDraft[index];
+    if (!mode) return;
+    updateMode(index, {
+      outputNodeIds: mode.outputNodeIds.map((id) =>
+        id === oldNodeId ? newNodeId : id,
+      ),
+    });
   }
 
   /** Removes `nodeId` from Mode `index`'s own output-node list, regardless of which Mode is currently being picked. */
@@ -1296,6 +1324,8 @@ export function useModelEditor() {
     setModeInputSetting,
     applySettingToEveryEligibleMode,
     toggleOutputNodeInEditingMode,
+    addOutputNode,
+    replaceOutputNode,
     removeOutputNode,
     moveOutputNode,
     toggleTestForm,

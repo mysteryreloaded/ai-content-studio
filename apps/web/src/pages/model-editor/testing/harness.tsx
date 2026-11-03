@@ -189,14 +189,6 @@ export async function openSection(
   fireEvent.click(button);
 }
 
-/** "Test" is ambiguous with the section nav's own "Test" item (issue #213): finds the Mode's own toggle inside the Modes section. */
-export async function findModeTestToggle(view: RenderResult) {
-  const matches = await view.findAllByText("Test");
-  const toggle = matches.find((el) => !el.closest("nav"));
-  if (!toggle) throw new Error("Mode's Test toggle not found");
-  return toggle;
-}
-
 export async function finishFile() {
   await drainMacrotasks();
   await GlobalRegistrator.unregister();

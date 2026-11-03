@@ -257,7 +257,9 @@ describe("Model editor frame (issue #213)", () => {
     const { default: userEvent } = await import("@testing-library/user-event");
 
     await openSection(view, "Modes");
+    await userEvent.click(await view.findByText("Default"));
     await userEvent.click(await view.findByText("Duplicate Mode"));
+    await userEvent.keyboard("{Escape}");
 
     const saveButton = (await view.findByText(
       "Save and disable",
@@ -563,7 +565,9 @@ describe("Model editor frame (issue #213)", () => {
     const { default: userEvent } = await import("@testing-library/user-event");
 
     await openSection(view, "Modes");
+    await userEvent.click(await view.findByText("Default"));
     await userEvent.click(await view.findByText("Duplicate Mode"));
+    await userEvent.keyboard("{Escape}");
     await openSection(view, "Details");
     await userEvent.type(await view.findByLabelText("Name"), "x");
 
@@ -580,7 +584,12 @@ describe("Model editor frame (issue #213)", () => {
     expect(saveButton.disabled).toBe(false);
 
     await openSection(view, "Modes");
-    expect(await view.findByDisplayValue("Default copy")).toBeTruthy();
+    await waitFor(() => {
+      const headers = view.container.querySelectorAll("thead th button");
+      expect([...headers].map((el) => el.textContent)).toContain(
+        "Default copy",
+      );
+    });
   });
 
   // Issue #241 CEO review 3: Discard and Reload must drop a
@@ -811,7 +820,7 @@ describe("Model editor frame (issue #213)", () => {
     const { default: userEvent } = await import("@testing-library/user-event");
 
     await openSection(view, "Modes");
-    expect(await view.findByDisplayValue("Default")).toBeTruthy();
+    expect(await view.findByText("Default")).toBeTruthy();
 
     await openSection(view, "Revisions");
     const restoreButtons = await view.findAllByRole("button", {
@@ -825,7 +834,7 @@ describe("Model editor frame (issue #213)", () => {
     await view.findByText("Saved · revision 1");
 
     await openSection(view, "Modes");
-    expect(view.queryByDisplayValue("Default")).toBeNull();
+    expect(view.queryByText("Default")).toBeNull();
 
     const saveButton = view.getByText("Save") as HTMLButtonElement;
     expect(saveButton.disabled).toBe(true);
@@ -872,7 +881,7 @@ describe("Model editor frame (issue #213)", () => {
     const { default: userEvent } = await import("@testing-library/user-event");
 
     await openSection(view, "Modes");
-    expect(await view.findByDisplayValue("Default")).toBeTruthy();
+    expect(await view.findByText("Default")).toBeTruthy();
 
     await openSection(view, "Workflow");
     const file = new File(
@@ -886,7 +895,7 @@ describe("Model editor frame (issue #213)", () => {
     await view.findByText("Saved · revision 2");
 
     await openSection(view, "Modes");
-    expect(view.queryByDisplayValue("Default")).toBeNull();
+    expect(view.queryByText("Default")).toBeNull();
 
     const saveButton = view.getByText("Save") as HTMLButtonElement;
     expect(saveButton.disabled).toBe(true);

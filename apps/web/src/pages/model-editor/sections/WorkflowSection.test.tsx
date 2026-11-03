@@ -595,8 +595,11 @@ describe("WorkflowSection (issue #214)", () => {
     await openSection(view, "Modes");
 
     await view.findByText("LTX 2.5");
-    await userEvent.click(view.getByText("Add Mode"));
-    await userEvent.type(view.getByLabelText("Mode name"), "Default");
+    await userEvent.click(view.getByText("+ Mode"));
+    const nameField = view.getByLabelText("Name") as HTMLInputElement;
+    await userEvent.clear(nameField);
+    await userEvent.type(nameField, "Default");
+    await userEvent.click(view.getByRole("button", { name: "Close" }));
 
     await pickOutputNodeInWorkflow(view, "Default", "2");
     const checkbox = view.getByLabelText(

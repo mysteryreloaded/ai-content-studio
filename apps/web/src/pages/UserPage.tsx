@@ -118,6 +118,9 @@ export function UserPage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [disableReason, setDisableReason] = useState("");
   const [deleteReason, setDeleteReason] = useState("");
+  // The original page's single action-error line: any failed action is
+  // visible, and a new action starts from a clean line.
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const userQuery = useQuery({
     queryKey: ["admin", "users", id],
@@ -158,9 +161,11 @@ export function UserPage() {
         api.api.admin.users[":id"].approve.$post({ param: { id } }),
       ),
     onSuccess: (data) => {
+      setActionError(null);
       queryClient.setQueryData(["admin", "users", id], data);
       invalidateUserAndBadge();
     },
+    onError: () => setActionError("could not approve this user"),
   });
 
   const roleMutation = useMutation({
@@ -173,18 +178,23 @@ export function UserPage() {
             api.api.admin.users[":id"].demote.$post({ param: { id } }),
           ),
     onSuccess: (data) => {
+      setActionError(null);
       queryClient.setQueryData(["admin", "users", id], data);
       invalidateUserAndBadge();
     },
+    onError: (_error, { action }) =>
+      setActionError(`could not ${action} this user`),
   });
 
   const enableMutation = useMutation({
     mutationFn: () =>
       ok<AdminUser>(api.api.admin.users[":id"].enable.$post({ param: { id } })),
     onSuccess: (data) => {
+      setActionError(null);
       queryClient.setQueryData(["admin", "users", id], data);
       invalidateUserAndBadge();
     },
+    onError: () => setActionError("could not enable this user"),
   });
 
   const disableMutation = useMutation({
@@ -196,11 +206,14 @@ export function UserPage() {
         }),
       ),
     onSuccess: (data) => {
+      setActionError(null);
       setDisableOpen(false);
       setDisableReason("");
       queryClient.setQueryData(["admin", "users", id], data);
       invalidateUserAndBadge();
     },
+    // A failed disable keeps its dialog open, the error inside it.
+    onError: () => setActionError("could not disable this user"),
   });
 
   const deleteMutation = useMutation({
@@ -215,6 +228,8 @@ export function UserPage() {
       invalidateUserAndBadge();
       navigate("/admin/users");
     },
+    // A failed delete keeps its dialog open, the error inside it.
+    onError: () => setActionError("could not delete this user"),
   });
 
   const capsForm = useForm<CapsFormValues>({
@@ -359,12 +374,23 @@ export function UserPage() {
         description={user.email || null}
         actions={
           <>
+            {/* The original page's single alert, beside the actions.
+                Inside a dialog's reach it renders in the open dialog
+                instead, so it never shows twice. */}
+            {actionError && !disableOpen && !deleteOpen ? (
+              <p role="alert" className="text-err">
+                {actionError}
+              </p>
+            ) : null}
             <HistoryLink targetType="user" targetId={user.id} />
             {canAct && user.status === "pending" ? (
               <Button
                 size="sm"
                 disabled={approveMutation.isPending}
-                onClick={() => void approveMutation.mutate()}
+                onClick={() => {
+                  setActionError(null);
+                  void approveMutation.mutate();
+                }}
               >
                 Approve
               </Button>
@@ -374,7 +400,10 @@ export function UserPage() {
                 variant="outline"
                 size="sm"
                 disabled={roleMutation.isPending}
-                onClick={() => void roleMutation.mutate({ action: "promote" })}
+                onClick={() => {
+                  setActionError(null);
+                  void roleMutation.mutate({ action: "promote" });
+                }}
               >
                 Promote to Admin
               </Button>
@@ -384,7 +413,10 @@ export function UserPage() {
                 variant="outline"
                 size="sm"
                 disabled={roleMutation.isPending}
-                onClick={() => void roleMutation.mutate({ action: "demote" })}
+                onClick={() => {
+                  setActionError(null);
+                  void roleMutation.mutate({ action: "demote" });
+                }}
               >
                 Demote to user
               </Button>
@@ -394,7 +426,10 @@ export function UserPage() {
                 variant="outline"
                 size="sm"
                 disabled={enableMutation.isPending}
-                onClick={() => void enableMutation.mutate()}
+                onClick={() => {
+                  setActionError(null);
+                  void enableMutation.mutate();
+                }}
               >
                 Enable
               </Button>
@@ -613,6 +648,11 @@ export function UserPage() {
           <p className="text-right text-xs text-muted-foreground">
             {disableReason.length} / {DISABLE_REASON_MAX_LENGTH}
           </p>
+          {actionError ? (
+            <p role="alert" className="text-err">
+              {actionError}
+            </p>
+          ) : null}
           <DialogFooter>
             <Button variant="ghost" onClick={() => setDisableOpen(false)}>
               Cancel
@@ -620,9 +660,10 @@ export function UserPage() {
             <Button
               variant="danger"
               disabled={disableMutation.isPending}
-              onClick={() =>
-                void disableMutation.mutate({ reason: disableReason })
-              }
+              onClick={() => {
+                setActionError(null);
+                void disableMutation.mutate({ reason: disableReason });
+              }}
             >
               Confirm disable
             </Button>
@@ -656,6 +697,11 @@ export function UserPage() {
           <p className="text-right text-xs text-muted-foreground">
             {deleteReason.length} / {DISABLE_REASON_MAX_LENGTH}
           </p>
+          {actionError ? (
+            <p role="alert" className="text-err">
+              {actionError}
+            </p>
+          ) : null}
           <DialogFooter>
             <Button variant="ghost" onClick={() => setDeleteOpen(false)}>
               Cancel
@@ -663,9 +709,10 @@ export function UserPage() {
             <Button
               variant="danger"
               disabled={deleteMutation.isPending}
-              onClick={() =>
-                void deleteMutation.mutate({ reason: deleteReason })
-              }
+              onClick={() => {
+                setActionError(null);
+                void deleteMutation.mutate({ reason: deleteReason });
+              }}
             >
               Confirm delete
             </Button>

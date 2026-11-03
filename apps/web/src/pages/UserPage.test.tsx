@@ -143,6 +143,32 @@ describe("UserPage", () => {
     });
   });
 
+  test("a failed disable keeps the dialog open and shows the error", async () => {
+    mockFetch((call) => {
+      if (call.url.endsWith("/disable")) {
+        return Response.json({ error: "boom" }, { status: 500 });
+      }
+      return undefined;
+    });
+
+    renderPage();
+    await screen.findByText("A User");
+
+    await userEvent.click(screen.getByText("Disable"));
+    await userEvent.type(
+      screen.getByLabelText("Reason (optional, Admin-only)"),
+      "Abusive prompts",
+    );
+    await userEvent.click(screen.getByText("Confirm disable"));
+
+    // The original page's error line, inside the open dialog, which
+    // stays open for a retry.
+    expect(await screen.findByText("could not disable this user")).toBeTruthy();
+    expect(
+      screen.getByRole("heading", { name: "Disable A User?" }),
+    ).toBeTruthy();
+  });
+
   test("enable is offered for a disabled user and clears the status", async () => {
     let status = "disabled";
     mockFetch((call) => {

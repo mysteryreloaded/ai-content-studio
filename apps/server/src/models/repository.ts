@@ -415,6 +415,47 @@ export function applyRebind(
   return { modes, inputs: reboundInputs, errors };
 }
 
+/** A Mode's own DB-insertable shape (no `id`/`sortOrder`, assigned fresh on insert) — what `saveDraft` carries forward or resolves, for either a brand-new Mode or one copied verbatim from `beforeModes`. */
+interface DraftModeRow {
+  name: string;
+  description: string;
+  outputNodes: ResolvedOutputNode[];
+  inputSettings: ModeInputSetting[];
+}
+
+/**
+ * Whether `input` (the draft's submitted Modes) is exactly what's
+ * already saved (issue #218 CEO review): the editor only resubmits a
+ * Mode unchanged when its own section wasn't touched, in which case
+ * `saveDraft` must carry it forward verbatim — broken output-node refs
+ * included — rather than re-resolving it as if it were fresh.
+ */
+function sameModeInputs(before: ModeRecord[], input: ModeInput[]): boolean {
+  if (before.length !== input.length) return false;
+  return before.every((mode, index) => {
+    const candidate = input[index];
+    if (!candidate) return false;
+    if (mode.name !== candidate.name) return false;
+    if (mode.description !== candidate.description) return false;
+    const beforeIds = mode.outputNodes.map((node) => node.nodeId);
+    if (JSON.stringify(beforeIds) !== JSON.stringify(candidate.outputNodeIds)) {
+      return false;
+    }
+    return (
+      JSON.stringify(mode.inputSettings) ===
+      JSON.stringify(candidate.inputSettings ?? [])
+    );
+  });
+}
+
+/** Same as {@link sameModeInputs}, for Inputs. */
+function sameInputDefinitions(
+  before: InputDefinition[],
+  input: InputDefinition[],
+): boolean {
+  return JSON.stringify(before) === JSON.stringify(input);
+}
+
 /** One numbered Model revision, listed in the editor's Revisions section (issue #71). */
 export interface RevisionSummary {
   revisionNumber: number;
@@ -1637,113 +1678,135 @@ export class ModelRepository {
           workflow = workflowRow.json as Workflow;
         }
 
-        // Issue #71's rebind, applied to this draft's own Modes/Inputs
-        // before anything resolves against the (possibly new) Workflow.
-        const rebindMap = new Map(
-          (input.workflow?.rebind ?? []).map((r) => [r.nodeId, r.newNodeId]),
+        // Issue #218 CEO review: a Mode/Input left exactly as it was
+        // saved (the editor only resubmits it unchanged when its own
+        // section wasn't touched) must carry forward verbatim, broken
+        // refs included — never re-resolved/re-validated as if it were
+        // a fresh submission. That's what `updateModes`/`updateInputs`/
+        // `uploadWorkflow` already do for whichever part THEY leave
+        // untouched; a Workflow re-upload's `rebind` still goes through
+        // the same `applyRebind` `uploadWorkflow` itself calls, so a
+        // rebind-left-broken node (or a rebind target's real classType/
+        // title) behaves identically here. Only a genuinely *edited*
+        // Mode/Input (the submitted value differs from what's saved)
+        // gets resolved/validated fresh against the final Workflow —
+        // same hard checks `updateModes`/`updateInputs` already run.
+        const modesUnchanged = sameModeInputs(beforeModes, input.modes);
+        const inputsUnchanged = sameInputDefinitions(
+          beforeInputs,
+          input.inputs,
         );
-        const modesInput: ModeInput[] =
-          rebindMap.size === 0
-            ? input.modes
-            : input.modes.map((mode) => ({
-                ...mode,
-                outputNodeIds: mode.outputNodeIds.map(
-                  (nodeId) => rebindMap.get(nodeId) ?? nodeId,
-                ),
-              }));
-        const inputsInput: InputDefinition[] =
-          rebindMap.size === 0
-            ? input.inputs
-            : input.inputs.map((def) => ({
-                ...def,
-                bindings: def.bindings.map((b) => ({
-                  ...b,
-                  nodeId: rebindMap.get(b.nodeId) ?? b.nodeId,
-                })),
-              }));
 
-        // Modes, resolved against the final Workflow (same checks
-        // `updateModes` runs).
-        const modeNamesSoFar: string[] = [];
-        const resolvedModes: Array<{
-          name: string;
-          description: string;
-          outputNodes: ResolvedOutputNode[];
-          inputSettings: ModeInputSetting[];
-        }> = [];
-        modesInput.forEach((modeInput, index) => {
-          const nameError = validateModeName(modeInput.name, modeNamesSoFar);
-          if (nameError) {
-            errors.push({ field: `modes.${index}.name`, message: nameError });
-          }
-          modeNamesSoFar.push(modeInput.name);
-
-          const inputSettings = modeInput.inputSettings ?? [];
-          const settingsErrors = validateModeInputSettings(
-            inputSettings,
-            inputsInput,
-          );
-          for (const message of settingsErrors) {
-            errors.push({
-              field: `modes.${index}.inputSettings`,
-              message,
-            });
-          }
-
-          const outcome = resolveModeOutputNodes(
-            workflow,
-            modeInput.outputNodeIds,
-          );
-          if (!outcome.ok) {
-            for (const message of outcome.errors) {
-              errors.push({ field: `modes.${index}.outputNodes`, message });
-            }
-            return;
-          }
-          resolvedModes.push({
-            name: modeInput.name,
-            description: modeInput.description,
-            outputNodes: outcome.outputNodes,
-            inputSettings,
-          });
-        });
-
-        // Inputs, validated against the final Workflow and the
-        // resolved Modes' output nodes (same checks `updateInputs` runs).
-        const outputNodeIds = new Set(
-          resolvedModes.flatMap((mode) =>
-            mode.outputNodes.map((node) => node.nodeId),
-          ),
-        );
-        const usedFields = new Set<string>();
-        const labelsSoFar: string[] = [];
-        const idsSoFar: string[] = [];
-        inputsInput.forEach((def, index) => {
-          const ctx: BindingValidationContext = {
-            workflow,
-            outputNodeIds,
-            usedFields,
+        const rebind = input.workflow?.rebind ?? [];
+        let baseModes: DraftModeRow[] = beforeModes;
+        let baseInputs: InputDefinition[] = beforeInputs;
+        if (parsedWorkflow && rebind.length > 0) {
+          const rebound = applyRebind(
+            parsedWorkflow,
+            beforeModes,
+            beforeInputs,
+            rebind,
             fieldSpecs,
             maxUploadMb,
-          };
-          const defErrors = validateInputDefinition(
-            def,
-            labelsSoFar,
-            ctx,
-            idsSoFar,
-            inputsInput,
           );
-          for (const message of defErrors) {
-            errors.push({ field: `inputs.${index}`, message });
-          }
-          labelsSoFar.push(def.label);
-          idsSoFar.push(def.id);
-          for (const binding of def.bindings) {
-            usedFields.add(fieldKey(binding.nodeId, binding.field));
-          }
-        });
+          errors.push(...rebound.errors);
+          baseModes = rebound.modes;
+          baseInputs = rebound.inputs;
+        }
 
-        const seedCount = inputsInput.filter(
+        // Modes: unchanged carries `baseModes` (the current Modes, or
+        // their rebind-touched equivalent) forward untouched; a genuine
+        // edit resolves fresh against the final Workflow (same checks
+        // `updateModes` runs).
+        let finalModes: DraftModeRow[];
+        if (modesUnchanged) {
+          finalModes = baseModes;
+        } else {
+          const modeNamesSoFar: string[] = [];
+          const resolvedModes: DraftModeRow[] = [];
+          input.modes.forEach((modeInput, index) => {
+            const nameError = validateModeName(modeInput.name, modeNamesSoFar);
+            if (nameError) {
+              errors.push({ field: `modes.${index}.name`, message: nameError });
+            }
+            modeNamesSoFar.push(modeInput.name);
+
+            const inputSettings = modeInput.inputSettings ?? [];
+            const settingsErrors = validateModeInputSettings(
+              inputSettings,
+              input.inputs,
+            );
+            for (const message of settingsErrors) {
+              errors.push({
+                field: `modes.${index}.inputSettings`,
+                message,
+              });
+            }
+
+            const outcome = resolveModeOutputNodes(
+              workflow,
+              modeInput.outputNodeIds,
+            );
+            if (!outcome.ok) {
+              for (const message of outcome.errors) {
+                errors.push({ field: `modes.${index}.outputNodes`, message });
+              }
+              return;
+            }
+            resolvedModes.push({
+              name: modeInput.name,
+              description: modeInput.description,
+              outputNodes: outcome.outputNodes,
+              inputSettings,
+            });
+          });
+          finalModes = resolvedModes;
+        }
+
+        // Inputs: unchanged carries `baseInputs` forward untouched; a
+        // genuine edit validates fresh against the final Workflow and
+        // the (possibly just-resolved) Modes' output nodes (same
+        // checks `updateInputs` runs).
+        let finalInputs: InputDefinition[];
+        if (inputsUnchanged) {
+          finalInputs = baseInputs;
+        } else {
+          const outputNodeIds = new Set(
+            finalModes.flatMap((mode) =>
+              mode.outputNodes.map((node) => node.nodeId),
+            ),
+          );
+          const usedFields = new Set<string>();
+          const labelsSoFar: string[] = [];
+          const idsSoFar: string[] = [];
+          input.inputs.forEach((def, index) => {
+            const ctx: BindingValidationContext = {
+              workflow,
+              outputNodeIds,
+              usedFields,
+              fieldSpecs,
+              maxUploadMb,
+            };
+            const defErrors = validateInputDefinition(
+              def,
+              labelsSoFar,
+              ctx,
+              idsSoFar,
+              input.inputs,
+            );
+            for (const message of defErrors) {
+              errors.push({ field: `inputs.${index}`, message });
+            }
+            labelsSoFar.push(def.label);
+            idsSoFar.push(def.id);
+            for (const binding of def.bindings) {
+              usedFields.add(fieldKey(binding.nodeId, binding.field));
+            }
+          });
+          finalInputs = input.inputs;
+        }
+
+        const seedCount = finalInputs.filter(
           (def) => def.kind === "seed",
         ).length;
         if (seedCount > 1) {
@@ -1753,7 +1816,7 @@ export class ModelRepository {
           });
         }
         if (before.state === "enabled") {
-          for (const def of inputsInput) {
+          for (const def of finalInputs) {
             if (def.kind === "seed" && def.max === null) {
               errors.push({
                 field: "inputs",
@@ -1816,14 +1879,14 @@ export class ModelRepository {
             modelId: id,
             revisionNumber: newRevisionNumber,
             workflowHash,
-            inputs: inputsInput,
+            inputs: finalInputs,
           })
           .returning();
         if (!newRevision) throw new Error("insert returned no row");
 
-        if (resolvedModes.length > 0) {
+        if (finalModes.length > 0) {
           await tx.insert(modes).values(
-            resolvedModes.map((mode, index) => ({
+            finalModes.map((mode, index) => ({
               revisionId: newRevision.id,
               sortOrder: index,
               name: mode.name,
@@ -1856,7 +1919,7 @@ export class ModelRepository {
             licenseUrl: row.licenseUrl,
             attribution: row.attribution,
             termsVersion: row.termsVersion,
-            inputs: inputsInput,
+            inputs: finalInputs,
             modes: afterModes,
           },
         });
@@ -1869,7 +1932,7 @@ export class ModelRepository {
           nodes: nodesFrom(workflow),
           outsideServiceNotes: parsedWorkflow ? outsideServiceNotes : [],
           modes: afterModes,
-          inputs: inputsInput,
+          inputs: finalInputs,
         };
       });
     } catch (err) {

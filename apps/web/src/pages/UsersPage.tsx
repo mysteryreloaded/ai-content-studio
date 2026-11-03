@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { cn } from "cn";
 import { LockIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
@@ -51,6 +52,8 @@ interface AdminUser {
   /** A scrubbed "Deleted user" row (ADR 0008) sets this. */
   deletedAt?: string | null;
   createdAt: string;
+  /** Issue #208: null until this user's first sign-in. */
+  lastSeenAt: string | null;
 }
 
 interface UsersResponse {
@@ -351,6 +354,9 @@ export function UsersPage() {
               <TableHead className={adminHeadCell}>Role</TableHead>
               <TableHead className={adminHeadCell}>Status</TableHead>
               <TableHead className={adminHeadCell}>Created</TableHead>
+              <TableHead className={cn(adminHeadCell, "hidden sm:table-cell")}>
+                Last seen
+              </TableHead>
               <TableHead className={adminHeadCell}>Actions</TableHead>
             </TableRow>
           </TableHeader>
@@ -383,6 +389,10 @@ export function UsersPage() {
                   </TableCell>
                   <TableCell className="max-w-60 truncate">
                     {user.email}
+                    <div className="text-muted-foreground sm:hidden">
+                      Last seen{" "}
+                      {user.lastSeenAt ? formatWhen(user.lastSeenAt) : "—"}
+                    </div>
                   </TableCell>
                   <TableCell>
                     <div className="flex flex-wrap items-center gap-1.5">
@@ -410,6 +420,9 @@ export function UsersPage() {
                     )}
                   </TableCell>
                   <TableCell>{formatWhen(user.createdAt)}</TableCell>
+                  <TableCell className="hidden sm:table-cell">
+                    {user.lastSeenAt ? formatWhen(user.lastSeenAt) : "—"}
+                  </TableCell>
                   <TableCell>
                     <div className="flex flex-wrap items-center gap-2">
                       {canAct && user.status === "pending" ? (

@@ -45,13 +45,20 @@ export async function createSession(
   const now = clock.now();
   const expiresAt = new Date(now.getTime() + SESSION_TTL_MS);
 
-  await db.insert(sessions).values({
-    id,
-    secretHash: sha256Hex(secret),
-    userId,
-    expiresAt,
-    lastSeenAt: now,
-    createdAt: now,
+  await db.transaction(async (tx) => {
+    await tx.insert(sessions).values({
+      id,
+      secretHash: sha256Hex(secret),
+      userId,
+      expiresAt,
+      lastSeenAt: now,
+      createdAt: now,
+    });
+    // Issue #208: every completed sign-in bumps both fields on the user.
+    await tx
+      .update(users)
+      .set({ lastSignInAt: now, lastSeenAt: now })
+      .where(eq(users.id, userId));
   });
 
   return { cookieValue: `${id}.${secret}`, expiresAt };
@@ -112,10 +119,18 @@ export async function readSession(
     SLIDING_BUMP_MIN_INTERVAL_MS
   ) {
     const expiresAt = new Date(now.getTime() + SESSION_TTL_MS);
-    await db
-      .update(sessions)
-      .set({ lastSeenAt: now, expiresAt })
-      .where(eq(sessions.id, id));
+    await db.transaction(async (tx) => {
+      await tx
+        .update(sessions)
+        .set({ lastSeenAt: now, expiresAt })
+        .where(eq(sessions.id, id));
+      // Issue #208: users.lastSeenAt moves on the same throttle, so a
+      // verified session costs no extra writes per request.
+      await tx
+        .update(users)
+        .set({ lastSeenAt: now })
+        .where(eq(users.id, row.userId));
+    });
   }
 
   return {

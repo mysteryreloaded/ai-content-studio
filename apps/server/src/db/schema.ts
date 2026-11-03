@@ -197,6 +197,15 @@ export const users = pgTable("users", {
    * second delete or an enable can't act on a "Deleted user" row.
    */
   deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  /**
+   * Issue #208: set from `sessions` activity so the admin panel can tell
+   * a dormant account from an active one even after sign-out, when the
+   * session row itself is gone. `lastSignInAt` is set once per
+   * completed sign-in; `lastSeenAt` moves with it, on the same throttle
+   * as `sessions.lastSeenAt`. Both null until the first sign-in.
+   */
+  lastSignInAt: timestamp("last_sign_in_at", { withTimezone: true }),
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

@@ -115,6 +115,31 @@ describe("UsersPage", () => {
     expect(await screen.findByText("Approve")).toBeTruthy();
   });
 
+  test("Last seen shows — for a never-signed-in account, and the formatted time once set (issue #208)", async () => {
+    mockFetch(() =>
+      Response.json({
+        users: [
+          userRow({ id: "u1", lastSeenAt: null }),
+          userRow({
+            id: "u2",
+            name: "Seen User",
+            email: "seen@example.com",
+            lastSeenAt: "2026-02-03T10:00:00.000Z",
+          }),
+        ],
+        hasMore: false,
+      }),
+    );
+
+    const { container } = renderPage();
+    await screen.findByText("A User");
+
+    expect(container.textContent).toContain("Last seen —");
+    expect(container.textContent).toContain(
+      formatWhen("2026-02-03T10:00:00.000Z"),
+    );
+  });
+
   test("action buttons are hidden on a pinned row", async () => {
     mockFetch(() =>
       Response.json({

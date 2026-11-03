@@ -10,7 +10,6 @@ import { BlockedAccountsPage } from "./BlockedAccountsPage.js";
 import { BlockedWordsForm } from "./BlockedWordsForm.js";
 import { CapsForm } from "./CapsForm.js";
 import { LogsPage } from "./LogsPage.js";
-import { ModelEditorPage } from "./ModelEditorPage.js";
 import { ModelsPage } from "./ModelsPage.js";
 import { OverviewPage } from "./OverviewPage.js";
 import { PauseNoticeForm } from "./PauseNoticeForm.js";
@@ -19,6 +18,7 @@ import { SiteSettingsForm } from "./SiteSettingsForm.js";
 import { SiteTermsForm } from "./SiteTermsForm.js";
 import { UserPage } from "./UserPage.js";
 import { UsersPage } from "./UsersPage.js";
+import { ModelEditorPage } from "./model-editor/ModelEditorPage.js";
 
 const ERROR_BADGE_POLL_MS = 30_000;
 

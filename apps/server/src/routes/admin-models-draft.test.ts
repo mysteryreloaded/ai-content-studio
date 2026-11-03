@@ -304,14 +304,89 @@ describe("PUT /api/admin/models/:id/draft (Workflow re-upload tolerance)", () =>
     "2": { class_type: "KSampler", inputs: { model: ["1", 0], steps: 20 } },
     "3": { class_type: "SaveImage", inputs: { images: ["2", 0] } },
     "4": { class_type: "SaveImage", inputs: { images: ["2", 0] } },
+    "5": { class_type: "CLIPTextEncode", inputs: { text: "a cat" } },
   };
 
-  /** "3" is renamed "6" (a rebind target); "4" is simply gone, left on "Leave broken" within the very same Mode. */
+  /** "3" is renamed "6" (a rebind target); "4" is simply gone, left on "Leave broken" within the very same Mode. "5" (the Prompt Input's own bound node) is untouched. */
   const WORKFLOW_TWO_OUTPUTS_MIXED = {
     "1": { class_type: "CheckpointLoaderSimple", inputs: {} },
     "2": { class_type: "KSampler", inputs: { model: ["1", 0], steps: 20 } },
     "6": { class_type: "SaveImage", inputs: { images: ["2", 0] } },
+    "5": { class_type: "CLIPTextEncode", inputs: { text: "a cat" } },
   };
+
+  const PROMPT_INPUT_ID = "22222222-2222-2222-2222-222222222222";
+
+  /**
+   * Issue #218 CEO review round 3: a real bound Input, whose key order
+   * in the request body is deliberately different from how it's first
+   * created — `sameInputDefinitions`' `JSON.stringify` comparison was
+   * key-order-sensitive (it compared the zod-parsed body against
+   * Postgres's own jsonb key order), so these tests only actually
+   * exercise the "unchanged, carry forward verbatim" path with the
+   * `isDeepStrictEqual` fix.
+   */
+  function promptInput(reorderedKeys: boolean) {
+    const binding = {
+      nodeId: "5",
+      field: "text",
+      classType: "CLIPTextEncode",
+      title: null,
+    };
+    if (!reorderedKeys) {
+      return {
+        id: PROMPT_INPUT_ID,
+        kind: "text",
+        group: "describe",
+        label: "Prompt",
+        help: "",
+        default: "",
+        multiline: true,
+        maxLength: 2000,
+        bindings: [binding],
+      };
+    }
+    return {
+      bindings: [
+        {
+          title: null,
+          classType: "CLIPTextEncode",
+          field: "text",
+          nodeId: "5",
+        },
+      ],
+      maxLength: 2000,
+      multiline: true,
+      default: "",
+      help: "",
+      label: "Prompt",
+      group: "describe",
+      kind: "text",
+      id: PROMPT_INPUT_ID,
+    };
+  }
+
+  /** Same reordering trick as {@link promptInput}, for a Mode's (non-empty) `inputSettings`. */
+  function promptInputSetting(reorderedKeys: boolean) {
+    if (!reorderedKeys) {
+      return [
+        {
+          inputId: PROMPT_INPUT_ID,
+          state: "required",
+          fixedValue: null,
+          label: "Prompt",
+        },
+      ];
+    }
+    return [
+      {
+        label: "Prompt",
+        fixedValue: null,
+        state: "required",
+        inputId: PROMPT_INPUT_ID,
+      },
+    ];
+  }
 
   function testEnv(): Env {
     return {
@@ -431,17 +506,35 @@ describe("PUT /api/admin/models/:id/draft (Workflow re-upload tolerance)", () =>
     clock.advance(30_000);
     await flushMicrotasks();
 
+    // A real bound Input (issue #218 CEO review round 3), so the
+    // round-2 broken-ref tests below exercise `sameInputDefinitions`
+    // against non-empty data, not just `[]`.
+    const inputsRes = await app.request(
+      `/api/admin/models/${model.id}/inputs`,
+      {
+        method: "PUT",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({
+          version: model.version,
+          inputs: [promptInput(false)],
+        }),
+      },
+    );
+    const { record: afterInputs } = (await inputsRes.json()) as {
+      record: { version: number };
+    };
+
     const modesRes = await app.request(`/api/admin/models/${model.id}/modes`, {
       method: "PUT",
       headers: { ...headers, "content-type": "application/json" },
       body: JSON.stringify({
-        version: model.version,
+        version: afterInputs.version,
         modes: [
           {
             name: "Default",
             description: "",
             outputNodeIds: ["3", "4"],
-            inputSettings: [],
+            inputSettings: promptInputSetting(false),
           },
         ],
       }),
@@ -487,13 +580,18 @@ describe("PUT /api/admin/models/:id/draft (Workflow re-upload tolerance)", () =>
           json: WORKFLOW_TWO_OUTPUTS_MIXED,
           rebind: [{ nodeId: "3", newNodeId: "6" }],
         },
-        inputs: [],
+        // Reordered keys (issue #218 CEO review round 3): unchanged
+        // from what's already saved, but not byte-identical JSON, so
+        // this only carries forward verbatim with the
+        // `isDeepStrictEqual` fix — a plain `JSON.stringify` compare
+        // would see these as different and re-validate them fresh.
+        inputs: [promptInput(true)],
         modes: [
           {
             name: "Default",
             description: "",
             outputNodeIds: ["3", "4"],
-            inputSettings: [],
+            inputSettings: promptInputSetting(true),
           },
         ],
         disable: false,
@@ -524,6 +622,7 @@ describe("PUT /api/admin/models/:id/draft (Workflow re-upload tolerance)", () =>
       expect(savedRes.status).toBe(200);
       const saved = (await savedRes.json()) as {
         model: { state: string; currentRevision: number };
+        inputs: { id: string; bindings: { nodeId: string }[] }[];
         modes: {
           outputNodes: {
             nodeId: string;
@@ -534,7 +633,8 @@ describe("PUT /api/admin/models/:id/draft (Workflow re-upload tolerance)", () =>
         }[];
       };
       expect(saved.model.state).toBe("disabled");
-      expect(saved.model.currentRevision).toBe(3);
+      expect(saved.model.currentRevision).toBe(4);
+      expect(saved.inputs[0]?.bindings[0]?.nodeId).toBe("5");
       expect(saved.modes[0]?.outputNodes).toEqual([
         { nodeId: "6", classType: "SaveImage", kind: "image", title: null },
         { nodeId: "4", classType: "SaveImage", kind: "image", title: null },
@@ -572,13 +672,13 @@ describe("PUT /api/admin/models/:id/draft (Workflow re-upload tolerance)", () =>
           json: WORKFLOW_TWO_OUTPUTS_MIXED,
           rebind: [{ nodeId: "3", newNodeId: "6" }],
         },
-        inputs: [],
+        inputs: [promptInput(false)],
         modes: [
           {
             name: "Default",
             description: "",
             outputNodeIds: ["3", "4"],
-            inputSettings: [],
+            inputSettings: promptInputSetting(false),
           },
         ],
         disable: true,
@@ -594,14 +694,20 @@ describe("PUT /api/admin/models/:id/draft (Workflow re-upload tolerance)", () =>
       expect(firstRes.status).toBe(200);
       const afterWorkflow = (await firstRes.json()) as {
         model: { version: number; currentRevision: number };
+        inputs: { id: string; bindings: { nodeId: string }[] }[];
         modes: { name: string; outputNodes: { nodeId: string }[] }[];
       };
+      expect(afterWorkflow.inputs[0]?.bindings[0]?.nodeId).toBe("5");
 
       const revisionsBefore = await db.select().from(modelRevisions);
 
       // Now a Details-only edit, resubmitting the already-broken Mode
-      // (and the unchanged Inputs) exactly as saved: this must not
-      // re-resolve/re-validate them, since neither was touched.
+      // and the Input exactly as saved, but with reordered keys
+      // (issue #218 CEO review round 3): this must not
+      // re-resolve/re-validate them, since neither section was
+      // actually touched — a plain `JSON.stringify` compare would
+      // wrongly treat the reordered Input as "changed" and re-validate
+      // it (and the broken Mode) fresh, 400ing.
       const detailsOnlyBody = {
         version: afterWorkflow.model.version,
         details: {
@@ -611,12 +717,12 @@ describe("PUT /api/admin/models/:id/draft (Workflow re-upload tolerance)", () =>
           maxRunTimeMinutes: model.maxRunTimeMinutes,
         },
         terms: BLANK_TERMS,
-        inputs: [],
+        inputs: [promptInput(true)],
         modes: afterWorkflow.modes.map((mode) => ({
           name: mode.name,
           description: "",
           outputNodeIds: mode.outputNodes.map((n) => n.nodeId),
-          inputSettings: [],
+          inputSettings: promptInputSetting(true),
         })),
         disable: true,
       };
@@ -632,12 +738,14 @@ describe("PUT /api/admin/models/:id/draft (Workflow re-upload tolerance)", () =>
       expect(secondRes.status).toBe(200);
       const after = (await secondRes.json()) as {
         model: { currentRevision: number; description: string };
+        inputs: { bindings: { nodeId: string }[] }[];
         modes: { outputNodes: { nodeId: string }[] }[];
       };
       expect(after.model.description).toBe("renamed");
       expect(after.model.currentRevision).toBe(
         afterWorkflow.model.currentRevision + 1,
       );
+      expect(after.inputs[0]?.bindings[0]?.nodeId).toBe("5");
       expect(after.modes[0]?.outputNodes.map((n) => n.nodeId)).toEqual([
         "6",
         "4",
@@ -645,6 +753,79 @@ describe("PUT /api/admin/models/:id/draft (Workflow re-upload tolerance)", () =>
 
       const revisionsAfter = await db.select().from(modelRevisions);
       expect(revisionsAfter.length).toBe(revisionsBefore.length + 1);
+    } finally {
+      await fake.stop();
+    }
+  });
+
+  // Issue #218 CEO review round 3 (bug 2): a Workflow re-upload isn't
+  // gated on every other draft being clean, so a Mode edited in the
+  // very same Save (not resubmitted unchanged — it goes through the
+  // fresh/validated path, not "carry forward verbatim") must still get
+  // `rebind` applied to its own submitted output-node ids before
+  // they're resolved against the new Workflow.
+  test("a genuinely edited Mode in the same Save as a Workflow re-upload still gets rebind applied", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const { app } = await build();
+      const { model, headers, version } = await buildEnabledModel(
+        app,
+        fake.url,
+      );
+
+      const draftBody = {
+        version,
+        details: {
+          name: model.name,
+          slug: model.slug,
+          description: model.description,
+          maxRunTimeMinutes: model.maxRunTimeMinutes,
+        },
+        terms: BLANK_TERMS,
+        workflow: {
+          json: WORKFLOW_TWO_OUTPUTS_MIXED,
+          rebind: [{ nodeId: "3", newNodeId: "6" }],
+        },
+        inputs: [promptInput(false)],
+        modes: [
+          {
+            // Renamed and down to one output node (issue #43/#71): a
+            // genuine edit, not a resubmission of what's saved, so
+            // this is the "fresh" path, not "unchanged, carry
+            // forward". It still names the *old* node id "3" — the
+            // editor carried that selection over from before the
+            // re-upload — which only resolves once `rebind` repoints
+            // it onto "6".
+            name: "Renamed",
+            description: "",
+            outputNodeIds: ["3"],
+            inputSettings: promptInputSetting(false),
+          },
+        ],
+        disable: true,
+      };
+
+      const res = await app.request(`/api/admin/models/${model.id}/draft`, {
+        method: "PUT",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify(draftBody),
+      });
+      expect(res.status).toBe(200);
+      const saved = (await res.json()) as {
+        modes: {
+          name: string;
+          outputNodes: {
+            nodeId: string;
+            classType: string;
+            kind: string | null;
+            title: string | null;
+          }[];
+        }[];
+      };
+      expect(saved.modes[0]?.name).toBe("Renamed");
+      expect(saved.modes[0]?.outputNodes).toEqual([
+        { nodeId: "6", classType: "SaveImage", kind: "image", title: null },
+      ]);
     } finally {
       await fake.stop();
     }

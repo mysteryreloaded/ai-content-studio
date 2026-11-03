@@ -3,6 +3,7 @@
 // forever (workflow-hash.ts); Model revisions are immutable and numbered
 // per Model.
 
+import { isDeepStrictEqual } from "node:util";
 import {
   type BindingValidationContext,
   type ComfyFieldSpec,
@@ -438,22 +439,23 @@ function sameModeInputs(before: ModeRecord[], input: ModeInput[]): boolean {
     if (mode.name !== candidate.name) return false;
     if (mode.description !== candidate.description) return false;
     const beforeIds = mode.outputNodes.map((node) => node.nodeId);
-    if (JSON.stringify(beforeIds) !== JSON.stringify(candidate.outputNodeIds)) {
-      return false;
-    }
-    return (
-      JSON.stringify(mode.inputSettings) ===
-      JSON.stringify(candidate.inputSettings ?? [])
-    );
+    if (!isDeepStrictEqual(beforeIds, candidate.outputNodeIds)) return false;
+    return isDeepStrictEqual(mode.inputSettings, candidate.inputSettings ?? []);
   });
 }
 
-/** Same as {@link sameModeInputs}, for Inputs. */
+/**
+ * Same as {@link sameModeInputs}, for Inputs. A plain `JSON.stringify`
+ * comparison (CEO review round 3) is key-order-sensitive — Postgres's
+ * stored jsonb key order and the zod-parsed request body's key order
+ * rarely match, so it almost never reported "unchanged" on real data.
+ * `isDeepStrictEqual` compares structurally instead.
+ */
 function sameInputDefinitions(
   before: InputDefinition[],
   input: InputDefinition[],
 ): boolean {
-  return JSON.stringify(before) === JSON.stringify(input);
+  return isDeepStrictEqual(before, input);
 }
 
 /** One numbered Model revision, listed in the editor's Revisions section (issue #71). */
@@ -1698,6 +1700,7 @@ export class ModelRepository {
         );
 
         const rebind = input.workflow?.rebind ?? [];
+        const rebindMap = new Map(rebind.map((r) => [r.nodeId, r.newNodeId]));
         let baseModes: DraftModeRow[] = beforeModes;
         let baseInputs: InputDefinition[] = beforeInputs;
         if (parsedWorkflow && rebind.length > 0) {
@@ -1743,10 +1746,19 @@ export class ModelRepository {
               });
             }
 
-            const outcome = resolveModeOutputNodes(
-              workflow,
-              modeInput.outputNodeIds,
-            );
+            // Issue #218 CEO review round 3: a genuinely edited Mode
+            // still has its submitted output-node ids repointed through
+            // `rebind` before resolving — `resolveModeOutputNodes`
+            // always re-derives classType/kind/title fresh from
+            // `workflow`, so repointing the id alone (no separate
+            // classType/title carry-over, unlike a binding) is enough.
+            const outputNodeIds =
+              rebindMap.size === 0
+                ? modeInput.outputNodeIds
+                : modeInput.outputNodeIds.map(
+                    (nodeId) => rebindMap.get(nodeId) ?? nodeId,
+                  );
+            const outcome = resolveModeOutputNodes(workflow, outputNodeIds);
             if (!outcome.ok) {
               for (const message of outcome.errors) {
                 errors.push({ field: `modes.${index}.outputNodes`, message });
@@ -1771,6 +1783,32 @@ export class ModelRepository {
         if (inputsUnchanged) {
           finalInputs = baseInputs;
         } else {
+          // Issue #218 CEO review round 3: a genuinely edited Input's
+          // bindings are repointed through `rebind` the same way
+          // `applyRebind` repoints one (new classType/title taken from
+          // the new node, same as `validateBinding`'s `savedClassType`
+          // check expects), before validating against the final
+          // Workflow — otherwise a rebound-but-edited Input's binding
+          // would still carry its old classType and spuriously fail
+          // "this binding was made for" the old class.
+          const remappedInputs: InputDefinition[] =
+            rebindMap.size === 0
+              ? input.inputs
+              : input.inputs.map((def) => ({
+                  ...def,
+                  bindings: def.bindings.map((b) => {
+                    const newNodeId = rebindMap.get(b.nodeId);
+                    if (!newNodeId) return b;
+                    const node = workflow[newNodeId];
+                    return {
+                      ...b,
+                      nodeId: newNodeId,
+                      classType: node?.class_type ?? b.classType,
+                      title: node?._meta?.title ?? null,
+                    };
+                  }),
+                }));
+
           const outputNodeIds = new Set(
             finalModes.flatMap((mode) =>
               mode.outputNodes.map((node) => node.nodeId),
@@ -1779,7 +1817,7 @@ export class ModelRepository {
           const usedFields = new Set<string>();
           const labelsSoFar: string[] = [];
           const idsSoFar: string[] = [];
-          input.inputs.forEach((def, index) => {
+          remappedInputs.forEach((def, index) => {
             const ctx: BindingValidationContext = {
               workflow,
               outputNodeIds,
@@ -1792,7 +1830,7 @@ export class ModelRepository {
               labelsSoFar,
               ctx,
               idsSoFar,
-              input.inputs,
+              remappedInputs,
             );
             for (const message of defErrors) {
               errors.push({ field: `inputs.${index}`, message });
@@ -1803,7 +1841,7 @@ export class ModelRepository {
               usedFields.add(fieldKey(binding.nodeId, binding.field));
             }
           });
-          finalInputs = input.inputs;
+          finalInputs = remappedInputs;
         }
 
         const seedCount = finalInputs.filter(

@@ -1,102 +1,147 @@
-import { PRIVACY_MAX_LENGTH, renderMarkdown } from "@ai-content-studio/shared";
-import { type FormEvent, useEffect, useState } from "react";
+import {
+  PRIVACY_MAX_LENGTH,
+  type SitePrivacyFields,
+  sitePrivacyFieldsSchema,
+} from "@ai-content-studio/shared";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
+import { useForm } from "react-hook-form";
+import { AdminSection } from "../components/admin/AdminSection.js";
+import { MarkdownEditor } from "../components/admin/MarkdownEditor.js";
+import { StaleSaveAlert } from "../components/admin/StaleSaveAlert.js";
+import { Button } from "../components/ui/button.js";
+import { ApiError, api, ok } from "../lib/api.js";
+import { describeSaveError, mapApiError, zodResolver } from "../lib/form.js";
+import {
+  type AdminSiteSettings,
+  siteSettingsQueryKey,
+} from "./site-settings-shared.js";
 
-interface AdminSitePrivacy {
-  privacyBody: string;
-  privacyUpdatedAt: string | null;
-  privacyRevision: number;
+function defaultValuesFrom(settings: AdminSiteSettings): SitePrivacyFields {
+  return { body: settings.privacyBody };
 }
 
-type SaveState =
-  | { status: "idle" }
-  | { status: "saving" }
-  | { status: "error"; message: string }
-  | { status: "saved" };
+function descriptionFor(settings: AdminSiteSettings): string {
+  const base =
+    "This is the Operator's own part of /privacy, shown before a studio-written section nobody here can edit.";
+  return settings.privacyUpdatedAt
+    ? `${base} Last updated ${new Date(settings.privacyUpdatedAt).toLocaleDateString()}.`
+    : base;
+}
 
-/** The Privacy policy's Operator part (issue #65), shown in the Admin panel next to Site terms. */
-export function SitePrivacyForm() {
-  const [settings, setSettings] = useState<AdminSitePrivacy | null>(null);
-  const [body, setBody] = useState("");
-  const [saveState, setSaveState] = useState<SaveState>({ status: "idle" });
+/** The Privacy policy section (issue #202, restyled from #65/#194): one shared `MarkdownEditor`. */
+export function SitePrivacyForm({
+  settings,
+  onReload,
+}: {
+  settings: AdminSiteSettings;
+  onReload: () => Promise<AdminSiteSettings | undefined>;
+}) {
+  const queryClient = useQueryClient();
+  const [staleSave, setStaleSave] = useState(false);
+  const [justSaved, setJustSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [privacyRevision, setPrivacyRevision] = useState(
+    settings.privacyRevision,
+  );
 
-  useEffect(() => {
-    fetch("/api/admin/site-settings")
-      .then((res) => res.json() as Promise<AdminSitePrivacy>)
-      .then((data) => {
-        setSettings(data);
-        setBody(data.privacyBody);
-      })
-      .catch(() => {});
-  }, []);
+  const {
+    handleSubmit,
+    watch,
+    setValue,
+    reset,
+    setError,
+    formState: { errors, isDirty, isSubmitting },
+  } = useForm<SitePrivacyFields>({
+    resolver: zodResolver(sitePrivacyFieldsSchema),
+    defaultValues: defaultValuesFrom(settings),
+  });
 
-  if (!settings) return <p>Loading…</p>;
+  const body = watch("body") ?? "";
 
-  const bodyError =
-    body.length > PRIVACY_MAX_LENGTH
-      ? `Privacy text must be ${PRIVACY_MAX_LENGTH.toLocaleString()} characters or fewer`
-      : null;
+  const { mutate, isPending } = useMutation({
+    mutationFn: (values: SitePrivacyFields) =>
+      ok<AdminSiteSettings>(
+        api.api.admin["site-settings"].privacy.$put({
+          json: { revision: privacyRevision, ...values },
+        }),
+      ),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(siteSettingsQueryKey, updated);
+      reset(defaultValuesFrom(updated));
+      setStaleSave(false);
+      setSaveError(null);
+      setPrivacyRevision(updated.privacyRevision);
+      setJustSaved(true);
+    },
+    onError: (error: unknown) => {
+      if (error instanceof ApiError && error.status === 409) {
+        setStaleSave(true);
+        setSaveError(null);
+        return;
+      }
+      if (error instanceof ApiError) {
+        mapApiError(setError, error);
+      }
+      setSaveError(describeSaveError(error));
+    },
+  });
 
-  async function handleSubmit(event: FormEvent) {
-    event.preventDefault();
-    if (bodyError || !settings) return;
-
-    setSaveState({ status: "saving" });
-    const res = await fetch("/api/admin/site-settings/privacy", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ revision: settings.privacyRevision, body }),
-    });
-
-    if (res.status === 409) {
-      setSaveState({
-        status: "error",
-        message: "changed by someone else, reload",
-      });
-      return;
+  async function handleReload() {
+    const fresh = await onReload();
+    if (fresh) {
+      reset(defaultValuesFrom(fresh));
+      setStaleSave(false);
+      setSaveError(null);
+      setPrivacyRevision(fresh.privacyRevision);
     }
-    if (!res.ok) {
-      setSaveState({ status: "error", message: "save failed" });
-      return;
-    }
-
-    const updated = (await res.json()) as AdminSitePrivacy;
-    setSettings(updated);
-    setBody(updated.privacyBody);
-    setSaveState({ status: "saved" });
   }
 
   return (
-    <form onSubmit={(event) => void handleSubmit(event)}>
-      <h2>Privacy policy</h2>
-      <p>
-        This is the Operator's own part of <code>/privacy</code>, shown before a
-        studio-written section nobody here can edit.
-        {settings.privacyUpdatedAt &&
-          ` Last updated ${new Date(settings.privacyUpdatedAt).toLocaleDateString()}.`}
-      </p>
-
-      <label htmlFor="privacy-body">Privacy notice (Markdown)</label>
-      <textarea
-        id="privacy-body"
-        rows={12}
-        value={body}
-        maxLength={PRIVACY_MAX_LENGTH}
-        onChange={(event) => setBody(event.target.value)}
-      />
-      {bodyError && <p role="alert">{bodyError}</p>}
-
-      <h3>Preview</h3>
-      {/* biome-ignore lint/security/noDangerouslySetInnerHtml: renderMarkdown (shared) strips raw HTML and images */}
-      <div dangerouslySetInnerHTML={{ __html: renderMarkdown(body) }} />
-
-      <button
-        type="submit"
-        disabled={!!bodyError || saveState.status === "saving"}
+    <AdminSection
+      id="privacy-policy"
+      title="Privacy policy"
+      description={descriptionFor(settings)}
+    >
+      <form
+        noValidate
+        className="flex flex-col gap-fields"
+        onSubmit={handleSubmit((values) => {
+          setJustSaved(false);
+          setSaveError(null);
+          mutate(values);
+        })}
       >
-        Save
-      </button>
-      {saveState.status === "error" && <p role="alert">{saveState.message}</p>}
-      {saveState.status === "saved" && <p>Saved.</p>}
-    </form>
+        <MarkdownEditor
+          id="privacy-body"
+          label="Privacy notice (Markdown)"
+          value={body}
+          onChange={(value) =>
+            setValue("body", value, { shouldDirty: true, shouldValidate: true })
+          }
+          maxLength={PRIVACY_MAX_LENGTH}
+          error={errors.body?.message}
+        />
+
+        {staleSave && <StaleSaveAlert onReload={() => void handleReload()} />}
+        {!staleSave && (errors.root?.message || saveError) && (
+          <p className="text-err">{errors.root?.message ?? saveError}</p>
+        )}
+
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[12.5px]">
+            {!staleSave &&
+              (isDirty ? (
+                <span className="text-muted-foreground">Unsaved changes</span>
+              ) : justSaved ? (
+                <span className="text-ok">Saved.</span>
+              ) : null)}
+          </span>
+          <Button type="submit" size="sm" disabled={isPending || isSubmitting}>
+            Save
+          </Button>
+        </div>
+      </form>
+    </AdminSection>
   );
 }

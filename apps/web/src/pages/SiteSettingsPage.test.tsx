@@ -50,7 +50,7 @@ interface FetchCall {
   url: string;
 }
 
-/** Every panel shares `/api/admin/site-settings`: `SiteSettingsForm` and `CapsForm` behind the page's one `useQuery`, and (until #202) the four untouched text forms each with their own `fetch`. */
+/** Every panel shares `/api/admin/site-settings`: the page's one `useQuery` passes `settings` to every section, including the four #202 text forms, so the GET fires exactly once. */
 function mockFetch() {
   const calls: FetchCall[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -83,7 +83,7 @@ describe("SiteSettingsPage", () => {
       "Blocked words",
       "Site terms",
       "Privacy policy",
-      "Notice",
+      "Notice and Pause",
     ]) {
       // The section nav repeats each label as a plain link, so this
       // looks for the section's own `<h2>` instead of any match.
@@ -101,10 +101,9 @@ describe("SiteSettingsPage", () => {
     await waitFor(() => {
       expect(siteSettingsGets.length).toBeGreaterThan(0);
     });
-    // 1 shared query (Branding/Accent/Sign-up/Caps/Contact-footer) + 4
-    // untouched text forms each fetching on their own = 5, not 6: the old
-    // page fetched once per of its six panels.
-    expect(siteSettingsGets.length).toBe(5);
+    // One shared query for every section (#202 moved the last four off
+    // their own `fetch`): the old page fetched once per of its six panels.
+    expect(siteSettingsGets.length).toBe(1);
   });
 
   test("after a caps save bumps the version in the cache, the branding PUT still sends the original version", async () => {
@@ -179,9 +178,6 @@ describe("SiteSettingsPage", () => {
 
     await screen.findByDisplayValue("My Studio");
 
-    // PauseNoticeForm (unchanged, #202) carries its own History link too
-    // (same URL twice, per issue #201's "gaps"), so at least one — the
-    // page header's — must point at the Site settings Audit entries.
     const historyLinks = screen.getAllByRole("link", { name: "History" });
     expect(
       historyLinks.some(

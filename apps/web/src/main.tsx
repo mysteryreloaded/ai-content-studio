@@ -76,6 +76,11 @@ const router = createBrowserRouter([
       { path: "/account", element: <AccountPage /> },
       {
         path: "/admin/*",
+        // Full width (issue #200): AdminShell puts most of its own
+        // routes back in the 1280px frame via `AdminPage`, but the
+        // Model editor route needs the full width RootLayout's default
+        // container would otherwise deny it.
+        handle: { layout: "full" },
         element: (
           <RequireTermsAccepted>
             <RequireActive>

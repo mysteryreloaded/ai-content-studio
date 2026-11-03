@@ -15,7 +15,6 @@ import { BackendsSection } from "./sections/BackendsSection.js";
 import { DetailsSection } from "./sections/DetailsSection.js";
 import { InputsSection } from "./sections/InputsSection.js";
 import { ModesSection } from "./sections/ModesSection.js";
-import { OutsideServiceNotes } from "./sections/OutsideServiceNotes.js";
 import { RevisionsSection } from "./sections/RevisionsSection.js";
 import { TermsSection } from "./sections/TermsSection.js";
 import { WorkflowSection } from "./sections/WorkflowSection.js";
@@ -65,10 +64,7 @@ export function ModelEditorPage() {
               <DetailsSection editor={editor} detail={detail} />
             )}
             {nav.section === "workflow" && (
-              <>
-                <OutsideServiceNotes detail={detail} />
-                <WorkflowSection editor={editor} detail={detail} />
-              </>
+              <WorkflowSection editor={editor} detail={detail} nav={nav} />
             )}
             {nav.section === "inputs" && (
               <InputsSection editor={editor} detail={detail} />

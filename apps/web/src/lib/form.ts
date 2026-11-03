@@ -11,6 +11,16 @@ export interface ServerIssue {
 }
 
 /**
+ * The shape of a `ValidationError` (backends/models `validation.ts`) as the
+ * server sends it in a 400 body's `errors`: a flat field name rather than
+ * `ServerIssue`'s path array.
+ */
+export interface ServerFieldError {
+  field: string;
+  message: string;
+}
+
+/**
  * Maps a server 400's `issues` (zod issues with a `path`, spec #33's
  * react-hook-form + shared-schema wiring) onto the form's fields via
  * `setError`: an issue with no path becomes the form-level `"root"`
@@ -32,14 +42,25 @@ export function mapServerIssues<T extends FieldValues>(
 
 /**
  * `mapServerIssues` for a caught `ApiError`: the server's 400 bodies are
- * `{ error, issues }`, so a non-400 or non-issues body sets nothing.
+ * either `{ error, issues }` (zod) or `{ errors }` (a `ValidationError[]`,
+ * e.g. the models/backends routes), so a body with neither sets nothing.
  */
 export function mapApiError<T extends FieldValues>(
   setError: UseFormSetError<T>,
   error: ApiError,
 ): void {
-  const body = error.body as { issues?: readonly ServerIssue[] } | null;
+  const body = error.body as {
+    issues?: readonly ServerIssue[];
+    errors?: readonly ServerFieldError[];
+  } | null;
   if (body?.issues) mapServerIssues(setError, body.issues);
+  if (body?.errors) {
+    for (const fieldError of body.errors) {
+      setError(fieldError.field as FieldPath<T>, {
+        message: fieldError.message,
+      });
+    }
+  }
 }
 
 /**

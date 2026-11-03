@@ -376,15 +376,15 @@ const SETTING_GROUPS: {
   { title: "Settings", kinds: ["number", "select", "seed"] },
 ];
 
-/** Grouped settings `dl`s, then the meta `dl` (issue #199's AC). */
-export function GenerationSettingsList({
+/**
+ * The grouped settings `dl`s alone ("Your files" / "Describe it" /
+ * "Settings"), without the Model/Mode/Submitted/id meta `dl` — the
+ * Admin detail (#209) shows those under its own "Settings" section and
+ * puts the meta facts in its right-hand panel instead.
+ */
+export function GenerationSettingsGroups({
   detail,
 }: { detail: GenerationDetail }) {
-  const ended =
-    detail.state === "succeeded" ||
-    detail.state === "failed" ||
-    detail.state === "cancelled";
-
   return (
     <>
       {SETTING_GROUPS.map((group) => {
@@ -410,6 +410,22 @@ export function GenerationSettingsList({
           </div>
         );
       })}
+    </>
+  );
+}
+
+/** Grouped settings `dl`s, then the meta `dl` (issue #199's AC). */
+export function GenerationSettingsList({
+  detail,
+}: { detail: GenerationDetail }) {
+  const ended =
+    detail.state === "succeeded" ||
+    detail.state === "failed" ||
+    detail.state === "cancelled";
+
+  return (
+    <>
+      <GenerationSettingsGroups detail={detail} />
 
       <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3.5 gap-y-2 border-t border-border pt-2.5 text-[13px]">
         <dt className="text-muted-foreground">Model</dt>

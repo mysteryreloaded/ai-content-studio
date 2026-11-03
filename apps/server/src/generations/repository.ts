@@ -217,6 +217,8 @@ export interface AdminGenerationDetail extends GenerationDetail {
   removedReason: string | null;
   tries: number;
   error: string | null;
+  /** Issue #209: the detail's own "Test" pill, as the list already shows. */
+  isTest: boolean;
 }
 
 /** The Admin Generations page's state filter (issue #68): every real `GenerationState`, plus "deleted" and "removed" (mutually exclusive with a real state and with each other — a deleted row never also matches "removed"). */
@@ -1224,6 +1226,7 @@ export class GenerationsRepository {
       deletedAt: row.generation.deletedAt,
       removedAt: row.generation.removedAt,
       removedReason: row.generation.removedReason,
+      isTest: row.generation.isTest,
       ownerId: row.user.id,
       ownerEmail: row.user.email,
       ownerName: row.user.name,

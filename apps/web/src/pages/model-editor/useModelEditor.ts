@@ -643,6 +643,10 @@ export function useModelEditor() {
     testRunningUploadsRef.current.get(input.id)?.controller.abort();
     testRunningUploadsRef.current.delete(input.id);
     setTestValues((v) => ({ ...v, [input.id]: "" }));
+    setTestUploads((u) => {
+      const { [input.id]: _, ...rest } = u;
+      return rest;
+    });
     setTestTrimRangeByInputId((ranges) => {
       const { [input.id]: _, ...rest } = ranges;
       return rest;
@@ -657,14 +661,22 @@ export function useModelEditor() {
           [input.id]: {
             status: "error",
             name: file.name,
-            message: `${file.name} ${issue}.`,
+            message: issue.prefixed
+              ? `${file.name} ${issue.message}.`
+              : issue.message,
           },
         }));
         return;
       }
       setTestUploads((u) => ({
         ...u,
-        [input.id]: { status: "uploading", name: file.name, progress: 0 },
+        [input.id]: {
+          status: "uploading",
+          name: file.name,
+          progress: 0,
+          size: file.size,
+          file,
+        },
       }));
       return uploadResumable(file, httpUploadApi(), {
         hint: { modelId: detail?.model.id ?? "", inputId: input.id },
@@ -673,7 +685,13 @@ export function useModelEditor() {
           if (controller.signal.aborted) return;
           setTestUploads((u) => ({
             ...u,
-            [input.id]: { status: "uploading", name: file.name, progress },
+            [input.id]: {
+              status: "uploading",
+              name: file.name,
+              progress,
+              size: file.size,
+              file,
+            },
           }));
         },
       })
@@ -688,12 +706,23 @@ export function useModelEditor() {
               uploadId: done.id,
               durationMs: done.durationMs,
               browserPlayable: done.browserPlayable,
+              size: file.size,
+              width: done.width,
+              height: done.height,
             },
           }));
           if (done.durationMs !== null) {
+            const maxDurationMs =
+              input.kind === "image_upload" ? null : input.maxDurationMs;
             setTestTrimRangeByInputId((ranges) => ({
               ...ranges,
-              [input.id]: { startMs: 0, endMs: done.durationMs as number },
+              [input.id]: {
+                startMs: 0,
+                endMs:
+                  maxDurationMs !== null
+                    ? Math.min(done.durationMs as number, maxDurationMs)
+                    : (done.durationMs as number),
+              },
             }));
           }
         })
@@ -710,6 +739,23 @@ export function useModelEditor() {
         });
     });
     testRunningUploadsRef.current.set(input.id, { promise, controller });
+  }
+
+  /** Mirrors WorkbenchPage's own `clearUpload` (issue #197), scoped to the Test form. */
+  function clearTestUpload(
+    input: WorkbenchImageUploadInput | WorkbenchMediaUploadInput,
+  ) {
+    testRunningUploadsRef.current.get(input.id)?.controller.abort();
+    testRunningUploadsRef.current.delete(input.id);
+    setTestValues((v) => ({ ...v, [input.id]: "" }));
+    setTestUploads((u) => {
+      const { [input.id]: _, ...rest } = u;
+      return rest;
+    });
+    setTestTrimRangeByInputId((ranges) => {
+      const { [input.id]: _, ...rest } = ranges;
+      return rest;
+    });
   }
 
   /** The Test submit payload (issue #74 CEO review, mirrors WorkbenchPage's valuesPayload): blank values are left out, a number/seed is parsed, not sent as the raw typed string. */
@@ -1236,6 +1282,7 @@ export function useModelEditor() {
     moveOutputNode,
     toggleTestForm,
     startTestUpload,
+    clearTestUpload,
     testValuesPayload,
     handleTestSubmit,
     addInput,

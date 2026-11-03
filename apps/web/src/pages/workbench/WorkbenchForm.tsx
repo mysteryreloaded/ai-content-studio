@@ -26,6 +26,7 @@ export function WorkbenchForm({
   handlePointsChange,
   displayedIssuesByInputId,
   startUpload,
+  clearUpload,
   hasSeedInput,
   count,
   setCount,
@@ -46,7 +47,12 @@ export function WorkbenchForm({
   setTrimRangeByInputId: Dispatch<SetStateAction<Record<string, TrimRange>>>;
   handlePointsChange: (inputId: string, raw: string) => void;
   displayedIssuesByInputId: Record<string, string>;
-  startUpload: (input: ImageUploadInput | MediaUploadInput, file: File) => void;
+  startUpload: (
+    input: ImageUploadInput | MediaUploadInput,
+    file: File,
+    needsPlayableVideo?: boolean,
+  ) => void;
+  clearUpload: (inputId: string) => void;
   hasSeedInput: boolean;
   count: number;
   setCount: (count: number) => void;
@@ -76,7 +82,10 @@ export function WorkbenchForm({
               [inputId]: range,
             }))
           }
-          onPick={(input, file) => void startUpload(input, file)}
+          onPick={(input, file, needsPlayableVideo) =>
+            void startUpload(input, file, needsPlayableVideo)
+          }
+          onClearUpload={(input) => clearUpload(input.id)}
           onPointsChange={handlePointsChange}
         />
       )}

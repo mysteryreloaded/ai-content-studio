@@ -23,12 +23,14 @@ interface ModelCardProps {
  */
 export function ModelCard({ model, to, href }: ModelCardProps) {
   const body = (
-    <span className="flex flex-col gap-1.5 px-3.5">
-      <span className="font-heading text-[19px] font-semibold leading-[1.2]">
+    <span className="flex flex-col gap-1.5 p-6">
+      <span className="font-heading text-[22px] font-semibold leading-[1.2]">
         {model.name}
       </span>
-      <span className="text-muted-foreground">{model.description}</span>
-      <span className="text-[12.5px] text-faint">
+      <span className="text-base text-muted-foreground">
+        {model.description}
+      </span>
+      <span className="text-sm text-faint">
         {model.modeCount === 1 ? "1 Mode" : `${model.modeCount} Modes`}
         {model.attribution ? ` · ${model.attribution}` : ""}
       </span>
@@ -36,7 +38,7 @@ export function ModelCard({ model, to, href }: ModelCardProps) {
   );
 
   const cardClass =
-    "flex flex-col gap-2.5 overflow-hidden rounded-[10px] border border-border bg-card pb-3.5 text-foreground text-left hover:border-input hover:shadow-md";
+    "flex flex-col overflow-hidden rounded-[10px] border border-border bg-card text-foreground text-left hover:border-input hover:shadow-md";
 
   if (to !== undefined) {
     return (

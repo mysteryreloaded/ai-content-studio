@@ -2,7 +2,9 @@ import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import type { PublicSiteSettings } from "./useSiteSettings.js";
 
-await GlobalRegistrator.register();
+// A real origin (issue #223's auth_error test sets `window.location.search`
+// via `pushState`, which happy-dom refuses from the default `about:blank`).
+await GlobalRegistrator.register({ url: "http://localhost/" });
 
 const { cleanup, within } = await import("@testing-library/react");
 const { LandingPage } = await import("./LandingPage.js");
@@ -13,6 +15,7 @@ const { drainMacrotasks, renderWithProviders } = await import(
 
 afterEach(() => {
   cleanup();
+  window.history.pushState({}, "", "/");
 });
 
 afterAll(async () => {
@@ -68,15 +71,35 @@ function mockFetch(options: {
   }) as typeof fetch;
 }
 
-function renderPage() {
+function renderPage(route?: string) {
   // The Footer now lives in the app's RootLayout (issue #173), so the test
-  // renders it after the page to keep its footer-content coverage.
+  // renders it after the page to keep its footer-content coverage. A
+  // custom route lets a test exercise `/?auth_error=...` or the
+  // signed-in redirect to `/models`.
   return renderWithProviders(
     <>
       <LandingPage />
       <Footer />
     </>,
+    route
+      ? {
+          route,
+          routes: [
+            { path: "/", element: <LandingPage /> },
+            { path: "/models", element: <p>Models home</p> },
+          ],
+        }
+      : undefined,
   );
+}
+
+/** Both sign-in links (hero and closing band) point at the Google OAuth route. */
+function expectBothSignInLinks(view: ReturnType<typeof renderPage>): void {
+  const links = view.getAllByRole("link", { name: /Sign in with Google/ });
+  expect(links.length).toBe(2);
+  for (const link of links) {
+    expect(link.getAttribute("href")).toBe("/api/auth/google");
+  }
 }
 
 describe("LandingPage", () => {
@@ -89,7 +112,9 @@ describe("LandingPage", () => {
         "AI Content Studio runs AI video models on its own GPUs. Sign in with Google to request access.",
       ),
     ).toBeTruthy();
-    expect(view.getByText("Sign in with Google")).toBeTruthy();
+    expectBothSignInLinks(view);
+    // Approval mode's quiet line under the hero's button.
+    expect(view.getByText("An Admin approves new accounts")).toBeTruthy();
     await view.findByText("Powered by AI Content Studio");
   });
 
@@ -104,6 +129,8 @@ describe("LandingPage", () => {
         "AI Content Studio runs AI models on its own GPUs. Sign in with Google to get started.",
       ),
     ).toBeTruthy();
+    // Open mode's quiet line under the hero's button.
+    expect(view.getByText("Sign in with Google to start")).toBeTruthy();
     await view.findByText("Powered by AI Content Studio");
   });
 
@@ -140,6 +167,7 @@ describe("LandingPage", () => {
     expect(view.getByText("Fast video generation.")).toBeTruthy();
     // The Mode count and Attribution share one small line.
     expect(view.getByText(/2 Modes · Powered by LTX 2\.5/)).toBeTruthy();
+    await view.findByText("What you can make");
     await view.findByText("Powered by AI Content Studio");
   });
 
@@ -179,8 +207,30 @@ describe("LandingPage", () => {
     mockFetch({ models: [] });
     const view = renderPage();
 
-    await view.findByText("Sign in with Google");
+    await view.findByText("An Admin approves new accounts");
     expect(view.queryByRole("region", { name: "Models" })).toBeNull();
+    expect(view.queryByText("What you can make")).toBeNull();
     await view.findByText("Powered by AI Content Studio");
+  });
+
+  test("shows the auth_error banner and the Operator's contact link for a disabled account", async () => {
+    mockFetch({ siteSettings: { contact: "ops@example.com" } });
+    // LandingPage reads `window.location.search` directly (issue #65), not
+    // the router's own location, so the query string is set here.
+    window.history.pushState({}, "", "/?auth_error=disabled");
+    const view = renderPage();
+
+    expect(
+      await view.findByText("This account has been disabled."),
+    ).toBeTruthy();
+    const contactLink = view.getByRole("link", { name: "ops@example.com" });
+    expect(contactLink.getAttribute("href")).toBe("mailto:ops@example.com");
+  });
+
+  test("redirects a signed-in visitor to /models", async () => {
+    mockFetch({ signedIn: true });
+    const view = renderPage("/");
+
+    expect(await view.findByText("Models home")).toBeTruthy();
   });
 });

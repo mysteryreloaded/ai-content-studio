@@ -1,7 +1,17 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { StaleSaveAlert } from "../../../components/admin/StaleSaveAlert.js";
 import { Button } from "../../../components/ui/button.js";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "../../../components/ui/dialog.js";
 import { Pill } from "../../../components/ui/pill.js";
+import type { EditorNavigation } from "../hooks/useEditorNavigation.js";
 import type { ModelDetail } from "../types.js";
 import type { ModelEditor } from "../useModelEditor.js";
 
@@ -13,16 +23,32 @@ import type { ModelEditor } from "../useModelEditor.js";
 export function EditorHeader({
   editor,
   detail,
+  nav,
 }: {
   editor: ModelEditor;
   detail: ModelDetail;
+  nav: EditorNavigation;
 }) {
   const { draft, mustDisableToSave } = editor;
   const enabled = detail.model.state === "enabled";
   const dirty = draft.anyDraftDirty;
+  // Issue #241 CEO review: Reload (from the stale-save alert) must ask
+  // "Discard unsaved changes?" first when there's something to lose,
+  // same as leaving the page.
+  const [confirmReloadOpen, setConfirmReloadOpen] = useState(false);
 
   async function handleSave() {
-    await draft.save(mustDisableToSave);
+    const result = await draft.save(mustDisableToSave);
+    if (!result.ok && result.invalidSection)
+      nav.setSection(result.invalidSection);
+  }
+
+  function handleReloadClick() {
+    if (dirty) {
+      setConfirmReloadOpen(true);
+      return;
+    }
+    void draft.reload();
   }
 
   return (
@@ -83,7 +109,7 @@ export function EditorHeader({
 
       {draft.staleSave && (
         <div className="w-full">
-          <StaleSaveAlert onReload={() => void draft.reload()} />
+          <StaleSaveAlert onReload={handleReloadClick} />
         </div>
       )}
       {!draft.staleSave && draft.saveError && (
@@ -91,6 +117,35 @@ export function EditorHeader({
           {draft.saveError}
         </p>
       )}
+
+      <Dialog open={confirmReloadOpen} onOpenChange={setConfirmReloadOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Discard unsaved changes?</DialogTitle>
+            <DialogDescription>
+              Reloading throws away what hasn't been saved.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setConfirmReloadOpen(false)}
+            >
+              Stay
+            </Button>
+            <Button
+              type="button"
+              onClick={() => {
+                setConfirmReloadOpen(false);
+                void draft.reload();
+              }}
+            >
+              Discard
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </header>
   );
 }

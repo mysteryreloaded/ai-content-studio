@@ -299,6 +299,59 @@ describe("Model editor frame (issue #213)", () => {
     expect(calls.some((c) => c.url.endsWith("/terms"))).toBe(false);
   });
 
+  // Moved from ModelEditorPage.test.tsx (PR #241 QA round 1): save-409
+  // handling is header/save behaviour, not Details' own.
+  test("a taken slug on save shows the server's own message, not the generic reload one", async () => {
+    mockFetch((call) => {
+      if (call.method === "GET") return respondGet(call.url);
+      if (call.method === "PUT") {
+        return Response.json(
+          { error: "a Model with this slug already exists" },
+          { status: 409 },
+        );
+      }
+      throw new Error(`unexpected ${call.method}`);
+    });
+
+    const view = renderEditor();
+
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await openSection(view, "Details");
+    await view.findByLabelText("URL slug");
+    await userEvent.type(view.getByLabelText("URL slug"), "x");
+    await userEvent.click(view.getByText("Save"));
+
+    expect(
+      await view.findByText("a Model with this slug already exists"),
+    ).toBeTruthy();
+    expect(view.queryByText("changed by someone else, reload")).toBeNull();
+  });
+
+  test("a stale version on save shows the reload message", async () => {
+    mockFetch((call) => {
+      if (call.method === "GET") return respondGet(call.url);
+      if (call.method === "PUT") {
+        return Response.json(
+          { error: "changed by someone else, reload" },
+          { status: 409 },
+        );
+      }
+      throw new Error(`unexpected ${call.method}`);
+    });
+
+    const view = renderEditor();
+
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await openSection(view, "Details");
+    await view.findByLabelText("URL slug");
+    await userEvent.type(view.getByLabelText("URL slug"), "x");
+    await userEvent.click(view.getByText("Save"));
+
+    expect(
+      await view.findByText("changed by someone else, reload"),
+    ).toBeTruthy();
+  });
+
   test("Discard resets every draft", async () => {
     mockFetch((call) => {
       if (call.method === "GET") return respondGet(call.url);
@@ -398,6 +451,283 @@ describe("Model editor frame (issue #213)", () => {
         "This Model has unfinished Generations. Cancel or let them finish, then delete it.",
       ),
     ).toBeTruthy();
+  });
+
+  // Issue #241 CEO review 1: `save()` now runs `form.trigger()` (and
+  // checks the Terms license URL) before sending anything, so an
+  // invalid Details value is shown and blocks the save instead of
+  // silently going out with `getValues()`'s stale/invalid data.
+  test("Save refuses an invalid slug: nothing is sent, the error shows, and Details opens", async () => {
+    const calls = mockFetch((call) => {
+      if (call.method === "GET") return respondGet(call.url);
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+
+    await openSection(view, "Modes");
+    await openSection(view, "Details");
+    const slugInput = await view.findByLabelText("URL slug");
+    await userEvent.type(slugInput, "X");
+    await userEvent.click(view.getByText("Save"));
+
+    expect(
+      await view.findByText(
+        "must be 1-80 characters: lowercase letters, digits and hyphens",
+      ),
+    ).toBeTruthy();
+    expect(calls.some((c) => c.method === "PUT")).toBe(false);
+
+    const detailsButton = view.getByRole("button", { name: /^Details/ });
+    await waitFor(() =>
+      expect(detailsButton.getAttribute("aria-current")).toBe("true"),
+    );
+  });
+
+  test("Save refuses an invalid Terms license URL: nothing is sent, and Terms opens", async () => {
+    const calls = mockFetch((call) => {
+      if (call.method === "GET") return respondGet(call.url);
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+
+    await openSection(view, "Terms and attribution");
+    await userEvent.type(
+      await view.findByLabelText("License URL"),
+      "not a url",
+    );
+
+    // Terms' own dirty state comes from its field changing, so Save
+    // is enabled even though Details/Inputs/Modes are untouched.
+    await userEvent.click(view.getByText("Save"));
+
+    expect(calls.some((c) => c.method === "PUT")).toBe(false);
+
+    const termsButton = view.getByRole("button", {
+      name: /^Terms and attribution/,
+    });
+    await waitFor(() =>
+      expect(termsButton.getAttribute("aria-current")).toBe("true"),
+    );
+  });
+
+  // Issue #241 CEO review 2: the drafts used to be re-derived from
+  // every `detail` change (including the refetch after Details
+  // saved), so a Modes edit that hadn't saved yet got silently wiped
+  // as soon as Details' own save succeeded — not by anything that
+  // actually saved it.
+  test("a refused Modes save after Details saved keeps the unsaved Modes edit, and Save stays enabled", async () => {
+    const detail = {
+      ...DETAIL,
+      modes: [
+        {
+          id: "mode-1",
+          sortOrder: 0,
+          name: "Default",
+          description: "",
+          outputNodes: [
+            {
+              nodeId: "1",
+              classType: "LoadImage",
+              title: null,
+              kind: "image" as const,
+            },
+          ],
+          inputSettings: [],
+        },
+      ],
+    };
+    let version = 1;
+    const calls = mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1")) {
+        return Response.json({
+          ...detail,
+          model: { ...detail.model, version },
+        });
+      }
+      if (call.method === "GET") return respondGet(call.url);
+      if (call.method === "PUT" && call.url.endsWith("/api/admin/models/m1")) {
+        version = 2;
+        return Response.json({ ...detail.model, version });
+      }
+      if (call.method === "PUT" && call.url.endsWith("/modes")) {
+        return Response.json({ error: "modes save failed" }, { status: 400 });
+      }
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+
+    await openSection(view, "Modes");
+    await userEvent.click(await view.findByText("Duplicate Mode"));
+    await openSection(view, "Details");
+    await userEvent.type(await view.findByLabelText("Name"), "x");
+
+    await userEvent.click(view.getByText("Save"));
+
+    await view.findByText("modes save failed");
+    expect(
+      calls.some(
+        (c) => c.url.endsWith("/api/admin/models/m1") && c.method === "PUT",
+      ),
+    ).toBe(true);
+
+    const saveButton = view.getByText("Save") as HTMLButtonElement;
+    expect(saveButton.disabled).toBe(false);
+
+    await openSection(view, "Modes");
+    expect(await view.findByDisplayValue("Default copy")).toBeTruthy();
+  });
+
+  // Issue #241 CEO review 3: Discard and Reload must drop a
+  // picked-but-unsaved Workflow file, its name and the rebind map
+  // too, not just the four section drafts.
+  test("Discard also clears a picked Workflow file and its name", async () => {
+    mockFetch((call) => {
+      if (call.method === "GET") return respondGet(call.url);
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+
+    // Picking a Workflow file alone doesn't dirty any of the four
+    // drafts Discard already resets, so Discard would stay disabled;
+    // dirty Details too, the same way a real session would have
+    // something else unsaved alongside a picked file.
+    await openSection(view, "Details");
+    await userEvent.type(await view.findByLabelText("Name"), "x");
+
+    await openSection(view, "Workflow");
+    const file = new File(
+      [JSON.stringify({ "1": { class_type: "LoadImage", inputs: {} } })],
+      "replacement.json",
+      { type: "application/json" },
+    );
+    await userEvent.upload(
+      view.getByLabelText("Replace Workflow (API format JSON)"),
+      file,
+    );
+    expect(await view.findByText(/Picked "replacement\.json"/)).toBeTruthy();
+
+    const discardButton = (await view.findByText(
+      "Discard",
+    )) as HTMLButtonElement;
+    await waitFor(() => expect(discardButton.disabled).toBe(false));
+    await userEvent.click(discardButton);
+
+    expect(view.queryByText(/Picked "replacement\.json"/)).toBeNull();
+  });
+
+  // Issue #241 CEO review 4: Reload must ask "Discard unsaved
+  // changes?" first when there's an unsaved draft to lose, the same
+  // way leaving the page does.
+  test("Reload asks to discard unsaved changes first, and clears the picked Workflow file too", async () => {
+    mockFetch((call) => {
+      if (call.method === "GET") return respondGet(call.url);
+      if (call.method === "PUT" && call.url.endsWith("/api/admin/models/m1")) {
+        return Response.json(
+          { error: "changed by someone else, reload" },
+          { status: 409 },
+        );
+      }
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+
+    // Trigger the stale-save alert (and its Reload button) first.
+    await openSection(view, "Details");
+    await userEvent.type(await view.findByLabelText("Name"), "x");
+    await userEvent.click(view.getByText("Save"));
+    await view.findByText("changed by someone else, reload");
+
+    // Pick a Workflow file while the stale-save alert is up, so Reload
+    // has something extra to clear.
+    await openSection(view, "Workflow");
+    const file = new File(
+      [JSON.stringify({ "1": { class_type: "LoadImage", inputs: {} } })],
+      "replacement.json",
+      { type: "application/json" },
+    );
+    await userEvent.upload(
+      view.getByLabelText("Replace Workflow (API format JSON)"),
+      file,
+    );
+    expect(await view.findByText(/Picked "replacement\.json"/)).toBeTruthy();
+
+    await userEvent.click(view.getByText("Reload"));
+    const dialog = await view.findByRole("dialog");
+    await userEvent.click(within(dialog).getByText("Stay"));
+    expect(await view.findByText(/Picked "replacement\.json"/)).toBeTruthy();
+
+    await userEvent.click(view.getByText("Reload"));
+    const dialog2 = await view.findByRole("dialog");
+    await userEvent.click(within(dialog2).getByText("Discard"));
+
+    await waitFor(() =>
+      expect(view.queryByText(/Picked "replacement\.json"/)).toBeNull(),
+    );
+  });
+
+  // Issue #241 CEO review 5: "Save and disable" with only Details/
+  // Terms dirty never ran Inputs/Modes, so `disable` never went out —
+  // the Model stayed enabled.
+  test("Save and disable with only Details dirty still disables the Model", async () => {
+    const enabledDetail = {
+      ...DETAIL,
+      model: { ...DETAIL.model, state: "enabled" as const },
+      inputs: [],
+    };
+    // No Modes (DETAIL's default `modes: []`): checkModel flags "needs
+    // at least one Mode", so the enabled Model can only save by
+    // disabling.
+    let version = 1;
+    let state: "enabled" | "disabled" = "enabled";
+    const calls = mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1")) {
+        return Response.json({
+          ...enabledDetail,
+          model: { ...enabledDetail.model, version, state },
+        });
+      }
+      if (call.method === "GET") return respondGet(call.url);
+      if (call.method === "PUT" && call.url.endsWith("/api/admin/models/m1")) {
+        version = 2;
+        return Response.json({ ...enabledDetail.model, version, state });
+      }
+      if (call.method === "POST" && call.url.endsWith("/disable")) {
+        version = 3;
+        state = "disabled";
+        return Response.json({ ...enabledDetail.model, version, state });
+      }
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+
+    await openSection(view, "Details");
+    await userEvent.type(await view.findByLabelText("Name"), "x");
+
+    const saveButton = (await view.findByText(
+      "Save and disable",
+    )) as HTMLButtonElement;
+    await waitFor(() => expect(saveButton.disabled).toBe(false));
+    await userEvent.click(saveButton);
+
+    await waitFor(() => {
+      const disableCall = calls.find(
+        (c) => c.method === "POST" && c.url.endsWith("/disable"),
+      );
+      expect(disableCall).toBeTruthy();
+      expect(disableCall?.body).toEqual({ version: 2 });
+    });
   });
 
   test("the leave dialog stays or discards", async () => {

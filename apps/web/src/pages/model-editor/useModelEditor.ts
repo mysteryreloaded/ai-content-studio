@@ -189,9 +189,20 @@ export function useModelEditor() {
   const inputsHeadingRef = useRef<HTMLHeadingElement>(null);
   const modesHeadingRef = useRef<HTMLHeadingElement>(null);
 
-  /** Re-derives the Modes/Inputs/Terms drafts from `detail` (issue #213: `load()` now just refetches the `useQuery`; this mirrors what it reset every time). */
+  // Issue #241 CEO review: this used to re-derive the Modes/Inputs/Terms
+  // drafts from every `detail` change, including a refetch after one
+  // save step (or after enable/disable, Replace Workflow, ...) — so if
+  // Details saved and Modes was then refused, the still-dirty Modes
+  // edits got silently wiped by this effect, not by anything that
+  // actually saved them. It now only seeds the drafts once per Model
+  // (the first time `detail` loads for a given id); `useModelDraft`'s
+  // own `discard()`/`discardFor()` reset all four explicitly on
+  // Discard, Reload and an id change.
+  const draftsInitializedForRef = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (!detail) return;
+    if (draftsInitializedForRef.current === detail.model.id) return;
+    draftsInitializedForRef.current = detail.model.id;
     setModesDraft(draftsFrom(detail));
     setEditingModeIndex(null);
     setInputsDraft(detail.inputs);
@@ -324,6 +335,14 @@ export function useModelEditor() {
       setPendingWorkflowFileName(null);
       setWorkflowUploadError("that file isn't valid JSON");
     }
+  }
+
+  /** Issue #241 CEO review: Discard and Reload must drop a picked-but-unsaved Workflow file, its name and the rebind picker too, not just the four section drafts. */
+  function resetWorkflowPicker() {
+    setPendingWorkflow(null);
+    setPendingWorkflowFileName(null);
+    setRebindMap({});
+    setWorkflowUploadError(null);
   }
 
   function setRebind(nodeId: string, newNodeId: string) {
@@ -940,6 +959,7 @@ export function useModelEditor() {
       setTermsForm(termsFrom(fresh));
       setAskAgain(false);
     },
+    resetWorkflowPicker,
   });
 
   // issue #213: ditto for "Save Terms" — Terms now saves through the

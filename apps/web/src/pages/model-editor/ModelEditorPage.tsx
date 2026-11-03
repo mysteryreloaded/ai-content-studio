@@ -35,7 +35,7 @@ export function ModelEditorPage() {
 
   return (
     <div className="@container flex h-[calc(100vh-var(--app-header-h))] flex-col">
-      <EditorHeader editor={editor} detail={detail} />
+      <EditorHeader editor={editor} detail={detail} nav={nav} />
       <div className="grid flex-1 grid-cols-[200px_minmax(0,1fr)_300px] overflow-auto @max-[1180px]:grid-cols-[180px_minmax(0,1fr)] @max-[760px]:grid-cols-1">
         <nav
           aria-label="Model editor sections"

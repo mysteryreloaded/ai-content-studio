@@ -41,62 +41,17 @@ afterEach(() => {
 });
 
 describe("ModelEditorPage", () => {
-  test("a taken slug on save shows the server's own message, not the generic reload one", async () => {
-    mockFetch((call) => {
-      if (call.method === "GET") return respondGet(call.url);
-      if (call.method === "PUT") {
-        return Response.json(
-          { error: "a Model with this slug already exists" },
-          { status: 409 },
-        );
-      }
-      throw new Error(`unexpected ${call.method}`);
-    });
-
-    const view = renderEditor();
-
-    const { default: userEvent } = await import("@testing-library/user-event");
-    await openSection(view, "Details");
-    await view.findByLabelText("URL slug");
-    await userEvent.type(view.getByLabelText("URL slug"), "x");
-    await userEvent.click(view.getByText("Save"));
-
-    expect(
-      await view.findByText("a Model with this slug already exists"),
-    ).toBeTruthy();
-    expect(view.queryByText("changed by someone else, reload")).toBeNull();
-  });
-
-  test("a stale version on save shows the reload message", async () => {
-    mockFetch((call) => {
-      if (call.method === "GET") return respondGet(call.url);
-      if (call.method === "PUT") {
-        return Response.json(
-          { error: "changed by someone else, reload" },
-          { status: 409 },
-        );
-      }
-      throw new Error(`unexpected ${call.method}`);
-    });
-
-    const view = renderEditor();
-
-    const { default: userEvent } = await import("@testing-library/user-event");
-    await openSection(view, "Details");
-    await view.findByLabelText("URL slug");
-    await userEvent.type(view.getByLabelText("URL slug"), "x");
-    await userEvent.click(view.getByText("Save"));
-
-    expect(
-      await view.findByText("changed by someone else, reload"),
-    ).toBeTruthy();
-  });
-
   // issue #213: the leave prompt is a `Dialog` now (not `window.confirm`),
   // and Delete moved into Details behind its own confirm `Dialog` — both
   // moved to frame/EditorFrame.test.tsx ("the leave dialog stays or
   // discards", "delete refused with unfinished Generations"). The
   // success/stale-version delete cases live there too now.
+  //
+  // PR #241 QA round 1: the two Save-409 cases ("a taken slug on save
+  // shows the server's own message, not the generic reload one", "a
+  // stale version on save shows the reload message") are header/save
+  // behaviour, not a section's own — moved to frame/EditorFrame.test.tsx
+  // alongside the rest of the Save-sequence tests.
 
   test("Backends section lists an attached Backend's missing node types, and attaches another one", async () => {
     const BACKEND_A = { id: "b1", name: "GPU 1", baseUrl: "http://gpu1" };

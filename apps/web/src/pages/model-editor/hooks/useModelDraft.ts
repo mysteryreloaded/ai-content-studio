@@ -1,5 +1,6 @@
 import {
   type ModelDetailsFormValues,
+  isValidModelLicenseUrl,
   modelDetailsSchema,
 } from "@ai-content-studio/shared";
 import type { InputDefinition } from "@ai-content-studio/shared";
@@ -8,6 +9,7 @@ import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { ApiError, api, ok } from "../../../lib/api.js";
 import { zodResolver } from "../../../lib/form.js";
+import type { SectionId } from "../frame/sections.js";
 import type { DraftMode, ModelDetail, TermsForm } from "../types.js";
 
 /**
@@ -35,6 +37,7 @@ export function useModelDraft({
   resetInputsDraft,
   resetModesDraft,
   resetTermsForm,
+  resetWorkflowPicker,
 }: {
   id: string | undefined;
   detail: ModelDetail | undefined;
@@ -48,6 +51,8 @@ export function useModelDraft({
   resetInputsDraft: (inputs: InputDefinition[]) => void;
   resetModesDraft: (detail: ModelDetail) => void;
   resetTermsForm: (detail: ModelDetail) => void;
+  /** Issue #241 CEO review: Discard and Reload must also drop a picked-but-unsaved Workflow file, its name and the rebind picker, not just the four section drafts. */
+  resetWorkflowPicker: () => void;
 }) {
   const queryClient = useQueryClient();
   const [saving, setSaving] = useState(false);
@@ -80,6 +85,7 @@ export function useModelDraft({
     resetInputsDraft(detail.inputs);
     resetModesDraft(detail);
     resetTermsForm(detail);
+    resetWorkflowPicker();
     setSaveError(null);
     setStaleSave(false);
   }
@@ -109,15 +115,29 @@ export function useModelDraft({
     return body?.error === "changed by someone else, reload";
   }
 
-  /** Save: only the dirty parts, in order, chaining `version` from a refetch (issue #213). */
-  async function save(disable: boolean): Promise<boolean> {
-    if (!id || !detail) return false;
+  /**
+   * Save: only the dirty parts, in order, chaining `version` from a
+   * refetch (issue #213). Issue #241 CEO review: Details' zod errors
+   * and the Terms license URL are checked (`form.trigger()`, which
+   * `getValues()` alone never ran) before anything is sent — an
+   * invalid value sends nothing and reports which section to open.
+   */
+  async function save(
+    disable: boolean,
+  ): Promise<{ ok: boolean; invalidSection?: SectionId }> {
+    if (!id || !detail) return { ok: false };
     setSaving(true);
     setSaveError(null);
     setStaleSave(false);
     let disableSent = !disable;
 
     try {
+      const detailsValid = await form.trigger();
+      if (!detailsValid) return { ok: false, invalidSection: "details" };
+      if (termsForm && !isValidModelLicenseUrl(termsForm.licenseUrl)) {
+        return { ok: false, invalidSection: "terms" };
+      }
+
       let current = detail;
 
       if (detailsDirty) {
@@ -134,7 +154,7 @@ export function useModelDraft({
         } catch (err) {
           if (isStaleSaveError(err)) setStaleSave(true);
           setSaveError(messageFromApiError(err, "save failed"));
-          return false;
+          return { ok: false };
         }
       }
 
@@ -156,7 +176,7 @@ export function useModelDraft({
         } catch (err) {
           if (isStaleSaveError(err)) setStaleSave(true);
           setSaveError(messageFromApiError(err, "save failed"));
-          return false;
+          return { ok: false };
         }
       }
 
@@ -186,7 +206,7 @@ export function useModelDraft({
         } catch (err) {
           if (isStaleSaveError(err)) setStaleSave(true);
           setSaveError(messageFromApiError(err, "save failed"));
-          return false;
+          return { ok: false };
         }
       }
 
@@ -207,11 +227,30 @@ export function useModelDraft({
         } catch (err) {
           if (isStaleSaveError(err)) setStaleSave(true);
           setSaveError(messageFromApiError(err, "save failed"));
-          return false;
+          return { ok: false };
         }
       }
 
-      return true;
+      // Issue #241 CEO review: "Save and disable" with only Details
+      // and/or Terms dirty never runs Inputs/Modes, so `disable` was
+      // never sent — explicitly disable now with the latest version.
+      if (disable && !disableSent) {
+        try {
+          await ok(
+            api.api.admin.models[":id"].disable.$post({
+              param: { id },
+              json: { version: current.model.version },
+            }),
+          );
+          await refetchModel();
+        } catch (err) {
+          if (isStaleSaveError(err)) setStaleSave(true);
+          setSaveError(messageFromApiError(err, "save failed"));
+          return { ok: false };
+        }
+      }
+
+      return { ok: true };
     } finally {
       setSaving(false);
     }
@@ -232,6 +271,7 @@ export function useModelDraft({
     resetInputsDraft(fresh.inputs);
     resetModesDraft(fresh);
     resetTermsForm(fresh);
+    resetWorkflowPicker();
     setSaveError(null);
     setStaleSave(false);
   }

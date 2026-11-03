@@ -144,6 +144,7 @@ export const routes: Route[] = [
 
   { name: "admin-overview", path: "/admin", as: "alice" },
   { name: "admin-settings", path: "/admin/settings", as: "alice" },
+  { name: "admin-backends", path: "/admin/backends", as: "alice" },
   { name: "admin-models", path: "/admin/models", as: "alice" },
   {
     name: "admin-editor",

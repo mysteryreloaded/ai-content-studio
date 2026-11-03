@@ -144,4 +144,15 @@ describe("UsersPage", () => {
       await screen.findByText("No users match these filters."),
     ).toBeTruthy();
   });
+
+  test("links to Blocked accounts, no longer a nav item of its own", async () => {
+    mockFetch(() => Response.json({ users: [], hasMore: false }));
+
+    renderPage();
+
+    const link = await screen.findByRole("link", {
+      name: "Blocked accounts",
+    });
+    expect(link.getAttribute("href")).toBe("/admin/blocked-accounts");
+  });
 });

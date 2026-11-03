@@ -29,7 +29,9 @@ await GlobalRegistrator.register();
   });
 }
 
-const { act, cleanup, waitFor } = await import("@testing-library/react");
+const { act, cleanup, waitFor, within } = await import(
+  "@testing-library/react"
+);
 const { WorkbenchPage } = await import("./WorkbenchPage.js");
 const { drainMacrotasks, renderWithProviders } = await import(
   "../test/render.js"
@@ -358,7 +360,8 @@ describe("WorkbenchPage", () => {
 
       const promptField = await view.findByLabelText("Prompt");
       await userEvent.type(promptField, "a dog");
-      await userEvent.click(view.getByRole("radio", { name: "Other" }));
+      await userEvent.click(view.getByRole("combobox", { name: "Mode" }));
+      await userEvent.click(view.getByRole("option", { name: /Other/ }));
 
       expect((view.getByLabelText("Prompt") as HTMLInputElement).value).toBe(
         "a dog",
@@ -445,7 +448,8 @@ describe("WorkbenchPage", () => {
       );
 
       await userEvent.type(await view.findByLabelText("Prompt"), "a dog");
-      await userEvent.selectOptions(view.getByLabelText("Aspect"), "wide");
+      await userEvent.click(view.getByRole("combobox", { name: "Aspect" }));
+      await userEvent.click(await view.findByRole("option", { name: "Wide" }));
 
       await userEvent.click(view.getByRole("button", { name: "Generate" }));
       await view.findByText(/This Model changed; reloaded/);
@@ -453,9 +457,9 @@ describe("WorkbenchPage", () => {
       expect((view.getByLabelText("Prompt") as HTMLInputElement).value).toBe(
         "a dog",
       );
-      expect((view.getByLabelText("Aspect") as HTMLSelectElement).value).toBe(
-        "",
-      );
+      expect(
+        view.getByRole("combobox", { name: "Aspect" }).textContent,
+      ).not.toContain("Wide");
     });
   });
 
@@ -486,12 +490,7 @@ describe("WorkbenchPage", () => {
       submissionId: "s1",
       state: "queued",
       tries: 0,
-      error: null,
       submittedAt: "2026-01-01T00:00:00.000Z",
-      startedAt: null,
-      endedAt: null,
-      assets: [],
-      removedAt: null,
     });
 
     expect(await view.findByText("waiting for a free GPU")).toBeTruthy();
@@ -877,7 +876,7 @@ describe("WorkbenchPage", () => {
       );
 
       await view.findByText("Be nice.");
-      await userEvent.click(view.getByRole("button", { name: "Accept" }));
+      await userEvent.click(view.getByRole("button", { name: "I agree" }));
 
       await waitFor(() => expect(view.queryByText("Be nice.")).toBeNull());
       expect(view.getByRole("button", { name: "Model terms" })).toBeTruthy();
@@ -918,7 +917,7 @@ describe("WorkbenchPage", () => {
       // Generate; the server still reports the version unaccepted, as a
       // re-ask would, so submitting re-opens the dialog.
       await view.findByText("Be nice.");
-      await userEvent.click(view.getByRole("button", { name: "Accept" }));
+      await userEvent.click(view.getByRole("button", { name: "I agree" }));
       await waitFor(() => expect(view.queryByText("Be nice.")).toBeNull());
 
       await userEvent.click(view.getByRole("button", { name: "Generate" }));
@@ -1262,7 +1261,7 @@ describe("WorkbenchPage", () => {
         "@testing-library/user-event"
       );
 
-      await view.findByText("Your media");
+      await view.findByLabelText("Clip");
       await userEvent.upload(
         view.getByLabelText("Clip"),
         new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
@@ -1294,7 +1293,7 @@ describe("WorkbenchPage", () => {
         "@testing-library/user-event"
       );
 
-      await view.findByText("Your media");
+      await view.findByLabelText("Clip");
       await userEvent.upload(
         view.getByLabelText("Clip"),
         new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
@@ -1318,7 +1317,7 @@ describe("WorkbenchPage", () => {
         "@testing-library/user-event"
       );
 
-      await view.findByText("Your media");
+      await view.findByLabelText("Clip");
       await userEvent.upload(
         view.getByLabelText("Clip"),
         new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
@@ -1513,7 +1512,7 @@ describe("WorkbenchPage", () => {
       pointsServer(pointsModelWithDefaultSize());
       const view = renderWorkbench();
 
-      await view.findByText("Points");
+      await view.findByLabelText("Clip");
       expect(view.getByText("Pick a video above first.")).toBeTruthy();
     });
 
@@ -1524,7 +1523,7 @@ describe("WorkbenchPage", () => {
         "@testing-library/user-event"
       );
 
-      await view.findByText("Your media");
+      await view.findByLabelText("Clip");
       await userEvent.upload(
         view.getByLabelText("Clip"),
         new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
@@ -1541,7 +1540,7 @@ describe("WorkbenchPage", () => {
         "@testing-library/user-event"
       );
 
-      await view.findByText("Your media");
+      await view.findByLabelText("Clip");
       await userEvent.upload(
         view.getByLabelText("Clip"),
         new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
@@ -1560,7 +1559,7 @@ describe("WorkbenchPage", () => {
         "@testing-library/user-event"
       );
 
-      await view.findByText("Your media");
+      await view.findByLabelText("Clip");
       await userEvent.upload(
         view.getByLabelText("Clip"),
         new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
@@ -2112,6 +2111,358 @@ describe("WorkbenchPage", () => {
         globals.Notification = previousNotification;
         globals.matchMedia = previousMatchMedia;
       }
+    });
+  });
+  describe("Restyled Workbench (issue #194)", () => {
+    const PROMPT_INPUT = {
+      id: "re-prompt",
+      group: "describe" as const,
+      label: "Prompt",
+      help: "",
+      required: false,
+      placeholder: null,
+      kind: "text" as const,
+      multiline: false,
+      maxLength: 2000,
+      default: "",
+    };
+
+    const START_FRAME_INPUT = {
+      id: "re-start-frame",
+      group: "describe" as const,
+      label: "Start frame",
+      help: "",
+      required: true,
+      placeholder: null,
+      kind: "image_upload" as const,
+      maxSizeMb: 20,
+      maxLongSide: null,
+    };
+
+    test('the Mode menu groups Modes and shows ModeUses ("Prompt only"; an image Upload\'s icon + label)', async () => {
+      const model = {
+        ...MODEL,
+        revision: 301,
+        modes: [
+          {
+            id: "rm-prompt",
+            name: "Prompt mode",
+            description: "Write a prompt",
+            inputs: [PROMPT_INPUT],
+            menuGroup: "prompt" as const,
+          },
+          {
+            id: "rm-image",
+            name: "Image mode",
+            description: "Start from an image",
+            inputs: [START_FRAME_INPUT],
+            menuGroup: "images" as const,
+          },
+        ],
+      };
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
+          return Response.json({ model });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ submissions: [] });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await userEvent.click(
+        await view.findByRole("combobox", { name: "Mode" }),
+      );
+
+      expect(view.getByText("From a prompt")).toBeTruthy();
+      expect(view.getByText("From images")).toBeTruthy();
+      const promptOption = view.getByRole("option", { name: /Prompt mode/ });
+      expect(within(promptOption).getByText("Prompt only")).toBeTruthy();
+      const imageOption = view.getByRole("option", { name: /Image mode/ });
+      expect(within(imageOption).getByText("Start frame")).toBeTruthy();
+      expect(imageOption.querySelector("svg.lucide-image")).toBeTruthy();
+    });
+
+    test("a one-Mode Model shows the eyebrow, the Mode's name as a heading, and its description", async () => {
+      const model = {
+        ...MODEL,
+        revision: 302,
+        modes: [
+          {
+            id: "om-mode",
+            name: "Wan 2.2",
+            description: "Image to video",
+            inputs: [],
+            menuGroup: "prompt" as const,
+          },
+        ],
+      };
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
+          return Response.json({ model });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ submissions: [] });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+
+      expect(await view.findByText("Mode")).toBeTruthy();
+      expect(
+        await view.findByRole("heading", { name: "Wan 2.2" }),
+      ).toBeTruthy();
+      expect(view.getByText("Image to video")).toBeTruthy();
+    });
+
+    test('an optional Input shows "Optional"; a required one does not', async () => {
+      const requiredInput = {
+        ...PROMPT_INPUT,
+        id: "re-required",
+        label: "Required text",
+        required: true,
+      };
+      const model = {
+        ...MODEL,
+        revision: 303,
+        modes: [
+          {
+            id: "opt-mode",
+            name: "Default",
+            description: "",
+            inputs: [PROMPT_INPUT, requiredInput],
+            menuGroup: "prompt" as const,
+          },
+        ],
+      };
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
+          return Response.json({ model });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ submissions: [] });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      await view.findByLabelText("Prompt");
+
+      expect(view.getByText("Optional")).toBeTruthy();
+      expect(view.queryByText("(required)")).toBeNull();
+    });
+
+    test("the text counter shows len / max", async () => {
+      const model = {
+        ...MODEL,
+        revision: 304,
+        modes: [
+          {
+            id: "counter-mode",
+            name: "Default",
+            description: "",
+            inputs: [PROMPT_INPUT],
+            menuGroup: "prompt" as const,
+          },
+        ],
+      };
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
+          return Response.json({ model });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ submissions: [] });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+      const field = await view.findByLabelText("Prompt");
+      await userEvent.type(field, "hi");
+
+      expect(view.getByText("2 / 2000")).toBeTruthy();
+    });
+
+    test('the seed\'s "Random" button clears a typed seed', async () => {
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
+          return Response.json({ model: MODEL_WITH_SEED });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ submissions: [] });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+      const seedField = await view.findByLabelText("Seed");
+      await userEvent.type(seedField, "42");
+      expect((seedField as HTMLInputElement).value).toBe("42");
+
+      await userEvent.click(view.getByRole("button", { name: "Random" }));
+      expect((seedField as HTMLInputElement).value).toBe("");
+    });
+
+    test("groups Inputs by kind, ignoring the Admin-set input.group", async () => {
+      const numberMisgrouped = {
+        id: "re-number",
+        group: "describe" as const,
+        label: "Steps",
+        help: "",
+        required: false,
+        placeholder: null,
+        kind: "number" as const,
+        numberMode: "integer" as const,
+        min: 1,
+        max: 50,
+        step: 1,
+        default: 20,
+      };
+      const model = {
+        ...MODEL,
+        revision: 306,
+        modes: [
+          {
+            id: "group-mode",
+            name: "Default",
+            description: "",
+            inputs: [PROMPT_INPUT, numberMisgrouped],
+            menuGroup: "prompt" as const,
+          },
+        ],
+      };
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
+          return Response.json({ model });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ submissions: [] });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      await view.findByLabelText("Prompt");
+
+      const settingsGroup = view.getByText("Settings").closest("fieldset");
+      const describeGroup = view.getByText("Describe it").closest("fieldset");
+      expect(settingsGroup).toBeTruthy();
+      expect(describeGroup).toBeTruthy();
+      expect(
+        within(settingsGroup as HTMLElement).getByLabelText("Steps"),
+      ).toBeTruthy();
+      expect(
+        within(describeGroup as HTMLElement).queryByLabelText("Steps"),
+      ).toBeNull();
+    });
+
+    test("the blocking terms dialog ignores Escape", async () => {
+      const model = {
+        ...MODEL,
+        revision: 307,
+        attribution: "By Example Corp",
+        terms: {
+          version: 1,
+          body: "Be nice.",
+          licenseUrl: "https://example.com/license",
+          accepted: false,
+        },
+      };
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
+          return Response.json({ model });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          return Response.json({ submissions: [] });
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+      await view.findByText("Before you use LTX 2.5");
+
+      await userEvent.keyboard("{Escape}");
+
+      expect(view.getByText("Before you use LTX 2.5")).toBeTruthy();
+    });
+
+    test("only the chosen Mode's shown Inputs are sent", async () => {
+      const promptA = { ...PROMPT_INPUT, id: "mode-a-prompt" };
+      const promptB = {
+        ...PROMPT_INPUT,
+        id: "mode-b-prompt",
+        label: "Caption",
+      };
+      const model = {
+        ...MODEL,
+        revision: 308,
+        modes: [
+          {
+            id: "mode-a",
+            name: "A",
+            description: "",
+            inputs: [promptA],
+            menuGroup: "prompt" as const,
+          },
+          {
+            id: "mode-b",
+            name: "B",
+            description: "",
+            inputs: [promptB],
+            menuGroup: "prompt" as const,
+          },
+        ],
+      };
+      const posts: FetchCall[] = [];
+      mockFetch((call) => {
+        if (call.url.endsWith("/api/models/ltx") && call.method === "GET") {
+          return Response.json({ model });
+        }
+        if (
+          call.url.endsWith("/api/models/ltx/generations") &&
+          call.method === "GET"
+        ) {
+          return Response.json({ submissions: [] });
+        }
+        if (call.url.endsWith("/api/models/ltx/generations")) {
+          posts.push(call);
+          return Response.json(
+            { generations: [], prompt: null },
+            { status: 201 },
+          );
+        }
+        throw new Error(`unexpected fetch ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await userEvent.click(
+        await view.findByRole("combobox", { name: "Mode" }),
+      );
+      await userEvent.click(view.getByRole("option", { name: /^B/ }));
+      await userEvent.type(await view.findByLabelText("Caption"), "hi");
+      await userEvent.click(view.getByRole("button", { name: "Generate" }));
+
+      await waitFor(() => expect(posts).toHaveLength(1));
+      expect(posts[0]?.body?.values).toEqual({ "mode-b-prompt": "hi" });
     });
   });
 });

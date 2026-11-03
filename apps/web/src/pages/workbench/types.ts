@@ -1,4 +1,5 @@
 import type { WorkbenchInput } from "@ai-content-studio/shared";
+import type { QueryClient } from "@tanstack/react-query";
 import type { Dispatch, RefObject, SetStateAction } from "react";
 import type { SubmissionSummary } from "../../components/generations/types.js";
 import type {
@@ -63,13 +64,14 @@ export interface UseGenerateOptions {
   modelRef: RefObject<WorkbenchModel | null>;
   valuesRef: RefObject<Record<string, string>>;
   runningUploadsRef: RunningUploads;
+  slug: string;
+  queryClient: QueryClient;
   selectedModeId: string | null;
   count: number;
   uploads: Record<string, UploadState>;
   trimRangeByInputId: Record<string, TrimRange>;
   setValues: Dispatch<SetStateAction<Record<string, string>>>;
   setIssuesByInputId: Dispatch<SetStateAction<Record<string, string>>>;
-  setModel: Dispatch<SetStateAction<WorkbenchModel | null>>;
   setSelectedModeId: Dispatch<SetStateAction<string | null>>;
   setTermsDialog: Dispatch<SetStateAction<TermsDialogState | null>>;
   refreshCaps: () => void;

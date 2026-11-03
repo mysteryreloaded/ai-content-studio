@@ -1,14 +1,38 @@
-import { useCallback, useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { upsertGeneration } from "../../components/generations/submissionCache.js";
 import {
   DONE_STATES,
   type GenerationProgress,
-  type GenerationState,
   type GenerationSummary,
   type SubmissionSummary,
 } from "../../components/generations/types.js";
-import { markOwnCancel } from "../../notifications/ownCancel.js";
+import { api, ok } from "../../lib/api.js";
+import { useEventStream } from "../../lib/sse.js";
+import {
+  markOwnCancel,
+  markOwnCancelGeneration,
+} from "../../notifications/ownCancel.js";
 import type { WorkbenchModel } from "./types.js";
+
+interface SubmissionsPage {
+  submissions: SubmissionSummary[];
+  hasMore: boolean;
+}
+
+const PROGRESS_KEY = ["generations", "progress"] as const;
+
+function removeGeneration(
+  current: SubmissionSummary[],
+  generationId: string,
+): SubmissionSummary[] {
+  return current
+    .map((submission) => ({
+      ...submission,
+      generations: submission.generations.filter((g) => g.id !== generationId),
+    }))
+    .filter((submission) => submission.generations.length > 0);
+}
 
 export function useWorkbenchFeed({
   model,
@@ -19,114 +43,129 @@ export function useWorkbenchFeed({
   slug: string;
   refreshCaps: () => void;
 }) {
-  const [submissions, setSubmissions] = useState<SubmissionSummary[]>([]);
-  const [activeStates, setActiveStates] = useState<
-    Map<string, GenerationState>
-  >(new Map());
-  const [progressById, setProgressById] = useState<
-    Map<string, GenerationProgress>
-  >(new Map());
-  const activeCount = [...activeStates.values()].filter(
-    (state) => !DONE_STATES.has(state),
-  ).length;
+  const queryClient = useQueryClient();
+  const queryKey = useMemo(
+    () => ["workbench-submissions", slug] as const,
+    [slug],
+  );
+  // `useEventStream`'s handlers are bound once per mount (issue #195 QA
+  // round 3): a Workbench that's reused across a slug change (AppHeader's
+  // Model links don't remount `/models/:slug`) would otherwise keep
+  // writing a stale slug's query key from the handlers' first-render
+  // closure. Reading the latest slug/key through a ref at call time fixes
+  // that without needing the stream itself to re-subscribe.
+  const slugRef = useRef(slug);
+  slugRef.current = slug;
+  const queryKeyRef = useRef(queryKey);
+  queryKeyRef.current = queryKey;
+
+  const { data } = useQuery({
+    queryKey,
+    queryFn: () =>
+      ok<SubmissionsPage>(
+        api.api.models[":slug"].generations.$get({ param: { slug } }),
+      ),
+    enabled: model !== null,
+  });
+  const submissions = data?.submissions ?? [];
+  const hasMore = data?.hasMore ?? false;
+
+  const setSubmissions = useCallback(
+    (
+      update:
+        | SubmissionSummary[]
+        | ((current: SubmissionSummary[]) => SubmissionSummary[]),
+    ) => {
+      queryClient.setQueryData<SubmissionsPage>(
+        queryKeyRef.current,
+        (current) => {
+          const currentSubmissions = current?.submissions ?? [];
+          const next =
+            typeof update === "function" ? update(currentSubmissions) : update;
+          return { submissions: next, hasMore: current?.hasMore ?? false };
+        },
+      );
+    },
+    [queryClient],
+  );
+
+  useEventStream("/api/generations/stream", {
+    snapshot: (_qc, raw) => {
+      const body = raw as { generations: GenerationSummary[] };
+      const forThisModel = body.generations.filter(
+        (g) => g.modelSlug === slugRef.current,
+      );
+      setSubmissions((current) =>
+        forThisModel.reduce(upsertGeneration, current),
+      );
+    },
+    change: (_qc, raw) => {
+      const generation = raw as GenerationSummary;
+      // A Generation finishing (or starting) moves the concurrent Cap's own
+      // count, so the foot's "more at once" needs a fresh read.
+      if (DONE_STATES.has(generation.state)) refreshCaps();
+      if (generation.modelSlug !== slugRef.current) return;
+      setSubmissions((current) => upsertGeneration(current, generation));
+    },
+    progress: (qc, raw) => {
+      const progress = raw as GenerationProgress;
+      qc.setQueryData<Map<string, GenerationProgress>>(
+        PROGRESS_KEY,
+        (current) => {
+          const next = new Map(current ?? []);
+          next.set(progress.generationId, progress);
+          return next;
+        },
+      );
+    },
+  });
+
+  // Reads (and reactively re-renders on) the shared progress cache without
+  // ever fetching it itself — `useEventStream`'s `progress` handler above is
+  // the only writer.
+  const { data: progressById = new Map<string, GenerationProgress>() } =
+    useQuery<Map<string, GenerationProgress>>({
+      queryKey: PROGRESS_KEY,
+      queryFn: () =>
+        queryClient.getQueryData(PROGRESS_KEY) ??
+        new Map<string, GenerationProgress>(),
+      enabled: false,
+    });
+
   /** Issue #54: disables a Submission's own Cancel button while its request is in flight. */
   const [cancellingSubmissionIds, setCancellingSubmissionIds] = useState<
     Set<string>
   >(new Set());
-  /** Issue #54: which Submission's Cancel request most recently failed, so the button's user sees why it's still enabled. */
   const [cancelErrorSubmissionId, setCancelErrorSubmissionId] = useState<
     string | null
   >(null);
-  /** Issue #57's AC: disables a Submission's own Delete all button while its request is in flight. */
   const [deletingSubmissionIds, setDeletingSubmissionIds] = useState<
     Set<string>
   >(new Set());
-  /** Issue #57's AC: which Submission's Delete all request most recently failed. */
   const [deleteErrorSubmissionId, setDeleteErrorSubmissionId] = useState<
     string | null
   >(null);
 
-  useEffect(() => {
-    if (!model) return;
-    let cancelled = false;
-
-    fetch(`/api/models/${slug}/generations`)
-      .then((res) => {
-        if (!res.ok) throw new Error(`unexpected status ${res.status}`);
-        return res.json() as Promise<{ submissions: SubmissionSummary[] }>;
-      })
-      .then((body) => {
-        if (!cancelled) setSubmissions(body.submissions);
-      })
-      .catch(() => {});
-
-    return () => {
-      cancelled = true;
-    };
-  }, [model, slug]);
-
-  useEffect(() => {
-    const source = new EventSource("/api/generations/stream");
-
-    source.addEventListener("snapshot", (event) => {
-      const body = JSON.parse((event as MessageEvent).data) as {
-        generations: GenerationSummary[];
-      };
-      setActiveStates(new Map(body.generations.map((g) => [g.id, g.state])));
-      const forThisModel = body.generations.filter((g) => g.modelSlug === slug);
-      setSubmissions((current) => {
-        let next = current;
-        for (const generation of forThisModel) {
-          next = upsertGeneration(next, generation);
-        }
-        return next;
-      });
-    });
-
-    source.addEventListener("change", (event) => {
-      const generation = JSON.parse(
-        (event as MessageEvent).data,
-      ) as GenerationSummary;
-      setActiveStates((current) => {
-        const next = new Map(current);
-        next.set(generation.id, generation.state);
-        return next;
-      });
-      // A Generation finishing (or starting) moves the concurrent Cap's
-      // own count, so the foot's "more at once" needs a fresh read.
-      if (DONE_STATES.has(generation.state)) refreshCaps();
-      if (generation.modelSlug !== slug) return;
-      setSubmissions((current) => upsertGeneration(current, generation));
-    });
-
-    source.addEventListener("progress", (event) => {
-      const progress = JSON.parse(
-        (event as MessageEvent).data,
-      ) as GenerationProgress;
-      setProgressById((current) => {
-        const next = new Map(current);
-        next.set(progress.generationId, progress);
-        return next;
-      });
-    });
-
-    return () => source.close();
-  }, [slug, refreshCaps]);
+  /** Issue #189/#195: a card's own Cancel while the server confirms. */
+  const [cancellingGenerationIds, setCancellingGenerationIds] = useState<
+    Set<string>
+  >(new Set());
+  const [deletingGenerationIds, setDeletingGenerationIds] = useState<
+    Set<string>
+  >(new Set());
 
   const handleCancelSubmission = useCallback(async (submissionId: string) => {
     setCancellingSubmissionIds((current) => new Set(current).add(submissionId));
     setCancelErrorSubmissionId(null);
     try {
-      const res = await fetch(`/api/submissions/${submissionId}/cancel`, {
-        method: "POST",
-      });
-      if (res.ok) {
-        // Issue #58: a cancel this tab made itself never raises a
-        // Notification, in this tab or any other.
-        markOwnCancel(submissionId);
-      } else {
-        setCancelErrorSubmissionId(submissionId);
-      }
+      await ok(
+        api.api.submissions[":submissionId"].cancel.$post({
+          param: { submissionId },
+        }),
+      );
+      // Issue #58: a cancel this tab made itself never raises a
+      // Notification, in this tab or any other.
+      markOwnCancel(submissionId);
     } catch {
       // The SSE stream carries the real outcome either way; a failed
       // request here just means this button stays enabled to retry.
@@ -141,44 +180,91 @@ export function useWorkbenchFeed({
   }, []);
 
   /** "Delete all" (issue #57's AC): a whole Submission, once every one of its Generations has ended, into Tombstones. */
-  const handleDeleteSubmission = useCallback(async (submissionId: string) => {
-    if (!window.confirm("Delete this Submission? This can't be undone.")) {
-      return;
-    }
-    setDeletingSubmissionIds((current) => new Set(current).add(submissionId));
-    setDeleteErrorSubmissionId(null);
+  const handleDeleteSubmission = useCallback(
+    async (submissionId: string) => {
+      setDeletingSubmissionIds((current) => new Set(current).add(submissionId));
+      setDeleteErrorSubmissionId(null);
+      try {
+        await ok(
+          api.api.submissions[":submissionId"].$delete({
+            param: { submissionId },
+          }),
+        );
+        setSubmissions((current) =>
+          current.filter(
+            (submission) => submission.submissionId !== submissionId,
+          ),
+        );
+      } catch {
+        setDeleteErrorSubmissionId(submissionId);
+      } finally {
+        setDeletingSubmissionIds((current) => {
+          const next = new Set(current);
+          next.delete(submissionId);
+          return next;
+        });
+      }
+    },
+    [setSubmissions],
+  );
+
+  const handleCancelGeneration = useCallback(async (id: string) => {
+    setCancellingGenerationIds((current) => new Set(current).add(id));
     try {
-      const res = await fetch(`/api/submissions/${submissionId}`, {
-        method: "DELETE",
-      });
-      if (!res.ok) throw new Error(`unexpected status ${res.status}`);
-      setSubmissions((current) =>
-        current.filter(
-          (submission) => submission.submissionId !== submissionId,
-        ),
-      );
+      await ok(api.api.generations[":id"].cancel.$post({ param: { id } }));
+      markOwnCancelGeneration(id);
     } catch {
-      setDeleteErrorSubmissionId(submissionId);
+      // The SSE stream carries the real outcome either way.
     } finally {
-      setDeletingSubmissionIds((current) => {
+      setCancellingGenerationIds((current) => {
         const next = new Set(current);
-        next.delete(submissionId);
+        next.delete(id);
         return next;
       });
     }
   }, []);
 
+  const handleDeleteGeneration = useCallback(
+    async (id: string) => {
+      setDeletingGenerationIds((current) => new Set(current).add(id));
+      try {
+        await ok(api.api.generations[":id"].$delete({ param: { id } }));
+        setSubmissions((current) => removeGeneration(current, id));
+      } catch {
+        // Left enabled so the owner can retry.
+      } finally {
+        setDeletingGenerationIds((current) => {
+          const next = new Set(current);
+          next.delete(id);
+          return next;
+        });
+      }
+    },
+    [setSubmissions],
+  );
+
+  const handleDismissGeneration = useCallback(
+    (id: string) => {
+      setSubmissions((current) => removeGeneration(current, id));
+    },
+    [setSubmissions],
+  );
+
   return {
     submissions,
+    hasMore,
     setSubmissions,
-    activeStates,
-    activeCount,
     progressById,
     cancellingSubmissionIds,
     cancelErrorSubmissionId,
     deletingSubmissionIds,
     deleteErrorSubmissionId,
+    cancellingGenerationIds,
+    deletingGenerationIds,
     handleCancelSubmission,
     handleDeleteSubmission,
+    handleCancelGeneration,
+    handleDeleteGeneration,
+    handleDismissGeneration,
   };
 }

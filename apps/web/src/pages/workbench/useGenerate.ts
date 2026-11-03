@@ -29,6 +29,7 @@ export function useGenerate({
   setTermsDialog,
   refreshCaps,
   setSubmissions,
+  setLastOwnSubmissionId,
 }: UseGenerateOptions) {
   const [submitState, setSubmitState] = useState<SubmitState>({
     status: "idle",
@@ -250,6 +251,9 @@ export function useGenerate({
       };
       if (created.generations.length > 0) {
         const submissionId = created.generations[0]?.submissionId;
+        // Issue #195's AC: the notifications offer shows inside this tab's
+        // own just-created block only.
+        setLastOwnSubmissionId(submissionId ?? null);
         setSubmissions((current) => {
           const next = created.generations.reduce(upsertGeneration, current);
           return next.map((submission) =>

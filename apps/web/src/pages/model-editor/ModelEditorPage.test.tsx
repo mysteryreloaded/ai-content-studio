@@ -155,11 +155,8 @@ describe("ModelEditorPage", () => {
   test("adds a Mode, picks an output node in the Workflow table, and saves it", async () => {
     const calls = mockFetch((call) => {
       if (call.method === "GET") return respondGet(call.url);
-      if (call.method === "PUT" && call.url.endsWith("/modes")) {
-        return Response.json({
-          record: { ...DETAIL.model, currentRevision: 2, version: 2 },
-          modes: [],
-        });
+      if (call.method === "PUT" && call.url.endsWith("/draft")) {
+        return Response.json(DETAIL);
       }
       throw new Error(`unexpected ${call.method} ${call.url}`);
     });
@@ -181,19 +178,17 @@ describe("ModelEditorPage", () => {
     await userEvent.click(view.getByText("Save"));
 
     const saved = calls.find(
-      (c) => c.method === "PUT" && c.url.endsWith("/modes"),
+      (c) => c.method === "PUT" && c.url.endsWith("/draft"),
     );
-    expect(saved?.body).toEqual({
-      version: 1,
-      modes: [
-        {
-          name: "Default",
-          description: "",
-          outputNodeIds: ["2"],
-          inputSettings: [],
-        },
-      ],
-    });
+    const body = saved?.body as { modes?: unknown } | null;
+    expect(body?.modes).toEqual([
+      {
+        name: "Default",
+        description: "",
+        outputNodeIds: ["2"],
+        inputSettings: [],
+      },
+    ]);
   });
 
   test("Test runs the unsaved draft Mode, and a failure shows the server's reasons (issue #74)", async () => {
@@ -745,11 +740,8 @@ describe("ModelEditorPage", () => {
         return Response.json(detail);
       }
       if (call.method === "GET") return respondGet(call.url);
-      if (call.method === "PUT" && call.url.endsWith("/inputs")) {
-        return Response.json({
-          record: { ...DETAIL.model, currentRevision: 2, version: 2 },
-          inputs: [],
-        });
+      if (call.method === "PUT" && call.url.endsWith("/draft")) {
+        return Response.json(detail);
       }
       throw new Error(`unexpected ${call.method} ${call.url}`);
     });
@@ -787,9 +779,10 @@ describe("ModelEditorPage", () => {
     await userEvent.click(view.getByText("Save"));
 
     const saved = calls.find(
-      (c) => c.method === "PUT" && c.url.endsWith("/inputs"),
+      (c) => c.method === "PUT" && c.url.endsWith("/draft"),
     );
-    expect(saved?.body?.inputs).toEqual([
+    const body = saved?.body as { inputs?: unknown } | null;
+    expect(body?.inputs).toEqual([
       {
         id: expect.any(String),
         kind: "image_upload",
@@ -848,11 +841,8 @@ describe("ModelEditorPage", () => {
         return Response.json(detail);
       }
       if (call.method === "GET") return respondGet(call.url);
-      if (call.method === "PUT" && call.url.endsWith("/inputs")) {
-        return Response.json({
-          record: { ...DETAIL.model, currentRevision: 2, version: 2 },
-          inputs: [],
-        });
+      if (call.method === "PUT" && call.url.endsWith("/draft")) {
+        return Response.json(detail);
       }
       throw new Error(`unexpected ${call.method} ${call.url}`);
     });
@@ -901,9 +891,10 @@ describe("ModelEditorPage", () => {
     await userEvent.click(view.getByText("Save"));
 
     const saved = calls.find(
-      (c) => c.method === "PUT" && c.url.endsWith("/inputs"),
+      (c) => c.method === "PUT" && c.url.endsWith("/draft"),
     );
-    expect(saved?.body?.inputs).toEqual([
+    const body = saved?.body as { inputs?: unknown } | null;
+    expect(body?.inputs).toEqual([
       videoInput,
       {
         id: expect.any(String),
@@ -1152,7 +1143,7 @@ describe("ModelEditorPage", () => {
     });
   });
 
-  test("Replace Workflow and Restore stay disabled while another section is dirty (issue #71 CEO review)", async () => {
+  test("Restore stays disabled while another section is dirty (issue #71 CEO review)", async () => {
     mockFetch((call) => {
       if (call.method === "GET") return respondGetWithRevisions(call.url);
       throw new Error(`unexpected ${call.method} ${call.url}`);
@@ -1170,15 +1161,5 @@ describe("ModelEditorPage", () => {
     await openSection(view, "Revisions");
     const restoreButtons = await view.findAllByText("Restore");
     expect((restoreButtons[1] as HTMLButtonElement).disabled).toBe(true);
-
-    await openSection(view, "Workflow");
-    const file = new File(
-      ['{"1":{"class_type":"LoadImage","inputs":{}}}'],
-      "wf.json",
-      { type: "application/json" },
-    );
-    await userEvent.upload(await view.findByLabelText("Choose file…"), file);
-    const replaceButton = await view.findByText("Replace Workflow");
-    expect((replaceButton as HTMLButtonElement).disabled).toBe(true);
   });
 });

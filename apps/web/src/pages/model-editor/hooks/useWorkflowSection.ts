@@ -1,34 +1,59 @@
+import type {
+  InputDefinition,
+  ModeInputSetting,
+} from "@ai-content-studio/shared";
 import { useMutation } from "@tanstack/react-query";
 import { type ResponseLike, api, ok } from "../../../lib/api.js";
 
-export interface ReplaceWorkflowBody {
+export interface SaveDraftBody {
   version: number;
-  workflow: unknown;
-  rebind?: { nodeId: string; newNodeId: string }[];
-  disable?: boolean;
+  details: {
+    name: string;
+    slug: string;
+    description: string;
+    maxRunTimeMinutes: number;
+  };
+  terms: {
+    termsBody: string;
+    licenseUrl: string;
+    attribution: string;
+    askAgain: boolean;
+  };
+  workflow?: {
+    json: unknown;
+    rebind?: { nodeId: string; newNodeId: string }[];
+  };
+  inputs: InputDefinition[];
+  modes: {
+    name: string;
+    description: string;
+    outputNodeIds: string[];
+    inputSettings: ModeInputSetting[];
+  }[];
+  disable: boolean;
 }
 
 /**
- * The server parses this route's body itself (`workflow` is arbitrary
- * JSON, not a zod-validated shape), so `hc` never generates a typed
- * `json` input for it the way it does for the other PUTs.
+ * The server parses `workflow.json` itself (arbitrary JSON, not a
+ * zod-validated shape), so `hc` never generates a typed `json` input
+ * for it the way it does for the other PUTs (same as the old
+ * Replace-Workflow-only PUT this replaced, issue #214).
  */
 type UntypedPut = (args: {
   param: { id: string };
-  json: ReplaceWorkflowBody;
+  json: SaveDraftBody;
 }) => Promise<ResponseLike>;
 
 /**
- * Replace Workflow's own PUT (issue #214), through the typed `api`
- * client instead of a bare `fetch`. The caller (`useModelEditor`) still
- * owns `pendingWorkflow`/`rebindMap` and what happens after a
- * successful replace (reseeding the other drafts, reloading revisions).
+ * The header Save's one PUT (issue #218): the whole editor draft —
+ * Details, Terms, an optional re-uploaded Workflow, Inputs and Modes —
+ * in one request, replacing the old chain of per-section PUTs (#213)
+ * and the separate "Replace Workflow" PUT (#214).
  */
-export function useReplaceWorkflowMutation(modelId: string | undefined) {
-  const put = api.api.admin.models[":id"].workflow
-    .$put as unknown as UntypedPut;
+export function useSaveDraftMutation(modelId: string | undefined) {
+  const put = api.api.admin.models[":id"].draft.$put as unknown as UntypedPut;
   return useMutation({
-    mutationFn: (body: ReplaceWorkflowBody) =>
+    mutationFn: (body: SaveDraftBody) =>
       ok(put({ param: { id: modelId as string }, json: body })),
   });
 }

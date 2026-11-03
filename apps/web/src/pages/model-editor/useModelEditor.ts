@@ -25,7 +25,6 @@ import type {
   ImageUploadInput as WorkbenchImageUploadInput,
   MediaUploadInput as WorkbenchMediaUploadInput,
 } from "../../components/inputs/types.js";
-import { ApiError } from "../../lib/api.js";
 import {
   httpUploadApi,
   trimUpload,
@@ -65,7 +64,6 @@ import {
 import { useModelChecks } from "./hooks/useModelChecks.js";
 import { useModelDetail } from "./hooks/useModelDetail.js";
 import { useModelDraft } from "./hooks/useModelDraft.js";
-import { useReplaceWorkflowMutation } from "./hooks/useWorkflowSection.js";
 import type {
   AdminBackendSummary,
   AttachedBackendEntry,
@@ -124,7 +122,7 @@ export function useModelEditor() {
   const [termsForm, setTermsForm] = useState<TermsForm | null>(null);
   const [askAgain, setAskAgain] = useState(false);
   // Issue #71: a re-uploaded Workflow file lives only in the editor
-  // (parsed client-side) until "Replace Workflow" sends it in one PUT —
+  // (parsed client-side) until the header's one Save sends it (issue #218) —
   // there's no separate server-side draft.
   const [pendingWorkflow, setPendingWorkflow] = useState<unknown | null>(null);
   const [pendingWorkflowFileName, setPendingWorkflowFileName] = useState<
@@ -133,7 +131,6 @@ export function useModelEditor() {
   const [workflowUploadError, setWorkflowUploadError] = useState<string | null>(
     null,
   );
-  const [uploadingWorkflow, setUploadingWorkflow] = useState(false);
   // Issue #71's rebind picker (CEO review): old node id -> the picked
   // Workflow's node id it's repointed onto, for the Mode outputs/Input
   // bindings `findBrokenNodeRefs` flags. Reset whenever a different file
@@ -379,63 +376,6 @@ export function useModelEditor() {
       }
       return { ...prev, [nodeId]: newNodeId };
     });
-  }
-
-  /** The server's own refusal (issue #214: "Show a server refusal's own text if one still comes back"): `errors` (`ValidationFailed`, e.g. uploadWorkflow's own structural checks) takes the same shape `messageFrom` reads for every other section's save. */
-  function workflowErrorMessage(err: unknown): string {
-    if (err instanceof ApiError) {
-      const body = err.body as {
-        error?: string;
-        errors?: { field: string; message: string }[];
-        reasons?: string[];
-      } | null;
-      const issues = body?.errors
-        ?.map((e) => `${e.field}: ${e.message}`)
-        .join(", ");
-      if (issues) return issues;
-      if (body?.reasons && body.reasons.length > 0) {
-        return body.reasons.join(", ");
-      }
-      return body?.error ?? "upload failed";
-    }
-    return "upload failed";
-  }
-
-  const replaceWorkflowMutation = useReplaceWorkflowMutation(id);
-
-  async function handleReplaceWorkflow() {
-    if (!detail || pendingWorkflow === null) return;
-    setUploadingWorkflow(true);
-    setWorkflowUploadError(null);
-
-    const rebind = Object.entries(rebindMap).map(([nodeId, newNodeId]) => ({
-      nodeId,
-      newNodeId,
-    }));
-
-    try {
-      await replaceWorkflowMutation.mutateAsync({
-        version: detail.model.version,
-        workflow: pendingWorkflow,
-        ...(rebind.length > 0 ? { rebind } : {}),
-        ...(mustDisableToSaveWorkflow ? { disable: true } : {}),
-      });
-
-      setPendingWorkflow(null);
-      setPendingWorkflowFileName(null);
-      setRebindMap({});
-      // Issue #241 CEO review: this replaces the saved Workflow, so the
-      // Modes/Inputs/Terms drafts must be reseeded from the fresh Model,
-      // not just refetched underneath the once-per-id seeding effect.
-      // Replace Workflow only runs while every draft is clean, so
-      // `draft.reload()` (a refetch + full reseed) is safe here.
-      await draft.reload();
-      loadRevisions();
-    } catch (err) {
-      setWorkflowUploadError(workflowErrorMessage(err));
-    } finally {
-      setUploadingWorkflow(false);
-    }
   }
 
   async function handleRestoreRevision(
@@ -1038,6 +978,8 @@ export function useModelEditor() {
     termsForm,
     termsDirty,
     askAgain,
+    pendingWorkflow,
+    rebindMap,
     resetInputsDraft: setInputsDraft,
     resetModesDraft: (fresh) => setModesDraft(draftsFrom(fresh)),
     resetTermsForm: (fresh) => {
@@ -1092,7 +1034,7 @@ export function useModelEditor() {
       );
     } catch {
       // Not a Workflow-shaped object; the server's own parse will refuse
-      // it with a clear message once "Replace Workflow" is pressed.
+      // it with a clear message once Save is pressed.
       return [];
     }
   }, [detail, pendingWorkflow, checkModelBackends, rebindMap]);
@@ -1103,15 +1045,22 @@ export function useModelEditor() {
   const termsErrorCount =
     termsForm && !isValidModelLicenseUrl(termsForm.licenseUrl) ? 1 : 0;
 
-  const { issuesBySection, modelHasErrors, mustDisableToSave } = useModelChecks(
-    {
-      modelIssues,
-      pendingWorkflowIssues,
-      detailsErrorCount: Object.keys(draft.form.formState.errors).length,
-      termsErrorCount,
-      enabled: detail?.model.state === "enabled",
-    },
-  );
+  const {
+    issuesBySection,
+    modelHasErrors,
+    mustDisableToSave: mustDisableToSaveModel,
+  } = useModelChecks({
+    modelIssues,
+    pendingWorkflowIssues,
+    detailsErrorCount: Object.keys(draft.form.formState.errors).length,
+    termsErrorCount,
+    enabled: detail?.model.state === "enabled",
+  });
+  // Issue #218: the header Save now carries a re-uploaded Workflow too,
+  // so its "Save and disable" label must also account for errors the
+  // picked-but-not-yet-saved file would bring, not just the already
+  // saved Workflow's own `modelIssues`.
+  const mustDisableToSave = mustDisableToSaveModel || mustDisableToSaveWorkflow;
 
   /** Issue #71's rebind picker: every broken Mode output/Input binding, each repointable to a node of the picked file. */
   const brokenNodeRefs: BrokenNodeRef[] = useMemo(() => {
@@ -1246,8 +1195,6 @@ export function useModelEditor() {
     setPendingWorkflowFileName,
     workflowUploadError,
     setWorkflowUploadError,
-    uploadingWorkflow,
-    setUploadingWorkflow,
     rebindMap,
     setRebindMap,
     revisions,
@@ -1286,7 +1233,6 @@ export function useModelEditor() {
     loadRevisions,
     handlePickWorkflowFile,
     setRebind,
-    handleReplaceWorkflow,
     handleRestoreRevision,
     handleAttach,
     handleDetach,

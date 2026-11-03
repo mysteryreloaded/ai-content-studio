@@ -19,6 +19,7 @@ import {
   renderEditor,
   respondGet,
   restoreConfirm,
+  waitFor,
   within,
 } from "../testing/harness.js";
 import { BindingPicker } from "../workflow/BindingPicker.js";
@@ -398,13 +399,13 @@ describe("WorkflowSection (issue #214)", () => {
     ).toBe("true");
   });
 
-  test("workflowErrorMessage surfaces the server's own validation errors", async () => {
+  test("the draft Save surfaces the server's own validation errors", async () => {
     mockFetch((call) => {
       if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1")) {
         return Response.json(DETAIL);
       }
       if (call.method === "GET") return Response.json(NO_BACKENDS);
-      if (call.method === "PUT" && call.url.endsWith("/workflow")) {
+      if (call.method === "PUT" && call.url.endsWith("/draft")) {
         return Response.json(
           {
             errors: [
@@ -427,7 +428,7 @@ describe("WorkflowSection (issue #214)", () => {
       { type: "application/json" },
     );
     await userEvent.upload(await view.findByLabelText("Choose file…"), file);
-    await userEvent.click(view.getByText("Replace Workflow"));
+    await userEvent.click(view.getByRole("button", { name: "Save" }));
 
     expect(
       await view.findByText("workflow: links to missing nodes: 7"),
@@ -567,11 +568,8 @@ describe("WorkflowSection (issue #214)", () => {
   test("Use as an output of <Mode> toggles the Mode's output nodes", async () => {
     const calls = mockFetch((call) => {
       if (call.method === "GET") return respondGet(call.url);
-      if (call.method === "PUT" && call.url.endsWith("/modes")) {
-        return Response.json({
-          record: { ...DETAIL.model, currentRevision: 2, version: 2 },
-          modes: [],
-        });
+      if (call.method === "PUT" && call.url.endsWith("/draft")) {
+        return Response.json(DETAIL);
       }
       throw new Error(`unexpected ${call.method} ${call.url}`);
     });
@@ -597,7 +595,7 @@ describe("WorkflowSection (issue #214)", () => {
     await userEvent.click(view.getByText("Save"));
 
     const saved = calls.find(
-      (c) => c.method === "PUT" && c.url.endsWith("/modes"),
+      (c) => c.method === "PUT" && c.url.endsWith("/draft"),
     );
     const body = saved?.body as { modes: { outputNodeIds: string[] }[] } | null;
     expect(body?.modes[0]?.outputNodeIds).toEqual([]);
@@ -664,7 +662,7 @@ describe("WorkflowSection (issue #214)", () => {
     );
   });
 
-  test("the rebind picker repoints a broken output node, and Replace Workflow sends it", async () => {
+  test("the rebind picker repoints a broken output node, and Save sends it", async () => {
     const MODE_DETAIL = {
       ...DETAIL,
       model: { ...DETAIL.model, currentRevision: 2, version: 1 },
@@ -696,13 +694,8 @@ describe("WorkflowSection (issue #214)", () => {
         return Response.json(MODE_DETAIL);
       }
       if (call.method === "GET") return Response.json(NO_BACKENDS);
-      if (call.method === "PUT" && call.url.endsWith("/workflow")) {
-        return Response.json({
-          record: { ...MODE_DETAIL.model, currentRevision: 3, version: 2 },
-          modes: [],
-          inputs: [],
-          outsideServiceNotes: [],
-        });
+      if (call.method === "PUT" && call.url.endsWith("/draft")) {
+        return Response.json(MODE_DETAIL);
       }
       throw new Error(`unexpected ${call.method} ${call.url}`);
     });
@@ -730,12 +723,56 @@ describe("WorkflowSection (issue #214)", () => {
     expect(await view.findByText(/rebind it/)).toBeTruthy();
 
     await userEvent.selectOptions(view.getByLabelText('Rebind node "2"'), "3");
-    await userEvent.click(view.getByText("Replace Workflow"));
+    await userEvent.click(view.getByRole("button", { name: "Save" }));
 
     const saved = calls.find(
-      (c) => c.method === "PUT" && c.url.endsWith("/workflow"),
+      (c) => c.method === "PUT" && c.url.endsWith("/draft"),
     );
-    const body = saved?.body as { rebind: unknown } | null;
-    expect(body?.rebind).toEqual([{ nodeId: "2", newNodeId: "3" }]);
+    const body = saved?.body as { workflow?: { rebind: unknown } } | null;
+    expect(body?.workflow?.rebind).toEqual([{ nodeId: "2", newNodeId: "3" }]);
+  });
+
+  // Issue #218: one Save makes one revision, whatever changed — there's
+  // no separate "Replace Workflow" action/button any more.
+  test("no 'Replace Workflow' button renders, and Save sends one request for a Details+Workflow+Modes edit", async () => {
+    const calls = mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1")) {
+        return Response.json(DETAIL);
+      }
+      if (call.method === "GET") return Response.json(NO_BACKENDS);
+      if (call.method === "PUT" && call.url.endsWith("/draft")) {
+        return Response.json(DETAIL);
+      }
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await openSection(view, "Workflow");
+
+    expect(view.queryByText("Replace Workflow")).toBeNull();
+
+    const file = new File(
+      [JSON.stringify({ "1": { class_type: "LoadImage", inputs: {} } })],
+      "wf.json",
+      { type: "application/json" },
+    );
+    await userEvent.upload(await view.findByLabelText("Choose file…"), file);
+    expect(view.queryByText("Replace Workflow")).toBeNull();
+
+    await openSection(view, "Details");
+    await userEvent.type(await view.findByLabelText("Name"), "x");
+
+    await userEvent.click(view.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      const draftCalls = calls.filter(
+        (c) => c.method === "PUT" && c.url.endsWith("/draft"),
+      );
+      expect(draftCalls.length).toBe(1);
+    });
+    expect(
+      calls.some((c) => c.url.endsWith("/inputs") || c.url.endsWith("/modes")),
+    ).toBe(false);
   });
 });

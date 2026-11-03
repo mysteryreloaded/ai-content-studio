@@ -106,18 +106,14 @@ export function WorkflowSection({
   nav: EditorNavigation;
 }) {
   const {
-    anyDraftDirty,
     brokenNodeRefs,
     editingMode,
     editingModeIndex,
     editingPath,
     handlePickWorkflowFile,
-    handleReplaceWorkflow,
     inputsDraft,
     modelIssues,
     modesDraft,
-    mustDisableToSaveWorkflow,
-    pendingWorkflow,
     pendingWorkflowFileName,
     pendingWorkflowIssues,
     pendingWorkflowNodes,
@@ -127,7 +123,6 @@ export function WorkflowSection({
     setModeInputSetting,
     setRebind,
     toggleOutputNodeInEditingMode,
-    uploadingWorkflow,
     updateInput,
     workflowUploadError,
   } = editor;
@@ -443,7 +438,7 @@ export function WorkflowSection({
           <p>
             Picked "{pendingWorkflowFileName}": Modes' output nodes and Inputs'
             bindings carry forward by node id. Nothing is sent until you press
-            "Replace Workflow".
+            the header's Save.
           </p>
         )}
       </div>
@@ -494,29 +489,11 @@ export function WorkflowSection({
         </div>
       )}
 
-      <div className="flex items-center gap-2">
-        <Button
-          type="button"
-          disabled={
-            uploadingWorkflow || pendingWorkflow === null || anyDraftDirty
-          }
-          title={
-            anyDraftDirty
-              ? "Save or discard your other unsaved changes first"
-              : undefined
-          }
-          onClick={() => void handleReplaceWorkflow()}
-        >
-          {mustDisableToSaveWorkflow
-            ? "Replace Workflow and disable"
-            : "Replace Workflow"}
-        </Button>
-        {workflowUploadError && (
-          <p role="alert" className="text-err">
-            {workflowUploadError}
-          </p>
-        )}
-      </div>
+      {workflowUploadError && (
+        <p role="alert" className="text-err">
+          {workflowUploadError}
+        </p>
+      )}
     </section>
   );
 }

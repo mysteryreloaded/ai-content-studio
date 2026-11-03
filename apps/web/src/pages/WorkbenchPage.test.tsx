@@ -3291,9 +3291,13 @@ describe("WorkbenchPage", () => {
         view.getByLabelText("Clip"),
         new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
       );
-      const startInput = await view.findByLabelText("Start (s)");
-      await userEvent.clear(startInput);
-      await userEvent.type(startInput, "0.5");
+      const startHandle = await view.findByRole("slider", {
+        name: "Trim start",
+      });
+      startHandle.focus();
+      for (let i = 0; i < 5; i++) {
+        await userEvent.keyboard("{ArrowRight}");
+      }
 
       await userEvent.click(view.getByRole("button", { name: "Generate" }));
 

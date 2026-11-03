@@ -1,99 +1,166 @@
 import {
   BLOCKED_WORDS_MAX_ENTRIES,
   BLOCKED_WORDS_MAX_ENTRY_LENGTH,
+  type SiteBlockedWordsFields,
   parseBlockedWordsList,
+  siteBlockedWordsFieldsSchema,
   validateBlockedWordsList,
 } from "@ai-content-studio/shared";
-import { type FormEvent, useEffect, useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
+import { useForm } from "react-hook-form";
+import { AdminSection } from "../components/admin/AdminSection.js";
+import { StaleSaveAlert } from "../components/admin/StaleSaveAlert.js";
+import { Button } from "../components/ui/button.js";
+import { Label } from "../components/ui/label.js";
+import { Textarea } from "../components/ui/textarea.js";
+import { ApiError, api, ok } from "../lib/api.js";
+import { describeSaveError, mapApiError, zodResolver } from "../lib/form.js";
+import {
+  type AdminSiteSettings,
+  siteSettingsQueryKey,
+} from "./site-settings-shared.js";
 
-interface AdminBlockedWords {
-  blockedWords: string[];
-  blockedWordsRevision: number;
+function defaultValuesFrom(
+  settings: AdminSiteSettings,
+): SiteBlockedWordsFields {
+  return { text: settings.blockedWords.join("\n") };
 }
 
-type SaveState =
-  | { status: "idle" }
-  | { status: "saving" }
-  | { status: "error"; message: string }
-  | { status: "saved" };
+/** The Blocked words section (issue #202, restyled from #66/#194). */
+export function BlockedWordsForm({
+  settings,
+  onReload,
+}: {
+  settings: AdminSiteSettings;
+  onReload: () => Promise<AdminSiteSettings | undefined>;
+}) {
+  const queryClient = useQueryClient();
+  const [staleSave, setStaleSave] = useState(false);
+  const [justSaved, setJustSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [blockedWordsRevision, setBlockedWordsRevision] = useState(
+    settings.blockedWordsRevision,
+  );
 
-/** The blocked words/phrases form (issue #66), shown in the Admin panel next to Site terms and Privacy. */
-export function BlockedWordsForm() {
-  const [settings, setSettings] = useState<AdminBlockedWords | null>(null);
-  const [text, setText] = useState("");
-  const [saveState, setSaveState] = useState<SaveState>({ status: "idle" });
+  const {
+    register,
+    handleSubmit,
+    watch,
+    reset,
+    setError,
+    formState: { errors, isDirty, isSubmitting },
+  } = useForm<SiteBlockedWordsFields>({
+    resolver: zodResolver(siteBlockedWordsFieldsSchema),
+    defaultValues: defaultValuesFrom(settings),
+  });
 
-  useEffect(() => {
-    fetch("/api/admin/site-settings")
-      .then((res) => res.json() as Promise<AdminBlockedWords>)
-      .then((data) => {
-        setSettings(data);
-        setText(data.blockedWords.join("\n"));
-      })
-      .catch(() => {});
-  }, []);
-
-  if (!settings) return <p>Loading…</p>;
-
+  const text = watch("text") ?? "";
   const words = parseBlockedWordsList(text);
   const listError = validateBlockedWordsList(words);
 
-  async function handleSubmit(event: FormEvent) {
-    event.preventDefault();
-    if (listError || !settings) return;
+  const { mutate, isPending } = useMutation({
+    mutationFn: (values: SiteBlockedWordsFields) =>
+      ok<AdminSiteSettings>(
+        api.api.admin["site-settings"]["blocked-words"].$put({
+          json: { revision: blockedWordsRevision, ...values },
+        }),
+      ),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(siteSettingsQueryKey, updated);
+      reset(defaultValuesFrom(updated));
+      setStaleSave(false);
+      setSaveError(null);
+      setBlockedWordsRevision(updated.blockedWordsRevision);
+      setJustSaved(true);
+    },
+    onError: (error: unknown) => {
+      if (error instanceof ApiError && error.status === 409) {
+        setStaleSave(true);
+        setSaveError(null);
+        return;
+      }
+      if (error instanceof ApiError) {
+        mapApiError(setError, error);
+      }
+      setSaveError(describeSaveError(error));
+    },
+  });
 
-    setSaveState({ status: "saving" });
-    const res = await fetch("/api/admin/site-settings/blocked-words", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ revision: settings.blockedWordsRevision, text }),
-    });
-
-    if (res.status === 409) {
-      setSaveState({
-        status: "error",
-        message: "changed by someone else, reload",
-      });
-      return;
+  async function handleReload() {
+    const fresh = await onReload();
+    if (fresh) {
+      reset(defaultValuesFrom(fresh));
+      setStaleSave(false);
+      setSaveError(null);
+      setBlockedWordsRevision(fresh.blockedWordsRevision);
     }
-    if (!res.ok) {
-      setSaveState({ status: "error", message: "save failed" });
-      return;
-    }
-
-    const updated = (await res.json()) as AdminBlockedWords;
-    setSettings(updated);
-    setText(updated.blockedWords.join("\n"));
-    setSaveState({ status: "saved" });
   }
 
   return (
-    <form onSubmit={(event) => void handleSubmit(event)}>
-      <h2>Blocked words</h2>
-      <p>
-        One word or phrase per line. A submitted prompt holding any of them,
-        whole word and case-insensitive, is refused. Up to{" "}
-        {BLOCKED_WORDS_MAX_ENTRIES.toLocaleString()} entries, each up to{" "}
-        {BLOCKED_WORDS_MAX_ENTRY_LENGTH} characters.
-      </p>
-
-      <label htmlFor="blocked-words-text">Blocked words and phrases</label>
-      <textarea
-        id="blocked-words-text"
-        rows={12}
-        value={text}
-        onChange={(event) => setText(event.target.value)}
-      />
-      {listError && <p role="alert">{listError}</p>}
-
-      <button
-        type="submit"
-        disabled={!!listError || saveState.status === "saving"}
+    <AdminSection
+      id="blocked-words"
+      title="Blocked words"
+      description="One word or phrase per line. A submitted prompt holding any of them, whole word and case-insensitive, is refused. Each refusal is logged as a warning with the user and the word."
+    >
+      <form
+        noValidate
+        className="flex flex-col gap-fields"
+        onSubmit={handleSubmit((values) => {
+          if (listError) return;
+          setJustSaved(false);
+          setSaveError(null);
+          mutate(values);
+        })}
       >
-        Save
-      </button>
-      {saveState.status === "error" && <p role="alert">{saveState.message}</p>}
-      {saveState.status === "saved" && <p>Saved.</p>}
-    </form>
+        <div className="flex min-w-0 flex-col gap-1">
+          <Label htmlFor="blocked-words-text">Blocked words and phrases</Label>
+          <Textarea
+            id="blocked-words-text"
+            rows={16}
+            aria-invalid={listError ? true : undefined}
+            className="min-h-96 font-mono text-[12.5px]"
+            {...register("text")}
+          />
+          <div className="flex items-baseline justify-between gap-2">
+            {listError ? (
+              <p className="text-err">{listError}</p>
+            ) : (
+              <p className="text-muted-foreground">
+                Up to {BLOCKED_WORDS_MAX_ENTRIES.toLocaleString()} entries, each
+                up to {BLOCKED_WORDS_MAX_ENTRY_LENGTH} characters.
+              </p>
+            )}
+            <span className="ml-auto shrink-0 text-muted-foreground">
+              {words.length.toLocaleString()} of{" "}
+              {BLOCKED_WORDS_MAX_ENTRIES.toLocaleString()} entries
+            </span>
+          </div>
+        </div>
+
+        {staleSave && <StaleSaveAlert onReload={() => void handleReload()} />}
+        {!staleSave && (errors.root?.message || saveError) && (
+          <p className="text-err">{errors.root?.message ?? saveError}</p>
+        )}
+
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[12.5px]">
+            {!staleSave &&
+              (isDirty ? (
+                <span className="text-muted-foreground">Unsaved changes</span>
+              ) : justSaved ? (
+                <span className="text-ok">Saved.</span>
+              ) : null)}
+          </span>
+          <Button
+            type="submit"
+            size="sm"
+            disabled={isPending || isSubmitting || !!listError}
+          >
+            Save
+          </Button>
+        </div>
+      </form>
+    </AdminSection>
   );
 }

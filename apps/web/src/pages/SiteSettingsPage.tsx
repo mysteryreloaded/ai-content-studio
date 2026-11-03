@@ -106,18 +106,10 @@ export function SiteSettingsPage() {
               onReload={reload}
               capsSlot={<CapsForm settings={data} onReload={reload} />}
             />
-            <section id="blocked-words" className="flex flex-col gap-content">
-              <BlockedWordsForm />
-            </section>
-            <section id="site-terms" className="flex flex-col gap-content">
-              <SiteTermsForm />
-            </section>
-            <section id="privacy-policy" className="flex flex-col gap-content">
-              <SitePrivacyForm />
-            </section>
-            <section id="notice-pause" className="flex flex-col gap-content">
-              <PauseNoticeForm />
-            </section>
+            <BlockedWordsForm settings={data} onReload={reload} />
+            <SiteTermsForm settings={data} onReload={reload} />
+            <SitePrivacyForm settings={data} onReload={reload} />
+            <PauseNoticeForm settings={data} />
           </div>
         </div>
       )}

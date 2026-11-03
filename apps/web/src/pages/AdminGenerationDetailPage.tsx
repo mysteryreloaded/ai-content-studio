@@ -1,224 +1,238 @@
-// A Generation's own detail, for an Admin (issue #68): read-only, plus
-// Remove with a required reason. Unlike the owner's detail dialog, this
-// never offers Reuse, and keeps the values/prompt/Upload links visible
-// even once it's been removed (only a Tombstone empties them).
+// A Generation's own detail, for an Admin (issue #68, restyled for
+// #209): read-only, plus Remove with a required reason. Unlike the
+// owner's detail dialog, this never offers Reuse, and keeps the
+// values/prompt/Upload links visible even once it's been removed (only
+// a Tombstone empties them).
 
-import type { GenerationInputSetting } from "@ai-content-studio/shared";
-import { useEffect, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Check, Copy } from "lucide-react";
+import { useState } from "react";
+import { Link, useParams } from "react-router-dom";
+import { AdminPageHeader } from "../components/admin/AdminPageHeader.js";
+import { AdminSection } from "../components/admin/AdminSection.js";
+import {
+  GenerationStatePill,
+  TestPill,
+} from "../components/admin/GenerationStatePill.js";
+import { HistoryLink } from "../components/admin/HistoryLink.js";
+import { LoadError } from "../components/admin/LoadError.js";
+import { RemoveDialog } from "../components/admin/RemoveDialog.js";
+import {
+  type GenerationDetail,
+  GenerationMediaPanel,
+  GenerationSettingsGroups,
+  runTime,
+} from "../components/generations/GenerationDetailBody.js";
+import { Button } from "../components/ui/button.js";
+import { api, ok } from "../lib/api.js";
+import { formatWhen } from "../lib/format.js";
 
-interface AdminGenerationAsset {
-  id: string;
-  nodeId: string;
-  sortOrder: number;
-  kind: string;
-  contentType: string;
-  size: number;
-}
-
-interface AdminGenerationDetail {
-  id: string;
-  state: string;
-  error: string | null;
-  tries: number;
-  submittedAt: string;
-  startedAt: string | null;
-  endedAt: string | null;
-  deletedAt: string | null;
-  removedAt: string | null;
-  removedReason: string | null;
+interface AdminGenerationDetail extends GenerationDetail {
   ownerId: string;
   ownerEmail: string;
   ownerName: string;
-  modelId: string;
-  modelSlug: string;
-  modelName: string;
-  modelAttribution: string;
-  modelDeleted: boolean;
-  modeId: string;
-  modeName: string;
-  assets: AdminGenerationAsset[];
-  settings: GenerationInputSetting[];
+  removedReason: string | null;
+  isTest: boolean;
 }
 
-function settingValue(setting: GenerationInputSetting): string {
-  if (setting.kind === "upload") {
-    if (!setting.upload) return "None";
-    if (setting.upload.removed) return "Removed by an administrator";
-    return `${setting.upload.name} (${setting.upload.id})`;
-  }
-  return setting.display;
+function CopyIdButton({ id }: { id: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      onClick={() => {
+        void navigator.clipboard.writeText(id).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1400);
+        });
+      }}
+    >
+      {copied ? <Check /> : <Copy />}
+      {copied ? "Copied" : "Copy"}
+    </Button>
+  );
 }
 
 /** The Admin Generations page's read-only detail (issue #68). */
 export function AdminGenerationDetailPage() {
   const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
-  const [detail, setDetail] = useState<AdminGenerationDetail | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [reason, setReason] = useState("");
-  const [removing, setRemoving] = useState(false);
-  const [removeError, setRemoveError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const [removeOpen, setRemoveOpen] = useState(false);
+  const queryKey = ["admin", "generation", id];
 
-  function load() {
-    if (!id) return;
-    fetch(`/api/admin/generations/${id}`)
-      .then((res) => {
-        if (!res.ok) throw new Error(`unexpected status ${res.status}`);
-        return res.json() as Promise<AdminGenerationDetail>;
-      })
-      .then((body) => {
-        setDetail(body);
-        setLoadError(null);
-      })
-      .catch(() => setLoadError("could not load this Generation"));
+  const {
+    data: detail,
+    error,
+    refetch,
+  } = useQuery<AdminGenerationDetail>({
+    queryKey,
+    enabled: !!id,
+    queryFn: () =>
+      ok<AdminGenerationDetail>(
+        api.api.admin.generations[":id"].$get({ param: { id: id as string } }),
+      ),
+  });
+
+  const removeMutation = useMutation({
+    mutationFn: (reason: string) =>
+      ok<AdminGenerationDetail>(
+        api.api.admin.generations[":id"].remove.$post({
+          param: { id: id as string },
+          json: { reason },
+        }),
+      ),
+    onSuccess: (body) => {
+      queryClient.setQueryData(queryKey, body);
+      setRemoveOpen(false);
+    },
+  });
+
+  if (error) {
+    return (
+      <LoadError
+        message="could not load this Generation"
+        onRetry={() => void refetch()}
+      />
+    );
   }
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: load is re-created each render, id is the actual dependency
-  useEffect(load, [id]);
-
-  async function handleRemove() {
-    if (!id) return;
-    setRemoveError(null);
-    if (reason.trim().length === 0) {
-      setRemoveError("a reason is required");
-      return;
-    }
-    setRemoving(true);
-    try {
-      const res = await fetch(`/api/admin/generations/${id}/remove`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ reason }),
-      });
-      if (!res.ok) throw new Error(`unexpected status ${res.status}`);
-      load();
-      setReason("");
-    } catch {
-      setRemoveError("could not remove this Generation");
-    } finally {
-      setRemoving(false);
-    }
-  }
-
-  if (loadError) return <p role="alert">{loadError}</p>;
   if (!detail) return <p>Loading…</p>;
 
   const canRemove = !detail.deletedAt && !detail.removedAt;
 
   return (
-    <section>
-      <button type="button" onClick={() => navigate(-1)}>
-        ← Back
-      </button>
-      <h2>
-        {detail.modelName} · {detail.modeName}
-      </h2>
-      {detail.modelAttribution && <p>{detail.modelAttribution}</p>}
-
-      <dl>
-        <dt>Owner</dt>
-        <dd>
-          <Link to={`/admin/users/${detail.ownerId}`}>
-            {detail.ownerName} ({detail.ownerEmail})
-          </Link>
-        </dd>
-        <dt>State</dt>
-        <dd>
-          {detail.deletedAt
-            ? "deleted"
-            : detail.removedAt
-              ? "removed"
-              : detail.state}
-        </dd>
-        {detail.error && (
-          <>
-            <dt>Error</dt>
-            <dd role="alert">{detail.error}</dd>
-          </>
-        )}
-        <dt>Submitted</dt>
-        <dd>{new Date(detail.submittedAt).toLocaleString()}</dd>
-        {detail.endedAt && (
-          <>
-            <dt>Ended</dt>
-            <dd>{new Date(detail.endedAt).toLocaleString()}</dd>
-          </>
-        )}
-        <dt>Id</dt>
-        <dd>
-          <code>{detail.id}</code>
-        </dd>
-        {detail.removedAt && (
-          <>
-            <dt>Removed</dt>
-            <dd>
-              {new Date(detail.removedAt).toLocaleString()} —{" "}
-              {detail.removedReason}
-            </dd>
-          </>
-        )}
-      </dl>
-
-      {detail.deletedAt ? (
-        <p>
-          This Generation was deleted by its owner; nothing is left to show.
-        </p>
-      ) : (
-        <>
-          {detail.assets.length > 0 && (
-            <section>
-              <h3>Assets</h3>
-              <ul>
-                {detail.assets.map((asset) => (
-                  <li key={asset.id}>
-                    <a href={`/api/assets/${asset.id}?download=1`}>
-                      {asset.kind} ({asset.contentType}, {asset.size} bytes)
-                    </a>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          )}
-
-          {detail.settings.length > 0 && (
-            <section>
-              <h3>Settings</h3>
-              <dl>
-                {detail.settings.map((setting) => (
-                  <div key={setting.inputId}>
-                    <dt>{setting.label}</dt>
-                    <dd>{settingValue(setting)}</dd>
-                  </div>
-                ))}
-              </dl>
-            </section>
-          )}
-        </>
-      )}
-
-      {canRemove && (
-        <section>
-          <h3>Remove this Generation</h3>
-          <label htmlFor="admin-generation-remove-reason">
-            Reason (required, up to 500 characters)
-          </label>
-          <textarea
-            id="admin-generation-remove-reason"
-            maxLength={500}
-            value={reason}
-            onChange={(event) => setReason(event.target.value)}
-          />
-          <button
-            type="button"
-            onClick={() => void handleRemove()}
-            disabled={removing}
+    <div className="flex flex-col gap-sections">
+      <AdminPageHeader
+        crumb={
+          <Link
+            to="/admin/generations"
+            className="underline-offset-4 hover:underline"
           >
-            Remove
-          </button>
-          {removeError && <p role="alert">{removeError}</p>}
-        </section>
-      )}
-    </section>
+            Admin / Generations
+          </Link>
+        }
+        title={`${detail.modelName} · ${detail.modeName}`}
+        pills={
+          <>
+            <GenerationStatePill
+              state={detail.state}
+              deletedAt={detail.deletedAt}
+              removedAt={detail.removedAt}
+            />
+            {detail.isTest && <TestPill />}
+          </>
+        }
+        actions={
+          <>
+            <Button variant="outline" size="sm" asChild>
+              <Link to={`/admin/logs?generationId=${detail.id}`}>
+                Log entries
+              </Link>
+            </Button>
+            <HistoryLink targetType="generation" targetId={detail.id} />
+            {canRemove && (
+              <Button
+                type="button"
+                variant="danger"
+                size="sm"
+                onClick={() => setRemoveOpen(true)}
+              >
+                Remove…
+              </Button>
+            )}
+          </>
+        }
+      />
+
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
+        <div className="flex flex-col gap-3">
+          {detail.deletedAt ? (
+            <p className="rounded-md bg-muted px-[11px] py-[9px] text-muted-foreground">
+              This Generation was deleted by its owner; nothing is left to show.
+            </p>
+          ) : detail.removedAt ? (
+            <div
+              role="alert"
+              className="rounded-r-md border border-l-[3px] border-border border-l-err bg-card px-3 py-[9px] text-err"
+            >
+              Removed {formatWhen(detail.removedAt)} — {detail.removedReason}
+            </div>
+          ) : (
+            <GenerationMediaPanel detail={detail} />
+          )}
+
+          {!detail.deletedAt && detail.settings.length > 0 && (
+            <AdminSection title="Settings">
+              <GenerationSettingsGroups detail={detail} />
+            </AdminSection>
+          )}
+        </div>
+
+        <div className="flex flex-col gap-2 rounded-xl border border-border bg-card p-4 text-[13px]">
+          <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3.5 gap-y-2">
+            <dt className="text-muted-foreground">Owner</dt>
+            <dd className="min-w-0">
+              <Link
+                to={`/admin/users/${detail.ownerId}`}
+                className="text-primary underline-offset-4 hover:underline"
+              >
+                {detail.ownerName}
+              </Link>{" "}
+              <span className="text-muted-foreground">{detail.ownerEmail}</span>
+            </dd>
+            <dt className="text-muted-foreground">Model</dt>
+            <dd className="min-w-0">
+              {detail.modelDeleted ? (
+                detail.modelName
+              ) : (
+                <Link
+                  to={`/admin/models/${detail.modelId}`}
+                  className="text-primary underline-offset-4 hover:underline"
+                >
+                  {detail.modelName}
+                </Link>
+              )}
+            </dd>
+            <dt className="text-muted-foreground">Mode</dt>
+            <dd className="min-w-0">{detail.modeName}</dd>
+            {detail.modelAttribution && (
+              <>
+                <dt className="text-muted-foreground">Attribution</dt>
+                <dd className="min-w-0">{detail.modelAttribution}</dd>
+              </>
+            )}
+            <dt className="text-muted-foreground">Submitted</dt>
+            <dd className="min-w-0">{formatWhen(detail.submittedAt)}</dd>
+            {runTime(detail.startedAt, detail.endedAt) && (
+              <>
+                <dt className="text-muted-foreground">Run time</dt>
+                <dd className="min-w-0">
+                  {runTime(detail.startedAt, detail.endedAt)}
+                </dd>
+              </>
+            )}
+            <dt className="text-muted-foreground">Tries</dt>
+            <dd className="min-w-0 tabular-nums">{detail.tries}</dd>
+            <dt className="text-muted-foreground">Id</dt>
+            <dd className="flex min-w-0 items-center gap-1">
+              <span className="font-mono text-[12.5px] [overflow-wrap:anywhere]">
+                {detail.id}
+              </span>
+            </dd>
+          </dl>
+          <CopyIdButton id={detail.id} />
+        </div>
+      </div>
+
+      <RemoveDialog
+        kind="Generation"
+        open={removeOpen}
+        onOpenChange={setRemoveOpen}
+        onRemove={async (reason) => {
+          await removeMutation.mutateAsync(reason);
+        }}
+      />
+    </div>
   );
 }

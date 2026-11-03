@@ -1,20 +1,15 @@
-// See ModelEditorPage.test.tsx's header comment: this file registers its
-// own happy-dom instance (bun test --isolate gives it a clean process).
-import { afterAll, afterEach, describe, expect, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
+// See ../test/happy-dom-setup.ts for why this is registered once, here,
+// before @testing-library/react is imported, and never unregistered.
+import { afterEach, describe, expect, test } from "bun:test";
+import { BUN_FETCH } from "../test/happy-dom-setup.js";
 
-await GlobalRegistrator.register();
-
-const { cleanup, render, waitFor } = await import("@testing-library/react");
-const { createMemoryRouter, RouterProvider } = await import("react-router-dom");
+const { cleanup, screen, waitFor } = await import("@testing-library/react");
+const { renderWithProviders } = await import("../test/render.js");
 const { AdminGenerationsPage } = await import("./AdminGenerationsPage.js");
 
 afterEach(() => {
   cleanup();
-});
-
-afterAll(async () => {
-  await GlobalRegistrator.unregister();
+  globalThis.fetch = BUN_FETCH;
 });
 
 interface FetchCall {
@@ -32,15 +27,14 @@ function mockFetch(handler: (call: FetchCall) => Response | Promise<Response>) {
   }) as typeof fetch;
 }
 
-function renderPage(initialEntry = "/admin/generations") {
-  const router = createMemoryRouter(
-    [
+function renderPage(route = "/admin/generations") {
+  return renderWithProviders(<AdminGenerationsPage />, {
+    route,
+    routes: [
       { path: "/admin/generations", element: <AdminGenerationsPage /> },
       { path: "/admin/generations/:id", element: <p>Detail page</p> },
     ],
-    { initialEntries: [initialEntry] },
-  );
-  return render(<RouterProvider router={router} />);
+  });
 }
 
 const ROW_SUCCEEDED = {
@@ -71,33 +65,49 @@ const ROW_REMOVED = {
   removedAt: new Date("2026-01-02T00:00:00Z").toISOString(),
 };
 
-describe("AdminGenerationsPage (issue #68)", () => {
+const ROW_TEST = {
+  ...ROW_SUCCEEDED,
+  id: "g3",
+  userId: "u3",
+  userName: "Test Runner",
+  isTest: true,
+  submittedAt: new Date("2026-01-04T00:00:00Z").toISOString(),
+};
+
+/** The list endpoint, never the `/resolve/:id` jump-to one (hc drops the "?" when the query is empty). */
+function isGenerationsList(url: string): boolean {
+  return (
+    url === "/api/admin/generations" ||
+    url.startsWith("/api/admin/generations?")
+  );
+}
+
+function defaultHandler(generations: unknown[]) {
+  return (call: FetchCall): Response => {
+    if (call.url.endsWith("/api/admin/models")) {
+      return Response.json({ models: [{ id: "m1", name: "LTX 2.5" }] });
+    }
+    if (isGenerationsList(call.url)) {
+      return Response.json({ generations, hasMore: false });
+    }
+    throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+  };
+}
+
+describe("AdminGenerationsPage (issue #68, #209)", () => {
   test("lists Generations across users, labelling a Removal distinctly from its own state", async () => {
-    mockFetch((call) => {
-      if (call.url.endsWith("/api/admin/models")) {
-        return Response.json({
-          models: [{ id: "m1", name: "LTX 2.5" }],
-        });
-      }
-      if (call.url.startsWith("/api/admin/generations?")) {
-        return Response.json({
-          generations: [ROW_SUCCEEDED, ROW_REMOVED],
-          hasMore: false,
-        });
-      }
-      throw new Error(`unexpected fetch ${call.method} ${call.url}`);
-    });
+    mockFetch(defaultHandler([ROW_SUCCEEDED, ROW_REMOVED]));
 
-    const view = renderPage();
-    await view.findByText("A User");
-    await view.findByText("Another User");
+    renderPage();
+    await screen.findByText("A User");
+    await screen.findByText("Another User");
 
-    const rows = view.getAllByRole("row");
+    const rows = screen.getAllByRole("row");
     // header row + 2 data rows
     expect(rows).toHaveLength(3);
-    expect(rows[1]?.textContent).toContain("succeeded");
-    expect(rows[2]?.textContent).toContain("removed");
-    const links = view
+    expect(rows[1]?.textContent).toContain("Succeeded");
+    expect(rows[2]?.textContent).toContain("Removed");
+    const links = screen
       .getAllByRole("link")
       .filter((link) =>
         link.getAttribute("href")?.startsWith("/admin/generations/"),
@@ -113,7 +123,7 @@ describe("AdminGenerationsPage (issue #68)", () => {
       if (call.url.endsWith("/api/admin/models")) {
         return Response.json({ models: [] });
       }
-      if (call.url.startsWith("/api/admin/generations?")) {
+      if (isGenerationsList(call.url)) {
         const status = new URL(call.url, "http://x").searchParams.get("status");
         statuses.push(status ?? "");
         return Response.json({ generations: [], hasMore: false });
@@ -121,11 +131,14 @@ describe("AdminGenerationsPage (issue #68)", () => {
       throw new Error(`unexpected fetch ${call.method} ${call.url}`);
     });
 
-    const view = renderPage();
-    await view.findByText("No Generations match these filters.");
+    renderPage();
+    await screen.findByText("No Generations match these filters.");
 
     const { default: userEvent } = await import("@testing-library/user-event");
-    await userEvent.selectOptions(view.getByLabelText("State"), "removed");
+    await userEvent.click(screen.getByLabelText("State"));
+    await userEvent.click(
+      await screen.findByRole("option", { name: "Removed" }),
+    );
 
     await waitFor(() => expect(statuses).toContain("removed"));
   });
@@ -135,7 +148,7 @@ describe("AdminGenerationsPage (issue #68)", () => {
       if (call.url.endsWith("/api/admin/models")) {
         return Response.json({ models: [] });
       }
-      if (call.url.startsWith("/api/admin/generations?")) {
+      if (isGenerationsList(call.url)) {
         return Response.json({ generations: [], hasMore: false });
       }
       if (call.url === "/api/admin/generations/resolve/asset-1") {
@@ -144,16 +157,44 @@ describe("AdminGenerationsPage (issue #68)", () => {
       throw new Error(`unexpected fetch ${call.method} ${call.url}`);
     });
 
-    const view = renderPage();
-    await view.findByText("No Generations match these filters.");
+    renderPage();
+    await screen.findByText("No Generations match these filters.");
 
     const { default: userEvent } = await import("@testing-library/user-event");
     await userEvent.type(
-      view.getByLabelText("Jump to a Generation or Asset id"),
+      screen.getByLabelText("Jump to a Generation or Asset id"),
       "asset-1",
     );
-    await userEvent.click(view.getByRole("button", { name: "Go" }));
+    await userEvent.click(screen.getByRole("button", { name: "Go" }));
 
-    expect(await view.findByText("Detail page")).toBeTruthy();
+    expect(await screen.findByText("Detail page")).toBeTruthy();
+  });
+
+  test("marks Test Generations", async () => {
+    mockFetch(defaultHandler([ROW_TEST]));
+
+    renderPage();
+    await screen.findByText("Test Runner");
+
+    expect(screen.getByText("Test")).toBeTruthy();
+  });
+
+  test("shows the filtered user's name", async () => {
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/admin/models")) {
+        return Response.json({ models: [] });
+      }
+      if (call.url.includes("/api/admin/users/u1")) {
+        return Response.json({ id: "u1", name: "Alice", email: "a@x.com" });
+      }
+      if (isGenerationsList(call.url)) {
+        return Response.json({ generations: [], hasMore: false });
+      }
+      throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+    });
+
+    renderPage("/admin/generations?user=u1");
+
+    expect(await screen.findByText("Filtered to Alice ×")).toBeTruthy();
   });
 });

@@ -70,7 +70,7 @@ export function ModelEditorPage() {
               <InputsSection editor={editor} detail={detail} nav={nav} />
             )}
             {nav.section === "modes" && (
-              <ModesSection editor={editor} detail={detail} />
+              <ModesSection editor={editor} detail={detail} nav={nav} />
             )}
             {nav.section === "backends" && (
               <BackendsSection editor={editor} detail={detail} />

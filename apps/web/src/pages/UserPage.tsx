@@ -1,6 +1,7 @@
 import {
   USER_CAP_OVERRIDE_MAX,
   USER_CAP_OVERRIDE_MIN,
+  userCapOverrideSchema,
 } from "@ai-content-studio/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRightIcon, LockIcon } from "lucide-react";
@@ -60,17 +61,17 @@ interface SiteCaps {
 
 const DISABLE_REASON_MAX_LENGTH = 500;
 
-/** Blank, or a whole number in the shared 0–1,000 range (userCapOverrideSchema's). */
+/**
+ * The raw input: a string (RHF has no `valueAsNull`, so form state can't
+ * hold the schema's null), which must be blank or pass the shared
+ * `userCapOverrideSchema`; a blank becomes the Site default (null) on
+ * submit.
+ */
 const capOverrideInput = z.string().refine(
   (raw) => {
     const trimmed = raw.trim();
     if (trimmed === "") return true;
-    const value = Number(trimmed);
-    return (
-      Number.isInteger(value) &&
-      value >= USER_CAP_OVERRIDE_MIN &&
-      value <= USER_CAP_OVERRIDE_MAX
-    );
+    return userCapOverrideSchema.safeParse(Number(trimmed)).success;
   },
   {
     message: `Blank, or a whole number between ${USER_CAP_OVERRIDE_MIN} and ${USER_CAP_OVERRIDE_MAX.toLocaleString()}.`,

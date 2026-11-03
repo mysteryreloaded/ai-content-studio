@@ -40,16 +40,7 @@ import {
   sameTerms,
   termsFrom,
 } from "./helpers/drafts.js";
-import {
-  newAudioUploadInput,
-  newImageUploadInput,
-  newNumberInput,
-  newPointsInput,
-  newSeedInput,
-  newSelectInput,
-  newTextInput,
-  newVideoUploadInput,
-} from "./helpers/newInputs.js";
+import { newInputOfKind } from "./helpers/newInputs.js";
 import { sortedTestRuns } from "./helpers/testRuns.js";
 import {
   boundNodeIds,
@@ -115,8 +106,6 @@ export function useModelEditor() {
   const [inputsDraft, setInputsDraft] = useState<InputDefinition[] | null>(
     null,
   );
-  const [newInputKind, setNewInputKind] =
-    useState<InputDefinition["kind"]>("text");
   const [stateError, setStateError] = useState<string[] | null>(null);
   const [togglingState, setTogglingState] = useState(false);
   const [termsForm, setTermsForm] = useState<TermsForm | null>(null);
@@ -879,38 +868,50 @@ export function useModelEditor() {
     }
   }
 
-  function addInput() {
-    if (!inputsDraft) return;
-    if (newInputKind === "seed" && inputsDraft.some((i) => i.kind === "seed")) {
-      return;
+  /** Issue #215's New Input menu: creates a fresh Input of `kind` (refused for a second Seed) and returns its id, so the caller can open its sheet. */
+  function createInput(kind: InputDefinition["kind"]): string | null {
+    if (!inputsDraft) return null;
+    if (kind === "seed" && inputsDraft.some((i) => i.kind === "seed")) {
+      return null;
     }
-    const created =
-      newInputKind === "text"
-        ? newTextInput()
-        : newInputKind === "number"
-          ? newNumberInput()
-          : newInputKind === "seed"
-            ? newSeedInput()
-            : newInputKind === "image_upload"
-              ? newImageUploadInput()
-              : newInputKind === "video_upload"
-                ? newVideoUploadInput()
-                : newInputKind === "audio_upload"
-                  ? newAudioUploadInput()
-                  : newInputKind === "points"
-                    ? newPointsInput()
-                    : newSelectInput();
+    const created = newInputOfKind(kind);
     setInputsDraft([...inputsDraft, created]);
+    return created.id;
   }
 
+  /** Issue #215: "Delete Input" removes it from the draft and its settings from every Mode draft, rather than leaving that to the server's own save-time filter. */
   function removeInput(index: number) {
     if (!inputsDraft) return;
+    const removed = inputsDraft[index];
     setInputsDraft(inputsDraft.filter((_, i) => i !== index));
+    if (removed && modesDraft) {
+      setModesDraft(
+        modesDraft.map((mode) => ({
+          ...mode,
+          inputSettings: mode.inputSettings.filter(
+            (s) => s.inputId !== removed.id,
+          ),
+        })),
+      );
+    }
   }
 
   function updateInput(index: number, next: InputDefinition) {
     if (!inputsDraft) return;
     setInputsDraft(inputsDraft.map((input, i) => (i === index ? next : input)));
+  }
+
+  /** Issue #215's Move up/Move down: reorders `inputsDraft`, which is also the Workbench's own Input order within each group. */
+  function moveInput(index: number, direction: "up" | "down") {
+    if (!inputsDraft) return;
+    const swapWith = direction === "up" ? index - 1 : index + 1;
+    if (swapWith < 0 || swapWith >= inputsDraft.length) return;
+    const next = [...inputsDraft];
+    const a = next[index] as InputDefinition;
+    const b = next[swapWith] as InputDefinition;
+    next[index] = b;
+    next[swapWith] = a;
+    setInputsDraft(next);
   }
 
   // issue #213: ditto for "Save Inputs".
@@ -1179,8 +1180,6 @@ export function useModelEditor() {
     setEditingModeIndex,
     inputsDraft,
     setInputsDraft,
-    newInputKind,
-    setNewInputKind,
     stateError,
     setStateError,
     togglingState,
@@ -1250,9 +1249,10 @@ export function useModelEditor() {
     clearTestUpload,
     testValuesPayload,
     handleTestSubmit,
-    addInput,
+    createInput,
     removeInput,
     updateInput,
+    moveInput,
     handleToggleState,
     modesDirty,
     inputsDirty,

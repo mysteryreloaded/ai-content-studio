@@ -30,6 +30,20 @@ export function bindingValueKind(
   if (Array.isArray(value)) return null;
   return typeof value as "string" | "number" | "boolean";
 }
+/** A bound field's COMBO choices, from whichever attached Backend reports them (issue #215's select options table); null when none does, or the field isn't a COMBO. */
+export function comboOptionsFor(
+  backends: CheckModelBackend[] | null,
+  classType: string,
+  field: string,
+): readonly string[] | null {
+  if (!backends) return null;
+  for (const backend of backends) {
+    const spec = backend.fieldSpecs?.get(classType)?.[field];
+    if (spec?.type === "COMBO" && spec.options) return spec.options;
+  }
+  return null;
+}
+
 /** `pendingWorkflow`'s own nodes, the same shape `detail.nodes` is in, for the rebind picker's node choices (issue #71). */
 export function nodesFromWorkflow(workflow: Workflow): ModelNode[] {
   return Object.entries(workflow).map(([id, node]) => ({

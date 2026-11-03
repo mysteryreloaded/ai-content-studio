@@ -439,6 +439,359 @@ describe("GalleryPage", () => {
     );
     expect(view.getAllByRole("link", { name: "LTX 2.5" }).length).toBe(2);
   });
+
+  test("a progress event shows the step counter on a running card", async () => {
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/gallery/models")) {
+        return Response.json({ models: [] });
+      }
+      if (call.url.endsWith("/api/models")) {
+        return Response.json({ models: [] });
+      }
+      if (call.url.includes("/api/gallery?")) {
+        return Response.json({
+          submissions: [
+            {
+              ...SUBMISSION_1,
+              generations: [
+                { ...SUBMISSION_1.generations[0], state: "running" },
+              ],
+            },
+          ],
+          hasMore: false,
+        });
+      }
+      throw new Error(`unexpected fetch ${call.url}`);
+    });
+
+    const view = renderGallery();
+    await view.findByText("Running");
+
+    await waitFor(() => FakeEventSource.generationsStream());
+    FakeEventSource.generationsStream().emit("progress", {
+      generationId: "g1",
+      elapsedMs: 10_000,
+      estimateMs: 100_000,
+      step: 14,
+      totalSteps: 30,
+    });
+
+    expect(await view.findByText(/step 14 \/ 30/)).toBeTruthy();
+  });
+
+  test("a snapshot event updates a loaded Generation's state", async () => {
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/gallery/models")) {
+        return Response.json({ models: [] });
+      }
+      if (call.url.endsWith("/api/models")) {
+        return Response.json({ models: [] });
+      }
+      if (call.url.includes("/api/gallery?")) {
+        return Response.json({
+          submissions: [
+            {
+              ...SUBMISSION_1,
+              generations: [
+                { ...SUBMISSION_1.generations[0], state: "queued" },
+              ],
+            },
+          ],
+          hasMore: false,
+        });
+      }
+      throw new Error(`unexpected fetch ${call.url}`);
+    });
+
+    const view = renderGallery();
+    await view.findByText("Queued");
+
+    await waitFor(() => FakeEventSource.generationsStream());
+    FakeEventSource.generationsStream().emit("snapshot", {
+      generations: [{ ...SUBMISSION_1.generations[0], state: "running" }],
+    });
+
+    expect(await view.findByText("Running")).toBeTruthy();
+  });
+
+  test("a Removed card shows under All", async () => {
+    const removedSubmission = {
+      ...SUBMISSION_1,
+      generations: [
+        {
+          ...SUBMISSION_1.generations[0],
+          state: "succeeded",
+          removedAt: new Date().toISOString(),
+        },
+      ],
+    };
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/gallery/models")) {
+        return Response.json({ models: [] });
+      }
+      if (call.url.endsWith("/api/models")) {
+        return Response.json({ models: [] });
+      }
+      if (call.url.includes("/api/gallery?")) {
+        return Response.json({
+          submissions: [removedSubmission],
+          hasMore: false,
+        });
+      }
+      throw new Error(`unexpected fetch ${call.url}`);
+    });
+
+    const view = renderGallery("/gallery");
+    expect(await view.findByText("Removed by an administrator")).toBeTruthy();
+  });
+
+  test("a Removed card is hidden under Finished", async () => {
+    const removedSubmission = {
+      ...SUBMISSION_1,
+      generations: [
+        {
+          ...SUBMISSION_1.generations[0],
+          state: "succeeded",
+          removedAt: new Date().toISOString(),
+        },
+      ],
+    };
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/gallery/models")) {
+        return Response.json({ models: [] });
+      }
+      if (call.url.endsWith("/api/models")) {
+        return Response.json({ models: [] });
+      }
+      if (call.url.includes("/api/gallery?")) {
+        // Mirrors the server (QA's own note): a removed Generation is
+        // returned under every state filter; the client hides it outside
+        // "All".
+        return Response.json({
+          submissions: [removedSubmission],
+          hasMore: false,
+        });
+      }
+      throw new Error(`unexpected fetch ${call.url}`);
+    });
+
+    const view = renderGallery("/gallery?state=finished");
+    await view.findByText("No Generations match.");
+    expect(view.queryByText("Removed by an administrator")).toBeNull();
+  });
+
+  test("Dismiss on a Removed card posts dismiss-removed and drops the card", async () => {
+    const removedSubmission = {
+      ...SUBMISSION_1,
+      generations: [
+        {
+          ...SUBMISSION_1.generations[0],
+          state: "succeeded",
+          removedAt: new Date().toISOString(),
+        },
+      ],
+    };
+    const dismissCalls: FetchCall[] = [];
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/gallery/models")) {
+        return Response.json({ models: [] });
+      }
+      if (call.url.endsWith("/api/models")) {
+        return Response.json({ models: [] });
+      }
+      if (call.url.includes("/api/gallery?")) {
+        return Response.json({
+          submissions: [removedSubmission],
+          hasMore: false,
+        });
+      }
+      if (call.url.includes("/dismiss-removed")) {
+        dismissCalls.push(call);
+        return Response.json({});
+      }
+      throw new Error(`unexpected fetch ${call.url}`);
+    });
+
+    const view = renderGallery();
+    await view.findByText("Removed by an administrator");
+
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await userEvent.click(view.getByRole("button", { name: "Dismiss" }));
+
+    await waitFor(() => expect(dismissCalls.length).toBe(1));
+    expect(dismissCalls[0]?.method).toBe("POST");
+    expect(dismissCalls[0]?.url).toContain(
+      "/api/generations/g1/dismiss-removed",
+    );
+    expect(view.queryByText("Removed by an administrator")).toBeNull();
+  });
+
+  test("Delete all on an ended Submission sends DELETE /api/submissions/:id and removes the block", async () => {
+    const twoGenSubmission = {
+      ...SUBMISSION_1,
+      generations: [
+        { ...SUBMISSION_1.generations[0], id: "g1", state: "succeeded" },
+        { ...SUBMISSION_1.generations[0], id: "g2", state: "failed" },
+      ],
+    };
+    const deleteCalls: FetchCall[] = [];
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/gallery/models")) {
+        return Response.json({
+          models: [{ id: "m1", slug: "ltx", name: "LTX 2.5", deleted: false }],
+        });
+      }
+      if (call.url.endsWith("/api/models")) {
+        return Response.json({ models: [] });
+      }
+      if (call.url.includes("/api/gallery?")) {
+        return Response.json({
+          submissions: [twoGenSubmission],
+          hasMore: false,
+        });
+      }
+      if (
+        call.url.endsWith("/api/submissions/sub1") &&
+        call.method === "DELETE"
+      ) {
+        deleteCalls.push(call);
+        return Response.json({});
+      }
+      throw new Error(`unexpected fetch ${call.url} ${call.method}`);
+    });
+
+    const view = renderGallery();
+    await view.findByRole("button", { name: "Delete all" });
+
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await userEvent.click(view.getByRole("button", { name: "Delete all" }));
+    await userEvent.click(view.getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(deleteCalls.length).toBe(1));
+    expect(await view.findByText("Nothing here yet")).toBeTruthy();
+  });
+
+  test("the empty state links to each enabled Model", async () => {
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/gallery/models")) {
+        return Response.json({ models: [] });
+      }
+      if (call.url.endsWith("/api/models")) {
+        return Response.json({
+          models: [{ id: "m1", slug: "ltx", name: "LTX 2.5" }],
+        });
+      }
+      if (call.url.includes("/api/gallery?")) {
+        return Response.json({ submissions: [], hasMore: false });
+      }
+      throw new Error(`unexpected fetch ${call.url}`);
+    });
+
+    const view = renderGallery();
+    await view.findByText("Nothing here yet");
+    expect(view.getByRole("link", { name: "LTX 2.5" })).toBeTruthy();
+  });
+
+  test("a Generation with 3 Assets shows +2", async () => {
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/gallery/models")) {
+        return Response.json({ models: [] });
+      }
+      if (call.url.endsWith("/api/models")) {
+        return Response.json({ models: [] });
+      }
+      if (call.url.includes("/api/gallery?")) {
+        return Response.json({
+          submissions: [
+            {
+              ...SUBMISSION_1,
+              generations: [
+                {
+                  ...SUBMISSION_1.generations[0],
+                  assets: [
+                    { ...SUBMISSION_1.generations[0]?.assets[0], id: "a1" },
+                    { ...SUBMISSION_1.generations[0]?.assets[0], id: "a2" },
+                    { ...SUBMISSION_1.generations[0]?.assets[0], id: "a3" },
+                  ],
+                },
+              ],
+            },
+          ],
+          hasMore: false,
+        });
+      }
+      throw new Error(`unexpected fetch ${call.url}`);
+    });
+
+    const view = renderGallery();
+    expect(await view.findByText("+2")).toBeTruthy();
+  });
+
+  test("a Test Generation shows the Test pill", async () => {
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/gallery/models")) {
+        return Response.json({ models: [] });
+      }
+      if (call.url.endsWith("/api/models")) {
+        return Response.json({ models: [] });
+      }
+      if (call.url.includes("/api/gallery?")) {
+        return Response.json({
+          submissions: [
+            {
+              ...SUBMISSION_1,
+              generations: [{ ...SUBMISSION_1.generations[0], isTest: true }],
+            },
+          ],
+          hasMore: false,
+        });
+      }
+      throw new Error(`unexpected fetch ${call.url}`);
+    });
+
+    const view = renderGallery();
+    expect(await view.findByText("Test")).toBeTruthy();
+  });
+
+  test("a Submission that finishes under Under way stays shown", async () => {
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/gallery/models")) {
+        return Response.json({ models: [] });
+      }
+      if (call.url.endsWith("/api/models")) {
+        return Response.json({ models: [] });
+      }
+      if (call.url.includes("/api/gallery?")) {
+        expect(call.url).toContain("state=underway");
+        return Response.json({
+          submissions: [
+            {
+              ...SUBMISSION_1,
+              generations: [
+                { ...SUBMISSION_1.generations[0], state: "running" },
+              ],
+            },
+          ],
+          hasMore: false,
+        });
+      }
+      throw new Error(`unexpected fetch ${call.url}`);
+    });
+
+    const view = renderGallery("/gallery?state=underway");
+    await view.findByText("Running");
+
+    await waitFor(() => FakeEventSource.generationsStream());
+    FakeEventSource.generationsStream().emit("change", {
+      ...SUBMISSION_1.generations[0],
+      modelSlug: SUBMISSION_1.modelSlug,
+      modelName: SUBMISSION_1.modelName,
+      state: "succeeded",
+    });
+
+    expect(await view.findByText("Done")).toBeTruthy();
+    expect(view.queryByRole("link", { name: "LTX 2.5" })).toBeTruthy();
+  });
 });
 
 describe("dayLabel", () => {

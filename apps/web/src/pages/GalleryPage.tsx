@@ -7,147 +7,160 @@ import {
   useParams,
   useSearchParams,
 } from "react-router-dom";
-import type {
-  AssetSummary,
-  GenerationState,
-  GenerationSummary,
-  SubmissionSummary,
-} from "../components/generations/types.js";
+import { FormField } from "../components/admin/FormField.js";
+import { SubmissionBlock } from "../components/generations/SubmissionBlock.js";
+import { Alert } from "../components/ui/alert.js";
+import { Button } from "../components/ui/button.js";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../components/ui/select.js";
+import { ToggleGroup, ToggleGroupItem } from "../components/ui/toggle-group.js";
 import { api, ok } from "../lib/api.js";
+import { useEnabledModels } from "../lib/models.js";
+import { useMediaQuery } from "../lib/useMediaQuery.js";
 import { usePauseNotice } from "../usePauseNotice.js";
 import { useSession } from "../useSession.js";
 import { GenerationDetailOverlay } from "./GenerationDetailOverlay.js";
 import {
   type GalleryModelOption,
+  STATE_LABELS,
+  type StateFilter,
   dayLabel,
+  filterRemovedForState,
   groupByDay,
-  timeLabel,
   toStateFilter,
 } from "./gallery/galleryLogic.js";
 import { useGalleryFeed } from "./gallery/useGalleryFeed.js";
 
 export { dayLabel };
 
-function stateLabel(state: GenerationState, paused: boolean): string {
-  switch (state) {
-    case "queued":
-      if (paused) return "Queued · paused";
-      return "Queued";
-    case "starting":
-      return "Starting…";
-    case "running":
-      return "Running…";
-    case "saving":
-      return "Saving…";
-    case "succeeded":
-      return "Done";
-    case "failed":
-      return "Failed";
-    case "cancelling":
-      return "Cancelling…";
-    case "cancelled":
-      return "Cancelled";
-    default:
-      return state;
-  }
-}
+const STATE_FILTER_ORDER: StateFilter[] = [
+  "all",
+  "underway",
+  "finished",
+  "failed",
+];
 
-/** The thumbnail src for a card's main (first) Asset: the small `/thumb` for an image, the `/poster` frame for a video, or nothing for audio. */
-function thumbSrcFor(asset: AssetSummary): string | null {
-  if (asset.kind === "image") return `/api/assets/${asset.id}/thumb`;
-  if (asset.kind === "video") return `/api/assets/${asset.id}/poster`;
-  return null;
-}
-
-function GenerationCard({
-  generation,
-  paused,
-  onOpen,
+/** The segmented control / select pair driving `?model=<id>&state=…` (issue #198): segmented from 640px, two labelled selects below it. */
+function GalleryFilters({
+  models,
+  modelFilter,
+  stateFilter,
+  onModelChange,
+  onStateChange,
 }: {
-  generation: GenerationSummary;
-  paused: boolean;
-  onOpen: (id: string) => void;
+  models: GalleryModelOption[];
+  modelFilter: string | null;
+  stateFilter: StateFilter;
+  onModelChange: (modelId: string | null) => void;
+  onStateChange: (state: StateFilter) => void;
 }) {
-  const mainAsset = generation.assets[0];
-  const extra = generation.assets.length - 1;
-  const thumb = mainAsset ? thumbSrcFor(mainAsset) : null;
+  const isDesktop = useMediaQuery("(min-width: 640px)");
+  const itemClassName =
+    "px-[9px] py-1 text-[12.5px] text-muted-foreground data-[state=on]:bg-accent-soft data-[state=on]:font-semibold data-[state=on]:text-foreground";
 
-  return (
-    <li className="gallery-card">
-      <button
-        type="button"
-        className="gallery-card-button"
-        onClick={() => onOpen(generation.id)}
-        aria-label={`Open Generation ${generation.id}`}
-      />
-      {generation.isTest && <span className="gallery-card-test">Test</span>}
-      {generation.removedAt ? (
-        <div className="gallery-card-state">
-          <span role="alert">Removed by an administrator</span>
-        </div>
-      ) : generation.state === "succeeded" && mainAsset ? (
-        <>
-          {thumb ? (
-            <img src={thumb} alt="" className="gallery-card-thumb" />
-          ) : (
-            <div
-              className="gallery-card-thumb gallery-card-audio"
-              aria-hidden="true"
+  if (isDesktop) {
+    return (
+      <div className="ml-auto flex flex-wrap items-center gap-2">
+        <ToggleGroup
+          type="single"
+          variant="outline"
+          size="sm"
+          spacing={0}
+          aria-label="Model"
+          value={modelFilter ?? ""}
+          onValueChange={(value) => {
+            if (!value && modelFilter === null) return;
+            onModelChange(value || null);
+          }}
+        >
+          <ToggleGroupItem value="" className={itemClassName}>
+            All Models
+          </ToggleGroupItem>
+          {models.map((model) => (
+            <ToggleGroupItem
+              key={model.id}
+              value={model.id}
+              className={itemClassName}
             >
-              ♪
-            </div>
-          )}
-          {extra > 0 && <span className="gallery-card-badge">+{extra}</span>}
-        </>
-      ) : (
-        <div className="gallery-card-state">
-          <span>{stateLabel(generation.state, paused)}</span>
-          {generation.state === "failed" && generation.error && (
-            <span role="alert">{generation.error}</span>
-          )}
-        </div>
-      )}
-    </li>
-  );
-}
-
-function SubmissionBlock({
-  submission,
-  paused,
-  onOpen,
-}: {
-  submission: SubmissionSummary;
-  paused: boolean;
-  onOpen: (id: string) => void;
-}) {
-  const first = submission.generations[0];
+              {model.name}
+              {model.deleted ? " (deleted)" : ""}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+        <ToggleGroup
+          type="single"
+          variant="outline"
+          size="sm"
+          spacing={0}
+          aria-label="State"
+          value={stateFilter}
+          onValueChange={(value) => {
+            if (!value) return;
+            onStateChange(value as StateFilter);
+          }}
+        >
+          {STATE_FILTER_ORDER.map((key) => (
+            <ToggleGroupItem key={key} value={key} className={itemClassName}>
+              {STATE_LABELS[key]}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+      </div>
+    );
+  }
 
   return (
-    <section className="gallery-submission" aria-label={submission.modeName}>
-      <header className="gallery-submission-header">
-        {first && (
-          <Link to={`/models/${first.modelSlug}`}>{first.modelName}</Link>
-        )}
-        <span>{submission.modeName}</span>
-        <time dateTime={submission.submittedAt}>
-          {timeLabel(new Date(submission.submittedAt))}
-        </time>
-      </header>
-      <ul className="gallery-card-grid">
-        {submission.generations.map((generation) => (
-          <GenerationCard
-            key={generation.id}
-            generation={generation}
-            paused={paused}
-            onOpen={onOpen}
-          />
-        ))}
-      </ul>
-    </section>
+    <div className="grid w-full grid-cols-2 gap-2">
+      <FormField label="Model" htmlFor="gallery-model">
+        <Select
+          value={modelFilter ?? "all"}
+          onValueChange={(value) =>
+            onModelChange(value === "all" ? null : value)
+          }
+        >
+          <SelectTrigger id="gallery-model" className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Models</SelectItem>
+            {models.map((model) => (
+              <SelectItem key={model.id} value={model.id}>
+                {model.name}
+                {model.deleted ? " (deleted)" : ""}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </FormField>
+      <FormField label="State" htmlFor="gallery-state">
+        <Select
+          value={stateFilter}
+          onValueChange={(value) => onStateChange(value as StateFilter)}
+        >
+          <SelectTrigger id="gallery-state" className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {STATE_FILTER_ORDER.map((key) => (
+              <SelectItem key={key} value={key}>
+                {STATE_LABELS[key]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </FormField>
+    </div>
   );
 }
 
-/** A user's own Gallery (issue #56): every Generation they've made, across every Model, grouped by day, filterable, live. */
+const CARDS_CLASS_NAME = "grid grid-cols-2 gap-2.5 sm:grid-cols-4";
+
+/** A user's own Gallery (issue #56/#198): every Generation they've made, across every Model, grouped by day, filterable, live. */
 export function GalleryPage() {
   const { session } = useSession();
   const { paused } = usePauseNotice();
@@ -156,23 +169,42 @@ export function GalleryPage() {
   const stateFilter = toStateFilter(searchParams.get("state"));
   const { id: openGenerationId } = useParams<{ id?: string }>();
   const navigate = useNavigate();
+  const { models: enabledModels } = useEnabledModels();
 
   const { data: modelsData } = useQuery({
     queryKey: ["gallery-models"],
     queryFn: () =>
       ok<{ models: GalleryModelOption[] }>(api.api.gallery.models.$get()),
   });
-  const models = modelsData?.models ?? null;
+  const models = modelsData?.models ?? [];
 
   const {
-    submissions,
+    submissions: loadedSubmissions,
     hasMore,
     isPending,
     isError,
+    loadMoreError,
     isFetchingNextPage,
     fetchNextPage,
+    progressById,
+    cancellingSubmissionIds,
+    cancelErrorSubmissionId,
+    deletingSubmissionIds,
+    deleteErrorSubmissionId,
+    cancellingGenerationIds,
+    deletingGenerationIds,
+    handleCancelSubmission,
+    handleDeleteSubmission,
+    handleCancelGeneration,
+    handleDeleteGeneration,
     handleDismissGeneration,
   } = useGalleryFeed({ modelFilter, stateFilter });
+
+  // Removed cards show under "All" only (issue #198's AC).
+  const submissions = useMemo(
+    () => filterRemovedForState(loadedSubmissions, stateFilter),
+    [loadedSubmissions, stateFilter],
+  );
 
   const now = useMemo(() => new Date(), []);
   const groups = useMemo(
@@ -197,6 +229,20 @@ export function GalleryPage() {
     navigate(`/gallery?${searchParams.toString()}`);
   }
 
+  function setModelFilter(modelId: string | null) {
+    const next = new URLSearchParams(searchParams);
+    if (modelId) next.set("model", modelId);
+    else next.delete("model");
+    setSearchParams(next);
+  }
+
+  function setStateFilter(state: StateFilter) {
+    const next = new URLSearchParams(searchParams);
+    if (state === "all") next.delete("state");
+    else next.set("state", state);
+    setSearchParams(next);
+  }
+
   if (session.status === "loading") return null;
   if (session.status === "signed-out") return <Navigate to="/" replace />;
 
@@ -219,99 +265,119 @@ export function GalleryPage() {
           onDismissed={handleDismissGeneration}
         />
       )}
-      <main className="gallery">
-        <h1>Gallery</h1>
+      <main className="mx-auto flex w-full max-w-[1100px] flex-col gap-4">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <h1>Gallery</h1>
+          <GalleryFilters
+            models={models}
+            modelFilter={modelFilter}
+            stateFilter={stateFilter}
+            onModelChange={setModelFilter}
+            onStateChange={setStateFilter}
+          />
+        </div>
 
-        <form className="gallery-filters" aria-label="Filters">
-          <label>
-            Model
-            <select
-              value={modelFilter ?? ""}
-              onChange={(event) => {
-                const next = new URLSearchParams(searchParams);
-                if (event.target.value) next.set("model", event.target.value);
-                else next.delete("model");
-                setSearchParams(next);
-              }}
+        {isError && (
+          <Alert variant="destructive">Could not load the Gallery.</Alert>
+        )}
+
+        {isPending && !isError && (
+          <p className="text-muted-foreground">Loading…</p>
+        )}
+
+        {!isPending &&
+          !isError &&
+          submissions.length === 0 &&
+          (hasActiveFilters ? (
+            <p className="py-6 text-muted-foreground">
+              No Generations match.{" "}
+              <Button variant="ghost" size="sm" onClick={clearFilters}>
+                Clear filters
+              </Button>
+            </p>
+          ) : (
+            <div className="flex flex-col gap-3 py-6 text-muted-foreground">
+              <p>Nothing here yet</p>
+              <div className="flex flex-wrap gap-3">
+                {enabledModels.map((model) => (
+                  <Link key={model.id} to={`/models/${model.slug}`}>
+                    {model.name}
+                  </Link>
+                ))}
+              </div>
+            </div>
+          ))}
+
+        <div className="flex flex-col gap-3.5">
+          {groups.map((group) => (
+            <div
+              key={group.submissions[0]?.submissionId ?? group.label}
+              className="flex flex-col gap-3.5"
             >
-              <option value="">All Models</option>
-              {models?.map((model) => (
-                <option key={model.id} value={model.id}>
-                  {model.name}
-                  {model.deleted ? " (deleted)" : ""}
-                </option>
+              <h2 className="mt-1.5 text-sm text-muted-foreground">
+                {group.label}
+              </h2>
+              {group.submissions.map((submission) => (
+                <SubmissionBlock
+                  key={submission.submissionId}
+                  submission={submission}
+                  progressById={progressById}
+                  paused={paused}
+                  now={now}
+                  showModel
+                  timeStyle="clock"
+                  cardMedia="thumbnail"
+                  cardsClassName={CARDS_CLASS_NAME}
+                  cancellingSubmission={cancellingSubmissionIds.has(
+                    submission.submissionId,
+                  )}
+                  deletingSubmission={deletingSubmissionIds.has(
+                    submission.submissionId,
+                  )}
+                  cancelSubmissionError={
+                    cancelErrorSubmissionId === submission.submissionId
+                  }
+                  deleteSubmissionError={
+                    deleteErrorSubmissionId === submission.submissionId
+                  }
+                  cancellingGenerationIds={cancellingGenerationIds}
+                  deletingGenerationIds={deletingGenerationIds}
+                  onCancelSubmission={() =>
+                    handleCancelSubmission(submission.submissionId)
+                  }
+                  onDeleteSubmission={() =>
+                    handleDeleteSubmission(submission.submissionId)
+                  }
+                  onCancelGeneration={handleCancelGeneration}
+                  onDeleteGeneration={handleDeleteGeneration}
+                  onOpenDetails={openGeneration}
+                  onDismissGeneration={handleDismissGeneration}
+                />
               ))}
-            </select>
-          </label>
+            </div>
+          ))}
+        </div>
 
-          <label>
-            State
-            <select
-              value={stateFilter}
-              onChange={(event) => {
-                const next = new URLSearchParams(searchParams);
-                const value = event.target.value;
-                if (value === "all") next.delete("state");
-                else next.set("state", value);
-                setSearchParams(next);
-              }}
-            >
-              <option value="all">All</option>
-              <option value="underway">Under way</option>
-              <option value="finished">Finished</option>
-              <option value="failed">Failed or cancelled</option>
-            </select>
-          </label>
-        </form>
+        {loadMoreError && (
+          <Alert variant="destructive">Could not load more.</Alert>
+        )}
 
-        {isError && <p role="alert">Could not load the Gallery.</p>}
-
-        {isPending && !isError && <p>Loading…</p>}
-
-        {!isPending && !isError && submissions.length === 0 && (
-          <p>
-            {hasActiveFilters ? (
-              <>
-                No Generations match.{" "}
-                <button type="button" onClick={clearFilters}>
-                  Clear filters
-                </button>
-              </>
-            ) : (
-              "Nothing here yet"
-            )}
+        {!isPending && submissions.length > 0 && !hasMore && (
+          <p className="text-center text-[12.5px] text-faint">
+            That's everything.
           </p>
         )}
 
-        {groups.map((group) => (
-          <div
-            key={group.submissions[0]?.submissionId ?? group.label}
-            className="gallery-day"
-          >
-            <h2>{group.label}</h2>
-            {group.submissions.map((submission) => (
-              <SubmissionBlock
-                key={submission.submissionId}
-                submission={submission}
-                paused={paused}
-                onOpen={openGeneration}
-              />
-            ))}
-          </div>
-        ))}
-
-        {!isPending && submissions.length > 0 && !hasMore && (
-          <p className="gallery-end">That's everything.</p>
-        )}
-
         {hasMore && (
-          <button
+          <Button
             type="button"
+            variant="outline"
+            className="mx-auto"
             onClick={fetchNextPage}
             disabled={isFetchingNextPage}
           >
             Load more
-          </button>
+          </Button>
         )}
       </main>
     </>

@@ -1,5 +1,40 @@
-import { type FormEvent, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { LockIcon } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { Avatar } from "../components/Avatar.js";
+import { adminBadgeKeys } from "../components/admin/AdminNav.js";
+import { AdminPageHeader } from "../components/admin/AdminPageHeader.js";
+import {
+  AdminTable,
+  adminHeadCell,
+  adminRowClickable,
+} from "../components/admin/AdminTable.js";
+import { AdminTabs, userSectionTabs } from "../components/admin/AdminTabs.js";
+import { EmptyState } from "../components/admin/EmptyState.js";
+import { FilterBar } from "../components/admin/FilterBar.js";
+import { FormField } from "../components/admin/FormField.js";
+import { LoadError } from "../components/admin/LoadError.js";
+import { LoadMoreButton } from "../components/admin/LoadMoreButton.js";
+import { Button } from "../components/ui/button.js";
+import { Input } from "../components/ui/input.js";
+import { Pill } from "../components/ui/pill.js";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../components/ui/select.js";
+import {
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "../components/ui/table.js";
+import { api, ok } from "../lib/api.js";
+import { formatWhen } from "../lib/format.js";
 import { useSession } from "../useSession.js";
 
 type Role = "user" | "admin";
@@ -9,9 +44,12 @@ interface AdminUser {
   id: string;
   email: string;
   name: string;
+  picture: string | null;
   role: Role;
   status: Status;
   pinned: boolean;
+  /** A scrubbed "Deleted user" row (ADR 0008) sets this. */
+  deletedAt?: string | null;
   createdAt: string;
 }
 
@@ -20,224 +58,442 @@ interface UsersResponse {
   hasMore: boolean;
 }
 
-interface FilterState {
-  q: string;
-  role: Role | "";
-  status: Status | "";
+/**
+ * What the action endpoints (approve, promote, demote) return: the
+ * user's six core fields and nothing else (the server's
+ * `respondForAction`), so no `createdAt` — an acted row is therefore
+ * patched by merging the response into the row, never replaced by it.
+ */
+interface UserActionResponse {
+  id: string;
+  email: string;
+  name: string;
+  picture: string | null;
+  role: Role;
+  status: Status;
 }
 
-const BLANK_FILTERS: FilterState = { q: "", role: "", status: "" };
+const PAGE_SIZE = 50;
 
-function queryStringFrom(filters: FilterState): string {
-  const params = new URLSearchParams();
-  for (const [key, value] of Object.entries(filters)) {
-    if (value) params.set(key, value);
+type ListAction = "approve" | "promote" | "demote";
+
+/** The status pill's tone (the prototype's `.pill` variants). */
+const statusTone: Record<Status, "warn" | "ok" | "err"> = {
+  pending: "warn",
+  active: "ok",
+  disabled: "err",
+};
+
+/** Only the keys the caller has, so the URL never carries empty values. */
+function listQueryParams(
+  q: string,
+  status: string,
+  role: string,
+  cursor?: { createdAt: string; id: string } | null,
+): Record<string, string> {
+  const query: Record<string, string> = {};
+  if (q) query.q = q;
+  if (status) query.status = status;
+  if (role) query.role = role;
+  if (cursor) {
+    query.beforeCreatedAt = cursor.createdAt;
+    query.beforeId = cursor.id;
   }
-  return params.toString();
+  query.limit = String(PAGE_SIZE);
+  return query;
 }
 
-/** The admin Users page: newest first, with search, filters and a pending badge (issue #62). */
+/**
+ * The admin's Users list (issue #207): newest first, with "Load older"
+ * paging by keyset cursor, search by email or name, and status and role
+ * filters kept in the URL. Each row shows the shared 24px avatar, the
+ * name (a "Deleted user" when scrubbed), email, role pill with a pinned
+ * marker, status pill, created date, and the row's actions; the whole
+ * row links to the user's page. Users and Blocked accounts are one
+ * section: the tabs live under the shared "Users" header.
+ */
 export function UsersPage() {
   const { session } = useSession();
-  const [draft, setDraft] = useState<FilterState>(BLANK_FILTERS);
-  const [applied, setApplied] = useState<FilterState>(BLANK_FILTERS);
-  const [users, setUsers] = useState<AdminUser[] | null>(null);
-  const [hasMore, setHasMore] = useState(false);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
 
-  function fetchPage(cursor?: { createdAt: string; id: string }) {
-    const params = new URLSearchParams(queryStringFrom(applied));
-    if (cursor) {
-      params.set("beforeCreatedAt", cursor.createdAt);
-      params.set("beforeId", cursor.id);
+  // The filters live in the URL (spec #207): ?q=&status=&role= — a link
+  // such as /admin/users?status=pending opens already filtered.
+  const q = searchParams.get("q") ?? "";
+  const status = searchParams.get("status") ?? "";
+  const role = searchParams.get("role") ?? "";
+
+  // The FilterBar edits a draft; "Apply" commits it to the URL,
+  // "Clear filters" empties both.
+  const [draft, setDraft] = useState({
+    q,
+    role: role as Role | "",
+    status: status as Status | "",
+  });
+
+  const filterKey = `${q}|${status}|${role}`;
+
+  const listQuery = useQuery({
+    queryKey: ["admin", "users", q, status, role],
+    queryFn: ({ signal }) =>
+      ok<UsersResponse>(
+        api.api.admin.users.$get(
+          { query: listQueryParams(q, status, role) },
+          { init: { signal } },
+        ),
+      ),
+  });
+
+  // "Load older": a keyset cursor over the last visible row; fetched
+  // pages accumulate in state, the newest page lives in this query.
+  const [cursor, setCursor] = useState<{
+    createdAt: string;
+    id: string;
+  } | null>(null);
+  const [older, setOlder] = useState<AdminUser[]>([]);
+  // The older page appended for a cursor: the key that was appended, so
+  // a refetch never appends it twice.
+  const appended = useRef<string | null>(null);
+  const olderQuery = useQuery({
+    queryKey: [
+      "admin",
+      "users",
+      "older",
+      q,
+      status,
+      role,
+      cursor?.createdAt ?? "",
+      cursor?.id ?? "",
+    ],
+    enabled: cursor !== null,
+    queryFn: ({ signal }) =>
+      ok<UsersResponse>(
+        api.api.admin.users.$get(
+          { query: listQueryParams(q, status, role, cursor) },
+          { init: { signal } },
+        ),
+      ),
+  });
+
+  // A new filter starts the list over, page and all. The setters are
+  // stable; the filters are the effect's real trigger.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the setters are stable; filterKey is the effect's real trigger
+  useEffect(() => {
+    setOlder([]);
+    setCursor(null);
+    // The append guard is per cursor, so a cursor that recurs after a
+    // filter change must be allowed to append again.
+    appended.current = null;
+  }, [filterKey]);
+
+  // Append the fetched older page once per cursor.
+  useEffect(() => {
+    if (!cursor || !olderQuery.data) return;
+    const key = `${cursor.createdAt}|${cursor.id}`;
+    if (appended.current !== key) {
+      appended.current = key;
+      setOlder((prev) => [...prev, ...olderQuery.data.users]);
     }
-    const qs = params.toString();
-    return fetch(`/api/admin/users${qs ? `?${qs}` : ""}`).then((res) => {
-      if (!res.ok) throw new Error(`unexpected status ${res.status}`);
-      return res.json() as Promise<UsersResponse>;
-    });
-  }
+  }, [cursor, olderQuery.data]);
 
-  function load() {
-    fetchPage()
-      .then((body) => {
-        setUsers(body.users);
-        setHasMore(body.hasMore);
-        setLoadError(null);
-      })
-      .catch(() => setLoadError("could not load users"));
-  }
+  // Row actions (approve / promote / demote) invalidate the list and the
+  // nav's pending badge (issue #207's AC: approving refreshes it).
+  const invalidateListAndBadge = () => {
+    void queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
+    void queryClient.invalidateQueries({ queryKey: adminBadgeKeys.pending });
+  };
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: load is re-created each render, applied is the actual dependency
-  useEffect(load, [applied]);
-
-  function loadMore() {
-    const last = users?.[users.length - 1];
-    if (!last) return;
-    setLoadingMore(true);
-    fetchPage({ createdAt: last.createdAt, id: last.id })
-      .then((body) => {
-        setUsers((current) => [...(current ?? []), ...body.users]);
-        setHasMore(body.hasMore);
-      })
-      .catch(() => setLoadError("could not load older users"))
-      .finally(() => setLoadingMore(false));
-  }
-
-  function handleSubmit(event: FormEvent) {
-    event.preventDefault();
-    setApplied(draft);
-  }
-
-  function handleClear() {
-    setDraft(BLANK_FILTERS);
-    setApplied(BLANK_FILTERS);
-  }
-
-  async function act(id: string, action: "approve" | "promote" | "demote") {
-    setActionError(null);
-    const res = await fetch(`/api/admin/users/${id}/${action}`, {
-      method: "POST",
-    });
-    if (!res.ok) {
-      setActionError(`could not ${action} this user`);
-      return;
-    }
-    load();
-  }
+  const actionMutation = useMutation({
+    mutationFn: ({ id, action }: { id: string; action: ListAction }) =>
+      action === "approve"
+        ? ok<UserActionResponse>(
+            api.api.admin.users[":id"].approve.$post({ param: { id } }),
+          )
+        : action === "promote"
+          ? ok<UserActionResponse>(
+              api.api.admin.users[":id"].promote.$post({ param: { id } }),
+            )
+          : ok<UserActionResponse>(
+              api.api.admin.users[":id"].demote.$post({ param: { id } }),
+            ),
+    // The list refetch covers the newest page, but the appended "older"
+    // pages are not re-appended on a refetch (the append guard keeps one
+    // page per cursor), so the acted row is patched from the response.
+    // The response carries only the six core fields, so it is merged
+    // into the row: replacing it would drop the row's createdAt (its
+    // Created cell and, as the last row, the next Load-older cursor).
+    onSuccess: (data, { id }) => {
+      setOlder((prev) =>
+        prev.map((u) => (u.id === id ? { ...u, ...data } : u)),
+      );
+      invalidateListAndBadge();
+    },
+  });
 
   const selfId = session.status === "signed-in" ? session.user.id : null;
+  const page1 = listQuery.data?.users ?? [];
+  const users = [...page1, ...older];
+  const loadingOlder =
+    cursor !== null && (olderQuery.isPending || olderQuery.isFetching);
+
+  // "Load older": the keyset cursor over the last visible row.
+  const loadOlder = () => {
+    const last = users[users.length - 1];
+    if (last) setCursor({ createdAt: last.createdAt, id: last.id });
+  };
 
   return (
-    <section>
-      <h2>Users</h2>
-      <Link to="/admin/blocked-accounts">Blocked accounts</Link>
+    <>
+      <AdminPageHeader
+        crumb={
+          <>
+            Admin /{" "}
+            <Link to="/admin/users" className="hover:underline">
+              Users
+            </Link>
+          </>
+        }
+        title="Users"
+      />
+      <AdminTabs tabs={userSectionTabs} />
+      <FilterBar
+        onApply={() => {
+          const next = new URLSearchParams();
+          if (draft.q) next.set("q", draft.q);
+          if (draft.status) next.set("status", draft.status);
+          if (draft.role) next.set("role", draft.role);
+          setSearchParams(next, { replace: true });
+        }}
+        onClear={() => {
+          setDraft({ q: "", role: "", status: "" });
+          setSearchParams(new URLSearchParams(), { replace: true });
+        }}
+      >
+        <FormField label="Search" htmlFor="users-q">
+          <Input
+            id="users-q"
+            type="search"
+            placeholder="Name or email"
+            value={draft.q}
+            onChange={(event) =>
+              setDraft((d) => ({ ...d, q: event.target.value }))
+            }
+          />
+        </FormField>
+        <FormField label="Status" htmlFor="users-status">
+          <Select
+            value={draft.status || "any"}
+            onValueChange={(value) =>
+              setDraft((d) => ({
+                ...d,
+                status: (value === "any" ? "" : value) as Status | "",
+              }))
+            }
+          >
+            <SelectTrigger id="users-status">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="any">Any</SelectItem>
+              <SelectItem value="pending">Pending</SelectItem>
+              <SelectItem value="active">Active</SelectItem>
+              <SelectItem value="disabled">Disabled</SelectItem>
+            </SelectContent>
+          </Select>
+        </FormField>
+        <FormField label="Role" htmlFor="users-role">
+          <Select
+            value={draft.role || "any"}
+            onValueChange={(value) =>
+              setDraft((d) => ({
+                ...d,
+                role: (value === "any" ? "" : value) as Role | "",
+              }))
+            }
+          >
+            <SelectTrigger id="users-role">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="any">Any</SelectItem>
+              <SelectItem value="user">User</SelectItem>
+              <SelectItem value="admin">Admin</SelectItem>
+            </SelectContent>
+          </Select>
+        </FormField>
+      </FilterBar>
 
-      <form onSubmit={handleSubmit}>
-        <label htmlFor="users-q">Search</label>
-        <input
-          id="users-q"
-          placeholder="Name or email"
-          value={draft.q}
-          onChange={(event) => setDraft({ ...draft, q: event.target.value })}
+      {/* One failed row action shows one alert above the table, not one
+          per row (the original page's single `actionError` line). */}
+      {actionMutation.error ? (
+        <p
+          role="alert"
+          className="text-err"
+        >{`could not ${actionMutation.variables.action} this user`}</p>
+      ) : null}
+
+      {listQuery.isError && !listQuery.data ? (
+        <LoadError
+          message="could not load the users list"
+          onRetry={() => void listQuery.refetch()}
         />
-
-        <label htmlFor="users-role">Role</label>
-        <select
-          id="users-role"
-          value={draft.role}
-          onChange={(event) =>
-            setDraft({ ...draft, role: event.target.value as Role | "" })
-          }
-        >
-          <option value="">Any</option>
-          <option value="user">User</option>
-          <option value="admin">Admin</option>
-        </select>
-
-        <label htmlFor="users-status">Status</label>
-        <select
-          id="users-status"
-          value={draft.status}
-          onChange={(event) =>
-            setDraft({ ...draft, status: event.target.value as Status | "" })
-          }
-        >
-          <option value="">Any</option>
-          <option value="pending">Pending</option>
-          <option value="active">Active</option>
-          <option value="disabled">Disabled</option>
-        </select>
-
-        <button type="submit">Apply</button>
-        <button type="button" onClick={handleClear}>
-          Clear
-        </button>
-      </form>
-
-      {loadError && <p role="alert">{loadError}</p>}
-      {actionError && <p role="alert">{actionError}</p>}
-      {!users && !loadError && <p>Loading…</p>}
-
-      {users && (
-        <table>
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Email</th>
-              <th>Role</th>
-              <th>Status</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
+      ) : listQuery.isPending ? (
+        <p>Loading…</p>
+      ) : users.length === 0 ? (
+        <EmptyState>No users match these filters.</EmptyState>
+      ) : (
+        <AdminTable>
+          <TableHeader>
+            <TableRow>
+              <TableHead className={adminHeadCell}>User</TableHead>
+              <TableHead className={adminHeadCell}>Email</TableHead>
+              <TableHead className={adminHeadCell}>Role</TableHead>
+              <TableHead className={adminHeadCell}>Status</TableHead>
+              <TableHead className={adminHeadCell}>Created</TableHead>
+              <TableHead className={adminHeadCell}>Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {users.map((user) => {
               const isSelf = user.id === selfId;
-              const canAct = !user.pinned && !isSelf;
+              const canAct = !user.pinned && !isSelf && !user.deletedAt;
               return (
-                <tr key={user.id}>
-                  <td>
-                    <Link to={`/admin/users/${user.id}`}>{user.name}</Link>
-                  </td>
-                  <td>{user.email}</td>
-                  <td>
-                    {user.role}
-                    {user.pinned ? " (pinned)" : ""}
-                  </td>
-                  <td>
-                    {user.status === "pending" ? (
-                      <strong>pending</strong>
-                    ) : (
-                      user.status
-                    )}
-                  </td>
-                  <td>
-                    {canAct && user.status === "pending" && (
-                      <button
-                        type="button"
-                        onClick={() => act(user.id, "approve")}
+                <TableRow
+                  key={user.id}
+                  className={adminRowClickable}
+                  onClick={() => navigate(`/admin/users/${user.id}`)}
+                >
+                  <TableCell>
+                    <div className="flex items-center gap-3">
+                      <Avatar
+                        name={user.name || user.email}
+                        picture={user.picture ?? null}
+                        size={24}
+                      />
+                      <Link
+                        to={`/admin/users/${user.id}`}
+                        className="min-w-0 truncate font-medium hover:underline"
                       >
-                        Approve
-                      </button>
+                        {user.deletedAt
+                          ? "Deleted user"
+                          : user.name || user.email}
+                      </Link>
+                    </div>
+                  </TableCell>
+                  <TableCell className="max-w-60 truncate">
+                    {user.email}
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {user.role === "admin" ? (
+                        <Pill tone="accent">Admin</Pill>
+                      ) : (
+                        <Pill tone="neutral">User</Pill>
+                      )}
+                      {user.pinned ? (
+                        <Pill
+                          tone="neutral"
+                          className="border border-input bg-transparent"
+                        >
+                          <LockIcon className="size-3" aria-hidden="true" />
+                          pinned
+                        </Pill>
+                      ) : null}
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    {user.deletedAt ? (
+                      <Pill tone="neutral">Deleted user</Pill>
+                    ) : (
+                      <Pill tone={statusTone[user.status]}>{user.status}</Pill>
                     )}
-                    {canAct &&
+                  </TableCell>
+                  <TableCell>{formatWhen(user.createdAt)}</TableCell>
+                  <TableCell>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {canAct && user.status === "pending" ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={actionMutation.isPending}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void actionMutation.mutate({
+                              id: user.id,
+                              action: "approve",
+                            });
+                          }}
+                        >
+                          Approve
+                        </Button>
+                      ) : null}
+                      {canAct &&
                       user.role === "user" &&
-                      user.status === "active" && (
-                        <button
-                          type="button"
-                          onClick={() => act(user.id, "promote")}
+                      user.status === "active" ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={actionMutation.isPending}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void actionMutation.mutate({
+                              id: user.id,
+                              action: "promote",
+                            });
+                          }}
                         >
                           Promote
-                        </button>
-                      )}
-                    {canAct && user.role === "admin" && (
-                      <button
-                        type="button"
-                        onClick={() => act(user.id, "demote")}
-                      >
-                        Demote
-                      </button>
-                    )}
-                  </td>
-                </tr>
+                        </Button>
+                      ) : null}
+                      {canAct && user.role === "admin" ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={actionMutation.isPending}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void actionMutation.mutate({
+                              id: user.id,
+                              action: "demote",
+                            });
+                          }}
+                        >
+                          Demote
+                        </Button>
+                      ) : null}
+                    </div>
+                  </TableCell>
+                </TableRow>
               );
             })}
-            {users.length === 0 && (
-              <tr>
-                <td colSpan={5}>No users match these filters.</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+          </TableBody>
+        </AdminTable>
       )}
 
-      {hasMore && (
-        <button type="button" onClick={loadMore} disabled={loadingMore}>
-          Load older
-        </button>
-      )}
-    </section>
+      {/* The "Load older" affordance: while an older page is in flight the
+          button stays mounted (loading), and a failed older page is an
+          error with a retry, not a silently hidden button. */}
+      {cursor ? (
+        olderQuery.isError ? (
+          <LoadError
+            message="could not load older users"
+            onRetry={() => void olderQuery.refetch()}
+          />
+        ) : loadingOlder || (olderQuery.data?.hasMore ?? false) ? (
+          <LoadMoreButton
+            label="Load older"
+            isLoading={loadingOlder}
+            onClick={loadOlder}
+          />
+        ) : null
+      ) : (listQuery.data?.hasMore ?? false) ? (
+        <LoadMoreButton
+          label="Load older"
+          isLoading={false}
+          onClick={loadOlder}
+        />
+      ) : null}
+    </>
   );
 }

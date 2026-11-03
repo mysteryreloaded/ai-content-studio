@@ -1,18 +1,49 @@
 import {
   USER_CAP_OVERRIDE_MAX,
   USER_CAP_OVERRIDE_MIN,
+  userCapOverrideSchema,
 } from "@ai-content-studio/shared";
-import { type FormEvent, useEffect, useState } from "react";
-import { Link, Navigate, useParams } from "react-router-dom";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ChevronRightIcon, LockIcon } from "lucide-react";
+import { useEffect, useState } from "react";
+import { useForm } from "react-hook-form";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { z } from "zod";
+import { Avatar } from "../components/Avatar.js";
+import { adminBadgeKeys } from "../components/admin/AdminNav.js";
+import { AdminPageHeader } from "../components/admin/AdminPageHeader.js";
+import { AdminSection } from "../components/admin/AdminSection.js";
+import { EmptyState } from "../components/admin/EmptyState.js";
+import { FormField } from "../components/admin/FormField.js";
+import { HistoryLink } from "../components/admin/HistoryLink.js";
+import { LoadError } from "../components/admin/LoadError.js";
+import { Button } from "../components/ui/button.js";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "../components/ui/dialog.js";
+import { Input } from "../components/ui/input.js";
+import { Pill } from "../components/ui/pill.js";
+import { Textarea } from "../components/ui/textarea.js";
+import { type ApiError, api, ok } from "../lib/api.js";
+import { mapApiError, zodResolver } from "../lib/form.js";
+import { formatWhen } from "../lib/format.js";
 import { useSession } from "../useSession.js";
+
+type Role = "user" | "admin";
+type Status = "pending" | "active" | "disabled";
 
 interface AdminUser {
   id: string;
   email: string;
   name: string;
   picture: string | null;
-  role: "user" | "admin";
-  status: "pending" | "active" | "disabled";
+  role: Role;
+  status: Status;
   pinned: boolean;
   dailyCapOverride: number | null;
   concurrentCapOverride: number | null;
@@ -22,303 +53,710 @@ interface AdminUser {
   createdAt: string;
 }
 
+/** The Site's default Caps, from Site settings (the caps' placeholders). */
+interface SiteCaps {
+  dailyCap: number;
+  concurrentCap: number;
+}
+
+/**
+ * What the action endpoints (approve, promote, demote, enable, disable)
+ * return: the user's six core fields and nothing else (the server's
+ * `respondForAction`) — no createdAt, caps, pinned or disabled fields —
+ * so a result is merged into the cached user, never a replacement of it.
+ */
+interface UserActionResponse {
+  id: string;
+  email: string;
+  name: string;
+  picture: string | null;
+  role: Role;
+  status: Status;
+}
+
 const DISABLE_REASON_MAX_LENGTH = 500;
 
-/** Blank, "0" or a whole number in range; anything else is left for the server to refuse. */
+/**
+ * The raw input: a string (RHF has no `valueAsNull`, so form state can't
+ * hold the schema's null), which must be blank or pass the shared
+ * `userCapOverrideSchema`; a blank becomes the Site default (null) on
+ * submit.
+ */
+const capOverrideInput = z.string().refine(
+  (raw) => {
+    const trimmed = raw.trim();
+    if (trimmed === "") return true;
+    return userCapOverrideSchema.safeParse(Number(trimmed)).success;
+  },
+  {
+    message: `Blank, or a whole number between ${USER_CAP_OVERRIDE_MIN} and ${USER_CAP_OVERRIDE_MAX.toLocaleString()}.`,
+  },
+);
+
+const capsSchema = z.object({
+  dailyCapOverride: capOverrideInput,
+  concurrentCapOverride: capOverrideInput,
+});
+
+type CapsFormValues = z.infer<typeof capsSchema>;
+
+/** Blank becomes null (the Site default); anything else is a whole number. */
 function parseOverride(raw: string): number | null {
   const trimmed = raw.trim();
   if (trimmed === "") return null;
   return Number(trimmed);
 }
 
-/** `/admin/users/:id`: a user's profile, with a History link, approve/promote/demote/disable/enable/delete (issue #62, #64) and Cap overrides (issue #64). */
+const statusTone: Record<Status, "warn" | "ok" | "err"> = {
+  pending: "warn",
+  active: "ok",
+  disabled: "err",
+};
+
+/**
+ * One user's page (issue #207): a profile header with the 48px shared
+ * avatar, name, role/pinned/status pills and the email, the History link
+ * and the allowed actions (Approve, Promote to Admin / Demote to user,
+ * Enable, Disable in a confirm dialog with the Admin-only reason, Delete
+ * account in a confirm dialog that navigates back to the Users list), a
+ * Profile panel, the Cap overrides form (Site defaults as placeholders, a
+ * 0 flagged as "Blocked from generating"), and a Work and files section.
+ * No server route or data shape changes.
+ */
 export function UserPage() {
-  const { id } = useParams<{ id: string }>();
+  const { id = "" } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const { session } = useSession();
-  const [user, setUser] = useState<AdminUser | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [deleted, setDeleted] = useState(false);
+  const queryClient = useQueryClient();
 
+  const [disableOpen, setDisableOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const [disableReason, setDisableReason] = useState("");
-  const [showDisableForm, setShowDisableForm] = useState(false);
   const [deleteReason, setDeleteReason] = useState("");
-  const [showDeleteForm, setShowDeleteForm] = useState(false);
+  // The original page's single action-error line: any failed action is
+  // visible, and a new action starts from a clean line.
+  const [actionError, setActionError] = useState<string | null>(null);
 
-  const [dailyCap, setDailyCap] = useState("");
-  const [concurrentCap, setConcurrentCap] = useState("");
-  const [capsSaving, setCapsSaving] = useState(false);
-  const [capsError, setCapsError] = useState<string | null>(null);
-  const [capsSaved, setCapsSaved] = useState(false);
+  const userQuery = useQuery({
+    queryKey: ["admin", "users", id],
+    enabled: id !== "",
+    queryFn: ({ signal }) =>
+      ok<AdminUser>(
+        api.api.admin.users[":id"].$get(
+          { param: { id } },
+          { init: { signal } },
+        ),
+      ),
+  });
 
-  function load() {
-    if (!id) return;
-    fetch(`/api/admin/users/${id}`)
-      .then((res) => {
-        if (!res.ok) throw new Error(`unexpected status ${res.status}`);
-        return res.json() as Promise<AdminUser>;
-      })
-      .then((body) => {
-        setUser(body);
-        setLoadError(null);
-        setDailyCap(
-          body.dailyCapOverride === null ? "" : String(body.dailyCapOverride),
-        );
-        setConcurrentCap(
-          body.concurrentCapOverride === null
+  const siteCapsQuery = useQuery({
+    queryKey: ["admin", "site-settings"],
+    queryFn: ({ signal }) =>
+      ok<SiteCaps>(api.api.admin["site-settings"].$get({ init: { signal } })),
+  });
+  const siteDaily = siteCapsQuery.data?.dailyCap;
+  const siteConcurrent = siteCapsQuery.data?.concurrentCap;
+
+  const user = userQuery.data;
+  const isSelf = session.status === "signed-in" && session.user.id === user?.id;
+  // A "Deleted user" row (deletedAt set) offers no action: the server
+  // refuses all of them, the same as a pinned or self-targeted row.
+  const canAct = user ? !user.pinned && !isSelf && !user.deletedAt : false;
+
+  // Every action that changes a user invalidates the list, this page and
+  // the nav's pending badge (issue #207's AC: approving refreshes it).
+  const invalidateUserAndBadge = () => {
+    void queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
+    void queryClient.invalidateQueries({ queryKey: adminBadgeKeys.pending });
+  };
+
+  // Merges an action's six-field response into the cached user. A
+  // replacement by it would drop the fields it does not carry — the
+  // Joined date would read NaN, the Cap inputs would reset to
+  // "undefined" (wiping unsaved edits) and the pinned pill would vanish
+  // — until the invalidation's refetch lands.
+  const patchCachedUser = (data: UserActionResponse) => {
+    queryClient.setQueryData<AdminUser>(["admin", "users", id], (prev) =>
+      prev ? { ...prev, ...data } : prev,
+    );
+  };
+
+  const approveMutation = useMutation({
+    mutationFn: () =>
+      ok<UserActionResponse>(
+        api.api.admin.users[":id"].approve.$post({ param: { id } }),
+      ),
+    onSuccess: (data) => {
+      setActionError(null);
+      patchCachedUser(data);
+      invalidateUserAndBadge();
+    },
+    onError: () => setActionError("could not approve this user"),
+  });
+
+  const roleMutation = useMutation({
+    mutationFn: ({ action }: { action: "promote" | "demote" }) =>
+      action === "promote"
+        ? ok<UserActionResponse>(
+            api.api.admin.users[":id"].promote.$post({ param: { id } }),
+          )
+        : ok<UserActionResponse>(
+            api.api.admin.users[":id"].demote.$post({ param: { id } }),
+          ),
+    onSuccess: (data) => {
+      setActionError(null);
+      patchCachedUser(data);
+      invalidateUserAndBadge();
+    },
+    onError: (_error, { action }) =>
+      setActionError(`could not ${action} this user`),
+  });
+
+  const enableMutation = useMutation({
+    mutationFn: () =>
+      ok<UserActionResponse>(
+        api.api.admin.users[":id"].enable.$post({ param: { id } }),
+      ),
+    onSuccess: (data) => {
+      setActionError(null);
+      patchCachedUser(data);
+      invalidateUserAndBadge();
+    },
+    onError: () => setActionError("could not enable this user"),
+  });
+
+  const disableMutation = useMutation({
+    mutationFn: ({ reason }: { reason: string }) =>
+      ok<UserActionResponse>(
+        api.api.admin.users[":id"].disable.$post({
+          param: { id },
+          json: { reason: reason.trim() || undefined },
+        }),
+      ),
+    onSuccess: (data) => {
+      setActionError(null);
+      setDisableOpen(false);
+      setDisableReason("");
+      patchCachedUser(data);
+      invalidateUserAndBadge();
+    },
+    // A failed disable keeps its dialog open, the error inside it.
+    onError: () => setActionError("could not disable this user"),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: ({ reason }: { reason: string }) =>
+      ok<{ ok: boolean }>(
+        api.api.admin.users[":id"].$delete({
+          param: { id },
+          json: { reason: reason.trim() || undefined },
+        }),
+      ),
+    onSuccess: () => {
+      invalidateUserAndBadge();
+      navigate("/admin/users");
+    },
+    // A failed delete keeps its dialog open, the error inside it.
+    onError: () => setActionError("could not delete this user"),
+  });
+
+  const capsForm = useForm<CapsFormValues>({
+    resolver: zodResolver(capsSchema),
+    defaultValues: { dailyCapOverride: "", concurrentCapOverride: "" },
+  });
+
+  // The inputs start from the saved overrides, and settle back on them
+  // after a save (the original page re-populated from the reload). The
+  // narrow overrides (not the whole user object) are the real
+  // dependencies, so a refetch with equal values does not re-populate.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the overrides are the effect's real dependencies, not the whole user object
+  useEffect(() => {
+    if (!user) return;
+    capsForm.reset({
+      dailyCapOverride:
+        user.dailyCapOverride === null ? "" : String(user.dailyCapOverride),
+      concurrentCapOverride:
+        user.concurrentCapOverride === null
+          ? ""
+          : String(user.concurrentCapOverride),
+    });
+  }, [user?.dailyCapOverride, user?.concurrentCapOverride]);
+
+  const capsMutation = useMutation({
+    mutationFn: ({
+      dailyCapOverride,
+      concurrentCapOverride,
+    }: {
+      dailyCapOverride: number | null;
+      concurrentCapOverride: number | null;
+    }) =>
+      ok<AdminUser>(
+        api.api.admin.users[":id"].caps.$put({
+          param: { id },
+          json: { dailyCapOverride, concurrentCapOverride },
+        }),
+      ),
+    onSuccess: (data) => {
+      queryClient.setQueryData(["admin", "users", id], data);
+      void queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
+      capsForm.reset({
+        dailyCapOverride:
+          data.dailyCapOverride === null ? "" : String(data.dailyCapOverride),
+        concurrentCapOverride:
+          data.concurrentCapOverride === null
             ? ""
-            : String(body.concurrentCapOverride),
-        );
-      })
-      .catch(() => setLoadError("could not load this user"));
+            : String(data.concurrentCapOverride),
+      });
+    },
+    onError: (error) => {
+      mapApiError(capsForm.setError, error as ApiError);
+    },
+  });
+
+  const dailyValue = capsForm.watch("dailyCapOverride");
+  const concurrentValue = capsForm.watch("concurrentCapOverride");
+
+  if (userQuery.isError && !user) {
+    return (
+      <>
+        <AdminPageHeader
+          crumb={
+            <>
+              Admin /{" "}
+              <Link to="/admin/users" className="hover:underline">
+                Users
+              </Link>
+            </>
+          }
+          title="User"
+        />
+        <LoadError
+          message="could not load this user"
+          onRetry={() => void userQuery.refetch()}
+        />
+      </>
+    );
   }
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: load is re-created each render, id is the actual dependency
-  useEffect(load, [id]);
-
-  async function act(action: "approve" | "promote" | "demote" | "enable") {
-    if (!id) return;
-    setActionError(null);
-    const res = await fetch(`/api/admin/users/${id}/${action}`, {
-      method: "POST",
-    });
-    if (!res.ok) {
-      setActionError(`could not ${action} this user`);
-      return;
-    }
-    load();
+  if (!user) {
+    return (
+      <>
+        <AdminPageHeader
+          crumb={
+            <>
+              Admin /{" "}
+              <Link to="/admin/users" className="hover:underline">
+                Users
+              </Link>
+            </>
+          }
+          title="User"
+        />
+        <p>Loading…</p>
+      </>
+    );
   }
 
-  async function disable() {
-    if (!id) return;
-    setActionError(null);
-    const res = await fetch(`/api/admin/users/${id}/disable`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ reason: disableReason.trim() || undefined }),
-    });
-    if (!res.ok) {
-      setActionError("could not disable this user");
-      return;
-    }
-    setShowDisableForm(false);
-    setDisableReason("");
-    load();
-  }
-
-  async function remove() {
-    if (!id) return;
-    setActionError(null);
-    const res = await fetch(`/api/admin/users/${id}`, {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ reason: deleteReason.trim() || undefined }),
-    });
-    if (!res.ok) {
-      setActionError("could not delete this user");
-      return;
-    }
-    setDeleted(true);
-  }
-
-  async function saveCaps(event: FormEvent) {
-    event.preventDefault();
-    if (!id) return;
-    setCapsError(null);
-    setCapsSaved(false);
-
-    const dailyCapOverride = parseOverride(dailyCap);
-    const concurrentCapOverride = parseOverride(concurrentCap);
-    if (
-      (dailyCapOverride !== null &&
-        (!Number.isInteger(dailyCapOverride) ||
-          dailyCapOverride < USER_CAP_OVERRIDE_MIN ||
-          dailyCapOverride > USER_CAP_OVERRIDE_MAX)) ||
-      (concurrentCapOverride !== null &&
-        (!Number.isInteger(concurrentCapOverride) ||
-          concurrentCapOverride < USER_CAP_OVERRIDE_MIN ||
-          concurrentCapOverride > USER_CAP_OVERRIDE_MAX))
-    ) {
-      setCapsError(
-        `Each override must be blank, or a whole number between ${USER_CAP_OVERRIDE_MIN} and ${USER_CAP_OVERRIDE_MAX.toLocaleString()}.`,
-      );
-      return;
-    }
-
-    setCapsSaving(true);
-    const res = await fetch(`/api/admin/users/${id}/caps`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ dailyCapOverride, concurrentCapOverride }),
-    });
-    setCapsSaving(false);
-    if (!res.ok) {
-      setCapsError("could not save Cap overrides");
-      return;
-    }
-    setCapsSaved(true);
-    load();
-  }
-
-  if (deleted) return <Navigate to="/admin/users" replace />;
-  if (loadError) return <p role="alert">{loadError}</p>;
-  if (!user) return <p>Loading…</p>;
-
-  const isSelf = session.status === "signed-in" && session.user.id === user.id;
-  // Issue #64: a "Deleted user" row (deletedAt set) offers no action —
-  // the server refuses all of them 404, the same as a pinned or
-  // self-targeted row.
-  const canAct = !user.pinned && !isSelf && !user.deletedAt;
+  const displayName = user.name || user.email || user.id;
 
   return (
-    <section>
-      <h2>{user.name}</h2>
-      <Link to={`/admin/audit?targetType=user&targetId=${user.id}`}>
-        History
-      </Link>{" "}
-      <Link to={`/admin/generations?user=${user.id}`}>Generations</Link>{" "}
-      <Link to={`/admin/users/${user.id}/uploads`}>Uploads</Link>
-      <dl>
-        <dt>Email</dt>
-        <dd>{user.email}</dd>
-        <dt>Role</dt>
-        <dd>
-          {user.role}
-          {user.pinned ? " (pinned)" : ""}
-        </dd>
-        <dt>Status</dt>
-        <dd>{user.status}</dd>
-        {user.status === "disabled" && !user.deletedAt && (
+    <>
+      <AdminPageHeader
+        crumb={
           <>
-            <dt>Disabled</dt>
+            Admin /{" "}
+            <Link to="/admin/users" className="hover:underline">
+              Users
+            </Link>
+          </>
+        }
+        title={
+          <>
+            <Avatar name={displayName} picture={user.picture} size={48} />
+            {displayName}
+          </>
+        }
+        pills={
+          <>
+            {user.role === "admin" ? (
+              <Pill tone="accent">Admin</Pill>
+            ) : (
+              <Pill tone="neutral">User</Pill>
+            )}
+            {user.pinned ? (
+              <Pill
+                tone="neutral"
+                className="border border-input bg-transparent"
+              >
+                <LockIcon className="size-3" aria-hidden="true" />
+                pinned
+              </Pill>
+            ) : null}
+            {user.deletedAt ? (
+              <Pill tone="neutral">Deleted user</Pill>
+            ) : (
+              <Pill tone={statusTone[user.status]}>{user.status}</Pill>
+            )}
+          </>
+        }
+        description={user.email || null}
+        actions={
+          <>
+            {/* The original page's single alert, beside the actions.
+                Inside a dialog's reach it renders in the open dialog
+                instead, so it never shows twice. */}
+            {actionError && !disableOpen && !deleteOpen ? (
+              <p role="alert" className="text-err">
+                {actionError}
+              </p>
+            ) : null}
+            <HistoryLink targetType="user" targetId={user.id} />
+            {canAct && user.status === "pending" ? (
+              <Button
+                size="sm"
+                disabled={approveMutation.isPending}
+                onClick={() => {
+                  setActionError(null);
+                  void approveMutation.mutate();
+                }}
+              >
+                Approve
+              </Button>
+            ) : null}
+            {canAct && user.role === "user" && user.status === "active" ? (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={roleMutation.isPending}
+                onClick={() => {
+                  setActionError(null);
+                  void roleMutation.mutate({ action: "promote" });
+                }}
+              >
+                Promote to Admin
+              </Button>
+            ) : null}
+            {canAct && user.role === "admin" ? (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={roleMutation.isPending}
+                onClick={() => {
+                  setActionError(null);
+                  void roleMutation.mutate({ action: "demote" });
+                }}
+              >
+                Demote to user
+              </Button>
+            ) : null}
+            {canAct && user.status === "disabled" ? (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={enableMutation.isPending}
+                onClick={() => {
+                  setActionError(null);
+                  void enableMutation.mutate();
+                }}
+              >
+                Enable
+              </Button>
+            ) : null}
+            {canAct && user.status !== "disabled" ? (
+              <Button
+                variant="danger"
+                size="sm"
+                onClick={() => {
+                  // A fresh dialog starts from a clean line: a stale
+                  // error from a prior action does not surface in it.
+                  setActionError(null);
+                  setDisableOpen(true);
+                }}
+              >
+                Disable
+              </Button>
+            ) : null}
+            {canAct ? (
+              <Button
+                variant="danger"
+                size="sm"
+                onClick={() => {
+                  // A fresh dialog starts from a clean line: a stale
+                  // error from a prior action does not surface in it.
+                  setActionError(null);
+                  setDeleteOpen(true);
+                }}
+              >
+                Delete account
+              </Button>
+            ) : null}
+          </>
+        }
+      />
+
+      {!canAct && !user.deletedAt ? (
+        <EmptyState>
+          {user.pinned
+            ? "Pinned Admin: listed in the Operator's ADMIN_EMAILS, so it can't be demoted, disabled or deleted here."
+            : "This is your own account: nobody changes their own role or status."}
+        </EmptyState>
+      ) : null}
+
+      <AdminSection title="Profile">
+        <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div className="flex flex-col gap-1">
+            <dt className="text-muted-foreground">Email</dt>
+            <dd>{user.email}</dd>
+          </div>
+          <div className="flex flex-col gap-1">
+            <dt className="text-muted-foreground">Role</dt>
             <dd>
-              {user.disabledAt && new Date(user.disabledAt).toLocaleString()}
-              {user.disabledReason ? ` — ${user.disabledReason}` : ""}
+              <div className="flex flex-wrap items-center gap-1.5">
+                {user.role === "admin" ? "Admin" : "User"}
+                {user.pinned ? " (pinned)" : ""}
+              </div>
             </dd>
-          </>
-        )}
-        {user.deletedAt && (
-          <>
-            <dt>Deleted</dt>
-            <dd>{new Date(user.deletedAt).toLocaleString()}</dd>
-          </>
-        )}
-        <dt>Joined</dt>
-        <dd>{new Date(user.createdAt).toLocaleString()}</dd>
-      </dl>
-      {actionError && <p role="alert">{actionError}</p>}
-      {canAct && user.status === "pending" && (
-        <button type="button" onClick={() => void act("approve")}>
-          Approve
-        </button>
-      )}
-      {canAct && user.role === "user" && user.status === "active" && (
-        <button type="button" onClick={() => void act("promote")}>
-          Promote to Admin
-        </button>
-      )}
-      {canAct && user.role === "admin" && (
-        <button type="button" onClick={() => void act("demote")}>
-          Demote to user
-        </button>
-      )}
-      {canAct && user.status !== "disabled" && !showDisableForm && (
-        <button type="button" onClick={() => setShowDisableForm(true)}>
-          Disable
-        </button>
-      )}
-      {canAct && user.status !== "disabled" && showDisableForm && (
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            void disable();
-          }}
+          </div>
+          <div className="flex flex-col gap-1">
+            <dt className="text-muted-foreground">Status</dt>
+            <dd>{user.deletedAt ? "Deleted user" : user.status}</dd>
+          </div>
+          <div className="flex flex-col gap-1">
+            <dt className="text-muted-foreground">Joined</dt>
+            <dd>{formatWhen(user.createdAt)}</dd>
+          </div>
+          {user.status === "disabled" && !user.deletedAt ? (
+            <>
+              <div className="flex flex-col gap-1">
+                <dt className="text-muted-foreground">Disabled</dt>
+                <dd>{user.disabledAt ? formatWhen(user.disabledAt) : "—"}</dd>
+              </div>
+              <div className="flex flex-col gap-1">
+                <dt className="text-muted-foreground">Reason (Admin-only)</dt>
+                <dd>{user.disabledReason ?? "No reason given"}</dd>
+              </div>
+            </>
+          ) : null}
+          {user.deletedAt ? (
+            <div className="flex flex-col gap-1">
+              <dt className="text-muted-foreground">Deleted</dt>
+              <dd>{formatWhen(user.deletedAt)}</dd>
+            </div>
+          ) : null}
+        </dl>
+      </AdminSection>
+
+      {!user.deletedAt ? (
+        <AdminSection
+          title="Cap overrides"
+          description={`Blank uses the Site default; 0 blocks this user from generating. Whole numbers between ${USER_CAP_OVERRIDE_MIN} and ${USER_CAP_OVERRIDE_MAX.toLocaleString()}.`}
         >
-          <label htmlFor="disable-reason">Reason (optional, Admin-only)</label>
-          <textarea
-            id="disable-reason"
-            maxLength={DISABLE_REASON_MAX_LENGTH}
-            value={disableReason}
-            onChange={(event) => setDisableReason(event.target.value)}
-          />
-          <button type="submit">Confirm disable</button>
-          <button type="button" onClick={() => setShowDisableForm(false)}>
-            Cancel
-          </button>
-        </form>
-      )}
-      {canAct && user.status === "disabled" && (
-        <button type="button" onClick={() => void act("enable")}>
-          Enable
-        </button>
-      )}
-      {canAct && !showDeleteForm && (
-        <button type="button" onClick={() => setShowDeleteForm(true)}>
-          Delete account
-        </button>
-      )}
-      {canAct && showDeleteForm && (
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            void remove();
-          }}
-        >
-          <p>
-            This scrubs {user.name}'s account like a self-delete.
-            {user.status === "disabled" &&
-              " Their Google account will also be blocked from signing up again."}
+          <form
+            className="grid grid-cols-1 gap-4 sm:grid-cols-2"
+            onSubmit={capsForm.handleSubmit((values) => {
+              void capsMutation.mutate({
+                dailyCapOverride: parseOverride(values.dailyCapOverride),
+                concurrentCapOverride: parseOverride(
+                  values.concurrentCapOverride,
+                ),
+              });
+            })}
+          >
+            <div className="flex flex-col gap-1.5">
+              <FormField
+                label="Daily cap override"
+                htmlFor="daily-cap-override"
+                error={
+                  capsForm.formState.errors.dailyCapOverride?.message ||
+                  undefined
+                }
+              >
+                <Input
+                  id="daily-cap-override"
+                  type="number"
+                  min={USER_CAP_OVERRIDE_MIN}
+                  max={USER_CAP_OVERRIDE_MAX}
+                  placeholder={
+                    siteDaily !== undefined
+                      ? `Default (${siteDaily})`
+                      : "Site default"
+                  }
+                  {...capsForm.register("dailyCapOverride")}
+                />
+              </FormField>
+              {dailyValue.trim() === "0" ? (
+                <Pill tone="err">Blocked from generating</Pill>
+              ) : null}
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <FormField
+                label="Concurrent cap override"
+                htmlFor="concurrent-cap-override"
+                error={
+                  capsForm.formState.errors.concurrentCapOverride?.message ||
+                  undefined
+                }
+              >
+                <Input
+                  id="concurrent-cap-override"
+                  type="number"
+                  min={USER_CAP_OVERRIDE_MIN}
+                  max={USER_CAP_OVERRIDE_MAX}
+                  placeholder={
+                    siteConcurrent !== undefined
+                      ? `Default (${siteConcurrent})`
+                      : "Site default"
+                  }
+                  {...capsForm.register("concurrentCapOverride")}
+                />
+              </FormField>
+              {concurrentValue.trim() === "0" ? (
+                <Pill tone="err">Blocked from generating</Pill>
+              ) : null}
+            </div>
+            <div className="flex items-center gap-3 sm:col-span-2">
+              <Button type="submit" size="sm" disabled={capsMutation.isPending}>
+                Save
+              </Button>
+              {capsMutation.isSuccess ? (
+                <span className="text-ok">Saved.</span>
+              ) : null}
+              {capsMutation.error &&
+              !capsForm.formState.errors.dailyCapOverride &&
+              !capsForm.formState.errors.concurrentCapOverride ? (
+                <p role="alert" className="text-err">
+                  could not save the Cap overrides
+                </p>
+              ) : null}
+            </div>
+          </form>
+        </AdminSection>
+      ) : null}
+
+      <AdminSection
+        title="Work and files"
+        description="Read-only. Remove abusive content from a Generation's or Upload's own page."
+      >
+        <div className="overflow-hidden rounded-xl border border-border bg-card">
+          <Link
+            to={`/admin/generations?user=${user.id}`}
+            className="flex items-center justify-between gap-2 px-3 py-2 text-sm hover:bg-muted"
+          >
+            Generations
+            <ChevronRightIcon
+              className="size-4 text-muted-foreground"
+              aria-hidden="true"
+            />
+          </Link>
+          <Link
+            to={`/admin/users/${user.id}/uploads`}
+            className="flex items-center justify-between gap-2 border-t border-border px-3 py-2 text-sm hover:bg-muted"
+          >
+            Uploads
+            <ChevronRightIcon
+              className="size-4 text-muted-foreground"
+              aria-hidden="true"
+            />
+          </Link>
+        </div>
+      </AdminSection>
+
+      <Dialog open={disableOpen} onOpenChange={setDisableOpen}>
+        <DialogContent className="sm:max-w-[520px]">
+          <DialogHeader>
+            <DialogTitle>{`Disable ${displayName}?`}</DialogTitle>
+            <DialogDescription>
+              Their sessions end now and queued or running Generations are
+              cancelled; files stay for review. It lasts until an Admin enables
+              the account again.
+            </DialogDescription>
+          </DialogHeader>
+          <FormField
+            label="Reason (optional, Admin-only)"
+            htmlFor="disable-reason"
+          >
+            <Textarea
+              id="disable-reason"
+              maxLength={DISABLE_REASON_MAX_LENGTH}
+              value={disableReason}
+              onChange={(event) => setDisableReason(event.target.value)}
+              className="min-h-24"
+            />
+          </FormField>
+          <p className="text-right text-xs text-muted-foreground">
+            {disableReason.length} / {DISABLE_REASON_MAX_LENGTH}
           </p>
-          <label htmlFor="delete-reason">
-            Blocked-account reason (optional)
-          </label>
-          <textarea
-            id="delete-reason"
-            maxLength={DISABLE_REASON_MAX_LENGTH}
-            value={deleteReason}
-            onChange={(event) => setDeleteReason(event.target.value)}
-          />
-          <button type="submit">Confirm delete</button>
-          <button type="button" onClick={() => setShowDeleteForm(false)}>
-            Cancel
-          </button>
-        </form>
-      )}
-      {!user.deletedAt && (
-        <form onSubmit={(event) => void saveCaps(event)}>
-          <h3>Cap overrides</h3>
-          <p>
-            Blank uses the Site default; 0 blocks this user from generating.
-            Whole numbers between {USER_CAP_OVERRIDE_MIN} and{" "}
-            {USER_CAP_OVERRIDE_MAX.toLocaleString()}.
+          {actionError ? (
+            <p role="alert" className="text-err">
+              {actionError}
+            </p>
+          ) : null}
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setDisableOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              disabled={disableMutation.isPending}
+              onClick={() => {
+                setActionError(null);
+                void disableMutation.mutate({ reason: disableReason });
+              }}
+            >
+              Confirm disable
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <DialogContent className="sm:max-w-[520px]">
+          <DialogHeader>
+            <DialogTitle>{`Delete ${displayName}'s account?`}</DialogTitle>
+            <DialogDescription>
+              This scrubs {displayName}'s account like a self-delete.
+              {user.status === "disabled" && !user.deletedAt
+                ? " Their Google account will also be blocked from signing up again."
+                : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <FormField
+            label="Blocked-account reason (optional)"
+            htmlFor="delete-reason"
+          >
+            <Textarea
+              id="delete-reason"
+              maxLength={DISABLE_REASON_MAX_LENGTH}
+              value={deleteReason}
+              onChange={(event) => setDeleteReason(event.target.value)}
+              className="min-h-24"
+            />
+          </FormField>
+          <p className="text-right text-xs text-muted-foreground">
+            {deleteReason.length} / {DISABLE_REASON_MAX_LENGTH}
           </p>
-          <label htmlFor="daily-cap-override">Daily cap override</label>
-          <input
-            id="daily-cap-override"
-            type="number"
-            min={USER_CAP_OVERRIDE_MIN}
-            max={USER_CAP_OVERRIDE_MAX}
-            value={dailyCap}
-            onChange={(event) => setDailyCap(event.target.value)}
-          />
-          <label htmlFor="concurrent-cap-override">
-            Concurrent cap override
-          </label>
-          <input
-            id="concurrent-cap-override"
-            type="number"
-            min={USER_CAP_OVERRIDE_MIN}
-            max={USER_CAP_OVERRIDE_MAX}
-            value={concurrentCap}
-            onChange={(event) => setConcurrentCap(event.target.value)}
-          />
-          <button type="submit" disabled={capsSaving}>
-            Save
-          </button>
-          {capsError && <p role="alert">{capsError}</p>}
-          {capsSaved && <p>Saved.</p>}
-        </form>
-      )}
-    </section>
+          {actionError ? (
+            <p role="alert" className="text-err">
+              {actionError}
+            </p>
+          ) : null}
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setDeleteOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              disabled={deleteMutation.isPending}
+              onClick={() => {
+                setActionError(null);
+                void deleteMutation.mutate({ reason: deleteReason });
+              }}
+            >
+              Confirm delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

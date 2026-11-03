@@ -9,12 +9,12 @@ await GlobalRegistrator.register();
 // error event for a blob: URL, so `readMediaDuration` (chunkedUpload.ts)
 // would hang forever reading a picked file's own duration. Firing
 // `loadedmetadata` (as a real browser would for any file it can at
-// least demux) resolves it with happy-dom's own duration/videoWidth/
-// videoHeight (0, since it doesn't decode media), which is enough for
-// every fixture here (all `minDurationMs`/`maxLongSide` tolerate 0).
-// `unplayableNextMediaLoad` (below) makes the *next* load behave like a
-// file this browser truly can't read at all (issue #197's AC), firing
-// `error` instead so it resolves to `null` just this once.
+// least demux) resolves it with happy-dom's own duration (0, since it
+// doesn't decode media), which is enough for every fixture here (all
+// `minDurationMs`/`maxLongSide` tolerate 0). `unplayableNextMediaLoad`
+// (below) makes the *next* load behave like a file this browser truly
+// can't read at all (issue #197's AC), firing `error` instead so it
+// resolves to `null` just this once.
 let forceNextMediaLoadUnplayable = false;
 function unplayableNextMediaLoad() {
   forceNextMediaLoadUnplayable = true;
@@ -35,12 +35,39 @@ function unplayableNextMediaLoad() {
     },
   });
 }
+// happy-dom also leaves videoWidth/videoHeight undefined (it doesn't
+// decode media either), which turns PointsField's own crop math into
+// NaN comparisons that silently refuse every click. A fixed 640x480
+// (the trim/points tests' own `clip.mp4`) is close enough to real for
+// every fixture here.
+Object.defineProperty(HTMLVideoElement.prototype, "videoWidth", {
+  configurable: true,
+  get: () => 640,
+});
+Object.defineProperty(HTMLVideoElement.prototype, "videoHeight", {
+  configurable: true,
+  get: () => 480,
+});
+// happy-dom's own `readyState` never advances past 0, so a PointsField
+// re-reading the frame after the trim start moves (its own `<video>`'s
+// src is unchanged, so `loadedmetadata` never fires again) never finds
+// `readyState >= 1` true and is stuck at "Getting the first frame…"
+// forever. Once an element has loaded at least once, a real browser's
+// `readyState` stays >= HAVE_METADATA; this mirrors that.
+const mediaLoadedOnce = new WeakSet<HTMLMediaElement>();
+Object.defineProperty(HTMLMediaElement.prototype, "readyState", {
+  configurable: true,
+  get() {
+    return mediaLoadedOnce.has(this) ? 1 : 0;
+  },
+});
 function fireMediaLoadEvent(media: HTMLMediaElement) {
   const unplayable = forceNextMediaLoadUnplayable;
   forceNextMediaLoadUnplayable = false;
-  queueMicrotask(() =>
-    media.dispatchEvent(new Event(unplayable ? "error" : "loadedmetadata")),
-  );
+  queueMicrotask(() => {
+    if (!unplayable) mediaLoadedOnce.add(media);
+    media.dispatchEvent(new Event(unplayable ? "error" : "loadedmetadata"));
+  });
 }
 // React sets a host element's `src` via `setAttribute`, not the property
 // setter above (which only matters for `readMediaDuration`'s own direct
@@ -1541,6 +1568,107 @@ describe("WorkbenchPage", () => {
       await waitFor(() => expect(trimCalls).toHaveLength(1));
       expect(trimCalls[0]?.body).toEqual({ startMs: 0, endMs: 2000 });
     });
+
+    test("a trimmable video this browser can't read any metadata from is refused on pick, nothing sent", async () => {
+      const server = videoServer();
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await view.findByLabelText("Clip");
+      unplayableNextMediaLoad();
+      await userEvent.upload(
+        view.getByLabelText("Clip"),
+        new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
+      );
+
+      expect(
+        await view.findByText(
+          "This video can't be shown in your browser. Convert it to H.264 MP4 or try another browser.",
+        ),
+      ).toBeTruthy();
+      expect(server.posts).toHaveLength(0);
+    });
+
+    test("a non-trimmable video this browser can't read any metadata from, with no Points Input, is accepted untrimmed", async () => {
+      const FIT_INPUT_ID = "88888888-ffff-4fff-8fff-ffffffffffff";
+      const FIT_UPLOAD_ID = "99999999-ffff-4fff-8fff-ffffffffffff";
+      const FIT_MODEL = {
+        ...MODEL,
+        modes: [
+          {
+            id: "mode-fit",
+            name: "Default",
+            description: "",
+            inputs: [
+              {
+                id: FIT_INPUT_ID,
+                kind: "video_upload",
+                group: "describe",
+                label: "Clip",
+                help: "",
+                placeholder: null,
+                maxSizeMb: 50,
+                maxLongSide: null,
+                minDurationMs: 0,
+                maxDurationMs: 10_000,
+                trimmable: false,
+              },
+            ],
+          },
+        ],
+      };
+      mockFetch(async (call) => {
+        if (call.url.endsWith("/api/models/ltx")) {
+          return Response.json({ model: FIT_MODEL });
+        }
+        if (
+          call.url.endsWith("/api/models/ltx/generations") &&
+          call.method === "GET"
+        ) {
+          return Response.json({ submissions: [] });
+        }
+        if (call.url === "/api/uploads") {
+          return Response.json(
+            { upload: { id: FIT_UPLOAD_ID, chunkSize: 16 * 1024 * 1024 } },
+            { status: 201 },
+          );
+        }
+        if (call.url.startsWith(`/api/uploads/${FIT_UPLOAD_ID}/chunk`)) {
+          return Response.json({ offset: 4 });
+        }
+        if (call.url === `/api/uploads/${FIT_UPLOAD_ID}/complete`) {
+          return Response.json({
+            upload: {
+              id: FIT_UPLOAD_ID,
+              durationMs: 2000,
+              browserPlayable: false,
+            },
+          });
+        }
+        throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+      });
+
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await view.findByLabelText("Clip");
+      unplayableNextMediaLoad();
+      await userEvent.upload(
+        view.getByLabelText("Clip"),
+        new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
+      );
+
+      expect(await view.findByText("clip.mp4")).toBeTruthy();
+      expect(
+        view.queryByText(
+          "This video can't be shown in your browser. Convert it to H.264 MP4 or try another browser.",
+        ),
+      ).toBeNull();
+    });
   });
 
   describe("Points Inputs (issue #52)", () => {
@@ -1773,6 +1901,151 @@ describe("WorkbenchPage", () => {
       expect(
         await view.findByText(/No points yet.*frame at 0:00\.0/),
       ).toBeTruthy();
+    });
+
+    /** happy-dom never lays elements out, so `getBoundingClientRect` is always 0×0; this fakes the frame's box so a real click can land inside the (centered, so (0.5, 0.5) is always inside) crop. */
+    function clickCenterOfFrame(view: ReturnType<typeof renderWorkbench>) {
+      const frameEl = view.getByRole("application", {
+        name: "First frame: click the person to replace",
+      });
+      frameEl.getBoundingClientRect = () =>
+        ({
+          left: 0,
+          top: 0,
+          width: 200,
+          height: 200,
+          right: 200,
+          bottom: 200,
+          x: 0,
+          y: 0,
+          toJSON() {},
+        }) as DOMRect;
+      fireEvent.click(frameEl, { clientX: 100, clientY: 100 });
+    }
+
+    /** Each `/api/uploads` call gets its own fresh id, so a Replace's second pick doesn't collide with the first. */
+    function multiUploadPointsServer(model: unknown) {
+      let nextId = 0;
+      mockFetch(async (call) => {
+        if (call.url.endsWith("/api/models/ltx")) {
+          return Response.json({ model });
+        }
+        if (
+          call.url.endsWith("/api/models/ltx/generations") &&
+          call.method === "GET"
+        ) {
+          return Response.json({ submissions: [] });
+        }
+        if (call.url === "/api/uploads") {
+          nextId += 1;
+          return Response.json(
+            {
+              upload: {
+                id: `99999999-9999-4999-8999-99999999999${nextId}`,
+                chunkSize: 16 * 1024 * 1024,
+              },
+            },
+            { status: 201 },
+          );
+        }
+        const chunkMatch = call.url.match(/^\/api\/uploads\/([^/]+)\/chunk/);
+        if (chunkMatch) return Response.json({ offset: 4 });
+        const completeMatch = call.url.match(
+          /^\/api\/uploads\/([^/]+)\/complete$/,
+        );
+        if (completeMatch) {
+          return Response.json({
+            upload: {
+              id: completeMatch[1],
+              durationMs: 2000,
+              browserPlayable: true,
+            },
+          });
+        }
+        throw new Error(`unexpected fetch ${call.method} ${call.url}`);
+      });
+    }
+
+    test("Replace clears existing points, noting the video changed", async () => {
+      multiUploadPointsServer(pointsModelWithDefaultSize());
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await view.findByLabelText("Clip");
+      await userEvent.upload(
+        view.getByLabelText("Clip"),
+        new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
+      );
+      await view.findByText(/No points yet/);
+      await act(async () => clickCenterOfFrame(view));
+      await view.findByText(/^1 point/);
+
+      await userEvent.click(view.getByRole("button", { name: "Replace" }));
+      await userEvent.upload(
+        view.getByLabelText("Clip"),
+        new File(["MP4!"], "clip2.mp4", { type: "video/mp4" }),
+      );
+
+      expect(
+        await view.findByText("Points cleared: the video changed."),
+      ).toBeTruthy();
+      expect(await view.findByText(/No points yet/)).toBeTruthy();
+    });
+
+    test("Remove clears the points too", async () => {
+      multiUploadPointsServer(pointsModelWithDefaultSize());
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await view.findByLabelText("Clip");
+      await userEvent.upload(
+        view.getByLabelText("Clip"),
+        new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
+      );
+      await view.findByText(/No points yet/);
+      await act(async () => clickCenterOfFrame(view));
+      await view.findByText(/^1 point/);
+
+      await userEvent.click(view.getByRole("button", { name: "Remove Clip" }));
+
+      expect(await view.findByText(/Add the clip first/)).toBeTruthy();
+      expect(
+        await view.findByText("Points cleared: the video changed."),
+      ).toBeTruthy();
+    });
+
+    test("moving the trim start clears the points, noting the first frame changed", async () => {
+      multiUploadPointsServer(pointsModelWithDefaultSize());
+      const view = renderWorkbench();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+
+      await view.findByLabelText("Clip");
+      await userEvent.upload(
+        view.getByLabelText("Clip"),
+        new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
+      );
+      await view.findByText(/No points yet/);
+      await act(async () => clickCenterOfFrame(view));
+      await view.findByText(/^1 point/);
+
+      const startHandle = await view.findByRole("slider", {
+        name: "Trim start",
+      });
+      startHandle.focus();
+      await userEvent.keyboard("{ArrowRight}");
+
+      expect(
+        await view.findByText(
+          "Points cleared: the trim start moved, so the first frame changed.",
+        ),
+      ).toBeTruthy();
+      expect(await view.findByText(/No points yet/)).toBeTruthy();
     });
   });
 

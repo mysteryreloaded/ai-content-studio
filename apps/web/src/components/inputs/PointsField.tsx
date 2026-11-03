@@ -95,23 +95,26 @@ export function PointsField({
   // re-running on every unrelated render.
   const points = useMemo(() => decodePointsValue(rawPoints) ?? [], [rawPoints]);
 
-  // Issue #52 AC: a new video or a moved trim start clears the points,
-  // each with its own note (issue #197's AC). `undefined` means "first
-  // render": the value already carried forward (e.g. a 409 reload) must
-  // survive it.
-  const prevRef = useRef<{ uploadId: string; startMs: number } | undefined>(
-    undefined,
-  );
+  // Issue #52 AC: a new video (including Replace and Remove, where the
+  // Upload simply goes away) or a moved trim start clears the points,
+  // each with its own note (issue #197's AC). CEO review round 1:
+  // `startUpload`/`clearUpload` drop the trim range before the Upload
+  // itself settles, so a null `startMs` is a normal in-flight state,
+  // not "first render" — treating it that way (resetting to `undefined`
+  // below) silently dropped every clear. `undefined` now means only the
+  // component's true first render, where a value already carried
+  // forward (e.g. a 409 reload) must survive it; `null` is tracked like
+  // any other value from then on.
+  const prevRef = useRef<
+    { uploadId: string | null; startMs: number | null } | undefined
+  >(undefined);
   useEffect(() => {
-    if (uploadId === null || startMs === null) {
-      prevRef.current = undefined;
-      return;
-    }
     const prev = prevRef.current;
     prevRef.current = { uploadId, startMs };
     if (!prev) return;
     const videoChanged = prev.uploadId !== uploadId;
-    const startMoved = !videoChanged && prev.startMs !== startMs;
+    const startMoved =
+      !videoChanged && uploadId !== null && prev.startMs !== startMs;
     if (!videoChanged && !startMoved) return;
     setFrame(null);
     if (points.length > 0) {
@@ -335,7 +338,7 @@ export function PointsField({
               <Button
                 type="button"
                 variant="ghost"
-                size="xs"
+                size="sm"
                 onClick={clearAll}
               >
                 Clear
@@ -349,7 +352,7 @@ export function PointsField({
                   key={`${point.x}-${point.y}-${index}`}
                   type="button"
                   variant="ghost"
-                  size="xs"
+                  size="sm"
                   aria-label={`Remove point ${index + 1}`}
                   onClick={() => removePoint(index)}
                 >

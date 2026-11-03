@@ -682,6 +682,10 @@ export function useModelEditor() {
     testRunningUploadsRef.current.get(input.id)?.controller.abort();
     testRunningUploadsRef.current.delete(input.id);
     setTestValues((v) => ({ ...v, [input.id]: "" }));
+    setTestUploads((u) => {
+      const { [input.id]: _, ...rest } = u;
+      return rest;
+    });
     setTestTrimRangeByInputId((ranges) => {
       const { [input.id]: _, ...rest } = ranges;
       return rest;

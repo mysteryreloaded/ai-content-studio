@@ -88,6 +88,11 @@ export function UploadField({
     upload?.status === "complete" &&
     upload.durationMs !== null &&
     upload.browserPlayable !== false;
+  // CEO review round 1 (prototype's own `refuseUpload`): a refused pick
+  // never reaches "filled", so it shows the dashed drop zone again (with
+  // the err border/message above, from `error`), not a card that looks
+  // attached to a file nothing was actually sent for.
+  const showDropZone = !upload || upload.status === "error";
   const Icon = kind === "video" ? Video : kind === "audio" ? AudioLines : Image;
   const chooseLabel =
     kind === "image"
@@ -104,7 +109,7 @@ export function UploadField({
       help={input.help}
       error={error}
     >
-      {!upload ? (
+      {showDropZone ? (
         <FilePicker
           id={input.id}
           accept={accept}

@@ -64,6 +64,15 @@ export function useUploads({
       runningUploadsRef.current.get(input.id)?.controller.abort();
       runningUploadsRef.current.delete(input.id);
       setValues((v) => ({ ...v, [input.id]: "" }));
+      // CEO review round 1: cleared together with the trim range, not
+      // left stale, so a Points Input watching this Upload sees the old
+      // one go away in the same render — "the video changed", not a
+      // spurious "the trim start moved" from the trim range alone
+      // disappearing a render early.
+      setUploads((u) => {
+        const { [input.id]: _, ...rest } = u;
+        return rest;
+      });
       setTrimRangeByInputId((ranges) => {
         const { [input.id]: _, ...rest } = ranges;
         return rest;

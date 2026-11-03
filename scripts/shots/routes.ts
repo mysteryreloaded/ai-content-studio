@@ -106,6 +106,7 @@ export const routes: Route[] = [
     name: "workbench-empty",
     path: "/models/seed-video",
     as: "robin",
+    actions: [{ role: "button", name: "Accept" }],
   },
 
   { name: "gallery", path: "/gallery", as: "sam", prototype: "gallery" },

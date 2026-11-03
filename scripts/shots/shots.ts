@@ -13,7 +13,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { chromium } from "playwright-core";
 import type { Browser, BrowserContext, Page } from "playwright-core";
-import { clientFromCookies, createClient } from "./client.js";
+import { createClient } from "./client.js";
 import {
   PROTOTYPE_VIEWS,
   extractPrototypes,
@@ -61,7 +61,11 @@ function parseArgs(argv: string[]): Args {
   return args;
 }
 
-async function checkPreflight(): Promise<{ chromePath: string | null }> {
+type BrowserLaunchOptions = { channel?: "chrome"; executablePath?: string };
+
+async function checkPreflight(): Promise<{
+  launchOptions: BrowserLaunchOptions;
+}> {
   const docker = Bun.spawnSync(["docker", "version"], {
     stdout: "pipe",
     stderr: "pipe",
@@ -90,18 +94,27 @@ async function checkPreflight(): Promise<{ chromePath: string | null }> {
       console.error(`shots: SHOTS_CHROME=${envChrome} doesn't exist.`);
       process.exit(1);
     }
-    return { chromePath: envChrome };
+    return { launchOptions: { executablePath: envChrome } };
   }
 
   try {
     const probe = await chromium.launch({ channel: "chrome", headless: true });
     await probe.close();
-    return { chromePath: null };
+    return { launchOptions: { channel: "chrome" } };
   } catch {
-    console.error(
-      "shots: no Chrome or Chromium found. Set SHOTS_CHROME=<path>, or run `bunx playwright-core install chromium`.",
-    );
-    process.exit(1);
+    // No system Chrome: fall back to playwright-core's own bundled
+    // Chromium (`bunx playwright-core install chromium`), instead of
+    // always trying "chrome" and never actually using it.
+    try {
+      const probe = await chromium.launch({ headless: true });
+      await probe.close();
+      return { launchOptions: {} };
+    } catch {
+      console.error(
+        "shots: no Chrome or Chromium found. Set SHOTS_CHROME=<path>, or run `bunx playwright-core install chromium`.",
+      );
+      process.exit(1);
+    }
   }
 }
 
@@ -254,12 +267,15 @@ function stopChildren(children: Children): void {
   children.fake?.kill();
 }
 
+// No route runs as Dana or Quinn — they only need to exist as rows (a
+// disabled account, a second pending user), which `seedShots` creates
+// through its own API client — so only the identities routes.ts actually
+// signs in as get a browser session here.
 const IDENTITIES: { id: Identity; email: string; name: string }[] = [
   { id: "alice", email: "alice@example.com", name: "Alice Admin" },
   { id: "sam", email: "sam.park@example.com", name: "Sam Park" },
   { id: "robin", email: "robin@example.com", name: "Robin New" },
   { id: "pat", email: "pat@example.com", name: "Pat Pending" },
-  { id: "dana", email: "dana@example.com", name: "Dana Disabled" },
 ];
 
 /** Resolves `{a.b}` placeholders in a route's path template against `seed.json`'s shape. */
@@ -337,10 +353,18 @@ async function shootRoute(
           });
         }
       }
-      if (route.actions?.length) actionedUrls.set(route.name, page.url());
     }
 
     await waitSettled(page, route.ready);
+
+    // Captured only now: an action (e.g. accepting Site terms) can kick
+    // off a client-side navigation (`/models` -> `/waiting`) that hasn't
+    // landed yet right after the click, so grabbing `page.url()` earlier
+    // cached the pre-navigation URL and every later theme replayed that
+    // stale page instead of the one `route.ready` actually waited for.
+    if (!alreadyActioned && route.actions?.length) {
+      actionedUrls.set(route.name, page.url());
+    }
 
     const themeLabel = (await page.evaluate(() =>
       matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light",
@@ -408,32 +432,35 @@ async function signInStorageStates(
     });
 
     // Issue #187 section 3's fallback: if Chromium ever drops the
-    // Secure `__Host-session` cookie on http://localhost, fall back to
-    // this identity's own API jar.
+    // Secure `__Host-session` cookie on http://localhost, sign in again
+    // through this identity's own real API jar instead.
     let storageState = await signInContext.storageState();
     const hasSession = storageState.cookies.some(
       (cookie) => cookie.name === "__Host-session",
     );
     if (!hasSession) {
-      const client = clientFromCookies(base, identity.email, "");
-      const cookieHeader = client.cookieHeader();
-      const sessionValue = cookieHeader
+      const client = await createClient(base, identity.email, identity.name);
+      const sessionValue = client
+        .cookieHeader()
         .split("; ")
         .find((pair) => pair.startsWith("__Host-session="))
         ?.slice("__Host-session=".length);
-      if (sessionValue) {
-        await signInContext.addCookies([
-          {
-            name: "__Host-session",
-            value: sessionValue,
-            url: base,
-            secure: true,
-            httpOnly: true,
-            path: "/",
-          },
-        ]);
-        storageState = await signInContext.storageState();
+      if (!sessionValue) {
+        throw new Error(
+          `shots: sign-in as ${identity.email} set no __Host-session cookie, in Chromium or via the API`,
+        );
       }
+      await signInContext.addCookies([
+        {
+          name: "__Host-session",
+          value: sessionValue,
+          url: base,
+          secure: true,
+          httpOnly: true,
+          path: "/",
+        },
+      ]);
+      storageState = await signInContext.storageState();
     }
     await signInContext.close();
 
@@ -508,6 +535,21 @@ ${skippedList}
   await writeFile(path.join(run, "index.html"), html);
 }
 
+/** Runs `args`, throwing with its captured output if it exits non-zero. */
+function sh(args: string[], cwd?: string, inherit = false): void {
+  const result = Bun.spawnSync(args, {
+    cwd,
+    stdout: inherit ? "inherit" : "pipe",
+    stderr: inherit ? "inherit" : "pipe",
+  });
+  if (result.exitCode !== 0) {
+    const detail = inherit ? "" : `: ${result.stderr.toString().slice(-2000)}`;
+    throw new Error(
+      `shots: \`${args.join(" ")}\` failed (exit ${result.exitCode})${detail}`,
+    );
+  }
+}
+
 async function publish(
   run: string,
   prNumber: string,
@@ -523,37 +565,26 @@ async function publish(
     }).exitCode === 0;
 
   if (branchExists) {
-    Bun.spawnSync(
+    sh(
       ["git", "worktree", "add", "-B", branch, worktreeDir, `origin/${branch}`],
-      { cwd: REPO_ROOT, stdout: "inherit", stderr: "inherit" },
+      REPO_ROOT,
+      true,
     );
   } else {
-    Bun.spawnSync(["git", "worktree", "add", "--detach", worktreeDir], {
-      cwd: REPO_ROOT,
-      stdout: "inherit",
-      stderr: "inherit",
-    });
-    Bun.spawnSync(["git", "checkout", "--orphan", branch], {
-      cwd: worktreeDir,
-      stdout: "inherit",
-      stderr: "inherit",
-    });
-    Bun.spawnSync(["git", "rm", "-rf", "--quiet", "."], { cwd: worktreeDir });
+    sh(["git", "worktree", "add", "--detach", worktreeDir], REPO_ROOT, true);
+    sh(["git", "checkout", "--orphan", branch], worktreeDir, true);
+    sh(["git", "rm", "-rf", "--quiet", "."], worktreeDir);
   }
 
-  Bun.spawnSync(["cp", "-r", path.join(run, "app"), worktreeDir]);
-  Bun.spawnSync(["cp", "-r", path.join(run, "prototype"), worktreeDir]);
-  Bun.spawnSync(["git", "add", "-A"], { cwd: worktreeDir });
+  sh(["cp", "-r", path.join(run, "app"), worktreeDir]);
+  sh(["cp", "-r", path.join(run, "prototype"), worktreeDir]);
+  sh(["git", "add", "-A"], worktreeDir);
   const commitLabel = only ? only.join(",") : "all";
-  Bun.spawnSync(
+  sh(
     ["git", "commit", "-m", `Shots for PR #${prNumber} (${commitLabel})`],
-    { cwd: worktreeDir },
+    worktreeDir,
   );
-  Bun.spawnSync(["git", "push", "-u", "origin", branch], {
-    cwd: worktreeDir,
-    stdout: "inherit",
-    stderr: "inherit",
-  });
+  sh(["git", "push", "-u", "origin", branch], worktreeDir, true);
 
   await rm(worktreeDir, { recursive: true, force: true });
   Bun.spawnSync(["git", "worktree", "prune"], { cwd: REPO_ROOT });
@@ -592,7 +623,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const { chromePath } = await checkPreflight();
+  const { launchOptions } = await checkPreflight();
   const t0 = Date.now();
   const log = (msg: string) =>
     console.log(`shots: [+${((Date.now() - t0) / 1000).toFixed(1)}s] ${msg}`);
@@ -710,17 +741,26 @@ async function main(): Promise<void> {
       : ROUTE_TABLE;
 
     log("launching the browser...");
-    const browser = await chromium.launch({
-      headless: true,
-      channel: chromePath ? undefined : "chrome",
-      executablePath: chromePath ?? undefined,
-    });
+    const browser = await chromium.launch({ headless: true, ...launchOptions });
 
     const identityStorageStates = await signInStorageStates(base, browser);
     const skipped: SkippedEntry[] = [];
     const actionedUrls = new Map<string, string>();
+    let sitePaused = false;
 
     for (const route of selectedRoutes) {
+      // The three `*-paused` routes (kept last in ROUTE_TABLE) need the
+      // site actually paused; nothing else in this run ever calls that
+      // endpoint, so pause it once, as Alice, right before the first one.
+      if (!sitePaused && route.name.endsWith("-paused")) {
+        const alice = await createClient(
+          base,
+          "alice@example.com",
+          "Alice Admin",
+        );
+        await alice.api("POST", "/api/admin/site-settings/pause");
+        sitePaused = true;
+      }
       const widths = route.widths ?? [...WIDTHS];
       for (const theme of ["light", "dark"] as const) {
         const storageState =
@@ -763,11 +803,7 @@ async function main(): Promise<void> {
     let prototypeBrowser: Browser | null = null;
 
     const launchPrototypeBrowser = () =>
-      chromium.launch({
-        headless: true,
-        channel: chromePath ? undefined : "chrome",
-        executablePath: chromePath ?? undefined,
-      });
+      chromium.launch({ headless: true, ...launchOptions });
 
     if (!args.noPrototype) {
       log("extracting prototypes...");

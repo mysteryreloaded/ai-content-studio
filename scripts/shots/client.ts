@@ -104,21 +104,6 @@ export async function createClient(
   return buildClient(origin, email, jar);
 }
 
-/** A client over an already-signed-in jar's cookie header (issue #187: a disabled user signs in through the API too, even once the browser flow records "disabled"). */
-export function clientFromCookies(
-  base: string,
-  email: string,
-  cookieHeader: string,
-): Client {
-  const origin = new URL(base).origin;
-  const jar = makeJar();
-  for (const pair of cookieHeader.split(";")) {
-    const eq = pair.indexOf("=");
-    if (eq > 0) jar.jar[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim();
-  }
-  return buildClient(origin, email, jar);
-}
-
 function buildClient(
   origin: string,
   email: string,

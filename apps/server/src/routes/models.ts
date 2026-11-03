@@ -216,14 +216,14 @@ export function modelsRoute(
           const session = c.get("session");
           if (!session) return c.json({ error: "unauthorized" }, 401);
 
-          const submissions =
+          const { submissions, hasMore } =
             await generationsRepository.listRecentSubmissionsForModel(
               detail.model.id,
               session.user.id,
               8,
               promptBindingFor(detail.inputs, detail.workflow),
             );
-          return c.json({ submissions });
+          return c.json({ submissions, hasMore });
         },
       )
 

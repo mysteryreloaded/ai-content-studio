@@ -27,6 +27,9 @@ export interface GenerationUploadFacts {
   thumbnailKey: string | null;
   /** The Upload it was trimmed from, by original name, or null when it wasn't (issue #51). */
   trimmedFromName: string | null;
+  /** Issue #51: the range kept, from the original's own timeline; null when not trimmed. They stay set when the original is gone. */
+  trimStartMs: number | null;
+  trimEndMs: number | null;
   /** Issue #68: an Admin removed this Upload for breaking the rules — its file is gone, so only this flag (not the facts above) should be shown. */
   removed: boolean;
 }

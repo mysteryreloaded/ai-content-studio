@@ -8,12 +8,14 @@ import { eq } from "drizzle-orm";
 import { createApp } from "../app.js";
 import { SESSION_COOKIE_NAME, createSession } from "../auth/session.js";
 import {
+  assets,
   backends,
   generations,
   logEntries,
   modelBackends,
   modelRevisions,
   models,
+  uploads,
   users,
   workflows,
 } from "../db/schema.js";
@@ -71,6 +73,8 @@ describe("/api/gallery", () => {
 
   beforeEach(async () => {
     const { db } = await testDb;
+    await db.delete(assets);
+    await db.delete(uploads);
     await db.delete(generations);
     await db.delete(logEntries);
     await db.delete(modelBackends);
@@ -200,6 +204,211 @@ describe("/api/gallery", () => {
     const submissionId = body.generations[0]?.submissionId;
     if (!submissionId) throw new Error("submit returned no submissionId");
     return submissionId;
+  }
+
+  /** Like `buildEnabledModel`, but with a text Input bound to node "1"'s `image` field, standing in for a prompt (issue #47). */
+  async function buildEnabledModelWithPrompt(
+    app: Awaited<ReturnType<typeof build>>["app"],
+    adminHeaders: Record<string, string>,
+    fakeUrl: string,
+    name: string,
+  ) {
+    const createRes = await app.request("/api/admin/models", {
+      method: "POST",
+      headers: { ...adminHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ name, workflow: WORKFLOW }),
+    });
+    const { model } = (await createRes.json()) as {
+      model: { id: string; slug: string; version: number };
+    };
+
+    const backendRes = await app.request("/api/admin/backends", {
+      method: "POST",
+      headers: { ...adminHeaders, "content-type": "application/json" },
+      body: JSON.stringify({
+        name: `Fake-${name}-prompt`,
+        baseUrl: fakeUrl,
+        auth: "none",
+      }),
+    });
+    const backend = (await backendRes.json()) as { id: string };
+
+    await app.request(`/api/admin/models/${model.id}/backends`, {
+      method: "POST",
+      headers: { ...adminHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ backendId: backend.id }),
+    });
+
+    clock.advance(30_000);
+    await flushMicrotasks();
+
+    const promptInputId = "77777777-7777-7777-7777-777777777777";
+    const inputsRes = await app.request(
+      `/api/admin/models/${model.id}/inputs`,
+      {
+        method: "PUT",
+        headers: { ...adminHeaders, "content-type": "application/json" },
+        body: JSON.stringify({
+          version: model.version,
+          inputs: [
+            {
+              id: promptInputId,
+              kind: "text",
+              group: "describe",
+              label: "Prompt",
+              help: "",
+              default: "",
+              multiline: true,
+              maxLength: 2000,
+              bindings: [
+                {
+                  nodeId: "1",
+                  field: "image",
+                  classType: "LoadImage",
+                  title: null,
+                },
+              ],
+            },
+          ],
+        }),
+      },
+    );
+    const { record: afterInputs } = (await inputsRes.json()) as {
+      record: { version: number };
+    };
+
+    const modesRes = await app.request(`/api/admin/models/${model.id}/modes`, {
+      method: "PUT",
+      headers: { ...adminHeaders, "content-type": "application/json" },
+      body: JSON.stringify({
+        version: afterInputs.version,
+        modes: [{ name: "Default", description: "", outputNodeIds: ["3"] }],
+      }),
+    });
+    const { record: afterModes, modes } = (await modesRes.json()) as {
+      record: { id: string; version: number; currentRevision: number };
+      modes: Array<{ id: string; name: string }>;
+    };
+
+    const enableRes = await app.request(
+      `/api/admin/models/${model.id}/enable`,
+      {
+        method: "POST",
+        headers: { ...adminHeaders, "content-type": "application/json" },
+        body: JSON.stringify({ version: afterModes.version }),
+      },
+    );
+    expect(enableRes.status).toBe(200);
+
+    return {
+      modelId: model.id,
+      slug: model.slug as string,
+      modeId: modes[0]?.id as string,
+      revision: afterModes.currentRevision,
+      promptInputId,
+    };
+  }
+
+  /** Like `buildEnabledModel`, but with one image Upload Input bound to node "1"'s `image` field (issue #190's list thumbnails). */
+  async function buildEnabledModelWithUpload(
+    app: Awaited<ReturnType<typeof build>>["app"],
+    adminHeaders: Record<string, string>,
+    fakeUrl: string,
+    name: string,
+  ) {
+    const createRes = await app.request("/api/admin/models", {
+      method: "POST",
+      headers: { ...adminHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ name, workflow: WORKFLOW }),
+    });
+    const { model } = (await createRes.json()) as {
+      model: { id: string; slug: string; version: number };
+    };
+
+    const backendRes = await app.request("/api/admin/backends", {
+      method: "POST",
+      headers: { ...adminHeaders, "content-type": "application/json" },
+      body: JSON.stringify({
+        name: `Fake-${name}-upload`,
+        baseUrl: fakeUrl,
+        auth: "none",
+      }),
+    });
+    const backend = (await backendRes.json()) as { id: string };
+
+    await app.request(`/api/admin/models/${model.id}/backends`, {
+      method: "POST",
+      headers: { ...adminHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ backendId: backend.id }),
+    });
+
+    clock.advance(30_000);
+    await flushMicrotasks();
+
+    const uploadInputId = "66666666-6666-4666-8666-666666666666";
+    const inputsRes = await app.request(
+      `/api/admin/models/${model.id}/inputs`,
+      {
+        method: "PUT",
+        headers: { ...adminHeaders, "content-type": "application/json" },
+        body: JSON.stringify({
+          version: model.version,
+          inputs: [
+            {
+              id: uploadInputId,
+              kind: "image_upload",
+              group: "describe",
+              label: "Photo",
+              help: "",
+              maxSizeMb: 5,
+              maxLongSide: 300,
+              bindings: [
+                {
+                  nodeId: "1",
+                  field: "image",
+                  classType: "LoadImage",
+                  title: null,
+                },
+              ],
+            },
+          ],
+        }),
+      },
+    );
+    const { record: afterInputs } = (await inputsRes.json()) as {
+      record: { version: number };
+    };
+
+    const modesRes = await app.request(`/api/admin/models/${model.id}/modes`, {
+      method: "PUT",
+      headers: { ...adminHeaders, "content-type": "application/json" },
+      body: JSON.stringify({
+        version: afterInputs.version,
+        modes: [{ name: "Default", description: "", outputNodeIds: ["3"] }],
+      }),
+    });
+    const { record: afterModes, modes } = (await modesRes.json()) as {
+      record: { id: string; version: number; currentRevision: number };
+      modes: Array<{ id: string; name: string }>;
+    };
+
+    const enableRes = await app.request(
+      `/api/admin/models/${model.id}/enable`,
+      {
+        method: "POST",
+        headers: { ...adminHeaders, "content-type": "application/json" },
+        body: JSON.stringify({ version: afterModes.version }),
+      },
+    );
+    expect(enableRes.status).toBe(200);
+
+    return {
+      modelId: model.id,
+      slug: model.slug as string,
+      modeId: modes[0]?.id as string,
+      revision: afterModes.currentRevision,
+      uploadInputId,
+    };
   }
 
   test("lists this user's Submissions across every Model, newest first", async () => {
@@ -524,6 +733,197 @@ describe("/api/gallery", () => {
       expect(
         afterBody.models.find((m) => m.id === modelA.modelId)?.deleted,
       ).toBe(true);
+
+      backendsService.stop();
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("shows a Submission's prompt — a custom one as-is, a blank one as the Model's own value, prefixed (issue #190)", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const { app, backendsService } = await build();
+      const { headers: adminHeaders } = await headersFor("admin");
+      const plain = await buildEnabledModel(
+        app,
+        adminHeaders,
+        fake.url,
+        "Plain Model",
+      );
+      const prompted = await buildEnabledModelWithPrompt(
+        app,
+        adminHeaders,
+        fake.url,
+        "Prompt Model",
+      );
+
+      const { headers: userHeaders } = await headersFor("user");
+      // The plain Model's revision is 2 (create + one Modes PUT); the
+      // prompt Model's is 3 (an extra Inputs PUT bumped it).
+      await submit(app, userHeaders, plain.slug, plain.modeId);
+      clock.advance(1_000);
+      const customRes = await app.request(
+        `/api/models/${prompted.slug}/generations`,
+        {
+          method: "POST",
+          headers: { ...userHeaders, "content-type": "application/json" },
+          body: JSON.stringify({
+            modeId: prompted.modeId,
+            revision: prompted.revision,
+            values: { [prompted.promptInputId]: "a red fox" },
+          }),
+        },
+      );
+      expect(customRes.status).toBe(201);
+      clock.advance(1_000);
+      const blankRes = await app.request(
+        `/api/models/${prompted.slug}/generations`,
+        {
+          method: "POST",
+          headers: { ...userHeaders, "content-type": "application/json" },
+          body: JSON.stringify({
+            modeId: prompted.modeId,
+            revision: prompted.revision,
+          }),
+        },
+      );
+      expect(blankRes.status).toBe(201);
+
+      const res = await app.request("/api/gallery", { headers: userHeaders });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        submissions: Array<{
+          modelName: string;
+          prompt: string | null;
+          uploads: unknown[];
+        }>;
+      };
+      // Newest first: the two prompt Model Submissions, then the plain one.
+      expect(body.submissions.map((s) => s.modelName)).toEqual([
+        "Prompt Model",
+        "Prompt Model",
+        "Plain Model",
+      ]);
+      // No Upload Inputs on any of these Models: nothing to show.
+      expect(body.submissions.every((s) => s.uploads.length === 0)).toBe(true);
+      // A blank prompt falls back to the Workflow's own value, prefixed
+      // (issue #47's rule); a custom one shows as-is.
+      expect(body.submissions[0]?.prompt).toBe("Default prompt: example.png");
+      expect(body.submissions[1]?.prompt).toBe("a red fox");
+      // The plain Model has no text Input: no prompt to show.
+      expect(body.submissions[2]?.prompt).toBeNull();
+
+      backendsService.stop();
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("shows a Submission's used Uploads — a removed one flagged without a thumbnail (issue #190)", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const { app, backendsService } = await build();
+      const { db } = await testDb;
+      const { headers: adminHeaders } = await headersFor("admin");
+      const { slug, modeId, revision, uploadInputId } =
+        await buildEnabledModelWithUpload(
+          app,
+          adminHeaders,
+          fake.url,
+          "Upload Model",
+        );
+
+      const { headers: userHeaders, userId } = await headersFor("user");
+      const uploadAId = crypto.randomUUID();
+      const uploadBId = crypto.randomUUID();
+      await db.insert(uploads).values([
+        {
+          id: uploadAId,
+          userId,
+          status: "complete",
+          originalName: "a.png",
+          declaredType: "image/png",
+          size: 10,
+          storageKey: "uploads/gallery-test/a.png",
+          kind: "image",
+          extension: "png",
+          width: 100,
+          height: 100,
+          thumbnailKey: "uploads/gallery-test/a.thumb.png",
+          createdAt: clock.now(),
+        },
+        {
+          id: uploadBId,
+          userId,
+          status: "complete",
+          originalName: "b.png",
+          declaredType: "image/png",
+          size: 10,
+          storageKey: "uploads/gallery-test/b.png",
+          kind: "image",
+          extension: "png",
+          width: 100,
+          height: 100,
+          thumbnailKey: "uploads/gallery-test/b.thumb.png",
+          createdAt: clock.now(),
+        },
+      ]);
+
+      // Each Submission uses one Upload; the first one is later removed
+      // by an Admin (its file is gone — issue #68).
+      const submitOne = (uploadId: string) =>
+        app.request(`/api/models/${slug}/generations`, {
+          method: "POST",
+          headers: { ...userHeaders, "content-type": "application/json" },
+          body: JSON.stringify({
+            modeId,
+            revision,
+            values: { [uploadInputId]: uploadId },
+          }),
+        });
+      expect((await submitOne(uploadAId)).status).toBe(201);
+      clock.advance(1_000);
+      expect((await submitOne(uploadBId)).status).toBe(201);
+
+      await db
+        .update(uploads)
+        .set({ removedAt: clock.now(), removedReason: "too large" })
+        .where(eq(uploads.id, uploadAId));
+
+      const res = await app.request("/api/gallery", { headers: userHeaders });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        submissions: Array<{
+          prompt: string | null;
+          uploads: Array<{
+            id: string;
+            kind: "image" | "video" | "audio";
+            thumbnailKey: string | null;
+            removed: boolean;
+          }>;
+        }>;
+      };
+      // No text Input on this Model: no prompt to show.
+      expect(body.submissions.every((s) => s.prompt === null)).toBe(true);
+      // Newest first: B (kept its thumbnail), then A (removed: flagged,
+      // no thumbnail).
+      expect(body.submissions[0]?.uploads).toEqual([
+        {
+          id: uploadBId,
+          kind: "image",
+          thumbnailKey: "uploads/gallery-test/b.thumb.png",
+          removed: false,
+        },
+      ]);
+      expect(body.submissions[1]?.uploads).toEqual([
+        {
+          id: uploadAId,
+          kind: "image",
+          thumbnailKey: null,
+          removed: true,
+        },
+      ]);
 
       backendsService.stop();
     } finally {

@@ -59,6 +59,15 @@ const WORKFLOW = {
   "3": { class_type: "SaveImage", inputs: { images: ["2", 0] } },
 };
 
+// A video loader the Mode's output runs off (the fake's object-info
+// fixture has no VHS nodes, so LoadVideoCustom's flagged "video" field
+// is the loader); only a Video Upload Input can feed it (no
+// fixed-file check).
+const VIDEO_WORKFLOW = {
+  "4": { class_type: "LoadVideoCustom", inputs: { video: "" } },
+  "3": { class_type: "SaveImage", inputs: { images: ["4", 0] } },
+};
+
 async function flushMicrotasks() {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
@@ -203,6 +212,111 @@ describe("/api/generations/:id (issue #57)", () => {
     const first = body.generations[0];
     if (!first) throw new Error("submit created no Generation");
     return { generationId: first.id, submissionId: first.submissionId };
+  }
+
+  /** Like `buildEnabledModel`, but a `VIDEO_WORKFLOW` Model with one trimmable video Upload Input bound to the loader (issue #51/#190). */
+  async function buildEnabledModelWithVideo(
+    app: Awaited<ReturnType<typeof build>>["app"],
+    adminHeaders: Record<string, string>,
+    fakeUrl: string,
+    name: string,
+  ) {
+    const createRes = await app.request("/api/admin/models", {
+      method: "POST",
+      headers: { ...adminHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ name, workflow: VIDEO_WORKFLOW }),
+    });
+    const { model } = (await createRes.json()) as {
+      model: { id: string; slug: string; version: number };
+    };
+
+    const backendRes = await app.request("/api/admin/backends", {
+      method: "POST",
+      headers: { ...adminHeaders, "content-type": "application/json" },
+      body: JSON.stringify({
+        name: `Fake-${name}`,
+        baseUrl: fakeUrl,
+        auth: "none",
+      }),
+    });
+    const backend = (await backendRes.json()) as { id: string };
+
+    await app.request(`/api/admin/models/${model.id}/backends`, {
+      method: "POST",
+      headers: { ...adminHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ backendId: backend.id }),
+    });
+
+    clock.advance(30_000);
+    await flushMicrotasks();
+
+    const videoInputId = "22222222-2222-2222-2222-222222222222";
+    const inputsRes = await app.request(
+      `/api/admin/models/${model.id}/inputs`,
+      {
+        method: "PUT",
+        headers: { ...adminHeaders, "content-type": "application/json" },
+        body: JSON.stringify({
+          version: model.version,
+          inputs: [
+            {
+              id: videoInputId,
+              kind: "video_upload",
+              group: "describe",
+              label: "Clip",
+              help: "",
+              maxSizeMb: 50,
+              maxLongSide: null,
+              minDurationMs: 0,
+              maxDurationMs: 10_000,
+              trimmable: true,
+              bindings: [
+                {
+                  nodeId: "4",
+                  field: "video",
+                  classType: "LoadVideoCustom",
+                  title: null,
+                },
+              ],
+            },
+          ],
+        }),
+      },
+    );
+    const { record: afterInputs } = (await inputsRes.json()) as {
+      record: { version: number };
+    };
+
+    const modesRes = await app.request(`/api/admin/models/${model.id}/modes`, {
+      method: "PUT",
+      headers: { ...adminHeaders, "content-type": "application/json" },
+      body: JSON.stringify({
+        version: afterInputs.version,
+        modes: [{ name: "Default", description: "", outputNodeIds: ["3"] }],
+      }),
+    });
+    const { record: afterModes, modes } = (await modesRes.json()) as {
+      record: { id: string; version: number; currentRevision: number };
+      modes: Array<{ id: string; name: string }>;
+    };
+
+    const enableRes = await app.request(
+      `/api/admin/models/${model.id}/enable`,
+      {
+        method: "POST",
+        headers: { ...adminHeaders, "content-type": "application/json" },
+        body: JSON.stringify({ version: afterModes.version }),
+      },
+    );
+    expect(enableRes.status).toBe(200);
+
+    return {
+      modelId: model.id as string,
+      slug: model.slug as string,
+      modeId: modes[0]?.id as string,
+      revision: afterModes.currentRevision,
+      videoInputId,
+    };
   }
 
   test("404s for someone else's Generation, and for a missing id", async () => {
@@ -595,6 +709,228 @@ describe("/api/generations/:id (issue #57)", () => {
         .from(uploads)
         .where(eq(uploads.id, onlyUploadId));
       expect(onlyRow).toBeUndefined();
+
+      backendsService.stop();
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("a trimmed video's detail shows the range kept and the original's name; the range survives when the original is gone (issue #190)", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const { app, backendsService } = await build();
+      const { db } = await testDb;
+      const { headers: adminHeaders } = await headersFor("admin");
+      const { slug, modeId, revision, videoInputId } =
+        await buildEnabledModelWithVideo(app, adminHeaders, fake.url, "V");
+
+      const { headers: userHeaders, userId } = await headersFor("user");
+      const originalId = crypto.randomUUID();
+      const trimmedId = crypto.randomUUID();
+      const plainId = crypto.randomUUID();
+      await db.insert(uploads).values([
+        {
+          id: originalId,
+          userId,
+          status: "complete",
+          originalName: "original.mp4",
+          declaredType: "video/mp4",
+          size: 10_000,
+          storageKey: "uploads/test/original.mp4",
+          kind: "video",
+          extension: "mp4",
+          width: 1920,
+          height: 1080,
+          durationMs: 5000,
+          fps: 25,
+          createdAt: clock.now(),
+        },
+        {
+          id: trimmedId,
+          userId,
+          status: "complete",
+          originalName: "clip.mp4",
+          declaredType: "video/mp4",
+          size: 8_000,
+          storageKey: "uploads/test/clip.mp4",
+          kind: "video",
+          extension: "mp4",
+          width: 1920,
+          height: 1080,
+          durationMs: 5500,
+          fps: 25,
+          trimmedFromId: originalId,
+          trimStartMs: 2000,
+          trimEndMs: 7500,
+          createdAt: clock.now(),
+        },
+        {
+          id: plainId,
+          userId,
+          status: "complete",
+          originalName: "plain.mp4",
+          declaredType: "video/mp4",
+          size: 8_000,
+          storageKey: "uploads/test/plain.mp4",
+          kind: "video",
+          extension: "mp4",
+          width: 1280,
+          height: 720,
+          durationMs: 4000,
+          createdAt: clock.now(),
+        },
+      ]);
+
+      const submit = (uploadId: string) =>
+        app.request(`/api/models/${slug}/generations`, {
+          method: "POST",
+          headers: { ...userHeaders, "content-type": "application/json" },
+          body: JSON.stringify({
+            modeId,
+            revision,
+            values: { [videoInputId]: uploadId },
+          }),
+        });
+
+      const trimmedRes = await submit(trimmedId);
+      expect(trimmedRes.status).toBe(201);
+      const trimmed = (await trimmedRes.json()) as {
+        generations: Array<{ id: string }>;
+      };
+      const trimmedGenId = trimmed.generations[0]?.id;
+      if (!trimmedGenId) throw new Error("submit created no Generation");
+      clock.advance(1_000);
+
+      type UploadFacts = {
+        id: string;
+        name: string;
+        size: number;
+        durationMs: number | null;
+        width: number | null;
+        height: number | null;
+        thumbnailKey: string | null;
+        trimmedFromName: string | null;
+        trimStartMs: number | null;
+        trimEndMs: number | null;
+        removed: boolean;
+      };
+      const detail = async () => {
+        const res = await app.request(`/api/generations/${trimmedGenId}`, {
+          headers: userHeaders,
+        });
+        expect(res.status).toBe(200);
+        return (await res.json()) as {
+          assets: Array<{
+            kind: string;
+            size: number;
+            width: number | null;
+            height: number | null;
+            durationMs: number | null;
+            fps: number | null;
+          }>;
+          settings: Array<{
+            inputId: string;
+            label: string;
+            kind: string;
+            display: string;
+            upload: UploadFacts | null;
+          }>;
+        };
+      };
+
+      const first = await detail();
+      // The trimmed Upload's own facts: the range kept, the original's
+      // name, nothing removed.
+      expect(first.settings).toEqual([
+        {
+          inputId: videoInputId,
+          label: "Clip",
+          kind: "upload",
+          display: "clip.mp4",
+          upload: {
+            id: trimmedId,
+            name: "clip.mp4",
+            size: 8_000,
+            durationMs: 5500,
+            width: 1920,
+            height: 1080,
+            thumbnailKey: null,
+            trimmedFromName: "original.mp4",
+            trimStartMs: 2000,
+            trimEndMs: 7500,
+            removed: false,
+          },
+        },
+      ]);
+
+      // The original gets deleted: the range kept is the trimmed
+      // Upload's own columns, so it stays; only the original's name is
+      // gone (issue #51/#190).
+      await db.delete(uploads).where(eq(uploads.id, originalId));
+      const afterDelete = await detail();
+      expect(afterDelete.settings[0]?.upload).toMatchObject({
+        name: "clip.mp4",
+        trimmedFromName: null,
+        trimStartMs: 2000,
+        trimEndMs: 7500,
+        removed: false,
+      });
+
+      // A non-trimmed video Upload: all three trim facts null.
+      const plainRes = await submit(plainId);
+      expect(plainRes.status).toBe(201);
+      const plain = (await plainRes.json()) as {
+        generations: Array<{ id: string }>;
+      };
+      const plainGenId = plain.generations[0]?.id;
+      if (!plainGenId) throw new Error("submit created no Generation");
+      const plainDetail = await app.request(`/api/generations/${plainGenId}`, {
+        headers: userHeaders,
+      });
+      expect(plainDetail.status).toBe(200);
+      const plainBody = (await plainDetail.json()) as {
+        settings: Array<{
+          inputId: string;
+          display: string;
+          upload: UploadFacts | null;
+        }>;
+      };
+      expect(plainBody.settings[0]?.display).toBe("plain.mp4");
+      expect(plainBody.settings[0]?.upload).toMatchObject({
+        id: plainId,
+        name: "plain.mp4",
+        trimmedFromName: null,
+        trimStartMs: null,
+        trimEndMs: null,
+        removed: false,
+      });
+
+      // The main Asset's own finishing facts (issue #190's detail shape).
+      await db.insert(assets).values({
+        generationId: trimmedGenId,
+        nodeId: "3",
+        sortOrder: 0,
+        kind: "video",
+        comfyuiFilename: "ComfyUI_00001_.mp4",
+        contentType: "video/mp4",
+        size: 8_000,
+        storageKey: "assets/test/ComfyUI_00001_.mp4",
+        width: 1920,
+        height: 1080,
+        durationMs: 5500,
+        fps: 25,
+      });
+      const withAsset = await detail();
+      expect(withAsset.assets).toHaveLength(1);
+      expect(withAsset.assets[0]).toMatchObject({
+        kind: "video",
+        size: 8_000,
+        width: 1920,
+        height: 1080,
+        durationMs: 5500,
+        fps: 25,
+      });
 
       backendsService.stop();
     } finally {

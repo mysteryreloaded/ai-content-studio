@@ -251,6 +251,8 @@ describe("resolveGenerationSettings", () => {
             height: 1080,
             thumbnailKey: "thumb/upload-1.jpg",
             trimmedFromName: "original.mp4",
+            trimStartMs: 2000,
+            trimEndMs: 7500,
             removed: false,
           },
         },
@@ -258,9 +260,16 @@ describe("resolveGenerationSettings", () => {
     });
     expect(setting?.display).toBe("clip.mp4");
     const uploadSetting = setting as {
-      upload: { trimmedFromName: string | null };
+      upload: {
+        trimmedFromName: string | null;
+        trimStartMs: number | null;
+        trimEndMs: number | null;
+      };
     };
     expect(uploadSetting.upload?.trimmedFromName).toBe("original.mp4");
+    // issue #190: the range kept, from the original's own timeline.
+    expect(uploadSetting.upload?.trimStartMs).toBe(2000);
+    expect(uploadSetting.upload?.trimEndMs).toBe(7500);
   });
 
   test("a Points Input decodes the pixels drawn on the frame", () => {

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Button } from "../components/ui/button.js";
 import { isNotificationSupported } from "./browserNotification.js";
 import {
   readNotificationsEnabled,
@@ -6,18 +7,6 @@ import {
   writeNotificationsPrompted,
 } from "./preference.js";
 import { useNotificationsPreference } from "./useNotificationsPreference.js";
-
-const PROMPT_STYLE = `
-.notify-prompt {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  margin: 0.5rem 0;
-}
-.notify-prompt p {
-  margin: 0;
-}
-`;
 
 function shouldOfferPrompt(): boolean {
   return (
@@ -40,20 +29,24 @@ export function FirstSubmissionNotifyPrompt() {
   };
 
   return (
-    <aside role="note" className="notify-prompt">
-      <style>{PROMPT_STYLE}</style>
-      <p>Get a browser notification when a Submission finishes?</p>
-      <button
+    <aside
+      role="note"
+      className="flex flex-wrap items-center gap-2 rounded-md bg-muted px-2.5 py-1.5 text-[13px]"
+    >
+      <span>Get notified when this finishes?</span>
+      <Button
         type="button"
+        variant="link"
         onClick={() => {
           void enable().finally(dismiss);
         }}
       >
         Turn on
-      </button>
-      <button type="button" onClick={dismiss}>
+      </Button>
+      <span className="text-faint">·</span>
+      <Button type="button" variant="link" onClick={dismiss}>
         Not now
-      </button>
+      </Button>
     </aside>
   );
 }

@@ -149,7 +149,12 @@ export const routes: Route[] = [
     as: "alice",
     prototype: "editor-c",
   },
-  { name: "admin-backends", path: "/admin/backends", as: "alice" },
+  {
+    name: "admin-backends",
+    path: "/admin/backends",
+    as: "alice",
+    prototype: "editor-a",
+  },
   { name: "admin-models", path: "/admin/models", as: "alice" },
   {
     name: "admin-editor",

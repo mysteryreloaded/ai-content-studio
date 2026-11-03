@@ -19,9 +19,7 @@ export function useReuseSettings({
   model: WorkbenchModel | null;
   reuseGenerationId: string | null;
   selectMode: (mode: WorkbenchMode) => void;
-  setValues: (
-    update: (current: Record<string, string>) => Record<string, string>,
-  ) => void;
+  setValues: Dispatch<SetStateAction<Record<string, string>>>;
   setReuseNotice: Dispatch<SetStateAction<string | null>>;
   searchParams: URLSearchParams;
   setSearchParams: SetURLSearchParams;

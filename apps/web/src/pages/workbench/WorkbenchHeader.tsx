@@ -1,23 +1,33 @@
+import { Link } from "react-router-dom";
 import type { WorkbenchModel } from "./types.js";
 
-interface WorkbenchHeaderProps {
-	model: WorkbenchModel;
-	reuseNotice: string | null;
-	onShowTerms: () => void;
-}
-
-export function WorkbenchHeader({ model, reuseNotice, onShowTerms }: WorkbenchHeaderProps) {
-	return (
-		<header className="workbench-header">
-			<div className="workbench-header-row">
-				<h1 className="page-title">{model.name}</h1>
-				<button type="button" className="button button-secondary" onClick={onShowTerms}>
-					Show model terms
-				</button>
-			</div>
-			{reuseNotice ? (
-				<div className="notice-box notice-box-accent">{reuseNotice}</div>
-			) : null}
-		</header>
-	);
+export function WorkbenchHeader({
+  model,
+  reuseNotice,
+  onShowTerms,
+}: {
+  model: WorkbenchModel;
+  reuseNotice: string | null;
+  onShowTerms: () => void;
+}) {
+  return (
+    <header className="workbench-header">
+      <h1>{model.name}</h1>
+      {model.description && <p>{model.description}</p>}
+      {model.attribution && <p>{model.attribution}</p>}
+      {reuseNotice && (
+        <output className="workbench-reuse-notice">{reuseNotice}</output>
+      )}
+      <p>
+        <Link to={`/gallery?model=${model.id}`}>View in Gallery</Link>
+      </p>
+      {model.terms && (
+        <p>
+          <button type="button" onClick={onShowTerms}>
+            Model terms
+          </button>
+        </p>
+      )}
+    </header>
+  );
 }

@@ -50,12 +50,8 @@ export function useGenerate({
   count: number;
   uploads: Record<string, UploadState>;
   trimRangeByInputId: Record<string, TrimRange>;
-  setValues: (
-    update: (current: Record<string, string>) => Record<string, string>,
-  ) => void;
-  setIssuesByInputId: (
-    update: (current: Record<string, string>) => Record<string, string>,
-  ) => void;
+  setValues: Dispatch<SetStateAction<Record<string, string>>>;
+  setIssuesByInputId: Dispatch<SetStateAction<Record<string, string>>>;
   setModel: Dispatch<SetStateAction<WorkbenchModel | null>>;
   setSelectedModeId: Dispatch<SetStateAction<string | null>>;
   setTermsDialog: Dispatch<SetStateAction<TermsDialogState | null>>;

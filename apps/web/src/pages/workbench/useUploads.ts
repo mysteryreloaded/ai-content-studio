@@ -6,7 +6,14 @@ import type {
   UploadState,
 } from "../../components/inputs/types.js";
 import { httpUploadApi, uploadResumable } from "../../lib/chunkedUpload.js";
-import { type RefObject, useCallback, useRef, useState } from "react";
+import {
+  type Dispatch,
+  type RefObject,
+  type SetStateAction,
+  useCallback,
+  useRef,
+  useState,
+} from "react";
 import type { WorkbenchModel } from "./types.js";
 
 export function useUploads({
@@ -19,12 +26,8 @@ export function useUploads({
   modelRef: RefObject<WorkbenchModel | null>;
   valuesRef: RefObject<Record<string, string>>;
   maxUploadMb: number | null;
-  setValues: (
-    update: (current: Record<string, string>) => Record<string, string>,
-  ) => void;
-  setIssuesByInputId: (
-    update: (current: Record<string, string>) => Record<string, string>,
-  ) => void;
+  setValues: Dispatch<SetStateAction<Record<string, string>>>;
+  setIssuesByInputId: Dispatch<SetStateAction<Record<string, string>>>;
 }) {
   const [uploads, setUploads] = useState<Record<string, UploadState>>({});
   // Issue #50: each running Upload, by Input id, so Generate can wait for

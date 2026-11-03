@@ -3,10 +3,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { BUN_FETCH } from "../test/happy-dom-setup.js";
 
-const { cleanup, render, screen, waitFor } = await import(
-  "@testing-library/react"
-);
-const { Link, MemoryRouter, Route, Routes } = await import("react-router-dom");
+const { cleanup, screen, waitFor } = await import("@testing-library/react");
+const { Link } = await import("react-router-dom");
+const { renderWithProviders } = await import("../test/render.js");
 const { AuditPage } = await import("./AuditPage.js");
 
 afterEach(() => {
@@ -62,35 +61,29 @@ const USER_ENTRY = {
   images: null,
 };
 
-function renderAt(initialEntry: string) {
-  return render(
-    <MemoryRouter initialEntries={[initialEntry]}>
-      <AuditPage />
-    </MemoryRouter>,
-  );
-}
-
 describe("AuditPage", () => {
-  test("lists entries newest first with actor, target and action", async () => {
+  test("lists entries newest first with actor, action and target", async () => {
     mockFetch(() =>
       Response.json({ entries: [USER_ENTRY, SITE_SETTINGS_ENTRY] }),
     );
 
-    renderAt("/admin/audit");
+    renderWithProviders(<AuditPage />, { route: "/admin/audit" });
 
-    expect(await screen.findByText(/System disable user/)).toBeTruthy();
     expect(
-      screen.getByText(/admin@example\.com update site_settings/),
+      await screen.findByText(/System · disabled · User Deleted user/),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(/admin@example\.com · updated · Site settings/),
     ).toBeTruthy();
   });
 
   test("shows the diff computed from before/after when expanded", async () => {
     mockFetch(() => Response.json({ entries: [SITE_SETTINGS_ENTRY] }));
 
-    renderAt("/admin/audit");
+    renderWithProviders(<AuditPage />, { route: "/admin/audit" });
 
     const summary = await screen.findByText(
-      /admin@example\.com update site_settings/,
+      /admin@example\.com · updated · Site settings/,
     );
     const { default: userEvent } = await import("@testing-library/user-event");
     await userEvent.click(summary);
@@ -99,10 +92,38 @@ describe("AuditPage", () => {
     expect(screen.getByText("New title")).toBeTruthy();
   });
 
+  test("hides unchanged fields until asked", async () => {
+    mockFetch(() =>
+      Response.json({
+        entries: [
+          {
+            ...SITE_SETTINGS_ENTRY,
+            before: { title: "Old title", theme: "dark" },
+            after: { title: "New title", theme: "dark" },
+          },
+        ],
+      }),
+    );
+
+    renderWithProviders(<AuditPage />, { route: "/admin/audit" });
+
+    const summary = await screen.findByText(
+      /admin@example\.com · updated · Site settings/,
+    );
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await userEvent.click(summary);
+
+    expect(screen.getByText("Old title")).toBeTruthy();
+    expect(screen.queryByText("dark")).toBeNull();
+
+    await userEvent.click(screen.getByText("Show 1 unchanged fields"));
+    expect(screen.getAllByText("dark").length).toBeGreaterThan(0);
+  });
+
   test("a Deleted user target shows live-looked-up name", async () => {
     mockFetch(() => Response.json({ entries: [USER_ENTRY] }));
 
-    renderAt("/admin/audit");
+    renderWithProviders(<AuditPage />, { route: "/admin/audit" });
 
     expect(await screen.findByText(/Deleted user/)).toBeTruthy();
   });
@@ -110,44 +131,61 @@ describe("AuditPage", () => {
   test("reads initial filters from the URL, as a History link would set them", async () => {
     const calls = mockFetch(() => Response.json({ entries: [] }));
 
-    renderAt("/admin/audit?targetType=site_settings&targetId=singleton");
+    renderWithProviders(<AuditPage />, {
+      route: "/admin/audit?targetType=site_settings&targetId=singleton",
+    });
 
     await waitFor(() => {
       expect(calls[0]?.url).toContain("targetType=site_settings");
       expect(calls[0]?.url).toContain("targetId=singleton");
     });
+    expect(screen.getByLabelText("Target type").textContent).toContain(
+      "Site settings",
+    );
+  });
+
+  test("a History link shows the Showing History note", async () => {
+    mockFetch(() => Response.json({ entries: [USER_ENTRY] }));
+
+    renderWithProviders(<AuditPage />, {
+      route: "/admin/audit?targetType=user&targetId=u1",
+    });
+
     expect(
-      (screen.getByLabelText("Target type") as HTMLInputElement).value,
-    ).toBe("site_settings");
+      await screen.findByText("Showing History for User Deleted user"),
+    ).toBeTruthy();
+    expect(screen.getByText("Show everything")).toBeTruthy();
   });
 
   test("no entries matching the filters shows a message", async () => {
     mockFetch(() => Response.json({ entries: [] }));
 
-    renderAt("/admin/audit");
+    renderWithProviders(<AuditPage />, { route: "/admin/audit" });
 
     expect(
       await screen.findByText("No Audit entries match these filters."),
     ).toBeTruthy();
   });
 
-  test("a user target shows by id plus the live-looked-up name", async () => {
+  test("a user target shows the live-looked-up name", async () => {
     mockFetch(() =>
       Response.json({
         entries: [{ ...USER_ENTRY, targetName: "Target Name" }],
       }),
     );
 
-    renderAt("/admin/audit");
+    renderWithProviders(<AuditPage />, { route: "/admin/audit" });
 
-    expect(await screen.findByText(/user u1 \(Target Name\)/)).toBeTruthy();
+    expect(await screen.findByText(/User Target Name/)).toBeTruthy();
   });
 
   test("a reload with from= set still filters, and the field shows it", async () => {
     const iso = "2026-01-01T10:00:00.000Z";
     const calls = mockFetch(() => Response.json({ entries: [] }));
 
-    renderAt(`/admin/audit?from=${encodeURIComponent(iso)}`);
+    renderWithProviders(<AuditPage />, {
+      route: `/admin/audit?from=${encodeURIComponent(iso)}`,
+    });
 
     await waitFor(() => {
       expect(calls[0]?.url).toContain(`from=${encodeURIComponent(iso)}`);
@@ -164,7 +202,9 @@ describe("AuditPage", () => {
   test("a bad from= in the URL is skipped instead of crashing the page", async () => {
     const calls = mockFetch(() => Response.json({ entries: [] }));
 
-    renderAt("/admin/audit?from=not-a-date");
+    renderWithProviders(<AuditPage />, {
+      route: "/admin/audit?from=not-a-date",
+    });
 
     await screen.findByText("No Audit entries match these filters.");
     expect(calls[0]?.url).not.toContain("from=");
@@ -181,16 +221,16 @@ describe("AuditPage", () => {
       });
     });
 
-    renderAt("/admin/audit");
+    renderWithProviders(<AuditPage />, { route: "/admin/audit" });
 
-    await screen.findByText(/System disable user/);
+    await screen.findByText(/System · disabled · User Deleted user/);
     const loadOlder = screen.getByText("Load older");
 
     const { default: userEvent } = await import("@testing-library/user-event");
     await userEvent.click(loadOlder);
 
     expect(
-      await screen.findByText(/admin@example\.com update site_settings/),
+      await screen.findByText(/admin@example\.com · updated · Site settings/),
     ).toBeTruthy();
     expect(screen.queryByText("Load older")).toBeNull();
     const secondCall = calls[1];
@@ -203,16 +243,20 @@ describe("AuditPage", () => {
   test("navigating to the unfiltered Audit link refetches without the old filter", async () => {
     const calls = mockFetch(() => Response.json({ entries: [] }));
 
-    render(
-      <MemoryRouter
-        initialEntries={["/admin/audit?targetType=backend&targetId=b1"]}
-      >
-        <Link to="/admin/audit">Audit</Link>
-        <Routes>
-          <Route path="/admin/audit" element={<AuditPage />} />
-        </Routes>
-      </MemoryRouter>,
-    );
+    renderWithProviders(null, {
+      route: "/admin/audit?targetType=backend&targetId=b1",
+      routes: [
+        {
+          path: "/admin/audit",
+          element: (
+            <>
+              <Link to="/admin/audit">Audit</Link>
+              <AuditPage />
+            </>
+          ),
+        },
+      ],
+    });
 
     await waitFor(() => {
       expect(calls[0]?.url).toContain("targetType=backend");
@@ -224,8 +268,6 @@ describe("AuditPage", () => {
     await waitFor(() => {
       expect(calls[1]?.url).not.toContain("targetType");
     });
-    expect(
-      (screen.getByLabelText("Target type") as HTMLInputElement).value,
-    ).toBe("");
+    expect(screen.getByLabelText("Target type").textContent).toContain("Any");
   });
 });

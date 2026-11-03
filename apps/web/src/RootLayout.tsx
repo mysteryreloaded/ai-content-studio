@@ -1,9 +1,16 @@
 import { cn } from "cn";
 import type { ReactNode } from "react";
-import { Outlet, useMatches } from "react-router-dom";
+import {
+  type Location,
+  Outlet,
+  useLocation,
+  useMatches,
+} from "react-router-dom";
+import { isWorkbenchLocation } from "./AppContentRoute.js";
 import { Footer } from "./Footer.js";
 import { NoticeBanner } from "./NoticeBanner.js";
 import { AppHeader } from "./components/AppHeader.js";
+import { Toaster } from "./components/ui/sonner.js";
 import { useTabNotifier } from "./notifications/useTabNotifier.js";
 
 /**
@@ -62,9 +69,20 @@ export function PageContainer({
  */
 export function RootLayout() {
   useTabNotifier();
-  const full = useMatches().some(
-    (match) => (match.handle as RouteHandle | undefined)?.layout === "full",
-  );
+  const location = useLocation();
+  const background = (
+    location.state as { backgroundLocation?: Location } | null
+  )?.backgroundLocation;
+  const full =
+    useMatches().some(
+      (match) => (match.handle as RouteHandle | undefined)?.layout === "full",
+    ) ||
+    // Issue #199 round 2: `/models/:slug`, `/gallery` and
+    // `/generations/:id` now share one `*` route (`AppContentRoute`),
+    // so there's no per-path `handle` to read here — check the location
+    // itself instead, the real one or, with the Generation detail
+    // dialog open, the Workbench location behind it.
+    isWorkbenchLocation(background?.pathname ?? location.pathname);
 
   return (
     <div className="flex min-h-dvh flex-col">
@@ -82,6 +100,7 @@ export function RootLayout() {
           <Outlet />
         </PageContainer>
       )}
+      <Toaster />
       <Footer />
     </div>
   );

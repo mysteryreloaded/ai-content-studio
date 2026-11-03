@@ -87,6 +87,8 @@ export type GenerationInputSetting =
       points: Point[];
       frameWidth: number | null;
       frameHeight: number | null;
+      /** The Upload Input whose first frame these points are drawn on (issue #199's AC). */
+      videoInputId: string;
     };
 
 function fieldValue(
@@ -272,6 +274,7 @@ export function resolveGenerationSettings(params: {
       points,
       frameWidth: typeof widthValue === "number" ? widthValue : null,
       frameHeight: typeof heightValue === "number" ? heightValue : null,
+      videoInputId: input.videoInputId,
     };
   });
 }

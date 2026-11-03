@@ -3,6 +3,7 @@ import { useMemo } from "react";
 import {
   Link,
   Navigate,
+  useLocation,
   useNavigate,
   useParams,
   useSearchParams,
@@ -169,6 +170,7 @@ export function GalleryPage() {
   const stateFilter = toStateFilter(searchParams.get("state"));
   const { id: openGenerationId } = useParams<{ id?: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const { models: enabledModels } = useEnabledModels();
 
   const { data: modelsData } = useQuery({
@@ -222,11 +224,25 @@ export function GalleryPage() {
   );
 
   function openGeneration(id: string) {
-    navigate(`/generations/${id}?${searchParams.toString()}`);
+    navigate(`/generations/${id}?${searchParams.toString()}`, {
+      state: { fromGallery: true },
+    });
+  }
+
+  function navigateGeneration(id: string) {
+    navigate(`/generations/${id}?${searchParams.toString()}`, {
+      replace: true,
+      state: location.state,
+    });
   }
 
   function closeOverlay() {
-    navigate(`/gallery?${searchParams.toString()}`);
+    const state = location.state as { fromGallery?: boolean } | null;
+    if (state?.fromGallery) {
+      navigate(-1);
+    } else {
+      navigate(`/gallery?${searchParams.toString()}`, { replace: true });
+    }
   }
 
   function setModelFilter(modelId: string | null) {
@@ -254,17 +270,21 @@ export function GalleryPage() {
 
   return (
     <>
-      {openGenerationId && (
-        <GenerationDetailOverlay
-          id={openGenerationId}
-          prevId={orderedIds[orderedIds.indexOf(openGenerationId) - 1] ?? null}
-          nextId={orderedIds[orderedIds.indexOf(openGenerationId) + 1] ?? null}
-          onClose={closeOverlay}
-          onNavigate={openGeneration}
-          onDeleted={handleDismissGeneration}
-          onDismissed={handleDismissGeneration}
-        />
-      )}
+      {openGenerationId &&
+        (() => {
+          const index = orderedIds.indexOf(openGenerationId);
+          return (
+            <GenerationDetailOverlay
+              id={openGenerationId}
+              prevId={index > 0 ? (orderedIds[index - 1] ?? null) : null}
+              nextId={index !== -1 ? (orderedIds[index + 1] ?? null) : null}
+              onClose={closeOverlay}
+              onNavigate={navigateGeneration}
+              onDeleted={handleDismissGeneration}
+              onDismissed={handleDismissGeneration}
+            />
+          );
+        })()}
       <main className="mx-auto flex w-full max-w-[1100px] flex-col gap-4">
         <div className="flex flex-wrap items-center gap-2.5">
           <h1>Gallery</h1>

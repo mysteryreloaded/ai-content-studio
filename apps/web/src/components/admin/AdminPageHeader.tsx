@@ -13,7 +13,7 @@ export function AdminPageHeader({
   description,
   actions,
 }: {
-  crumb?: string;
+  crumb?: ReactNode;
   title: string;
   pills?: ReactNode;
   description?: string;

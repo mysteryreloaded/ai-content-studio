@@ -397,7 +397,7 @@ describe("Dispatcher end-to-end against a fake ComfyUI", () => {
 
       await dispatcher.runUntilIdle();
 
-      const summaries =
+      const { submissions: summaries } =
         await generationsRepository.listRecentSubmissionsForModel(
           model.id,
           user.id,
@@ -1211,7 +1211,7 @@ describe("Dispatcher end-to-end against a fake ComfyUI", () => {
         fake.inputFile("studio", `${stale.id}.png`)?.lastModified.getTime(),
       ).toBeGreaterThan(now.getTime() - 60_000);
 
-      const summaries =
+      const { submissions: summaries } =
         await generationsRepository.listRecentSubmissionsForModel(
           model.id,
           user.id,

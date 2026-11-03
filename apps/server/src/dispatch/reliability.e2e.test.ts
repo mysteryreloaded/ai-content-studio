@@ -251,7 +251,7 @@ describe("Reliable dispatch (issue #55)", () => {
       fake.setUnreachable(true);
 
       await dispatcher.runUntilIdle();
-      const summaries =
+      const { submissions: summaries } =
         await generationsRepository.listRecentSubmissionsForModel(
           model.id,
           user.id,
@@ -325,7 +325,7 @@ describe("Reliable dispatch (issue #55)", () => {
       // both — the requeue after try 1 wakes the dispatcher right back
       // up), exhausting after 2.
       await dispatcher.runUntilIdle();
-      const summaries =
+      const { submissions: summaries } =
         await generationsRepository.listRecentSubmissionsForModel(
           model.id,
           user.id,
@@ -422,7 +422,7 @@ describe("Reliable dispatch (issue #55)", () => {
       });
       await runPromise;
 
-      const summaries =
+      const { submissions: summaries } =
         await generationsRepository.listRecentSubmissionsForModel(
           model.id,
           user.id,
@@ -499,7 +499,7 @@ describe("Reliable dispatch (issue #55)", () => {
           submittedAt: systemClock.now(),
         });
         await dispatcher.runUntilIdle();
-        const summaries =
+        const { submissions: summaries } =
           await generationsRepository.listRecentSubmissionsForModel(
             model.id,
             user.id,
@@ -587,7 +587,7 @@ describe("Reliable dispatch (issue #55)", () => {
       });
 
       await dispatcher.runUntilIdle();
-      const summaries =
+      const { submissions: summaries } =
         await generationsRepository.listRecentSubmissionsForModel(
           model.id,
           user.id,
@@ -639,7 +639,7 @@ describe("Reliable dispatch (issue #55)", () => {
       await dispatcher.runWatchdogOnce();
       await dispatcher.runWatchdogOnce();
 
-      const summaries =
+      const { submissions: summaries } =
         await generationsRepository.listRecentSubmissionsForModel(
           model.id,
           user.id,
@@ -707,7 +707,7 @@ describe("Reliable dispatch (issue #55)", () => {
 
       await dispatcher.runWatchdogOnce();
 
-      const summaries =
+      const { submissions: summaries } =
         await generationsRepository.listRecentSubmissionsForModel(
           model.id,
           user.id,
@@ -827,7 +827,7 @@ describe("Reliable dispatch (issue #55)", () => {
         await assetsRepository.listForGeneration(generationId);
       expect(savedAssets).toHaveLength(1);
 
-      const summaries =
+      const { submissions: summaries } =
         await generationsRepository.listRecentSubmissionsForModel(
           model.id,
           user.id,
@@ -917,7 +917,7 @@ describe("Reliable dispatch (issue #55)", () => {
         getSiteTitle: async () => "localhost",
       });
 
-      const summaries =
+      const { submissions: summaries } =
         await generationsRepository.listRecentSubmissionsForModel(
           model.id,
           user.id,
@@ -1009,7 +1009,7 @@ describe("Reliable dispatch (issue #55)", () => {
         getSiteTitle: async () => "localhost",
       });
 
-      const summaries =
+      const { submissions: summaries } =
         await generationsRepository.listRecentSubmissionsForModel(
           model.id,
           user.id,

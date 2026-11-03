@@ -8,12 +8,14 @@ import { eq } from "drizzle-orm";
 import { createApp } from "../app.js";
 import { SESSION_COOKIE_NAME, createSession } from "../auth/session.js";
 import {
+  assets,
   backends,
   generations,
   logEntries,
   modelBackends,
   modelRevisions,
   models,
+  uploads,
   users,
   workflows,
 } from "../db/schema.js";
@@ -58,6 +60,19 @@ const WORKFLOW = {
   "3": { class_type: "SaveImage", inputs: { images: ["2", 0] } },
 };
 
+// Like `WORKFLOW`, with a second loader (node "4") on the Mode's path —
+// node "2" links to it — so a second Upload Input bound there is
+// relevant at submit time (issue #190's list thumbnails).
+const UPLOAD_WORKFLOW = {
+  "1": { class_type: "LoadImage", inputs: { image: "example.png" } },
+  "2": {
+    class_type: "KSampler",
+    inputs: { seed: 0, model: ["1", 0], image: ["4", 0] },
+  },
+  "3": { class_type: "SaveImage", inputs: { images: ["2", 0] } },
+  "4": { class_type: "LoadImage", inputs: { image: "" } },
+};
+
 async function flushMicrotasks() {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
@@ -72,6 +87,8 @@ describe("/api/models/:slug and :slug/generations", () => {
 
   beforeEach(async () => {
     const { db } = await testDb;
+    await db.delete(assets);
+    await db.delete(uploads);
     await db.delete(generations);
     await db.delete(logEntries);
     await db.delete(modelBackends);
@@ -379,6 +396,122 @@ describe("/api/models/:slug and :slug/generations", () => {
       modeId: modes[0]?.id as string,
       revision: afterModes.currentRevision,
       promptInputId,
+    };
+  }
+
+  /** Like `buildEnabledModel`, but with two image Upload Inputs, each bound to one of the two loaders on the Mode's path (issue #190's list thumbnails). */
+  async function buildEnabledModelWithUploads(
+    app: Awaited<ReturnType<typeof build>>["app"],
+    adminHeaders: Record<string, string>,
+    fakeUrl: string,
+  ) {
+    const createRes = await app.request("/api/admin/models", {
+      method: "POST",
+      headers: { ...adminHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ name: "LTX Uploads", workflow: UPLOAD_WORKFLOW }),
+    });
+    const { model } = (await createRes.json()) as {
+      model: { id: string; slug: string; version: number };
+    };
+
+    const backendRes = await app.request("/api/admin/backends", {
+      method: "POST",
+      headers: { ...adminHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ name: "Fake4", baseUrl: fakeUrl, auth: "none" }),
+    });
+    const backend = (await backendRes.json()) as { id: string };
+
+    await app.request(`/api/admin/models/${model.id}/backends`, {
+      method: "POST",
+      headers: { ...adminHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ backendId: backend.id }),
+    });
+
+    clock.advance(30_000);
+    await flushMicrotasks();
+
+    const inputA = "66666666-6666-4666-8666-666666666666";
+    const inputB = "55555555-5555-4555-8555-555555555555";
+    const inputsRes = await app.request(
+      `/api/admin/models/${model.id}/inputs`,
+      {
+        method: "PUT",
+        headers: { ...adminHeaders, "content-type": "application/json" },
+        body: JSON.stringify({
+          version: model.version,
+          inputs: [
+            {
+              id: inputA,
+              kind: "image_upload",
+              group: "describe",
+              label: "Photo",
+              help: "",
+              maxSizeMb: 5,
+              maxLongSide: 300,
+              bindings: [
+                {
+                  nodeId: "1",
+                  field: "image",
+                  classType: "LoadImage",
+                  title: null,
+                },
+              ],
+            },
+            {
+              id: inputB,
+              kind: "image_upload",
+              group: "describe",
+              label: "Second photo",
+              help: "",
+              maxSizeMb: 5,
+              maxLongSide: 300,
+              bindings: [
+                {
+                  nodeId: "4",
+                  field: "image",
+                  classType: "LoadImage",
+                  title: null,
+                },
+              ],
+            },
+          ],
+        }),
+      },
+    );
+    const { record: afterInputs } = (await inputsRes.json()) as {
+      record: { version: number };
+    };
+
+    const modesRes = await app.request(`/api/admin/models/${model.id}/modes`, {
+      method: "PUT",
+      headers: { ...adminHeaders, "content-type": "application/json" },
+      body: JSON.stringify({
+        version: afterInputs.version,
+        modes: [{ name: "Default", description: "", outputNodeIds: ["3"] }],
+      }),
+    });
+    const { record: afterModes, modes } = (await modesRes.json()) as {
+      record: { id: string; version: number; currentRevision: number };
+      modes: Array<{ id: string; name: string }>;
+    };
+
+    const enableRes = await app.request(
+      `/api/admin/models/${model.id}/enable`,
+      {
+        method: "POST",
+        headers: { ...adminHeaders, "content-type": "application/json" },
+        body: JSON.stringify({ version: afterModes.version }),
+      },
+    );
+    expect(enableRes.status).toBe(200);
+
+    return {
+      modelId: model.id,
+      slug: model.slug as string,
+      modeId: modes[0]?.id as string,
+      revision: afterModes.currentRevision,
+      inputA,
+      inputB,
     };
   }
 
@@ -783,6 +916,249 @@ describe("/api/models/:slug and :slug/generations", () => {
       expect(body.submissions.length).toBe(1);
       expect(body.submissions[0]?.modeName).toBe("Default");
       expect(body.submissions[0]?.generations.length).toBe(1);
+
+      backendsService.stop();
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("the Submissions list shows a Submission's used Uploads — in Input order, de-duplicated, a removed one flagged without a thumbnail — and its Assets' shape (issue #190)", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const { app, backendsService } = await build();
+      const { db } = await testDb;
+      const { headers: adminHeaders } = await headersFor("admin");
+      const { slug, modeId, revision, inputA, inputB } =
+        await buildEnabledModelWithUploads(app, adminHeaders, fake.url);
+
+      const { headers: userHeaders, userId } = await headersFor("user");
+      const uploadAId = crypto.randomUUID();
+      const uploadBId = crypto.randomUUID();
+      await db.insert(uploads).values([
+        {
+          id: uploadAId,
+          userId,
+          status: "complete",
+          originalName: "a.png",
+          declaredType: "image/png",
+          size: 10,
+          storageKey: "uploads/test/a.png",
+          kind: "image",
+          extension: "png",
+          width: 100,
+          height: 100,
+          thumbnailKey: "uploads/test/a.thumb.png",
+          createdAt: clock.now(),
+        },
+        {
+          id: uploadBId,
+          userId,
+          status: "complete",
+          originalName: "b.png",
+          declaredType: "image/png",
+          size: 10,
+          storageKey: "uploads/test/b.png",
+          kind: "image",
+          extension: "png",
+          width: 100,
+          height: 100,
+          thumbnailKey: "uploads/test/b.thumb.png",
+          createdAt: clock.now(),
+        },
+      ]);
+
+      const submitRes = await app.request(`/api/models/${slug}/generations`, {
+        method: "POST",
+        headers: { ...userHeaders, "content-type": "application/json" },
+        body: JSON.stringify({
+          modeId,
+          revision,
+          values: { [inputA]: uploadAId, [inputB]: uploadBId },
+        }),
+      });
+      expect(submitRes.status).toBe(201);
+      const submitted = (await submitRes.json()) as {
+        generations: Array<{ id: string; submissionId: string }>;
+      };
+      const first = submitted.generations[0];
+      if (!first) throw new Error("submit created no Generation");
+
+      const [submittedRow] = await db
+        .select()
+        .from(generations)
+        .where(eq(generations.id, first.id));
+      if (!submittedRow) throw new Error("missing Generation");
+      // The Submission's own Generation carries the Uploads in the
+      // Mode's Input order (issue #50's Set-deduped order).
+      expect(submittedRow.uploadIds).toEqual([uploadAId, uploadBId]);
+
+      // A second Generation in the same Submission, using the same
+      // Uploads: the list must show each Upload once, in that order.
+      await db.insert(generations).values({
+        id: crypto.randomUUID(),
+        modelId: submittedRow.modelId,
+        revisionId: submittedRow.revisionId,
+        modeId: submittedRow.modeId,
+        userId: submittedRow.userId,
+        submissionId: submittedRow.submissionId,
+        builtPrompt: submittedRow.builtPrompt,
+        nodeTypes: submittedRow.nodeTypes,
+        uploadIds: [uploadAId, uploadBId],
+        queuedAt: submittedRow.submittedAt,
+        submittedAt: submittedRow.submittedAt,
+      });
+
+      // An Admin removes Upload B: its list entry stays, flagged, with
+      // no thumbnail (its file is gone — issue #68).
+      await db
+        .update(uploads)
+        .set({ removedAt: clock.now(), removedReason: "too large" })
+        .where(eq(uploads.id, uploadBId));
+
+      // One Asset, with its media shape (issue #190's Asset fields).
+      await db.insert(assets).values({
+        generationId: first.id,
+        nodeId: "3",
+        sortOrder: 0,
+        kind: "image",
+        comfyuiFilename: "ComfyUI_00001_.png",
+        contentType: "image/png",
+        size: 123456,
+        storageKey: "assets/test/ComfyUI_00001_.png",
+        width: 512,
+        height: 512,
+        durationMs: null,
+      });
+
+      const listRes = await app.request(`/api/models/${slug}/generations`, {
+        headers: userHeaders,
+      });
+      expect(listRes.status).toBe(200);
+      const body = (await listRes.json()) as {
+        hasMore: boolean;
+        submissions: Array<{
+          prompt: string | null;
+          uploads: Array<{
+            id: string;
+            kind: "image" | "video" | "audio";
+            thumbnailKey: string | null;
+            removed: boolean;
+          }>;
+          generations: Array<{
+            id: string;
+            assets: Array<{
+              size: number;
+              width: number | null;
+              height: number | null;
+              durationMs: number | null;
+            }>;
+          }>;
+        }>;
+      };
+      expect(body.submissions).toHaveLength(1);
+      expect(body.hasMore).toBe(false);
+      // No text Input on this Model: nothing to show as a prompt.
+      expect(body.submissions[0]?.prompt).toBeNull();
+      // Both Generations used both Uploads: each Upload once, Input order.
+      expect(body.submissions[0]?.uploads).toEqual([
+        {
+          id: uploadAId,
+          kind: "image",
+          thumbnailKey: "uploads/test/a.thumb.png",
+          removed: false,
+        },
+        {
+          id: uploadBId,
+          kind: "image",
+          thumbnailKey: null,
+          removed: true,
+        },
+      ]);
+      const assetsEntry = body.submissions[0]?.generations.find(
+        (generation) => generation.id === first.id,
+      )?.assets[0];
+      expect(assetsEntry).toMatchObject({
+        kind: "image",
+        size: 123456,
+        width: 512,
+        height: 512,
+        durationMs: null,
+      });
+
+      backendsService.stop();
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("the Submissions list's hasMore is false at exactly 8 Submissions and true at 9 (issue #190)", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const { app, backendsService } = await build();
+      const { headers: adminHeaders } = await headersFor("admin");
+      const { slug, modeId } = await buildEnabledModel(
+        app,
+        adminHeaders,
+        fake.url,
+      );
+
+      const { headers: userHeaders } = await headersFor("user");
+      const submit = () =>
+        app.request(`/api/models/${slug}/generations`, {
+          method: "POST",
+          headers: { ...userHeaders, "content-type": "application/json" },
+          body: JSON.stringify({ modeId, revision: 2 }),
+        });
+
+      const emptyRes = await app.request(`/api/models/${slug}/generations`, {
+        headers: userHeaders,
+      });
+      const emptyBody = (await emptyRes.json()) as {
+        submissions: unknown[];
+        hasMore: boolean;
+      };
+      expect(emptyBody.submissions).toEqual([]);
+      expect(emptyBody.hasMore).toBe(false);
+
+      for (let i = 0; i < 8; i++) {
+        const res = await submit();
+        expect(res.status).toBe(201);
+        // Settle the dispatched job (the fake finishes it in real time;
+        // the runner polls on the fake clock) so the per-user
+        // concurrent cap of 4 is back to 0 before the next submit.
+        clock.advance(1_000);
+        await flushMicrotasks();
+        clock.advance(1_000);
+        await flushMicrotasks();
+      }
+
+      const listRes = await app.request(`/api/models/${slug}/generations`, {
+        headers: userHeaders,
+      });
+      const listBody = (await listRes.json()) as {
+        submissions: Array<{ submissionId: string }>;
+        hasMore: boolean;
+      };
+      // Exactly 8: the list holds the route's whole page, no older one.
+      expect(listBody.submissions).toHaveLength(8);
+      expect(listBody.hasMore).toBe(false);
+
+      const ninth = await submit();
+      expect(ninth.status).toBe(201);
+      clock.advance(1_000);
+      await flushMicrotasks();
+      clock.advance(1_000);
+      await flushMicrotasks();
+      const listMore = await app.request(`/api/models/${slug}/generations`, {
+        headers: userHeaders,
+      });
+      const moreBody = (await listMore.json()) as {
+        submissions: Array<{ submissionId: string }>;
+        hasMore: boolean;
+      };
+      expect(moreBody.submissions).toHaveLength(8);
+      expect(moreBody.hasMore).toBe(true);
 
       backendsService.stop();
     } finally {

@@ -114,7 +114,7 @@ function gib(bytes: number): string {
 const HEADER_NAME_RE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 const AUTH_KINDS = ["none", "basic", "header"] as const;
 
-function backendFormSchema(isEdit: boolean) {
+function backendFormSchema(requireCredentials: boolean) {
   return z
     .object({
       name: z
@@ -164,7 +164,7 @@ function backendFormSchema(isEdit: boolean) {
             message: "must be a valid header name",
           });
         }
-        if (!isEdit && !data.headerValue) {
+        if (requireCredentials && !data.headerValue) {
           ctx.addIssue({
             code: "custom",
             path: ["headerValue"],
@@ -173,7 +173,7 @@ function backendFormSchema(isEdit: boolean) {
         }
       }
 
-      if (data.auth === "basic" && !isEdit) {
+      if (data.auth === "basic" && requireCredentials) {
         if (!data.basicUser || !data.basicPass) {
           ctx.addIssue({
             code: "custom",
@@ -318,14 +318,14 @@ function BackendFormFields({
   register,
   errors,
   watchAuth,
-  isEdit,
+  showUnchangedHint,
   credentialFieldRef,
 }: {
   control: ReturnType<typeof useForm<BackendFormValues>>["control"];
   register: ReturnType<typeof useForm<BackendFormValues>>["register"];
   errors: ReturnType<typeof useForm<BackendFormValues>>["formState"]["errors"];
   watchAuth: AuthKind;
-  isEdit: boolean;
+  showUnchangedHint: boolean;
   credentialFieldRef: (el: HTMLInputElement | null) => void;
 }) {
   const keptHint = "Leave blank to keep the saved one.";
@@ -412,7 +412,7 @@ function BackendFormFields({
           >
             <Input
               id="backend-basic-user"
-              placeholder={isEdit ? "(unchanged)" : undefined}
+              placeholder={showUnchangedHint ? "(unchanged)" : undefined}
               aria-invalid={errors.basicUser ? true : undefined}
               ref={(el) => {
                 register("basicUser").ref(el);
@@ -428,7 +428,7 @@ function BackendFormFields({
             htmlFor="backend-basic-pass"
             error={errors.basicPass?.message}
             hint={
-              isEdit
+              showUnchangedHint
                 ? keptHint
                 : "Write-only: stored encrypted, never shown again."
             }
@@ -436,7 +436,7 @@ function BackendFormFields({
             <Input
               id="backend-basic-pass"
               type="password"
-              placeholder={isEdit ? "(unchanged)" : undefined}
+              placeholder={showUnchangedHint ? "(unchanged)" : undefined}
               aria-invalid={errors.basicPass ? true : undefined}
               {...register("basicPass")}
             />
@@ -463,12 +463,12 @@ function BackendFormFields({
             label="Header value"
             htmlFor="backend-header-value"
             error={errors.headerValue?.message}
-            hint={isEdit ? keptHint : "Write-only."}
+            hint={showUnchangedHint ? keptHint : "Write-only."}
           >
             <Input
               id="backend-header-value"
               type="password"
-              placeholder={isEdit ? "(unchanged)" : undefined}
+              placeholder={showUnchangedHint ? "(unchanged)" : undefined}
               aria-invalid={errors.headerValue ? true : undefined}
               ref={(el) => {
                 register("headerValue").ref(el);
@@ -499,6 +499,8 @@ function BackendFormSheet({
   onAdded: (name: string) => void;
 }) {
   const isEdit = backend !== null;
+  const requireCredentials = !isEdit || !!reenterCredentials;
+  const showUnchangedHint = isEdit && !reenterCredentials;
   const queryClient = useQueryClient();
   const [staleSave, setStaleSave] = useState(false);
   const firstCredentialRef = useRef<HTMLInputElement | null>(null);
@@ -511,7 +513,7 @@ function BackendFormSheet({
     setError,
     formState: { errors, isSubmitting },
   } = useForm<BackendFormValues>({
-    resolver: zodResolver(backendFormSchema(isEdit)),
+    resolver: zodResolver(backendFormSchema(requireCredentials)),
     defaultValues: defaultValuesFor(backend),
   });
   const watchAuth = watch("auth");
@@ -621,7 +623,7 @@ function BackendFormSheet({
               register={register}
               errors={errors}
               watchAuth={watchAuth}
-              isEdit={isEdit}
+              showUnchangedHint={showUnchangedHint}
               credentialFieldRef={(el) => {
                 firstCredentialRef.current = el;
               }}
@@ -741,6 +743,20 @@ function BackendRow({
     isOlderThanTested(backend.health.comfyuiVersion)
       ? backend.health.comfyuiVersion
       : null;
+  const [staleToggle, setStaleToggle] = useState(false);
+  const [toggleError, setToggleError] = useState<string | null>(null);
+
+  const onToggleError = (error: unknown) => {
+    if (error instanceof ApiError && error.status === 409) {
+      setStaleToggle(true);
+      return;
+    }
+    setToggleError("could not update");
+  };
+  const onToggleMutate = () => {
+    setStaleToggle(false);
+    setToggleError(null);
+  };
 
   const { mutate: setEnabled } = useMutation({
     mutationFn: (enabled: boolean) => {
@@ -754,6 +770,8 @@ function BackendRow({
         api.api.admin.backends[":id"].enabled.$patch(args),
       );
     },
+    onMutate: onToggleMutate,
+    onError: onToggleError,
     onSettled: () =>
       queryClient.invalidateQueries({ queryKey: ["admin", "backends"] }),
   });
@@ -767,6 +785,8 @@ function BackendRow({
         api.api.admin.backends[":id"].draining.$patch(args),
       );
     },
+    onMutate: onToggleMutate,
+    onError: onToggleError,
     onSettled: () =>
       queryClient.invalidateQueries({ queryKey: ["admin", "backends"] }),
   });
@@ -851,6 +871,22 @@ function BackendRow({
           </Button>
         </div>
       </div>
+
+      {staleToggle && (
+        <StaleSaveAlert
+          onReload={() => {
+            setStaleToggle(false);
+            void queryClient.invalidateQueries({
+              queryKey: ["admin", "backends"],
+            });
+          }}
+        />
+      )}
+      {toggleError && (
+        <p role="alert" className="text-err">
+          {toggleError}
+        </p>
+      )}
 
       {expanded && <RecentLogs backendId={backend.id} />}
     </div>

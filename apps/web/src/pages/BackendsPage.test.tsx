@@ -330,6 +330,45 @@ describe("BackendsPage", () => {
     expect(await screen.findByText("has unfinished Generations")).toBeTruthy();
   });
 
+  test("a blank re-enter-credentials save shows field errors and sends no PUT", async () => {
+    const calls = mockFetch((call) => {
+      if (call.method === "GET")
+        return Response.json({
+          backends: [
+            {
+              ...BACKEND,
+              auth: "basic" as const,
+              health: {
+                ...BACKEND.health,
+                reachability: "unreachable",
+                credentialsError: true,
+              },
+            },
+          ],
+          disabledBanner: null,
+        });
+      throw new Error(`unexpected ${call.method}`);
+    });
+
+    const { default: userEvent } = await import("@testing-library/user-event");
+    renderPage();
+
+    const reenterButton = await screen.findByRole("button", {
+      name: "Re-enter credentials",
+    });
+    await userEvent.click(reenterButton);
+    await screen.findByText("Edit GPU 1");
+
+    await userEvent.click(screen.getByText("Save"));
+
+    expect(
+      await screen.findByText(
+        "username and password are required for basic auth",
+      ),
+    ).toBeTruthy();
+    expect(calls.some((c) => c.method === "PUT")).toBe(false);
+  });
+
   test("drain switch patches draining", async () => {
     const calls = mockFetch((call) => {
       if (call.method === "GET")
@@ -352,5 +391,48 @@ describe("BackendsPage", () => {
       expect(patch?.body?.draining).toBe(true);
       expect(patch?.body?.version).toBe(1);
     });
+  });
+
+  test("a 409 on the Enabled switch shows the reload message", async () => {
+    mockFetch((call) => {
+      if (call.method === "GET")
+        return Response.json({ backends: [BACKEND], disabledBanner: null });
+      if (call.method === "PATCH") {
+        return Response.json(
+          { error: "changed by someone else, reload" },
+          { status: 409 },
+        );
+      }
+      throw new Error(`unexpected ${call.method}`);
+    });
+
+    renderPage();
+
+    await screen.findByText("GPU 1");
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await userEvent.click(screen.getByLabelText("Enabled"));
+
+    expect(
+      await screen.findByText("changed by someone else, reload"),
+    ).toBeTruthy();
+  });
+
+  test("a non-409 error on the Drain switch shows a generic error", async () => {
+    mockFetch((call) => {
+      if (call.method === "GET")
+        return Response.json({ backends: [BACKEND], disabledBanner: null });
+      if (call.method === "PATCH") {
+        return Response.json({ error: "boom" }, { status: 500 });
+      }
+      throw new Error(`unexpected ${call.method}`);
+    });
+
+    renderPage();
+
+    await screen.findByText("GPU 1");
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await userEvent.click(screen.getByLabelText("Drain"));
+
+    expect(await screen.findByText("could not update")).toBeTruthy();
   });
 });

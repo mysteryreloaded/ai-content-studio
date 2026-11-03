@@ -26,7 +26,7 @@ export function PrivacyPage() {
     queryFn: () => ok<PrivacyData | null>(api.api.privacy.$get()),
   });
 
-  const column = "mx-auto w-full max-w-[72ch]";
+  const column = "mx-auto w-full max-w-[72ch] flex flex-col gap-content";
 
   if (isError || data === null) {
     return (

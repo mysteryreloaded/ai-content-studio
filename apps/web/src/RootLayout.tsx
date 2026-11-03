@@ -22,7 +22,8 @@ export interface RouteHandle {
  *  docs/ui-sizes.md (issue #222) — 16px sides on phones, 32px at
  *  `md` (768px) and up, and 40px above and below. The prototype's
  *  22px/16px frame is replaced, its max-width is kept. */
-const PAGE_CONTAINER_CLASS = "mx-auto w-full max-w-320 flex-1 px-4 py-10 md:px-8";
+const PAGE_CONTAINER_CLASS =
+  "mx-auto w-full max-w-320 flex-1 px-4 py-10 md:px-8";
 
 /**
  * The default page container as a component (issue #188): full-width

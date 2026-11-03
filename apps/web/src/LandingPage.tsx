@@ -44,7 +44,7 @@ function signInHref(returnTo?: string): string {
 
 /** The prototype's Model-card grid (issue #175): one card per row on phones, auto-fill to 340px above. */
 const CARD_GRID_CLASS =
-  "grid grid-cols-[repeat(auto-fill,minmax(min(100%,340px),1fr))] gap-3.5";
+  "grid grid-cols-[repeat(auto-fill,minmax(min(100%,340px),1fr))] gap-sections";
 
 export function LandingPage() {
   const settings = useSiteSettings();
@@ -84,17 +84,17 @@ export function LandingPage() {
     : {};
 
   return (
-    <main className="flex flex-col gap-4">
+    <main className="flex flex-col gap-sections">
       <header
         style={backgroundStyle}
         className="flex flex-col items-center rounded-[10px] bg-[var(--landing-background)] p-8 text-center text-[var(--landing-foreground)]"
       >
-        <div className="flex w-full max-w-md flex-col items-center gap-4">
+        <div className="flex w-full max-w-md flex-col items-center gap-content">
           {settings?.hasLogo && (
             <img src="/api/site-settings/logo" alt="" width={64} height={64} />
           )}
           <h1>{title}</h1>
-          {landingText && <p className="text-[15px]">{landingText}</p>}
+          {landingText && <p>{landingText}</p>}
           {bannerMessage && (
             <Alert variant="destructive" className="w-full">
               <AlertTitle>{bannerMessage}</AlertTitle>

@@ -120,7 +120,7 @@ function DeleteAccount({
       <CardContent>
         <form
           noValidate
-          className="space-y-3"
+          className="flex flex-col gap-fields"
           onSubmit={handleSubmit(() => {
             setGeneralError(null);
             setConfirmOpen(true);
@@ -211,7 +211,7 @@ export function AccountPage() {
   const { user } = session;
 
   return (
-    <main className="mx-auto w-full max-w-md space-y-4">
+    <main className="mx-auto w-full max-w-md flex flex-col gap-sections">
       <h1>Account</h1>
       <Card>
         <CardHeader>

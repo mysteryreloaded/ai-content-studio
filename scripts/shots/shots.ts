@@ -756,9 +756,20 @@ async function main(): Promise<void> {
       }
     }
 
+    // ~80 sequential contexts on the one app-shooting browser can leave it
+    // unstable (or outright closed) by the time we get here, so the
+    // prototype phase gets its own fresh browser instead of reusing it.
+    await browser.close().catch(() => undefined);
+    let prototypeBrowser: Browser | null = null;
+
     if (!args.noPrototype) {
       log("extracting prototypes...");
       await extractPrototypes(REPO_ROOT, run);
+      prototypeBrowser = await chromium.launch({
+        headless: true,
+        channel: chromePath ? undefined : "chrome",
+        executablePath: chromePath ?? undefined,
+      });
       // One page load per (view, theme): a context's `colorScheme` is
       // fixed at creation, but `page.setViewportSize` doesn't reload the
       // page, so both widths share the one real navigation and click
@@ -766,15 +777,16 @@ async function main(): Promise<void> {
       // wall-clock time, and cdnjs/Google Fonts are real network calls).
       for (const view of PROTOTYPE_VIEWS) {
         for (const theme of ["light", "dark"] as const) {
-          const ctx = await browser.newContext({
-            viewport: { width: WIDTHS[0], height: 800 },
-            deviceScaleFactor: 1,
-            colorScheme: theme,
-            reducedMotion: "reduce",
-            locale: "en-GB",
-            timezoneId: "Europe/London",
-          });
+          let ctx: BrowserContext | undefined;
           try {
+            ctx = await prototypeBrowser.newContext({
+              viewport: { width: WIDTHS[0], height: 800 },
+              deviceScaleFactor: 1,
+              colorScheme: theme,
+              reducedMotion: "reduce",
+              locale: "en-GB",
+              timezoneId: "Europe/London",
+            });
             const page = await openPrototypeView(ctx, run, view);
             for (const width of WIDTHS) {
               await page.setViewportSize({ width, height: 800 });
@@ -788,17 +800,17 @@ async function main(): Promise<void> {
             }
           } catch (err) {
             skipped.push({
-              name: `prototype:${view.name}`,
+              name: `prototype:${view.name}-${theme}`,
               reason: err instanceof Error ? err.message : String(err),
             });
           } finally {
-            await ctx.close().catch(() => undefined);
+            await ctx?.close().catch(() => undefined);
           }
         }
       }
     }
 
-    await browser.close();
+    await prototypeBrowser?.close().catch(() => undefined);
 
     log("writing the contact sheet...");
     await writeContactSheet(run, skipped, selectedRoutes);

@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from "react";
 import { upsertGeneration } from "../../components/generations/submissionCache.js";
 import type { GenerationSummary } from "../../components/generations/types.js";
 import type { MediaUploadInput } from "../../components/inputs/types.js";
+import { api, ok } from "../../lib/api.js";
 import { trimUpload } from "../../lib/chunkedUpload.js";
 import { carryValuesFor, liveIssuesFor, valuesPayload } from "./formValues.js";
 import type {
@@ -10,18 +11,20 @@ import type {
   UseGenerateOptions,
   WorkbenchModel,
 } from "./types.js";
+import { workbenchModelQueryKey } from "./workbenchModelQuery.js";
 
 export function useGenerate({
   modelRef,
   valuesRef,
   runningUploadsRef,
+  slug,
+  queryClient,
   selectedModeId,
   count,
   uploads,
   trimRangeByInputId,
   setValues,
   setIssuesByInputId,
-  setModel,
   setSelectedModeId,
   setTermsDialog,
   refreshCaps,
@@ -135,17 +138,16 @@ export function useGenerate({
     setIssuesByInputId({});
 
     try {
-      const res = await fetch(`/api/models/${current.slug}/generations`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
+      const res = await api.api.models[":slug"].generations.$post({
+        param: { slug: current.slug },
+        json: {
           modeId: mode.id,
           revision: current.revision,
           values: valuesPayload(mode, values),
           ...(mode.inputs.some((input) => input.kind === "seed")
             ? { count }
             : {}),
-        }),
+        },
       });
 
       if (res.status === 409) {
@@ -172,7 +174,7 @@ export function useGenerate({
           return;
         }
         if (body.error === "model_changed" && body.model) {
-          setModel(body.model);
+          queryClient.setQueryData(workbenchModelQueryKey(slug), body.model);
           const stillSelected = body.model.modes.find(
             (m) => m.id === selectedModeId,
           );
@@ -190,12 +192,15 @@ export function useGenerate({
         if (body.error === "model_terms_required") {
           // Re-fetch so the dialog shows the current (possibly re-asked)
           // terms version; the submit itself queued nothing (issue #61).
-          const refreshed = await fetch(`/api/models/${current.slug}`)
-            .then((r) =>
-              r.ok ? (r.json() as Promise<{ model: WorkbenchModel }>) : null,
-            )
-            .catch(() => null);
-          if (refreshed) setModel(refreshed.model);
+          const refreshed = await ok<{ model: WorkbenchModel }>(
+            api.api.models[":slug"].$get({ param: { slug: current.slug } }),
+          ).catch(() => null);
+          if (refreshed) {
+            queryClient.setQueryData(
+              workbenchModelQueryKey(slug),
+              refreshed.model,
+            );
+          }
           setTermsDialog({
             blocking: true,
             error: "Accept this Model's terms to continue.",

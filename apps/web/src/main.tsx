@@ -48,6 +48,9 @@ const router = createBrowserRouter([
             </RequireActive>
           </RequireTermsAccepted>
         ),
+        // Full-width (issue #194): the Workbench runs its own `.va-grid`
+        // edge to edge, not the default 1280px page container.
+        handle: { layout: "full" },
       },
       {
         path: "/gallery",

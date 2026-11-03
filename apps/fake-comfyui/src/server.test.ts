@@ -1,6 +1,76 @@
 import { describe, expect, test } from "bun:test";
 import { startFakeComfyUi } from "./server.js";
 
+describe("fake ComfyUI /__control__/script-next (issue #187)", () => {
+  test("a prompt with no per-id script takes the next queued one, FIFO", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      fake.scriptNext({
+        outputs: {
+          "1": {
+            images: [{ filename: "a.png", subfolder: "", type: "output" }],
+          },
+        },
+      });
+      fake.scriptNext({
+        outputs: {
+          "1": {
+            images: [{ filename: "b.png", subfolder: "", type: "output" }],
+          },
+        },
+      });
+
+      const workflow = { "1": { class_type: "SaveImage", inputs: {} } };
+      const first = await fetch(`${fake.url}/prompt`, {
+        method: "POST",
+        body: JSON.stringify({ prompt: workflow, prompt_id: "p1" }),
+      });
+      const { prompt_id: firstId } = (await first.json()) as {
+        prompt_id: string;
+      };
+      const second = await fetch(`${fake.url}/prompt`, {
+        method: "POST",
+        body: JSON.stringify({ prompt: workflow, prompt_id: "p2" }),
+      });
+      const { prompt_id: secondId } = (await second.json()) as {
+        prompt_id: string;
+      };
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const firstJob = (await (
+        await fetch(`${fake.url}/api/jobs/${firstId}`)
+      ).json()) as { outputs: { "1": { images: { filename: string }[] } } };
+      const secondJob = (await (
+        await fetch(`${fake.url}/api/jobs/${secondId}`)
+      ).json()) as { outputs: { "1": { images: { filename: string }[] } } };
+      expect(firstJob.outputs["1"].images[0]?.filename).toBe("a.png");
+      expect(secondJob.outputs["1"].images[0]?.filename).toBe("b.png");
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("an empty queue leaves today's behaviour (completes with no outputs)", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const workflow = { "1": { class_type: "SaveImage", inputs: {} } };
+      const res = await fetch(`${fake.url}/prompt`, {
+        method: "POST",
+        body: JSON.stringify({ prompt: workflow, prompt_id: "p3" }),
+      });
+      const { prompt_id } = (await res.json()) as { prompt_id: string };
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const job = (await (
+        await fetch(`${fake.url}/api/jobs/${prompt_id}`)
+      ).json()) as { status: string; outputs: unknown };
+      expect(job.status).toBe("completed");
+      expect(job.outputs).toEqual({});
+    } finally {
+      fake.stop();
+    }
+  });
+});
+
 describe("fake ComfyUI /object_info", () => {
   test("serves a captured object_info keyed by node class type", async () => {
     const fake = startFakeComfyUi({ port: 0 });
@@ -60,6 +130,30 @@ describe("fake ComfyUI /view (issue #79)", () => {
       expect(new Uint8Array(await ranged.arrayBuffer())).toEqual(
         new Uint8Array(bytes).subarray(2, 5),
       );
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("issue #187: a stored output file replaces the placeholder", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const bytes = new TextEncoder().encode("real png bytes");
+      fake.putOutputFile("out.png", bytes);
+      const res = await fetch(`${fake.url}/view?filename=out.png`);
+      expect(res.status).toBe(200);
+      expect(new Uint8Array(await res.arrayBuffer())).toEqual(bytes);
+
+      const unknown = await fetch(`${fake.url}/view?filename=other.png`);
+      expect(await unknown.text()).toBe("fake-comfyui:other.png");
+
+      const put = await fetch(
+        `${fake.url}/__control__/output-file?filename=via-http.png`,
+        { method: "POST", body: bytes },
+      );
+      expect(put.status).toBe(204);
+      const viaHttp = await fetch(`${fake.url}/view?filename=via-http.png`);
+      expect(new Uint8Array(await viaHttp.arrayBuffer())).toEqual(bytes);
     } finally {
       fake.stop();
     }

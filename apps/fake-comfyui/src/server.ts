@@ -102,12 +102,16 @@ export function startFakeComfyUi(opts: FakeComfyUiOptions) {
   let unreachable = false;
   let unreachableTimer: ReturnType<typeof setTimeout> | null = null;
   const scripts = new Map<string, ScriptedJob>();
+  /** Issue #187's FIFO queue: a `/prompt` whose id has no `/__control__/script` entry takes the next of these, if any. */
+  const scriptQueue: ScriptedJob[] = [];
   const jobs = new Map<string, JobState>();
   const sockets = new Map<
     string,
     Set<{ send(data: string): void; close(): void }>
   >();
   const inputFiles = new Map<string, InputFile>();
+  /** Issue #187: bytes a `/__control__/output-file` call stored under a filename, served by `/view` in place of the placeholder. */
+  const outputFiles = new Map<string, Uint8Array>();
   let uploadCount = 0;
 
   function sendTo(clientId: string, payload: unknown) {
@@ -217,6 +221,27 @@ export function startFakeComfyUi(opts: FakeComfyUiOptions) {
         });
       }
 
+      if (
+        url.pathname === "/__control__/script-next" &&
+        req.method === "POST"
+      ) {
+        return req.json().then((body: unknown) => {
+          scriptQueue.push(body as ScriptedJob);
+          return new Response(null, { status: 204 });
+        });
+      }
+
+      if (
+        url.pathname === "/__control__/output-file" &&
+        req.method === "POST"
+      ) {
+        const filename = url.searchParams.get("filename") ?? "";
+        return req.arrayBuffer().then((buf) => {
+          outputFiles.set(filename, new Uint8Array(buf));
+          return new Response(null, { status: 204 });
+        });
+      }
+
       /** Simulates ComfyUI's process restarting: forgets every in-flight job, so `/api/jobs/:id` 404s the way it would for a job the server never ran (issue #55's AC). */
       if (url.pathname === "/__control__/restart" && req.method === "POST") {
         for (const job of jobs.values()) {
@@ -224,6 +249,7 @@ export function startFakeComfyUi(opts: FakeComfyUiOptions) {
         }
         jobs.clear();
         scripts.clear();
+        scriptQueue.length = 0;
         for (const set of sockets.values()) {
           for (const ws of set) ws.close();
         }
@@ -307,7 +333,7 @@ export function startFakeComfyUi(opts: FakeComfyUiOptions) {
             );
           }
 
-          const script = scripts.get(promptId) ?? {};
+          const script = scripts.get(promptId) ?? scriptQueue.shift() ?? {};
           scripts.delete(promptId);
           const totalSteps = script.steps ?? 1;
           const job: JobState = {
@@ -420,7 +446,8 @@ export function startFakeComfyUi(opts: FakeComfyUiOptions) {
         if (!isAuthorized(req, opts))
           return new Response("unauthorized", { status: 401 });
         const filename = url.searchParams.get("filename") ?? "";
-        return serveView(req, fakeFileBytes(filename), null, {
+        const stored = outputFiles.get(filename);
+        return serveView(req, stored ?? fakeFileBytes(filename), null, {
           "content-type": contentTypeFor(filename),
         });
       }
@@ -464,6 +491,14 @@ export function startFakeComfyUi(opts: FakeComfyUiOptions) {
     script(promptId: string, job: ScriptedJob) {
       scripts.set(promptId, job);
     },
+    /** Issue #187: appends to the FIFO queue a `/prompt` with no per-id script consumes from, in submission order. */
+    scriptNext(job: ScriptedJob) {
+      scriptQueue.push(job);
+    },
+    /** Issue #187: stores bytes `/view` serves for `filename` instead of the placeholder text. */
+    putOutputFile(filename: string, bytes: Uint8Array) {
+      outputFiles.set(filename, bytes);
+    },
     /** The input folder's file at `subfolder/filename`, as `/upload/image` stored it. */
     inputFile(subfolder: string, filename: string): InputFile | undefined {
       return inputFiles.get(inputKey(subfolder, filename));
@@ -494,6 +529,7 @@ export function startFakeComfyUi(opts: FakeComfyUiOptions) {
       }
       jobs.clear();
       scripts.clear();
+      scriptQueue.length = 0;
       for (const set of sockets.values()) {
         for (const ws of set) ws.close();
       }

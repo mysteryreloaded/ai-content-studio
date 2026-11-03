@@ -1,10 +1,11 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { FakeClock } from "@ai-content-studio/shared";
-import { eq } from "drizzle-orm";
-import { auditEntries } from "../db/schema.js";
+import { eq, sql } from "drizzle-orm";
+import { auditEntries, siteSettings } from "../db/schema.js";
 import { createLocalStorage } from "../storage/storage.js";
 import { createTestDatabase } from "../test/database.js";
 import {
@@ -510,5 +511,61 @@ describe("Notice and Pause (issue #59)", () => {
       .from(auditEntries)
       .where(eq(auditEntries.action, "resume"));
     expect(after).toHaveLength(before.length);
+  });
+});
+
+describe("Migration 0029 maps the retired accent keys (issue #191)", () => {
+  const testDb = createTestDatabase("site_settings_accent_migration_test");
+
+  afterAll(async () => {
+    await (await testDb).close();
+  });
+
+  const migrationSql = readFileSync(
+    new URL("../../drizzle/migrations/0029_mellow_hood.sql", import.meta.url),
+    "utf8",
+  );
+
+  async function applyMigration0029(
+    db: NonNullable<Awaited<ReturnType<typeof createTestDatabase>>>["db"],
+  ) {
+    for (const part of migrationSql.split("--> statement-breakpoint")) {
+      const statement = part.trim();
+      if (statement) await db.execute(sql.raw(statement));
+    }
+  }
+
+  const legacyKeys: [oldKey: string, newKey: string][] = [
+    ["rose", "fuchsia"],
+    ["amber", "orange"],
+    ["emerald", "green"],
+    ["sky", "blue"],
+    ["slate", "graphite"],
+  ];
+
+  for (const [oldKey, newKey] of legacyKeys) {
+    test(`a stored "${oldKey}" becomes "${newKey}"`, async () => {
+      const { db } = await testDb;
+      await db
+        .update(siteSettings)
+        .set({ accent: oldKey })
+        .where(eq(siteSettings.singleton, true));
+
+      await applyMigration0029(db);
+
+      expect((await getSiteSettings(db)).accent).toBe(newKey);
+    });
+  }
+
+  test("a key already at its new value stays put (no double mapping)", async () => {
+    const { db } = await testDb;
+    await db
+      .update(siteSettings)
+      .set({ accent: "fuchsia" })
+      .where(eq(siteSettings.singleton, true));
+
+    await applyMigration0029(db);
+
+    expect((await getSiteSettings(db)).accent).toBe("fuchsia");
   });
 });

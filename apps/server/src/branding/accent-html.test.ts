@@ -5,21 +5,21 @@ const BASE_HTML = "<html><head><title>t</title></head><body></body></html>";
 
 describe("injectBrandingIntoHtml", () => {
   test("injects theme-color and CSS vars for the accent, before </head>", () => {
-    const html = injectBrandingIntoHtml(BASE_HTML, "rose", null);
+    const html = injectBrandingIntoHtml(BASE_HTML, "fuchsia", null);
     expect(html).toContain('name="theme-color"');
-    expect(html).toContain("--accent: #be123c");
-    expect(html).toContain("--landing-background: #fff5f6");
+    expect(html).toContain("--accent: #a21caf");
+    expect(html).toContain("--landing-background: #fdf2f8");
     expect(html.indexOf("--accent")).toBeLessThan(html.indexOf("</head>"));
   });
 
   test('the dark palette also applies under an explicit data-theme="dark" (issue #65)', () => {
-    const html = injectBrandingIntoHtml(BASE_HTML, "rose", null);
+    const html = injectBrandingIntoHtml(BASE_HTML, "fuchsia", null);
     expect(html).toContain('[data-theme="dark"]');
     expect(html).toContain(':not([data-theme="light"])');
   });
 
   test("sets color-scheme so Light/Dark repaints every page, not just the styled landing <main> (issue #65)", () => {
-    const html = injectBrandingIntoHtml(BASE_HTML, "rose", null);
+    const html = injectBrandingIntoHtml(BASE_HTML, "fuchsia", null);
     expect(html).toContain("color-scheme: light dark;");
     expect(html).toMatch(/\[data-theme="light"\]\s*\{\s*color-scheme: light;/);
     expect(html).toMatch(/\[data-theme="dark"\]\s*\{\s*color-scheme: dark;/);

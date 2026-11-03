@@ -1,6 +1,7 @@
 import { fieldKey, listBindableFields } from "@ai-content-studio/shared";
 import type {
   BindableField,
+  InputBinding,
   InputDefinition,
   Workflow,
 } from "@ai-content-studio/shared";
@@ -50,12 +51,6 @@ export function candidateFieldsFor(
     return true;
   });
 }
-/** The workflow's own number-valued fields (issue #52), for a Points Input's Width/Height field pickers; not restricted to unused ones, since those fields are only ever read, never written by the Points Input itself. */
-export function numberFieldsFor(workflow: Workflow): BindableField[] {
-  return listBindableFields(workflow).filter(
-    (field) => field.valueType === "number",
-  );
-}
 /** Adds or removes a binding, keeping a select Input's option values arrays the same length as its bindings. */
 export function toggleBinding(
   input: InputDefinition,
@@ -102,4 +97,39 @@ export function toggleBinding(
     };
   }
   return { ...input, bindings };
+}
+
+/** A binding whose node or field is gone from `workflow` (issue #215's Rebind row). */
+export function isBindingBroken(
+  workflow: Workflow,
+  binding: InputBinding,
+): boolean {
+  const node = workflow[binding.nodeId];
+  return !node || !(binding.field in node.inputs);
+}
+
+/** Repoints a broken binding at a freshly picked field, keeping its position (so a Select's per-option values stay aligned, issue #215). */
+export function rebindBinding(
+  input: InputDefinition,
+  oldBinding: { nodeId: string; field: string },
+  field: {
+    nodeId: string;
+    field: string;
+    classType: string;
+    title: string | null;
+  },
+): InputDefinition {
+  return {
+    ...input,
+    bindings: input.bindings.map((binding) =>
+      binding.nodeId === oldBinding.nodeId && binding.field === oldBinding.field
+        ? {
+            nodeId: field.nodeId,
+            field: field.field,
+            classType: field.classType,
+            title: field.title,
+          }
+        : binding,
+    ),
+  };
 }

@@ -67,7 +67,7 @@ export function ModelEditorPage() {
               <WorkflowSection editor={editor} detail={detail} nav={nav} />
             )}
             {nav.section === "inputs" && (
-              <InputsSection editor={editor} detail={detail} />
+              <InputsSection editor={editor} detail={detail} nav={nav} />
             )}
             {nav.section === "modes" && (
               <ModesSection editor={editor} detail={detail} />

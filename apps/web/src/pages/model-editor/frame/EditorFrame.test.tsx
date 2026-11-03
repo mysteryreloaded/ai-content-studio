@@ -608,10 +608,7 @@ describe("Model editor frame (issue #213)", () => {
       "replacement.json",
       { type: "application/json" },
     );
-    await userEvent.upload(
-      view.getByLabelText("Replace Workflow (API format JSON)"),
-      file,
-    );
+    await userEvent.upload(view.getByLabelText("Choose file…"), file);
     expect(await view.findByText(/Picked "replacement\.json"/)).toBeTruthy();
 
     const discardButton = (await view.findByText(
@@ -655,10 +652,7 @@ describe("Model editor frame (issue #213)", () => {
       "replacement.json",
       { type: "application/json" },
     );
-    await userEvent.upload(
-      view.getByLabelText("Replace Workflow (API format JSON)"),
-      file,
-    );
+    await userEvent.upload(view.getByLabelText("Choose file…"), file);
     expect(await view.findByText(/Picked "replacement\.json"/)).toBeTruthy();
 
     await userEvent.click(view.getByText("Reload"));
@@ -886,10 +880,7 @@ describe("Model editor frame (issue #213)", () => {
       "replacement.json",
       { type: "application/json" },
     );
-    await userEvent.upload(
-      view.getByLabelText("Replace Workflow (API format JSON)"),
-      file,
-    );
+    await userEvent.upload(view.getByLabelText("Choose file…"), file);
     await userEvent.click(await view.findByText("Replace Workflow"));
 
     await view.findByText("Saved · revision 2");

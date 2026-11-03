@@ -1,6 +1,9 @@
+import { VIDEO_LOADER_CLASS_TYPES } from "@ai-content-studio/shared";
 import type {
   AudioUploadInputDefinition,
+  BindableField,
   ImageUploadInputDefinition,
+  InputDefinition,
   NumberInputDefinition,
   PointsInputDefinition,
   SeedInputDefinition,
@@ -8,6 +11,7 @@ import type {
   TextInputDefinition,
   VideoUploadInputDefinition,
 } from "@ai-content-studio/shared";
+import { toggleBinding } from "./bindings.js";
 export function newTextInput(): TextInputDefinition {
   return {
     id: crypto.randomUUID(),
@@ -115,4 +119,62 @@ export function newPointsInput(): PointsInputDefinition {
     heightField: { nodeId: "", field: "" },
     bindings: [],
   };
+}
+
+/** The new-Input kind this field matches (issue #214's "Make it an Input"): a loader's file field becomes an Upload; an int field named like seed becomes a Seed (only when `hasSeed` is false); another number becomes Number; a string becomes Text; a boolean becomes a 2-option (toggle) Select. */
+export function newInputKindForField(
+  field: BindableField,
+  hasSeed: boolean,
+): InputDefinition["kind"] {
+  if (field.valueType === "string") {
+    if (field.classType === "LoadImage") return "image_upload";
+    if (VIDEO_LOADER_CLASS_TYPES.has(field.classType)) return "video_upload";
+    if (/load.*audio|audio.*load/i.test(field.classType)) return "audio_upload";
+    return "text";
+  }
+  if (field.valueType === "number") {
+    return !hasSeed && /seed/i.test(field.field) ? "seed" : "number";
+  }
+  return "select";
+}
+
+/** This field's label once it becomes an Input (issue #214): a loader drops "Load " from its title; a `value` field is named after the node; otherwise it's "<title> <field>". */
+export function labelForNewInput(
+  field: BindableField,
+  kind: InputDefinition["kind"],
+): string {
+  const title = field.title || field.classType;
+  if (
+    kind === "image_upload" ||
+    kind === "video_upload" ||
+    kind === "audio_upload"
+  ) {
+    return title.replace(/^Load /, "");
+  }
+  if (field.field === "value") return title;
+  return `${title} ${field.field}`;
+}
+
+/** Builds and binds the new Input a "Make it an Input" / "New Input from this field" creates (issue #214). */
+export function newInputFromField(
+  field: BindableField,
+  hasSeed: boolean,
+): InputDefinition {
+  const kind = newInputKindForField(field, hasSeed);
+  const label = labelForNewInput(field, kind);
+  const base: InputDefinition =
+    kind === "text"
+      ? newTextInput()
+      : kind === "number"
+        ? newNumberInput()
+        : kind === "seed"
+          ? newSeedInput()
+          : kind === "image_upload"
+            ? newImageUploadInput()
+            : kind === "video_upload"
+              ? newVideoUploadInput()
+              : kind === "audio_upload"
+                ? newAudioUploadInput()
+                : newSelectInput();
+  return toggleBinding({ ...base, label }, field);
 }

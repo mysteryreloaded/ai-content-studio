@@ -38,6 +38,20 @@ export function typeDotKindFor(kind: InputDefinition["kind"]): TypeDotKind {
   }
 }
 
+/** A node field's own JS value type (issue #214's Node fields table), not an Input's kind. */
+export function typeDotKindForValueType(
+  valueType: "string" | "number" | "boolean",
+): TypeDotKind {
+  switch (valueType) {
+    case "number":
+      return "float";
+    case "boolean":
+      return "bool";
+    default:
+      return "string";
+  }
+}
+
 const CLASS_BY_KIND: Record<TypeDotKind, string> = {
   image: "bg-t-image",
   video: "bg-t-video",

@@ -1,14 +1,16 @@
 import {
+  BYTES_PER_MB,
   checkModel,
   computeModePath,
+  findOutsideServiceNotes,
   hasBlockingErrors,
   isValidModelLicenseUrl,
   modeInputSetting,
+  parseApiFormatWorkflow,
   renderMarkdown,
 } from "@ai-content-studio/shared";
 import type {
   AudioUploadInputDefinition,
-  BindableField,
   InputDefinition,
   ModeInputSetting,
   ModelIssue,
@@ -23,13 +25,13 @@ import type {
   ImageUploadInput as WorkbenchImageUploadInput,
   MediaUploadInput as WorkbenchMediaUploadInput,
 } from "../../components/inputs/types.js";
+import { ApiError } from "../../lib/api.js";
 import {
   httpUploadApi,
   trimUpload,
   uploadResumable,
 } from "../../lib/chunkedUpload.js";
 import { useSession } from "../../useSession.js";
-import { candidateFieldsFor, toggleBinding } from "./helpers/bindings.js";
 import {
   draftsFrom,
   messageFrom,
@@ -63,6 +65,7 @@ import {
 import { useModelChecks } from "./hooks/useModelChecks.js";
 import { useModelDetail } from "./hooks/useModelDetail.js";
 import { useModelDraft } from "./hooks/useModelDraft.js";
+import { useReplaceWorkflowMutation } from "./hooks/useWorkflowSection.js";
 import type {
   AdminBackendSummary,
   AttachedBackendEntry,
@@ -112,9 +115,6 @@ export function useModelEditor() {
   const [modesDraft, setModesDraft] = useState<DraftMode[] | null>(null);
   const [editingModeIndex, setEditingModeIndex] = useState<number | null>(null);
   const [inputsDraft, setInputsDraft] = useState<InputDefinition[] | null>(
-    null,
-  );
-  const [editingInputIndex, setEditingInputIndex] = useState<number | null>(
     null,
   );
   const [newInputKind, setNewInputKind] =
@@ -206,7 +206,6 @@ export function useModelEditor() {
     setModesDraft(draftsFrom(detail));
     setEditingModeIndex(null);
     setInputsDraft(detail.inputs);
-    setEditingInputIndex(null);
     setStateError(null);
     setTermsForm(termsFrom(detail));
     setAskAgain(false);
@@ -319,6 +318,22 @@ export function useModelEditor() {
     loadRevisions();
   }, [id]);
 
+  /** The agreed browser-side refusals (issue #214), run before a picked file ever becomes `pendingWorkflow`. */
+  function refuseWorkflowFile(file: File, parsed: unknown): string | null {
+    if (file.size > 10 * BYTES_PER_MB) {
+      return "This file is over 10 MB. Export the Workflow with Export (API).";
+    }
+    const result = parseApiFormatWorkflow(parsed);
+    if (!result.ok) return result.error;
+    for (const note of findOutsideServiceNotes(result.workflow)) {
+      if (!note.keySet) continue;
+      const node = result.workflow[note.nodeId];
+      const name = node?._meta?.title ?? note.classType;
+      return `${name} holds an API key; clear it in ComfyUI and export again`;
+    }
+    return null;
+  }
+
   async function handlePickWorkflowFile(file: File | null) {
     setWorkflowUploadError(null);
     setRebindMap({});
@@ -327,14 +342,24 @@ export function useModelEditor() {
       setPendingWorkflowFileName(null);
       return;
     }
+    let parsed: unknown;
     try {
-      setPendingWorkflow(await readFileAsJson(file));
-      setPendingWorkflowFileName(file.name);
+      parsed = await readFileAsJson(file);
     } catch {
       setPendingWorkflow(null);
       setPendingWorkflowFileName(null);
-      setWorkflowUploadError("that file isn't valid JSON");
+      setWorkflowUploadError("That file isn't valid JSON.");
+      return;
     }
+    const refusal = refuseWorkflowFile(file, parsed);
+    if (refusal) {
+      setPendingWorkflow(null);
+      setPendingWorkflowFileName(null);
+      setWorkflowUploadError(refusal);
+      return;
+    }
+    setPendingWorkflow(parsed);
+    setPendingWorkflowFileName(file.name);
   }
 
   /** Issue #241 CEO review: Discard and Reload must drop a picked-but-unsaved Workflow file, its name and the rebind picker too, not just the four section drafts. */
@@ -356,6 +381,20 @@ export function useModelEditor() {
     });
   }
 
+  /** The server's own refusal (issue #214: "Show a server refusal's own text if one still comes back"). */
+  function workflowErrorMessage(err: unknown): string {
+    if (err instanceof ApiError) {
+      const body = err.body as { error?: string; reasons?: string[] } | null;
+      if (body?.reasons && body.reasons.length > 0) {
+        return body.reasons.join(", ");
+      }
+      return body?.error ?? "upload failed";
+    }
+    return "upload failed";
+  }
+
+  const replaceWorkflowMutation = useReplaceWorkflowMutation(id);
+
   async function handleReplaceWorkflow() {
     if (!detail || pendingWorkflow === null) return;
     setUploadingWorkflow(true);
@@ -367,21 +406,12 @@ export function useModelEditor() {
     }));
 
     try {
-      const res = await fetch(`/api/admin/models/${detail.model.id}/workflow`, {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          version: detail.model.version,
-          workflow: pendingWorkflow,
-          ...(rebind.length > 0 ? { rebind } : {}),
-          ...(mustDisableToSaveWorkflow ? { disable: true } : {}),
-        }),
+      await replaceWorkflowMutation.mutateAsync({
+        version: detail.model.version,
+        workflow: pendingWorkflow,
+        ...(rebind.length > 0 ? { rebind } : {}),
+        ...(mustDisableToSaveWorkflow ? { disable: true } : {}),
       });
-
-      if (!res.ok) {
-        setWorkflowUploadError(await messageFrom(res, "upload failed"));
-        return;
-      }
 
       setPendingWorkflow(null);
       setPendingWorkflowFileName(null);
@@ -393,6 +423,8 @@ export function useModelEditor() {
       // `draft.reload()` (a refetch + full reseed) is safe here.
       await draft.reload();
       loadRevisions();
+    } catch (err) {
+      setWorkflowUploadError(workflowErrorMessage(err));
     } finally {
       setUploadingWorkflow(false);
     }
@@ -921,26 +953,16 @@ export function useModelEditor() {
                     ? newPointsInput()
                     : newSelectInput();
     setInputsDraft([...inputsDraft, created]);
-    setEditingInputIndex(inputsDraft.length);
   }
 
   function removeInput(index: number) {
     if (!inputsDraft) return;
     setInputsDraft(inputsDraft.filter((_, i) => i !== index));
-    if (editingInputIndex === index) setEditingInputIndex(null);
   }
 
   function updateInput(index: number, next: InputDefinition) {
     if (!inputsDraft) return;
     setInputsDraft(inputsDraft.map((input, i) => (i === index ? next : input)));
-  }
-
-  /** Toggles `field` in and out of the currently *picking* Input's bindings. */
-  function toggleFieldInEditingInput(field: BindableField) {
-    if (editingInputIndex === null || !inputsDraft) return;
-    const input = inputsDraft[editingInputIndex];
-    if (!input) return;
-    updateInput(editingInputIndex, toggleBinding(input, field));
   }
 
   // issue #213: ditto for "Save Inputs".
@@ -1112,15 +1134,6 @@ export function useModelEditor() {
         )
       : null;
 
-  const editingInput =
-    editingInputIndex !== null
-      ? (inputsDraft?.[editingInputIndex] ?? null)
-      : null;
-  const editingInputCandidates =
-    detail && editingInput && inputsDraft
-      ? candidateFieldsFor(detail.workflow, editingInput, inputsDraft)
-      : null;
-
   useEffect(() => {
     if (!draft.anyDraftDirty) return;
     const handler = (event: BeforeUnloadEvent) => {
@@ -1209,8 +1222,6 @@ export function useModelEditor() {
     setEditingModeIndex,
     inputsDraft,
     setInputsDraft,
-    editingInputIndex,
-    setEditingInputIndex,
     newInputKind,
     setNewInputKind,
     stateError,
@@ -1288,7 +1299,6 @@ export function useModelEditor() {
     addInput,
     removeInput,
     updateInput,
-    toggleFieldInEditingInput,
     handleToggleState,
     modesDirty,
     inputsDirty,
@@ -1301,8 +1311,6 @@ export function useModelEditor() {
     mustDisableToSaveWorkflow,
     editingMode,
     editingPath,
-    editingInput,
-    editingInputCandidates,
     goBack,
     handleDelete,
     modelIssues,

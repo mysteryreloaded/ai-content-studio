@@ -1,8 +1,10 @@
 import { fieldKey } from "@ai-content-studio/shared";
 import type { InputDefinition } from "@ai-content-studio/shared";
+import { useState } from "react";
 import { toggleBinding } from "../helpers/bindings.js";
 import type { ModelDetail } from "../types.js";
 import type { ModelEditor } from "../useModelEditor.js";
+import { BindingPicker } from "../workflow/BindingPicker.js";
 import { NumberSettings } from "./NumberSettings.js";
 import { PointsSettings } from "./PointsSettings.js";
 import { SeedSettings } from "./SeedSettings.js";
@@ -20,8 +22,8 @@ export function InputCard({
   editor: ModelEditor;
   detail: ModelDetail;
 }) {
-  const { updateInput, editingInputIndex, setEditingInputIndex, removeInput } =
-    editor;
+  const { updateInput, inputsDraft, removeInput } = editor;
+  const [bindingPickerOpen, setBindingPickerOpen] = useState(false);
   return (
     <fieldset>
       <p>Kind: {input.kind}</p>
@@ -125,17 +127,22 @@ export function InputCard({
         ))}
       </ul>
 
-      <button
-        type="button"
-        aria-pressed={editingInputIndex === index}
-        onClick={() =>
-          setEditingInputIndex(editingInputIndex === index ? null : index)
-        }
-      >
-        {editingInputIndex === index
-          ? "Done picking fields"
-          : "Pick fields in the Workflow below"}
+      <button type="button" onClick={() => setBindingPickerOpen(true)}>
+        Bind a field
       </button>
+      <BindingPicker
+        open={bindingPickerOpen}
+        onOpenChange={setBindingPickerOpen}
+        input={input}
+        workflow={detail.workflow}
+        otherInputs={(inputsDraft ?? detail.inputs).filter(
+          (other) => other.id !== input.id,
+        )}
+        onBind={(field) => {
+          updateInput(index, toggleBinding(input, field));
+          setBindingPickerOpen(false);
+        }}
+      />
       <button type="button" onClick={() => removeInput(index)}>
         Remove Input
       </button>

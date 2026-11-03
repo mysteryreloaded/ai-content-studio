@@ -36,6 +36,7 @@ export function ModesSection({
     setTestTrimRangeByInputId,
     setTestValues,
     startTestUpload,
+    clearTestUpload,
     testBackendId,
     testError,
     testOpenForModeKey,
@@ -117,6 +118,7 @@ export function ModesSection({
               onValuesChange={setTestValues}
               uploads={testUploads}
               onPick={(input, file) => startTestUpload(input, file)}
+              onClear={(input) => clearTestUpload(input)}
               trimRangeByInputId={testTrimRangeByInputId}
               onTrimRangeChange={(inputId, range) =>
                 setTestTrimRangeByInputId((ranges) => ({

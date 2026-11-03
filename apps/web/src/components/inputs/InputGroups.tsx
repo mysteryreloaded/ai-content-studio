@@ -1,9 +1,8 @@
 import type { WorkbenchInput } from "@ai-content-studio/shared";
 import type { WorkbenchMode } from "../../pages/workbench/types.js";
 import { InputField } from "./InputField.js";
-import { PointsPickers } from "./PointsPickers.js";
-import { YourFiles } from "./YourFiles.js";
-import { YourMedia } from "./YourMedia.js";
+import { PointsField } from "./PointsField.js";
+import { UploadField } from "./UploadField.js";
 import {
   type ImageUploadInput,
   type MediaUploadInput,
@@ -11,6 +10,7 @@ import {
   type TrimRange,
   UPLOAD_KINDS,
   type UploadState,
+  videoInputIdsUsedByPoints,
 } from "./types.js";
 
 type Kind = "files" | "describe" | "settings";
@@ -39,7 +39,12 @@ interface InputGroupsProps {
   uploads: Record<string, UploadState>;
   trimRangeByInputId: Record<string, TrimRange>;
   onTrimRangeChange: (inputId: string, range: TrimRange) => void;
-  onPick: (input: ImageUploadInput | MediaUploadInput, file: File) => void;
+  onPick: (
+    input: ImageUploadInput | MediaUploadInput,
+    file: File,
+    needsPlayableVideo: boolean,
+  ) => void;
+  onClearUpload: (input: ImageUploadInput | MediaUploadInput) => void;
   onPointsChange: (inputId: string, raw: string) => void;
 }
 
@@ -53,11 +58,13 @@ export function InputGroups({
   trimRangeByInputId,
   onTrimRangeChange,
   onPick,
+  onClearUpload,
   onPointsChange,
 }: InputGroupsProps) {
   function setValue(inputId: string, value: string) {
     setValues((current) => ({ ...current, [inputId]: value }));
   }
+  const videoIdsUsedByPoints = videoInputIdsUsedByPoints(mode.inputs);
 
   return (
     <>
@@ -74,47 +81,42 @@ export function InputGroups({
             </legend>
             {group === "files"
               ? inputs.map((input) => {
-                  if (input.kind === "image_upload") {
+                  if (UPLOAD_KINDS.has(input.kind)) {
+                    const uploadInput = input as
+                      | ImageUploadInput
+                      | MediaUploadInput;
+                    const needsPlayableVideo =
+                      uploadInput.kind === "video_upload" &&
+                      (uploadInput.trimmable ||
+                        videoIdsUsedByPoints.has(uploadInput.id));
                     return (
-                      <YourFiles
+                      <UploadField
                         key={input.id}
-                        inputs={[input]}
-                        uploads={uploads}
-                        issuesByInputId={issuesByInputId}
-                        onPick={onPick}
-                        bare
+                        input={uploadInput}
+                        upload={uploads[input.id]}
+                        trimRange={trimRangeByInputId[input.id]}
+                        onTrimRangeChange={(range) =>
+                          onTrimRangeChange(input.id, range)
+                        }
+                        onPick={(file) =>
+                          onPick(uploadInput, file, needsPlayableVideo)
+                        }
+                        onClear={() => onClearUpload(uploadInput)}
+                        needsPlayableVideo={needsPlayableVideo}
+                        issue={issuesByInputId[input.id]}
                       />
                     );
                   }
-                  if (
-                    input.kind === "video_upload" ||
-                    input.kind === "audio_upload"
-                  ) {
-                    return (
-                      <YourMedia
-                        key={input.id}
-                        inputs={[input]}
-                        uploads={uploads}
-                        trimRangeByInputId={trimRangeByInputId}
-                        onTrimRangeChange={onTrimRangeChange}
-                        issuesByInputId={issuesByInputId}
-                        onPick={onPick}
-                        bare
-                      />
-                    );
-                  }
-                  const pointsInput = input as PointsInput;
                   return (
-                    <PointsPickers
+                    <PointsField
                       key={input.id}
-                      inputs={[pointsInput]}
+                      input={input as PointsInput}
                       allInputs={mode.inputs}
                       uploads={uploads}
                       trimRangeByInputId={trimRangeByInputId}
                       values={values}
                       onPointsChange={onPointsChange}
-                      issuesByInputId={issuesByInputId}
-                      bare
+                      issue={issuesByInputId[input.id]}
                     />
                   );
                 })

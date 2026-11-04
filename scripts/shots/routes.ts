@@ -207,6 +207,30 @@ export const routes: Route[] = [
     ready: "text=What users see",
     prototype: "editor-c",
   },
+  {
+    name: "admin-editor-backends",
+    path: "/admin/models/{model.video.id}?section=backends",
+    as: "alice",
+    prototype: "editor-a",
+  },
+  {
+    name: "admin-editor-terms",
+    path: "/admin/models/{model.video.id}?section=terms",
+    as: "alice",
+    prototype: "editor-a",
+  },
+  {
+    name: "admin-editor-test",
+    path: "/admin/models/{model.video.id}?section=test",
+    as: "alice",
+    prototype: "editor-a",
+  },
+  {
+    name: "admin-editor-revisions",
+    path: "/admin/models/{model.video.id}?section=revisions",
+    as: "alice",
+    prototype: "editor-a",
+  },
   { name: "admin-generations", path: "/admin/generations", as: "alice" },
   {
     name: "admin-generation",

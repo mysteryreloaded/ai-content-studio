@@ -64,10 +64,18 @@ export interface BrokenNodeRef {
   nodeId: string;
   description: string;
 }
+/** A Backend's live health (issue #39), as `GET /api/admin/backends` reports it. */
+export interface BackendHealth {
+  reachability: "unknown" | "reachable" | "unreachable";
+  comfyuiVersion: string | null;
+  credentialsError: boolean;
+}
 export interface AdminBackendSummary {
   id: string;
   name: string;
   baseUrl: string;
+  enabled: boolean;
+  health: BackendHealth;
 }
 /** `GET /:id/object-info`'s JSON shape (issue #49): a Backend's `/object_info` knowledge, plain enough to send over the wire. */
 export interface ObjectInfoBackendJson {

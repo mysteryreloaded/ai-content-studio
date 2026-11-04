@@ -73,7 +73,7 @@ export function TestSection({
 
   const eligibleBackends = (attachedBackends ?? []).filter((entry) => {
     const cb = checkModelBackends?.find((b) => b.id === entry.backend.id);
-    if (!cb || !cb.reachable || !checkMode) return false;
+    if (!cb || !cb.reachable || !cb.enabled || !checkMode) return false;
     return modeBackendGaps(checkModel, checkMode, [cb]).length === 0;
   });
 

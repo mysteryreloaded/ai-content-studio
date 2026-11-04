@@ -92,7 +92,7 @@ function RevisionRow({
   modelId: string;
   anyDraftDirty: boolean;
   restoringRevision: number | null;
-  restoreError: string | undefined;
+  restoreError: { message: string; reasons: string[] } | undefined;
   modelEnabled: boolean;
   onRestore: (revisionNumber: number, disable: boolean) => void;
 }) {
@@ -125,8 +125,15 @@ function RevisionRow({
         {restoreError && (
           <div className="flex flex-col gap-1">
             <p role="alert" className="text-err">
-              {restoreError}
+              {restoreError.message}
             </p>
+            {restoreError.reasons.length > 0 && (
+              <ul className="list-inside list-disc text-err">
+                {restoreError.reasons.map((reason) => (
+                  <li key={reason}>{reason}</li>
+                ))}
+              </ul>
+            )}
             {modelEnabled && (
               <Button
                 type="button"

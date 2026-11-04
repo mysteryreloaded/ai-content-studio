@@ -17,6 +17,7 @@ import {
   prepareConfirmAndEventSource,
   renderEditor,
   restoreConfirm,
+  waitFor,
 } from "../testing/harness.js";
 
 /** The Test section's own SSE stream (issue #259): a `FakeEventSource` that remembers its instance, so a test can `emit` a "change"/"progress" on it after the form submits. Mirrors GalleryPage.test.tsx's own. */
@@ -79,8 +80,14 @@ const MODE_DETAIL = {
 
 const BACKEND_A = { id: "b1", name: "GPU 1", baseUrl: "http://gpu1" };
 const BACKEND_B = { id: "b2", name: "GPU 2", baseUrl: "http://gpu2" };
+const BACKEND_C = { id: "b3", name: "GPU 3", baseUrl: "http://gpu3" };
 
-/** Both attached and reachable; A can run the Mode (has every node type on its Path), B can't (missing SaveImage). */
+/**
+ * All three attached and reachable; A can run the Mode (has every node
+ * type on its Path) and is enabled; B can't (missing SaveImage); C can
+ * (has every node type) but is disabled, so it must be excluded too
+ * (CEO fix #2 on #261: `eligibleBackends` ignored `enabled`).
+ */
 function mockBackendsAndTests(
   extra?: (call: {
     method: string;
@@ -114,11 +121,17 @@ function mockBackendsAndTests(
             missingNodeTypes: ["SaveImage"],
             note: null,
           },
+          {
+            backend: BACKEND_C,
+            reachable: true,
+            missingNodeTypes: [],
+            note: null,
+          },
         ],
       });
     }
     if (call.method === "GET" && call.url.endsWith("/api/admin/backends")) {
-      return Response.json({ backends: [BACKEND_A, BACKEND_B] });
+      return Response.json({ backends: [BACKEND_A, BACKEND_B, BACKEND_C] });
     }
     if (call.method === "GET" && call.url.endsWith("/object-info")) {
       return Response.json({
@@ -137,6 +150,14 @@ function mockBackendsAndTests(
             enabled: true,
             reachable: true,
             nodeTypes: ["LoadImage"],
+            fieldSpecs: {},
+          },
+          {
+            id: "b3",
+            name: "GPU 3",
+            enabled: false,
+            reachable: true,
+            nodeTypes: ["LoadImage", "SaveImage"],
             fieldSpecs: {},
           },
         ],
@@ -165,6 +186,7 @@ describe("TestSection", () => {
     expect(view.getByRole("option", { name: "Any attached" })).toBeTruthy();
     expect(view.getByRole("option", { name: "GPU 1" })).toBeTruthy();
     expect(view.queryByRole("option", { name: "GPU 2" })).toBeNull();
+    expect(view.queryByRole("option", { name: "GPU 3" })).toBeNull();
   });
 
   test("Run test Generation is blocked by the Mode's errors", async () => {
@@ -321,5 +343,280 @@ describe("TestSection", () => {
     const img = document.querySelector("img[src='/api/assets/a1']");
     expect(img).toBeTruthy();
     expect(view.queryByRole("button", { name: "Cancel" })).toBeNull();
+  });
+
+  test("Test runs the unsaved draft Mode, and a failure shows the server's reasons (issue #74)", async () => {
+    const calls = mockBackendsAndTests((call) => {
+      if (call.method === "POST" && call.url.endsWith("/m1/test")) {
+        return Response.json(
+          {
+            error: "mode_has_errors",
+            reasons: ["needs at least one attached Backend"],
+          },
+          { status: 400 },
+        );
+      }
+      return null;
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await openSection(view, "Test");
+
+    const runButton = await view.findByRole("button", {
+      name: /Run test Generation/,
+    });
+    await userEvent.click(runButton);
+
+    const sent = calls.find(
+      (c) => c.method === "POST" && c.url.endsWith("/m1/test"),
+    );
+    expect(sent?.body).toEqual({
+      mode: {
+        name: "Default",
+        description: "",
+        outputNodeIds: ["2"],
+        inputSettings: [],
+      },
+      inputs: [],
+      values: {},
+      backendId: null,
+    });
+    expect(
+      await view.findByText("needs at least one attached Backend"),
+    ).toBeTruthy();
+  });
+
+  test("typing into a Number Input sends a number in the Test POST body, not the typed string (CEO review round 2)", async () => {
+    const DETAIL_NUMBER = {
+      ...MODE_DETAIL,
+      inputs: [
+        {
+          id: "steps-input",
+          kind: "number",
+          group: "describe",
+          label: "Steps",
+          help: "",
+          numberMode: "integer",
+          min: 1,
+          max: 100,
+          step: 1,
+          default: null,
+          bindings: [
+            {
+              nodeId: "2",
+              field: "steps",
+              classType: "SaveImage",
+              title: null,
+            },
+          ],
+        },
+      ],
+    };
+
+    const calls = mockBackendsAndTests((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1")) {
+        return Response.json(DETAIL_NUMBER);
+      }
+      if (call.method === "POST" && call.url.endsWith("/m1/test")) {
+        return Response.json(
+          {
+            generation: {
+              id: "g1",
+              modelId: "m1",
+              modelSlug: "ltx-2-5",
+              modelName: "LTX 2.5",
+              modeId: "mode-1",
+              modeName: "Default",
+              submissionId: "sub1",
+              state: "queued",
+              tries: 0,
+              error: null,
+              submittedAt: new Date().toISOString(),
+              startedAt: null,
+              endedAt: null,
+              assets: [],
+              removedAt: null,
+              isTest: true,
+            },
+          },
+          { status: 201 },
+        );
+      }
+      return null;
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await openSection(view, "Test");
+
+    await userEvent.type(await view.findByLabelText("Steps"), "7");
+    await userEvent.click(
+      view.getByRole("button", { name: /Run test Generation/ }),
+    );
+
+    const sent = calls.find(
+      (c) => c.method === "POST" && c.url.endsWith("/m1/test"),
+    );
+    expect(sent?.body?.values).toEqual({ "steps-input": 7 });
+  });
+
+  test("an Image Upload Input can be tested: pick, upload, Run test sends its Upload id (issue #74 CEO review)", async () => {
+    const UPLOAD_INPUT_ID = "img-input";
+    const UPLOAD_ID = "upload-1";
+    const DETAIL_UPLOAD = {
+      ...MODE_DETAIL,
+      inputs: [
+        {
+          id: UPLOAD_INPUT_ID,
+          kind: "image_upload",
+          group: "describe",
+          label: "Start frame",
+          help: "",
+          maxSizeMb: 5,
+          maxLongSide: null,
+          bindings: [
+            {
+              nodeId: "2",
+              field: "image",
+              classType: "SaveImage",
+              title: null,
+            },
+          ],
+        },
+      ],
+    };
+
+    const posts: { method: string; url: string; body: unknown }[] = [];
+    const calls = mockBackendsAndTests((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1")) {
+        return Response.json(DETAIL_UPLOAD);
+      }
+      if (call.url === "/api/uploads") {
+        return Response.json(
+          { upload: { id: UPLOAD_ID, chunkSize: 16 * 1024 * 1024 } },
+          { status: 201 },
+        );
+      }
+      if (call.url.startsWith(`/api/uploads/${UPLOAD_ID}/chunk`)) {
+        return Response.json({ offset: 4 });
+      }
+      if (call.url === `/api/uploads/${UPLOAD_ID}/complete`) {
+        return Response.json({
+          upload: {
+            id: UPLOAD_ID,
+            width: 10,
+            height: 10,
+            durationMs: null,
+            browserPlayable: null,
+          },
+        });
+      }
+      if (call.method === "POST" && call.url.endsWith("/m1/test")) {
+        posts.push(call);
+        return Response.json(
+          {
+            generation: {
+              id: "g1",
+              modelId: "m1",
+              modelSlug: "ltx-2-5",
+              modelName: "LTX 2.5",
+              modeId: "mode-1",
+              modeName: "Default",
+              submissionId: "sub1",
+              state: "queued",
+              tries: 0,
+              error: null,
+              submittedAt: new Date().toISOString(),
+              startedAt: null,
+              endedAt: null,
+              assets: [],
+              removedAt: null,
+              isTest: true,
+            },
+          },
+          { status: 201 },
+        );
+      }
+      return null;
+    });
+    void calls;
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await openSection(view, "Test");
+
+    await userEvent.upload(
+      await view.findByLabelText("Start frame"),
+      new File(["PNG!"], "frame.png", { type: "image/png" }),
+    );
+    await view.findByText("frame.png");
+
+    await userEvent.click(
+      view.getByRole("button", { name: /Run test Generation/ }),
+    );
+
+    expect(posts).toHaveLength(1);
+    expect(
+      (posts[0]?.body as { values?: Record<string, string> })?.values,
+    ).toEqual({ [UPLOAD_INPUT_ID]: UPLOAD_ID });
+  });
+
+  test('the Backend select sends backendId null for "Any attached" and the picked Backend\'s id when one is chosen', async () => {
+    const calls = mockBackendsAndTests((call) => {
+      if (call.method === "POST" && call.url.endsWith("/m1/test")) {
+        return Response.json(
+          {
+            generation: {
+              id: "g1",
+              modelId: "m1",
+              modelSlug: "ltx-2-5",
+              modelName: "LTX 2.5",
+              modeId: "mode-1",
+              modeName: "Default",
+              submissionId: "sub1",
+              state: "queued",
+              tries: 0,
+              error: null,
+              submittedAt: new Date().toISOString(),
+              startedAt: null,
+              endedAt: null,
+              assets: [],
+              removedAt: null,
+              isTest: true,
+            },
+          },
+          { status: 201 },
+        );
+      }
+      return null;
+    });
+
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await openSection(view, "Test");
+
+    await userEvent.click(
+      view.getByRole("button", { name: /Run test Generation/ }),
+    );
+    await waitFor(() => {
+      const sent = calls.find(
+        (c) => c.method === "POST" && c.url.endsWith("/m1/test"),
+      );
+      expect(sent?.body).toMatchObject({ backendId: null });
+    });
+
+    await userEvent.click(view.getByRole("combobox", { name: "Backend" }));
+    await userEvent.click(view.getByRole("option", { name: "GPU 1" }));
+    await userEvent.click(
+      view.getByRole("button", { name: /Run test Generation/ }),
+    );
+
+    await waitFor(() => {
+      const sent = calls.filter(
+        (c) => c.method === "POST" && c.url.endsWith("/m1/test"),
+      )[1];
+      expect(sent?.body).toMatchObject({ backendId: "b1" });
+    });
   });
 });

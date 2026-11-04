@@ -102,9 +102,9 @@ export function useModelEditor() {
   const [restoringRevision, setRestoringRevision] = useState<number | null>(
     null,
   );
-  const [restoreErrors, setRestoreErrors] = useState<Record<number, string>>(
-    {},
-  );
+  const [restoreErrors, setRestoreErrors] = useState<
+    Record<number, { message: string; reasons: string[] }>
+  >({});
   // Set right before navigating away after a successful delete: `dirty`
   // is still computed from this render's (pre-setForm(null)) state when
   // the blocker runs, since state updates haven't flushed yet, so without
@@ -234,22 +234,32 @@ export function useModelEditor() {
         }),
       );
     } catch (err) {
-      const message =
+      const body =
         err instanceof ApiError
-          ? ((err.body as { error?: string } | null)?.error ?? "restore failed")
-          : "restore failed";
-      setRestoreErrors((prev) => ({ ...prev, [revisionNumber]: message }));
+          ? (err.body as { error?: string; reasons?: string[] } | null)
+          : null;
+      setRestoreErrors((prev) => ({
+        ...prev,
+        [revisionNumber]: {
+          message: body?.error ?? "restore failed",
+          reasons: body?.reasons ?? [],
+        },
+      }));
       setRestoringRevision(null);
       return;
     }
 
     // Issue #241 CEO review: restoring a revision replaces the saved
     // Modes/Inputs/Terms, so they need a full reseed, not just a
-    // refetch under the once-per-id seeding effect. Restore only runs
-    // while every draft is clean, so `draft.reload()` is safe here.
-    await draft.reload();
-    revisionsSection.invalidate();
-    setRestoringRevision(null);
+    // refetch under the once-per-id seeding effect. Reset
+    // `restoringRevision` in a `finally` so a failed `draft.reload()`
+    // can't leave Restore disabled forever.
+    try {
+      await draft.reload();
+      revisionsSection.invalidate();
+    } finally {
+      setRestoringRevision(null);
+    }
   }
 
   /** "+ Mode" (issue #216): adds "Mode N" (N = count + 1) with no outputs, returning its key so the caller opens its sheet right away. */

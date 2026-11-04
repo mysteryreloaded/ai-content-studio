@@ -212,6 +212,9 @@ describe("RevisionsSection", () => {
         "has errors; restore and disable this Model to save it anyway",
       ),
     ).toBeTruthy();
+    expect(
+      (await view.findAllByText("needs at least one attached Backend")).length,
+    ).toBeGreaterThan(0);
 
     const disableButton = await view.findByText("Restore and disable");
     await userEvent.click(disableButton);

@@ -47,7 +47,7 @@ function testErrorReasons(err: unknown): string[] {
         : ["test failed"])
     );
   }
-  return ["test failed"];
+  return [err instanceof Error ? err.message : "test failed"];
 }
 
 /** The Test submit payload (mirrors WorkbenchPage's own `valuesPayload`): blank values are left out, a number/seed is parsed, not sent as the raw typed string. */

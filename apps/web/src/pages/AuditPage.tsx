@@ -2,7 +2,7 @@
 // first, filterable by actor, target type, target, action and date, with
 // a one-line summary that expands to a before/after diff.
 
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery } from "@tanstack/react-query";
 import { cn } from "cn";
 import { ChevronRight } from "lucide-react";
 import { type FormEvent, useEffect, useState } from "react";
@@ -12,8 +12,8 @@ import { AdminTable, adminHeadCell } from "../components/admin/AdminTable.js";
 import { EmptyState } from "../components/admin/EmptyState.js";
 import { FilterBar } from "../components/admin/FilterBar.js";
 import { FormField } from "../components/admin/FormField.js";
+import { InfiniteList } from "../components/admin/InfiniteList.js";
 import { LoadError } from "../components/admin/LoadError.js";
-import { LoadMoreButton } from "../components/admin/LoadMoreButton.js";
 import { Button } from "../components/ui/button.js";
 import { Input } from "../components/ui/input.js";
 import {
@@ -44,6 +44,10 @@ interface AuditEntry {
   createdAt: string;
   actorType: string;
   actorName: string | null;
+  /** Issue #211: where the change was made from; shown beside the diff. */
+  actorIp: string | null;
+  actorUserAgent: string | null;
+  actorRequestId: string | null;
   targetType: string;
   targetId: string;
   targetName: string | null;
@@ -57,6 +61,9 @@ interface AuditResponse {
   entries: AuditEntry[];
   hasMore: boolean;
 }
+
+/** Issue #211: keyset cursor — the last shown entry (null = first page). */
+type AuditPageParam = { createdAt: string; id: string } | null;
 
 interface FilterState {
   actor: string;
@@ -348,6 +355,44 @@ function EntryDiff({ entry }: { entry: AuditEntry }) {
   );
 }
 
+/**
+ * Issue #211: where the change was made from, beside the diff. The
+ * request id links to the Logs page filtered to that request's entries.
+ */
+function EntryRequestDetails({ entry }: { entry: AuditEntry }) {
+  const { actorIp, actorUserAgent, actorRequestId } = entry;
+  if (!actorIp && !actorUserAgent && !actorRequestId) return null;
+  return (
+    <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[12.5px]">
+      {actorIp && (
+        <>
+          <dt className="text-muted-foreground">IP</dt>
+          <dd className="font-mono break-all">{actorIp}</dd>
+        </>
+      )}
+      {actorUserAgent && (
+        <>
+          <dt className="text-muted-foreground">User agent</dt>
+          <dd className="break-all">{actorUserAgent}</dd>
+        </>
+      )}
+      {actorRequestId && (
+        <>
+          <dt className="text-muted-foreground">Request</dt>
+          <dd className="font-mono break-all">
+            <Link
+              to={`/admin/logs?requestId=${actorRequestId}`}
+              className="text-primary underline-offset-4 hover:underline"
+            >
+              {actorRequestId}
+            </Link>
+          </dd>
+        </>
+      )}
+    </dl>
+  );
+}
+
 function EntryRow({ entry }: { entry: AuditEntry }) {
   const [expanded, setExpanded] = useState(false);
   const href = targetHref(entry);
@@ -384,6 +429,7 @@ function EntryRow({ entry }: { entry: AuditEntry }) {
               View {targetTypeLabel(entry.targetType)}
             </Link>
           )}
+          <EntryRequestDetails entry={entry} />
           <EntryDiff entry={entry} />
         </div>
       )}
@@ -400,55 +446,54 @@ export function AuditPage() {
   const appliedKey = searchParams.toString();
   const applied = filtersFromParams(searchParams);
   const [draft, setDraft] = useState<FilterState>(applied);
-  const [olderEntries, setOlderEntries] = useState<AuditEntry[]>([]);
-  const [olderHasMore, setOlderHasMore] = useState<boolean | null>(null);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: applied is derived from appliedKey, the actual dependency
   useEffect(() => {
     setDraft(applied);
   }, [appliedKey]);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: appliedKey is the actual dependency
-  useEffect(() => {
-    setOlderEntries([]);
-    setOlderHasMore(null);
-    setLoadMoreError(null);
-  }, [appliedKey]);
-
-  const { data, isPending, isError, refetch, isFetching } = useQuery({
+  // Issue #211: load on scroll — the newest page is page one; older pages
+  // are fetched (keyset cursor over the last visible row) as the bottom
+  // nears the viewport, or from the "Load older" fallback. Each applied
+  // filter set is its own query, so a filter change starts fresh.
+  const {
+    data,
+    isPending,
+    isError,
+    isFetchNextPageError,
+    isFetchingNextPage,
+    hasNextPage,
+    refetch,
+    fetchNextPage,
+  } = useInfiniteQuery({
     queryKey: ["admin-audit", appliedKey],
-    queryFn: () =>
+    initialPageParam: null as AuditPageParam,
+    queryFn: ({ pageParam, signal }) =>
       ok<AuditResponse>(
-        api.api.admin.audit.$get({ query: queryParamsFrom(applied) }),
+        api.api.admin.audit.$get(
+          {
+            query: {
+              ...queryParamsFrom(applied),
+              ...(pageParam
+                ? {
+                    beforeCreatedAt: pageParam.createdAt,
+                    beforeId: pageParam.id,
+                  }
+                : {}),
+            },
+          },
+          { init: { signal } },
+        ),
       ),
+    getNextPageParam: (lastPage) => {
+      if (!lastPage.hasMore || lastPage.entries.length === 0) return null;
+      const last = lastPage.entries[lastPage.entries.length - 1];
+      if (!last) return null;
+      return { createdAt: last.createdAt, id: last.id };
+    },
   });
 
-  const entries = [...(data?.entries ?? []), ...olderEntries];
-  const hasMore = olderHasMore ?? data?.hasMore ?? false;
-
-  function loadMore() {
-    const last = entries[entries.length - 1];
-    if (!last) return;
-    setLoadingMore(true);
-    setLoadMoreError(null);
-    ok<AuditResponse>(
-      api.api.admin.audit.$get({
-        query: {
-          ...queryParamsFrom(applied),
-          beforeCreatedAt: last.createdAt,
-          beforeId: last.id,
-        },
-      }),
-    )
-      .then((body) => {
-        setOlderEntries((current) => [...current, ...body.entries]);
-        setOlderHasMore(body.hasMore);
-      })
-      .catch(() => setLoadMoreError("could not load older Audit entries"))
-      .finally(() => setLoadingMore(false));
-  }
+  const entries = data ? data.pages.flatMap((page) => page.entries) : [];
 
   function applyFilters() {
     setSearchParams(queryParamsFrom(draft));
@@ -583,14 +628,11 @@ export function AuditPage() {
         </FilterBar>
       </form>
 
-      {isError && (
+      {isError && !data && (
         <LoadError
           message="could not load the Audit trail"
           onRetry={() => refetch()}
         />
-      )}
-      {loadMoreError && (
-        <LoadError message={loadMoreError} onRetry={loadMore} />
       )}
 
       {isPending && <p className="text-muted-foreground">Loading…</p>}
@@ -607,11 +649,15 @@ export function AuditPage() {
         </div>
       )}
 
-      {hasMore && (
-        <LoadMoreButton
+      {entries.length > 0 && (
+        <InfiniteList
+          hasMore={hasNextPage}
+          isLoading={isFetchingNextPage}
+          onLoadMore={() => void fetchNextPage()}
           label="Load older"
-          isLoading={loadingMore || isFetching}
-          onClick={loadMore}
+          error={
+            isFetchNextPageError ? "could not load older Audit entries" : null
+          }
         />
       )}
     </div>

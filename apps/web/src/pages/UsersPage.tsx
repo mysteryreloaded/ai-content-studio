@@ -15,8 +15,8 @@ import { AdminTabs, userSectionTabs } from "../components/admin/AdminTabs.js";
 import { EmptyState } from "../components/admin/EmptyState.js";
 import { FilterBar } from "../components/admin/FilterBar.js";
 import { FormField } from "../components/admin/FormField.js";
+import { InfiniteList } from "../components/admin/InfiniteList.js";
 import { LoadError } from "../components/admin/LoadError.js";
-import { LoadMoreButton } from "../components/admin/LoadMoreButton.js";
 import { Button } from "../components/ui/button.js";
 import { Input } from "../components/ui/input.js";
 import { Pill } from "../components/ui/pill.js";
@@ -484,29 +484,34 @@ export function UsersPage() {
         </AdminTable>
       )}
 
-      {/* The "Load older" affordance: while an older page is in flight the
-          button stays mounted (loading), and a failed older page is an
+      {/* Issue #211: the shared load-on-scroll footer. The sentinel fetches
+          the next page as the last row nears the viewport; the "Load older"
+          button is the keyboard fallback and the retry for a failed page;
+          "That's everything." ends the list. A failed older page stays an
           error with a retry, not a silently hidden button. */}
-      {cursor ? (
-        olderQuery.isError ? (
-          <LoadError
-            message="could not load older users"
-            onRetry={() => void olderQuery.refetch()}
-          />
-        ) : loadingOlder || (olderQuery.data?.hasMore ?? false) ? (
-          <LoadMoreButton
-            label="Load older"
-            isLoading={loadingOlder}
-            onClick={loadOlder}
-          />
-        ) : null
-      ) : (listQuery.data?.hasMore ?? false) ? (
-        <LoadMoreButton
+      {users.length > 0 && (
+        <InfiniteList
+          hasMore={
+            cursor
+              ? loadingOlder || (olderQuery.data?.hasMore ?? false)
+              : (listQuery.data?.hasMore ?? false)
+          }
+          isLoading={loadingOlder}
+          onLoadMore={() => {
+            // A failed older page retries the already-requested page;
+            // otherwise the cursor moves to the last visible row.
+            if (cursor && olderQuery.isError) {
+              void olderQuery.refetch();
+            } else {
+              loadOlder();
+            }
+          }}
           label="Load older"
-          isLoading={false}
-          onClick={loadOlder}
+          error={
+            cursor && olderQuery.isError ? "could not load older users" : null
+          }
         />
-      ) : null}
+      )}
     </>
   );
 }

@@ -28,8 +28,25 @@ async function typedCalls() {
   });
 
   // Audit and logs: the list and 24h-count routes take no typed body.
+  // Issue #211's query params — the keyset cursor (both routes) and the
+  // Logs request-id filter, as the web pages call them.
   await client.api.admin.audit.$get();
+  await client.api.admin.audit.$get({
+    query: {
+      limit: "100",
+      beforeCreatedAt: "2026-01-02T00:00:00.000Z",
+      beforeId: ID,
+    },
+  });
   await client.api.admin.logs.$get();
+  await client.api.admin.logs.$get({
+    query: {
+      limit: "100",
+      requestId: ID,
+      beforeCreatedAt: "2026-01-02T00:00:00.000Z",
+      beforeId: ID,
+    },
+  });
   await client.api.admin.logs["error-count-24h"].$get();
 
   // Wrong field types are type errors: the client knows each route's

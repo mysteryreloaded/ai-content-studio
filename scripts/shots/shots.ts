@@ -401,6 +401,11 @@ async function shootRoute(
           }
         }
 
+        if (route.scrollToTop) {
+          await page.evaluate(() => window.scrollTo(0, 0));
+          await page.waitForTimeout(100);
+        }
+
         const file = path.join(
           appDir,
           `${route.name}-${width}-${themeLabel}.png`,

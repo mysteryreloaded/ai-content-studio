@@ -138,4 +138,113 @@ describe("LogsPage", () => {
       expect(logsCalls[1]?.url).toContain("level=warning");
     });
   });
+
+  test("a request id in the URL filters the list and shows as a removable chip", async () => {
+    const calls = mockFetch(defaultHandler([]));
+
+    renderWithProviders(<LogsPage />, {
+      route: "/admin/logs?requestId=req-42&level=error",
+    });
+
+    await waitFor(() => {
+      const logsCall = calls.find((call) =>
+        call.url.includes("/api/admin/logs?"),
+      );
+      expect(logsCall?.url).toContain("requestId=req-42");
+      expect(logsCall?.url).toContain("level=error");
+    });
+
+    expect(screen.getByText("req-42")).toBeTruthy();
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await userEvent.click(
+      screen.getByRole("button", { name: "Clear request id filter" }),
+    );
+
+    await waitFor(() => {
+      const logsCalls = calls.filter((call) =>
+        call.url.includes("/api/admin/logs?"),
+      );
+      const last = logsCalls[logsCalls.length - 1]?.url ?? "";
+      expect(last).not.toContain("requestId");
+      expect(last).toContain("level=error");
+    });
+    expect(screen.queryByText("req-42")).toBeNull();
+  });
+
+  test("an expanded entry shows the request it was written in", async () => {
+    mockFetch(defaultHandler([{ ...ERROR_ENTRY, requestId: "req-42" }]));
+
+    renderWithProviders(<LogsPage />, { route: "/admin/logs" });
+
+    const row = await screen.findByText("ComfyUI raised an error");
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await userEvent.click(row);
+
+    expect(screen.getByText("request req-42")).toBeTruthy();
+  });
+
+  test("the end of the list says that is everything", async () => {
+    mockFetch((call) => {
+      if (call.url.includes("/api/admin/backends")) {
+        return Response.json({ backends: BACKENDS, disabledBanner: null });
+      }
+      if (call.url.includes("/api/admin/models")) {
+        return Response.json({ models: MODELS });
+      }
+      return Response.json({ entries: [ERROR_ENTRY], hasMore: false });
+    });
+
+    renderWithProviders(<LogsPage />, { route: "/admin/logs" });
+
+    await screen.findByText("ComfyUI raised an error");
+    expect(screen.getByText("That's everything.")).toBeTruthy();
+  });
+
+  test("Load older fetches the next page with a keyset cursor and appends", async () => {
+    const OLDER_ENTRY = {
+      ...ERROR_ENTRY,
+      id: "l2",
+      message: "An older error",
+      details: null,
+      userId: null,
+      userEmail: null,
+      modelId: null,
+      generationId: null,
+      requestId: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    const calls = mockFetch((call) => {
+      if (call.url.includes("/api/admin/backends")) {
+        return Response.json({ backends: BACKENDS, disabledBanner: null });
+      }
+      if (call.url.includes("/api/admin/models")) {
+        return Response.json({ models: MODELS });
+      }
+      if (call.url.includes("/api/admin/users/")) {
+        return Response.json({ id: "u1", name: "Alice" });
+      }
+      if (!call.url.includes("beforeCreatedAt")) {
+        return Response.json({ entries: [ERROR_ENTRY], hasMore: true });
+      }
+      return Response.json({ entries: [OLDER_ENTRY], hasMore: false });
+    });
+
+    renderWithProviders(<LogsPage />, { route: "/admin/logs" });
+
+    await screen.findByText("ComfyUI raised an error");
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await userEvent.click(screen.getByText("Load older"));
+
+    expect(await screen.findByText("An older error")).toBeTruthy();
+    expect(screen.queryByText("Load older")).toBeNull();
+    expect(screen.getByText("That's everything.")).toBeTruthy();
+    // No filters set, so the first call's URL carries no "?".
+    const secondCall = calls.filter((call) =>
+      call.url.includes("/api/admin/logs"),
+    )[1]?.url;
+    expect(secondCall).toContain(
+      `beforeCreatedAt=${encodeURIComponent(ERROR_ENTRY.createdAt)}`,
+    );
+    expect(secondCall).toContain("beforeId=l1");
+  });
 });

@@ -233,11 +233,40 @@ describe("AuditPage", () => {
       await screen.findByText(/admin@example\.com · updated · Site settings/),
     ).toBeTruthy();
     expect(screen.queryByText("Load older")).toBeNull();
+    expect(screen.getByText("That's everything.")).toBeTruthy();
     const secondCall = calls[1];
     expect(secondCall?.url).toContain(
       `beforeCreatedAt=${encodeURIComponent(USER_ENTRY.createdAt)}`,
     );
     expect(secondCall?.url).toContain(`beforeId=${USER_ENTRY.id}`);
+  });
+
+  test("an expanded entry shows where the change was made from, with a link to that request's Logs", async () => {
+    mockFetch(() =>
+      Response.json({
+        entries: [
+          {
+            ...SITE_SETTINGS_ENTRY,
+            actorIp: "192.168.1.23",
+            actorUserAgent: "Mozilla/5.0 (X11; Linux x86_64)",
+            actorRequestId: "req-42",
+          },
+        ],
+      }),
+    );
+
+    renderWithProviders(<AuditPage />, { route: "/admin/audit" });
+
+    const summary = await screen.findByText(
+      /admin@example\.com · updated · Site settings/,
+    );
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await userEvent.click(summary);
+
+    expect(screen.getByText("192.168.1.23")).toBeTruthy();
+    expect(screen.getByText("Mozilla/5.0 (X11; Linux x86_64)")).toBeTruthy();
+    const link = screen.getByRole("link", { name: "req-42" });
+    expect(link.getAttribute("href")).toBe("/admin/logs?requestId=req-42");
   });
 
   test("navigating to the unfiltered Audit link refetches without the old filter", async () => {

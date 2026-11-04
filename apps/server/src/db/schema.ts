@@ -296,23 +296,34 @@ export const backends = pgTable(
 export const logLevel = pgEnum("log_level", ["error", "warning", "info"]);
 export const logSource = pgEnum("log_source", ["backend", "app"]);
 
-export const logEntries = pgTable("log_entries", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  level: logLevel("level").notNull(),
-  source: logSource("source").notNull().default("backend"),
-  message: text("message").notNull(),
-  /** Truncated by the writer before insert; see backends/log-entries.ts. */
-  details: text("details"),
-  backendId: uuid("backend_id").references(() => backends.id, {
-    onDelete: "set null",
-  }),
-  userId: uuid("user_id").references(() => users.id, {
-    onDelete: "set null",
-  }),
-  modelId: uuid("model_id"),
-  generationId: uuid("generation_id"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
-});
+export const logEntries = pgTable(
+  "log_entries",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    level: logLevel("level").notNull(),
+    source: logSource("source").notNull().default("backend"),
+    message: text("message").notNull(),
+    /** Truncated by the writer before insert; see backends/log-entries.ts. */
+    details: text("details"),
+    backendId: uuid("backend_id").references(() => backends.id, {
+      onDelete: "set null",
+    }),
+    userId: uuid("user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    modelId: uuid("model_id"),
+    generationId: uuid("generation_id"),
+    /**
+     * Issue #211: the request this entry was written in (its `request_id`,
+     * the same value every stdout line and Audit entry carries); null when
+     * written outside a request (a Backend monitor tick, the retention
+     * sweep, a dispatcher outcome).
+     */
+    requestId: text("request_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [index("log_entries_request_id_idx").on(table.requestId)],
+);
 
 /**
  * A Workflow's JSON, content-addressed by `hash` (SHA-256 of its canonical

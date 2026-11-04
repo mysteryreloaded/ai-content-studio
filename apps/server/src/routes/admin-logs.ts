@@ -1,7 +1,7 @@
 // `/api/admin/logs`: the Logs page's filters and the 24h error badge (issue #67).
 
 import type { Clock } from "@ai-content-studio/shared";
-import { and, desc, eq, gte, ilike, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, ilike, lt, lte, or, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { type RouteEntry, guard } from "../auth/access.js";
 import type { AppEnv } from "../auth/app-env.js";
@@ -45,6 +45,9 @@ function filtersFrom(query: Record<string, string | undefined>) {
   if (isUuid(query.generationId)) {
     clauses.push(eq(logEntries.generationId, query.generationId));
   }
+  if (isUuid(query.requestId)) {
+    clauses.push(eq(logEntries.requestId, query.requestId));
+  }
   if (query.from) {
     const from = new Date(query.from);
     if (!Number.isNaN(from.getTime()))
@@ -62,10 +65,32 @@ function filtersFrom(query: Record<string, string | undefined>) {
     );
   }
 
+  // Keyset cursor for "load more on scroll": entries strictly after
+  // (createdAt, id) in the desc(createdAt), desc(id) ordering below
+  // (issue #211) — the same cursor the Audit route uses.
+  if (query.beforeCreatedAt && isUuid(query.beforeId)) {
+    const beforeCreatedAt = new Date(query.beforeCreatedAt);
+    if (!Number.isNaN(beforeCreatedAt.getTime())) {
+      clauses.push(
+        or(
+          lt(logEntries.createdAt, beforeCreatedAt),
+          and(
+            eq(logEntries.createdAt, beforeCreatedAt),
+            lt(logEntries.id, query.beforeId),
+          ),
+        ),
+      );
+    }
+  }
+
   return clauses;
 }
 
-/** `/api/admin/logs`: text/filterable Log entries and the 24h error badge. */
+/**
+ * `/api/admin/logs`: text/filterable Log entries and the 24h error badge.
+ * Paged newest-first by keyset cursor (`beforeCreatedAt` + `beforeId`,
+ * issue #211); an entry written during a request carries its request id.
+ */
 export function adminLogsRoute(
   db: Database,
   clock: Clock,
@@ -97,16 +122,23 @@ export function adminLogsRoute(
           userEmail: users.email,
           modelId: logEntries.modelId,
           generationId: logEntries.generationId,
+          requestId: logEntries.requestId,
           createdAt: logEntries.createdAt,
         })
         .from(logEntries)
         .leftJoin(backends, eq(logEntries.backendId, backends.id))
         .leftJoin(users, eq(logEntries.userId, users.id))
         .where(clauses.length > 0 ? and(...clauses) : undefined)
-        .orderBy(desc(logEntries.createdAt))
-        .limit(limit);
+        .orderBy(desc(logEntries.createdAt), desc(logEntries.id))
+        .limit(limit + 1);
 
-      return c.json({ entries: rows });
+      // Issue #211: keyset paging with `hasMore`, like the Audit route;
+      // the extra row is trimmed off so a `limit` page has exactly `limit`
+      // entries.
+      const hasMore = rows.length > limit;
+      const page = hasMore ? rows.slice(0, limit) : rows;
+
+      return c.json({ entries: page, hasMore });
     })
     .get(
       "/error-count-24h",

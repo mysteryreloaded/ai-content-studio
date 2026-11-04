@@ -34,6 +34,13 @@ export interface Route {
   ready?: string;
   widths?: number[];
   fullPage?: boolean;
+  /**
+   * Scroll the page back to the top before capturing: a full-page
+   * capture renders a sticky nav where the page was last scrolled, so
+   * an action that scrolled content into view would otherwise get its
+   * target covered by the nav in the capture.
+   */
+  scrollToTop?: boolean;
   /** The prototype view (see `prototype.ts`) this route is compared with. */
   prototype?: string;
 }
@@ -236,7 +243,41 @@ export const routes: Route[] = [
     prototype: "editor-a",
   },
   { name: "admin-logs", path: "/admin/logs", as: "alice" },
+  {
+    name: "admin-logs-expanded",
+    path: "/admin/logs",
+    as: "alice",
+    // The newest entry (the seed's rejected prompt) was written inside a
+    // request, so the expanded row shows that request's id (issue #211).
+    actions: [
+      {
+        role: "button",
+        name: 'Refused a submitted prompt holding a blocked word: "bloodbath"',
+      },
+    ],
+    repeatActions: true,
+    ready: "text=request",
+    scrollToTop: true,
+  },
   { name: "admin-audit", path: "/admin/audit", as: "alice" },
+  {
+    name: "admin-audit-expanded",
+    path: "/admin/audit",
+    as: "alice",
+    // The newest entry (the seed's last change, a Notice update) is the
+    // row expanded for issue #211: its request context, with the request
+    // id linking to the Logs page filtered to that request. Admin actors
+    // show by email (ADR 0005), never by name.
+    actions: [
+      {
+        role: "button",
+        name: "alice@example.com · updated the pause notice · Site settings",
+      },
+    ],
+    repeatActions: true,
+    ready: "text=Before",
+    scrollToTop: true,
+  },
   { name: "account-admin", path: "/account", as: "alice" },
 
   { name: "workbench-paused", path: "/models/seed-video", as: "sam" },

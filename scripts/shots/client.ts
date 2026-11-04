@@ -117,6 +117,10 @@ function buildClient(
     const headers: Record<string, string> = {
       Origin: origin,
       Cookie: jar.header(),
+      // The server only reads a client IP from X-Forwarded-For (ADR 0005,
+      // proxy deploys); a fixed TEST-NET-1 address, so the seed's Audit
+      // entries show an IP in the expanded-entry screenshot (issue #211).
+      "X-Forwarded-For": "192.0.2.1",
     };
     let payload: RequestInit["body"];
     if (

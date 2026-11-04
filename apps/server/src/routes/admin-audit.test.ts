@@ -120,6 +120,9 @@ describe("GET /api/admin/audit", () => {
       entries: {
         actorType: string;
         actorName: string | null;
+        actorIp: string | null;
+        actorUserAgent: string | null;
+        actorRequestId: string | null;
         action: string;
       }[];
     };
@@ -129,6 +132,19 @@ describe("GET /api/admin/audit", () => {
     expect(body.entries[0]?.actorType).toBe("system");
     expect(body.entries[0]?.actorName).toBeNull();
     expect(body.entries[1]?.actorName).toBe("admin@example.com");
+
+    // Issue #211: an expanded Audit entry shows where the change was made
+    // from; an Admin actor carries its request context, "system" has none.
+    const adminEntry = body.entries.find(
+      (e) => e.actorName === "admin@example.com",
+    );
+    expect(adminEntry?.actorIp).toBe("127.0.0.1");
+    expect(adminEntry?.actorUserAgent).toBe("test-agent");
+    expect(adminEntry?.actorRequestId).toBe("req-1");
+    const systemEntry = body.entries.find((e) => e.actorType === "system");
+    expect(systemEntry?.actorIp).toBeNull();
+    expect(systemEntry?.actorUserAgent).toBeNull();
+    expect(systemEntry?.actorRequestId).toBeNull();
   });
 
   test("a user target's name is looked up live, 'Deleted user' once gone", async () => {

@@ -250,6 +250,7 @@ export function modelsRoute(
                 userId: session.user.id,
                 values,
                 count,
+                requestId: c.get("requestId"),
               },
               submissionDeps,
             );

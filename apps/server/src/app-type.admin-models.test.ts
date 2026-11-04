@@ -85,6 +85,20 @@ async function typedCalls() {
   const changed: string[] | null | undefined = revisionRow?.changed;
   void [author, changed];
 
+  // Object info: GET /:id/object-info (issue #220) carries `others` —
+  // every enabled, unattached Backend's node knowledge, same shape as
+  // the attached `backends` entries.
+  const objectInfoRes = await client.api.admin.models[":id"][
+    "object-info"
+  ].$get({ param: { id: "u" } });
+  if (objectInfoRes.ok) {
+    const { backends: objectInfoBackends, others } = await objectInfoRes.json();
+    const [otherBackend] = others;
+    const otherNodeTypes: string[] | undefined = otherBackend?.nodeTypes;
+    const otherReachable: boolean | undefined = otherBackend?.reachable;
+    void [objectInfoBackends, otherNodeTypes, otherReachable];
+  }
+
   // Wrong field types are type errors: the client knows each body's shape.
   await client.api.admin.models.$post({
     // @ts-expect-error `name` must be a string

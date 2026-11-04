@@ -43,7 +43,10 @@ export function useBackendsSection(id: string | undefined) {
   const objectInfoQuery = useQuery({
     queryKey: ["admin-model-object-info", id],
     queryFn: () =>
-      ok<{ backends: ObjectInfoBackendJson[] }>(
+      ok<{
+        backends: ObjectInfoBackendJson[];
+        others: ObjectInfoBackendJson[];
+      }>(
         api.api.admin.models[":id"]["object-info"].$get({
           param: { id: id as string },
         }),
@@ -86,6 +89,7 @@ export function useBackendsSection(id: string | undefined) {
     backendsLoadError: attachedQuery.isError ? "could not load Backends" : null,
     allBackends: allBackendsQuery.data?.backends ?? null,
     objectInfo: objectInfoQuery.data?.backends ?? null,
+    othersObjectInfo: objectInfoQuery.data?.others ?? null,
     attach: (backendId: string) => attachMutation.mutateAsync(backendId),
     detach: (backendId: string) => detachMutation.mutateAsync(backendId),
     attaching: attachMutation.isPending,

@@ -52,6 +52,7 @@ import { NotFound as BackendNotFound } from "../models/model-backends.js";
 import type { ModelBackendsRepository } from "../models/model-backends.js";
 import {
   buildObjectInfo,
+  buildObjectInfoFromCache,
   toCheckModelBackends,
 } from "../models/object-info.js";
 import {
@@ -724,7 +725,17 @@ export function adminModelsRoute(
 
           const attached = await modelBackends.listForModel(id);
           const backends = await buildObjectInfo(attached, backendsService);
-          return c.json({ backends });
+
+          const attachedIds = new Set(attached.map((backend) => backend.id));
+          const otherBackends = (await backendRepository.list()).filter(
+            (backend) => backend.enabled && !attachedIds.has(backend.id),
+          );
+          const others = buildObjectInfoFromCache(
+            otherBackends,
+            backendsService,
+          );
+
+          return c.json({ backends, others });
         },
       )
       .post(

@@ -201,6 +201,97 @@ describe("BackendsSection", () => {
     ).toBe(true);
   });
 
+  test("an unattached Backend missing one node shows that Mode's Can't run line (issue #220)", async () => {
+    const BACKEND_B = { id: "b2", name: "GPU 2", baseUrl: "http://gpu2" };
+    const objectInfo = {
+      backends: [],
+      others: [
+        {
+          id: "b2",
+          name: "GPU 2",
+          enabled: true,
+          reachable: true,
+          // Has SaveImage but not LoadImage, the other node on the
+          // Mode's Path.
+          nodeTypes: ["SaveImage"],
+          fieldSpecs: {},
+        },
+      ],
+    };
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/admin/models/m1")) {
+        return Response.json(MODE_DETAIL);
+      }
+      if (call.url.endsWith("/object-info")) return Response.json(objectInfo);
+      if (call.url.endsWith("/api/admin/models/m1/backends")) {
+        return Response.json({ backends: [] });
+      }
+      if (call.url.endsWith("/api/admin/backends")) {
+        return Response.json({
+          backends: [
+            {
+              ...BACKEND_B,
+              enabled: true,
+              health: {
+                reachability: "reachable",
+                comfyuiVersion: null,
+                credentialsError: false,
+              },
+            },
+          ],
+        });
+      }
+      return Response.json({ backends: [] });
+    });
+
+    const view = renderEditor();
+    await openSection(view, "Backends");
+
+    expect(await view.findByText("GPU 2")).toBeTruthy();
+    expect(
+      await view.findByText((text) => text.startsWith("Can't run Default:")),
+    ).toBeTruthy();
+    expect(await view.findByText("LoadImage")).toBeTruthy();
+  });
+
+  test("an unattached Backend with no cached knowledge shows the unreachable line (issue #220)", async () => {
+    const BACKEND_B = { id: "b2", name: "GPU 2", baseUrl: "http://gpu2" };
+    const objectInfo = { backends: [], others: [] };
+    mockFetch((call) => {
+      if (call.url.endsWith("/api/admin/models/m1")) {
+        return Response.json(MODE_DETAIL);
+      }
+      if (call.url.endsWith("/object-info")) return Response.json(objectInfo);
+      if (call.url.endsWith("/api/admin/models/m1/backends")) {
+        return Response.json({ backends: [] });
+      }
+      if (call.url.endsWith("/api/admin/backends")) {
+        return Response.json({
+          backends: [
+            {
+              ...BACKEND_B,
+              enabled: true,
+              health: {
+                reachability: "unknown",
+                comfyuiVersion: null,
+                credentialsError: false,
+              },
+            },
+          ],
+        });
+      }
+      return Response.json({ backends: [] });
+    });
+
+    const view = renderEditor();
+    await openSection(view, "Backends");
+
+    expect(await view.findByText("GPU 2")).toBeTruthy();
+    expect(
+      await view.findByText("Unreachable: its nodes can't be checked."),
+    ).toBeTruthy();
+  });
+
   test("detaching the only Backend empties the Backends section", async () => {
     const BACKEND = { id: "b1", name: "GPU 1", baseUrl: "http://gpu1" };
     let attached = [

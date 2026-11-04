@@ -82,6 +82,29 @@ export class BackendsService {
     return this.nodeKnowledge.fieldSpecsFor(backend);
   }
 
+  /**
+   * `backend`'s cached node types only (issue #220), never fetching: an
+   * unattached Backend's "what it would miss" note must cost no extra
+   * ComfyUI calls, so it reads whatever the cache already has (warmed
+   * by some other Model's attachment) and nothing otherwise. Still
+   * requires reachability, like `nodeTypesFor`: the monitor doesn't
+   * invalidate the cache on going unreachable (it can take up to the
+   * poll interval), so a stale cache must not be mistaken for live
+   * knowledge of a Backend that's currently down.
+   */
+  cachedNodeTypesFor(backend: BackendRecord): Set<string> | null {
+    if (this.healthFor(backend.id).reachability !== "reachable") return null;
+    return this.nodeKnowledge.cachedNodeTypesFor(backend.id);
+  }
+
+  /** `backend`'s cached field shapes only (issue #220); see `cachedNodeTypesFor`. */
+  cachedFieldSpecsFor(
+    backend: BackendRecord,
+  ): Map<string, Record<string, ComfyFieldSpec>> | null {
+    if (this.healthFor(backend.id).reachability !== "reachable") return null;
+    return this.nodeKnowledge.cachedFieldSpecsFor(backend.id);
+  }
+
   unreachableSince(backendId: string) {
     return this.monitor.unreachableSince(backendId);
   }

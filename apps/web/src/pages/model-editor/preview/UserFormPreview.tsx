@@ -5,9 +5,15 @@ import {
   visibleModeBoundFields,
 } from "@ai-content-studio/shared";
 import type { InputDefinition, Workflow } from "@ai-content-studio/shared";
-import { useState } from "react";
+import { type Dispatch, type SetStateAction, useState } from "react";
 import { CountPicker } from "../../../components/inputs/CountPicker.js";
 import { InputGroups } from "../../../components/inputs/InputGroups.js";
+import type {
+  ImageUploadInput,
+  MediaUploadInput,
+  TrimRange,
+  UploadState,
+} from "../../../components/inputs/types.js";
 import { Button } from "../../../components/ui/button.js";
 import type { DraftMode } from "../types.js";
 
@@ -15,7 +21,11 @@ import type { DraftMode } from "../types.js";
  * "What users see" (issue #216, variant C): a live, read-only-by-default
  * render of a Mode's Workbench form, built from the real Input controls
  * in `components/inputs/`. `interactive` lets #217 reuse this unchanged
- * as the Test form.
+ * as the Test form; the Test section (#259) also controls `values` and
+ * the upload props itself (its own values/uploads outlive this
+ * component, surviving a leave-and-return), hides the always-disabled
+ * "Generate" button (`hideSubmit`) and drops the Count picker, since a
+ * Test is always exactly one Generation (`hideCountPicker`).
  */
 export function UserFormPreview({
   modelName,
@@ -24,6 +34,15 @@ export function UserFormPreview({
   inputs,
   workflow,
   interactive = false,
+  values: controlledValues,
+  onValuesChange,
+  uploads = {},
+  trimRangeByInputId = {},
+  onTrimRangeChange,
+  onPick,
+  onClearUpload,
+  hideSubmit = false,
+  hideCountPicker = false,
 }: {
   modelName: string;
   attribution: string;
@@ -31,8 +50,25 @@ export function UserFormPreview({
   inputs: InputDefinition[];
   workflow: Workflow;
   interactive?: boolean;
+  values?: Record<string, string>;
+  onValuesChange?: Dispatch<SetStateAction<Record<string, string>>>;
+  uploads?: Record<string, UploadState>;
+  trimRangeByInputId?: Record<string, TrimRange>;
+  onTrimRangeChange?: (inputId: string, range: TrimRange) => void;
+  onPick?: (
+    input: ImageUploadInput | MediaUploadInput,
+    file: File,
+    needsPlayableVideo: boolean,
+  ) => void;
+  onClearUpload?: (input: ImageUploadInput | MediaUploadInput) => void;
+  hideSubmit?: boolean;
+  hideCountPicker?: boolean;
 }) {
-  const [values, setValues] = useState<Record<string, string>>({});
+  const [internalValues, setInternalValues] = useState<Record<string, string>>(
+    {},
+  );
+  const values = controlledValues ?? internalValues;
+  const setValues = onValuesChange ?? setInternalValues;
 
   const unresolvable = visibleModeBoundFields(mode.inputSettings ?? [], inputs);
   const relevant =
@@ -87,22 +123,24 @@ export function UserFormPreview({
             values={values}
             setValues={setValues}
             issuesByInputId={{}}
-            uploads={{}}
-            trimRangeByInputId={{}}
-            onTrimRangeChange={() => {}}
-            onPick={() => {}}
-            onClearUpload={() => {}}
+            uploads={uploads}
+            trimRangeByInputId={trimRangeByInputId}
+            onTrimRangeChange={onTrimRangeChange ?? (() => {})}
+            onPick={onPick ?? (() => {})}
+            onClearUpload={onClearUpload ?? (() => {})}
             onPointsChange={(inputId, raw) =>
               setValues((current) => ({ ...current, [inputId]: raw }))
             }
           />
         )}
-        {showsCountPicker && (
+        {showsCountPicker && !hideCountPicker && (
           <CountPicker count={1} onChange={() => {}} maxCount={4} />
         )}
-        <Button type="button" disabled>
-          Generate
-        </Button>
+        {!hideSubmit && (
+          <Button type="button" disabled>
+            Generate
+          </Button>
+        )}
       </fieldset>
     </div>
   );

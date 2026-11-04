@@ -1,56 +1,45 @@
-import { useState } from "react";
-import {
-  TEST_UNFINISHED_STATES,
-  testRunStateLabel,
-} from "../helpers/testRuns.js";
+import { Link } from "react-router-dom";
+import { ago } from "../../../components/generations/stateLabel.js";
+import { Pill } from "../../../components/ui/pill.js";
+import { testRunPillTone, testRunStateLabel } from "../helpers/testRuns.js";
 import type { TestRun } from "../types.js";
 
-/** Inline progress for one Test, with Cancel while it's still under way (issue #74's AC). */
-export function TestRunRow({ run }: { run: TestRun }) {
-  const [cancelling, setCancelling] = useState(false);
-  const unfinished = TEST_UNFINISHED_STATES.has(run.state);
-
-  async function handleCancel() {
-    setCancelling(true);
-    try {
-      await fetch(`/api/submissions/${run.submissionId}/cancel`, {
-        method: "POST",
-      });
-    } finally {
-      setCancelling(false);
-    }
+/** The last 5 Tests (issue #74/#259's AC), newest first; persisted server-side, so they're here on return too. */
+export function RecentTests({ runs }: { runs: TestRun[] }) {
+  if (runs.length === 0) {
+    return (
+      <p className="text-muted-foreground">No tests run yet for this Model.</p>
+    );
   }
 
-  return (
-    <li>
-      {run.modeName}: {testRunStateLabel(run)}
-      {run.state === "failed" && run.error && <span> — {run.error}</span>}
-      {run.state === "succeeded" && run.assets.length > 0 && (
-        <a href={`/api/assets/${run.assets[0]?.id}`}> View</a>
-      )}
-      {unfinished && (
-        <button
-          type="button"
-          disabled={cancelling || run.state === "cancelling"}
-          onClick={() => void handleCancel()}
-        >
-          Cancel
-        </button>
-      )}
-    </li>
-  );
-}
+  const now = new Date();
 
-/** The last 5 Tests (issue #74's AC), newest first; persisted server-side, so they're here on return too. */
-export function RecentTests({ runs }: { runs: TestRun[] }) {
   return (
-    <section aria-label="Recent tests">
-      <h4>Last 5 tests</h4>
-      <ul>
+    <div className="flex flex-col gap-1">
+      <h3 className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+        Last 5 tests
+      </h3>
+      <ul className="flex flex-col overflow-hidden rounded-xl border border-border bg-card">
         {runs.map((run) => (
-          <TestRunRow key={run.id} run={run} />
+          <li
+            key={run.id}
+            className="flex flex-wrap items-center gap-2 border-b border-border px-2.5 py-1.5 last:border-b-0"
+          >
+            <span className="font-medium">{run.modeName}</span>
+            <Pill tone={testRunPillTone(run)}>{testRunStateLabel(run)}</Pill>
+            <span className="text-muted-foreground">
+              {ago(run.submittedAt, now)}
+            </span>
+            <span className="min-w-0 flex-1" />
+            <Link
+              to={`/admin/generations/${run.id}`}
+              className="text-primary underline"
+            >
+              Open
+            </Link>
+          </li>
         ))}
       </ul>
-    </section>
+    </div>
   );
 }

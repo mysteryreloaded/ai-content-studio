@@ -3,6 +3,7 @@ import type {
   ModeInputSetting,
   Workflow,
 } from "@ai-content-studio/shared";
+import type { GenerationSummary } from "../../components/generations/types.js";
 export interface ModelNode {
   id: string;
   classType: string;
@@ -78,19 +79,14 @@ export interface ObjectInfoBackendJson {
   nodeTypes: string[];
   fieldSpecs: Record<string, Record<string, unknown>>;
 }
-/** One Test run (issue #74), as the `/test` and `/tests` endpoints and the SSE stream return it. */
-export interface TestRun {
-  id: string;
-  submissionId: string;
-  modeId: string;
-  modeName: string;
-  state: string;
-  error: string | null;
-  submittedAt: string;
-  isTest?: boolean;
-  modelId?: string;
-  assets: { id: string; kind: string }[];
-}
+/**
+ * One Test run (issue #74/#259), as the `/test` and `/tests` endpoints
+ * and the `/api/generations/stream` SSE stream return it: the same
+ * shape as any other Generation, so the Test section's result panel
+ * can reuse the Workbench's own player, progress and state-pill pieces
+ * from `components/generations/` unchanged.
+ */
+export type TestRun = GenerationSummary;
 export interface AttachedBackendEntry {
   backend: AdminBackendSummary;
   reachable: boolean;

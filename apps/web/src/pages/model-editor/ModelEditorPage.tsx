@@ -17,6 +17,7 @@ import { InputsSection } from "./sections/InputsSection.js";
 import { ModesSection } from "./sections/ModesSection.js";
 import { RevisionsSection } from "./sections/RevisionsSection.js";
 import { TermsSection } from "./sections/TermsSection.js";
+import { TestSection } from "./sections/TestSection.js";
 import { WorkflowSection } from "./sections/WorkflowSection.js";
 import { IssueCount } from "./ui/ChecksList.js";
 import { useModelEditor } from "./useModelEditor.js";
@@ -79,9 +80,7 @@ export function ModelEditorPage() {
               <TermsSection editor={editor} detail={detail} />
             )}
             {nav.section === "test" && (
-              <p className="text-muted-foreground">
-                Testing a Mode is coming soon (issue #217).
-              </p>
+              <TestSection editor={editor} detail={detail} />
             )}
             {nav.section === "revisions" && (
               <RevisionsSection editor={editor} detail={detail} />

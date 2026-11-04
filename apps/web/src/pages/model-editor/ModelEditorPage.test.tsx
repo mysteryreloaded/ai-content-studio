@@ -339,7 +339,7 @@ describe("ModelEditorPage", () => {
     });
   });
 
-  test("Replace Workflow and Restore stay disabled while another section is dirty (issue #71 CEO review)", async () => {
+  test("Restore stays disabled while another section is dirty (issue #71 CEO review)", async () => {
     mockFetch((call) => {
       if (call.method === "GET") return respondGetWithRevisions(call.url);
       throw new Error(`unexpected ${call.method} ${call.url}`);
@@ -357,15 +357,5 @@ describe("ModelEditorPage", () => {
     await openSection(view, "Revisions");
     const restoreButtons = await view.findAllByText("Restore");
     expect((restoreButtons[1] as HTMLButtonElement).disabled).toBe(true);
-
-    await openSection(view, "Workflow");
-    const file = new File(
-      ['{"1":{"class_type":"LoadImage","inputs":{}}}'],
-      "wf.json",
-      { type: "application/json" },
-    );
-    await userEvent.upload(await view.findByLabelText("Choose file…"), file);
-    const replaceButton = await view.findByText("Replace Workflow");
-    expect((replaceButton as HTMLButtonElement).disabled).toBe(true);
   });
 });

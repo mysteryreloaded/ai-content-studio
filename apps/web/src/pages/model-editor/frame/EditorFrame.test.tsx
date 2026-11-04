@@ -243,11 +243,10 @@ describe("Model editor frame (issue #213)", () => {
         return Response.json(detail);
       }
       if (call.method === "GET") return respondGet(call.url);
-      if (call.method === "PUT" && call.url.endsWith("/modes")) {
+      if (call.method === "PUT" && call.url.endsWith("/draft")) {
         return Response.json({
-          ...detail.model,
-          state: "disabled",
-          version: 2,
+          ...detail,
+          model: { ...detail.model, state: "disabled", version: 2 },
         });
       }
       throw new Error(`unexpected ${call.method} ${call.url}`);
@@ -269,9 +268,9 @@ describe("Model editor frame (issue #213)", () => {
 
     const saved = await waitFor(() => {
       const call = calls.find(
-        (c) => c.method === "PUT" && c.url.endsWith("/modes"),
+        (c) => c.method === "PUT" && c.url.endsWith("/draft"),
       );
-      if (!call) throw new Error("no /modes PUT yet");
+      if (!call) throw new Error("no /draft PUT yet");
       return call;
     });
     expect(saved.body?.disable).toBe(true);
@@ -516,12 +515,10 @@ describe("Model editor frame (issue #213)", () => {
     );
   });
 
-  // Issue #241 CEO review 2: the drafts used to be re-derived from
-  // every `detail` change (including the refetch after Details
-  // saved), so a Modes edit that hadn't saved yet got silently wiped
-  // as soon as Details' own save succeeded — not by anything that
-  // actually saved it.
-  test("a refused Modes save after Details saved keeps the unsaved Modes edit, and Save stays enabled", async () => {
+  // Issue #218: Save is one request now, so a refusal leaves every
+  // section's draft exactly as dirty as it was — nothing partially
+  // saves, and Save stays enabled to try again.
+  test("a refused Save keeps every draft dirty, and Save stays enabled", async () => {
     const detail = {
       ...DETAIL,
       modes: [
@@ -542,21 +539,13 @@ describe("Model editor frame (issue #213)", () => {
         },
       ],
     };
-    let version = 1;
     const calls = mockFetch((call) => {
       if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1")) {
-        return Response.json({
-          ...detail,
-          model: { ...detail.model, version },
-        });
+        return Response.json(detail);
       }
       if (call.method === "GET") return respondGet(call.url);
-      if (call.method === "PUT" && call.url.endsWith("/api/admin/models/m1")) {
-        version = 2;
-        return Response.json({ ...detail.model, version });
-      }
-      if (call.method === "PUT" && call.url.endsWith("/modes")) {
-        return Response.json({ error: "modes save failed" }, { status: 400 });
+      if (call.method === "PUT" && call.url.endsWith("/draft")) {
+        return Response.json({ error: "save failed" }, { status: 400 });
       }
       throw new Error(`unexpected ${call.method} ${call.url}`);
     });
@@ -573,11 +562,9 @@ describe("Model editor frame (issue #213)", () => {
 
     await userEvent.click(view.getByText("Save"));
 
-    await view.findByText("modes save failed");
+    await view.findByText("save failed");
     expect(
-      calls.some(
-        (c) => c.url.endsWith("/api/admin/models/m1") && c.method === "PUT",
-      ),
+      calls.some((c) => c.url.endsWith("/draft") && c.method === "PUT"),
     ).toBe(true);
 
     const saveButton = view.getByText("Save") as HTMLButtonElement;
@@ -632,7 +619,7 @@ describe("Model editor frame (issue #213)", () => {
   test("Reload asks to discard unsaved changes first, and clears the picked Workflow file too", async () => {
     mockFetch((call) => {
       if (call.method === "GET") return respondGet(call.url);
-      if (call.method === "PUT" && call.url.endsWith("/api/admin/models/m1")) {
+      if (call.method === "PUT" && call.url.endsWith("/draft")) {
         return Response.json(
           { error: "changed by someone else, reload" },
           { status: 409 },
@@ -687,24 +674,16 @@ describe("Model editor frame (issue #213)", () => {
     // No Modes (DETAIL's default `modes: []`): checkModel flags "needs
     // at least one Mode", so the enabled Model can only save by
     // disabling.
-    let version = 1;
-    let state: "enabled" | "disabled" = "enabled";
     const calls = mockFetch((call) => {
       if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1")) {
-        return Response.json({
-          ...enabledDetail,
-          model: { ...enabledDetail.model, version, state },
-        });
+        return Response.json(enabledDetail);
       }
       if (call.method === "GET") return respondGet(call.url);
-      if (call.method === "PUT" && call.url.endsWith("/api/admin/models/m1")) {
-        version = 2;
-        return Response.json({ ...enabledDetail.model, version, state });
-      }
-      if (call.method === "POST" && call.url.endsWith("/disable")) {
-        version = 3;
-        state = "disabled";
-        return Response.json({ ...enabledDetail.model, version, state });
+      if (call.method === "PUT" && call.url.endsWith("/draft")) {
+        return Response.json({
+          ...enabledDetail,
+          model: { ...enabledDetail.model, version: 2, state: "disabled" },
+        });
       }
       throw new Error(`unexpected ${call.method} ${call.url}`);
     });
@@ -722,11 +701,13 @@ describe("Model editor frame (issue #213)", () => {
     await userEvent.click(saveButton);
 
     await waitFor(() => {
-      const disableCall = calls.find(
-        (c) => c.method === "POST" && c.url.endsWith("/disable"),
+      const draftCall = calls.find(
+        (c) => c.method === "PUT" && c.url.endsWith("/draft"),
       );
-      expect(disableCall).toBeTruthy();
-      expect(disableCall?.body).toEqual({ version: 2 });
+      expect(draftCall).toBeTruthy();
+      expect((draftCall?.body as { disable?: boolean } | null)?.disable).toBe(
+        true,
+      );
     });
   });
 
@@ -837,7 +818,7 @@ describe("Model editor frame (issue #213)", () => {
     expect(saveButton.disabled).toBe(true);
   });
 
-  test("Replace Workflow reseeds the Modes draft from the new revision", async () => {
+  test("a re-uploaded Workflow saved by Save reseeds the Modes draft from the new revision", async () => {
     const modeBeforeReplace = {
       id: "mode-1",
       sortOrder: 0,
@@ -867,7 +848,7 @@ describe("Model editor frame (issue #213)", () => {
         });
       }
       if (call.method === "GET") return respondGet(call.url);
-      if (call.method === "PUT" && call.url.endsWith("/workflow")) {
+      if (call.method === "PUT" && call.url.endsWith("/draft")) {
         replaced = true;
         return Response.json({});
       }
@@ -887,7 +868,7 @@ describe("Model editor frame (issue #213)", () => {
       { type: "application/json" },
     );
     await userEvent.upload(view.getByLabelText("Choose file…"), file);
-    await userEvent.click(await view.findByText("Replace Workflow"));
+    await userEvent.click(view.getByText("Save"));
 
     await view.findByText("Saved · revision 2");
 

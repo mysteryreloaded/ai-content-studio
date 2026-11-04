@@ -104,11 +104,8 @@ describe("ModesSection", () => {
       if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1"))
         return Response.json(DETAIL);
       if (call.method === "GET") return Response.json(NO_BACKENDS);
-      if (call.method === "PUT" && call.url.endsWith("/modes")) {
-        return Response.json({
-          record: { ...DETAIL.model, currentRevision: 2, version: 2 },
-          modes: [],
-        });
+      if (call.method === "PUT" && call.url.endsWith("/draft")) {
+        return Response.json(DETAIL);
       }
       throw new Error(`unexpected ${call.method} ${call.url}`);
     });
@@ -129,19 +126,17 @@ describe("ModesSection", () => {
     await userEvent.click(view.getByRole("button", { name: "Save" }));
 
     const saved = calls.find(
-      (c) => c.method === "PUT" && c.url.endsWith("/modes"),
+      (c) => c.method === "PUT" && c.url.endsWith("/draft"),
     );
-    expect(saved?.body).toEqual({
-      version: 1,
-      modes: [
-        {
-          name: "Default",
-          description: "",
-          outputNodeIds: ["2"],
-          inputSettings: [],
-        },
-      ],
-    });
+    const body = saved?.body as { modes?: unknown } | null;
+    expect(body?.modes).toEqual([
+      {
+        name: "Default",
+        description: "",
+        outputNodeIds: ["2"],
+        inputSettings: [],
+      },
+    ]);
   });
 
   test("Remove on one Mode's output node doesn't affect another Mode being picked", async () => {

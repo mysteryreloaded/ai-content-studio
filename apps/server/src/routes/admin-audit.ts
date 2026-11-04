@@ -100,6 +100,9 @@ export function adminAuditRoute(db: Database, routes: RouteEntry[]) {
           actorType: auditEntries.actorType,
           actorUserId: auditEntries.actorUserId,
           actorEmail: auditEntries.actorEmail,
+          actorIp: auditEntries.actorIp,
+          actorUserAgent: auditEntries.actorUserAgent,
+          actorRequestId: auditEntries.actorRequestId,
           targetType: auditEntries.targetType,
           targetId: auditEntries.targetId,
           action: auditEntries.action,
@@ -145,6 +148,9 @@ export function adminAuditRoute(db: Database, routes: RouteEntry[]) {
             : row.actorUserId
               ? (names.get(row.actorUserId) ?? "Deleted user")
               : null,
+        actorIp: row.actorIp,
+        actorUserAgent: row.actorUserAgent,
+        actorRequestId: row.actorRequestId,
         targetType: row.targetType,
         targetId: row.targetId,
         targetName:

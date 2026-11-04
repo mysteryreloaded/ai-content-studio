@@ -160,6 +160,116 @@ describe("GET /api/admin/logs", () => {
     expect(warning?.message).toContain("GET /api/admin/backends");
   });
 
+  test("filters by request id, as an Audit entry's link would set it", async () => {
+    const { app, db } = await build();
+    const admin = await makeUser("admin", "admin@example.com");
+
+    const now = clock.now();
+    await db.insert(logEntries).values([
+      {
+        level: "error",
+        source: "app",
+        message: "written in request A",
+        requestId: "00000000-0000-0000-0000-0000000000aa",
+        createdAt: now,
+      },
+      {
+        level: "error",
+        source: "app",
+        message: "written in request B",
+        requestId: "00000000-0000-0000-0000-0000000000bb",
+        createdAt: now,
+      },
+      {
+        level: "error",
+        source: "app",
+        message: "outside any request",
+        createdAt: now,
+      },
+    ]);
+
+    const res = await app.request(
+      "/api/admin/logs?requestId=00000000-0000-0000-0000-0000000000aa",
+      {
+        headers: { ...SAME_ORIGIN_HEADERS, Cookie: await cookieFor(admin.id) },
+      },
+    );
+    const body = (await res.json()) as {
+      entries: { message: string; requestId: string | null }[];
+    };
+    expect(body.entries).toHaveLength(1);
+    expect(body.entries[0]?.message).toBe("written in request A");
+    expect(body.entries[0]?.requestId).toBe(
+      "00000000-0000-0000-0000-0000000000aa",
+    );
+  });
+
+  test("keyset paging walks entries that share a createdAt, without gaps or repeats", async () => {
+    const { app, db } = await build();
+    const admin = await makeUser("admin", "admin@example.com");
+
+    // Five entries share one timestamp: their order within that second
+    // must come from the id tie-break (desc(createdAt), desc(id)).
+    const now = clock.now();
+    for (let i = 0; i < 5; i++) {
+      await db.insert(logEntries).values({
+        level: "error",
+        source: "app",
+        message: `entry-${i}`,
+        createdAt: now,
+      });
+    }
+
+    const cookie = await cookieFor(admin.id);
+    const seen: string[] = [];
+    let cursor = "";
+    for (let page = 0; page < 3; page++) {
+      const res = await app.request(`/api/admin/logs?limit=2${cursor}`, {
+        headers: { ...SAME_ORIGIN_HEADERS, Cookie: cookie },
+      });
+      const body = (await res.json()) as {
+        entries: { id: string; createdAt: string }[];
+        hasMore: boolean;
+      };
+      for (const entry of body.entries) {
+        expect(seen).not.toContain(entry.id);
+        seen.push(entry.id);
+      }
+      if (!body.hasMore) break;
+      const last = body.entries[body.entries.length - 1];
+      if (!last) throw new Error("the cursor page was empty");
+      cursor = `&beforeCreatedAt=${encodeURIComponent(last.createdAt)}&beforeId=${last.id}`;
+    }
+    expect(seen).toHaveLength(5);
+  });
+
+  test("a 500 inside a request leaves a Log entry carrying that request's id", async () => {
+    const { db, sql } = await testDb;
+    // A `webDistDir` without its `index.html` makes the SPA fallback's
+    // `Bun.file(...).text()` throw: the cleanest unhandled error this app
+    // can answer, so the real `onError` writes the entry.
+    const { app } = await createApp({
+      db,
+      sql,
+      clock,
+      logger: silentLogger,
+      env: TEST_ENV,
+      webDistDir: "/nonexistent-web-dist",
+    });
+
+    const res = await app.request("/");
+    expect(res.status).toBe(500);
+    const requestId = res.headers.get("x-request-id");
+    expect(requestId).not.toBeNull();
+
+    const entry = (await db.select().from(logEntries)).find(
+      (row) => row.level === "error",
+    );
+    expect(entry?.source).toBe("app");
+    expect(entry?.message).toContain("ENOENT");
+    expect(entry?.requestId).toBe(requestId);
+  });
+
   test("error-count-24h counts only errors within the last 24 hours", async () => {
     const { app, db } = await build();
     const admin = await makeUser("admin", "admin@example.com");

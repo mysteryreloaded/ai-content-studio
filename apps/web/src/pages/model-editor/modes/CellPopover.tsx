@@ -3,7 +3,7 @@ import type {
   ModeInputSetting,
 } from "@ai-content-studio/shared";
 import type { ReactNode } from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "../../../components/ui/button.js";
 import { Input } from "../../../components/ui/input.js";
 import {
@@ -42,6 +42,7 @@ export function CellPopover({
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(Boolean(defaultOpen));
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   // The checks rail's "jump to this cell" (issue #216's `openCell`) can
   // target a cell well after this popover first mounted, so it's not
@@ -50,23 +51,30 @@ export function CellPopover({
     if (defaultOpen) setOpen(true);
   }, [defaultOpen]);
 
-  // The prototype closes the popover on scroll, not just Escape and an
-  // outside click (Radix's own defaults for those two) — but not a
+  // The prototype closes the popover on a real scroll, not just Escape and
+  // an outside click (Radix's own defaults for those two) — but not a
   // scroll inside the popover itself (e.g. a long label or hint text
   // scrolling its own field), which isn't "the page moved under it".
   //
-  // Opening the popover moves focus onto its own controls (Radix's
-  // FocusScope), and Chromium's scroll anchoring can fire a `scroll`
-  // event on `document` for that focus move even though nothing's
-  // position actually changed — `document` isn't an Element, so it
-  // never matched the popover-content check above and closed the
-  // popover it had just opened. Comparing the real scroll position
-  // catches that zero-delta case without missing a genuine scroll.
+  // The editor is a fixed-height box with its own scroll containers (the
+  // section's `overflow-auto` pane and the grid's `overflow-auto`), and
+  // neither of them ever scrolls `document.scrollingElement` — so tracking
+  // the document's position alone would miss both of them. Instead we record
+  // the trigger's viewport position on open and close once any scroll (from
+  // any container, the window included) moves it. A `scroll` that fires with
+  // the trigger still in place changes nothing and leaves it open — that's
+  // the zero-delta case Chromium fires itself when Radix's FocusScope moves
+  // focus into the popover on open, which must not close it right back up.
   useEffect(() => {
     if (!open) return;
-    const scroller = document.scrollingElement;
-    let lastTop = scroller?.scrollTop ?? 0;
-    let lastLeft = scroller?.scrollLeft ?? 0;
+    const trigger = triggerRef.current;
+    if (!trigger) return;
+    // Pin the trigger to a non-nullable `const`: TS won't carry a `const`
+    // ref's narrowed non-null type into the closure below, but a fresh
+    // binding inferred from the narrowed value is, and `onScroll` closes over
+    // it.
+    const anchor = trigger;
+    const start = anchor.getBoundingClientRect();
     function onScroll(event: Event) {
       const target = event.target;
       if (
@@ -75,11 +83,8 @@ export function CellPopover({
       ) {
         return;
       }
-      const top = scroller?.scrollTop ?? 0;
-      const left = scroller?.scrollLeft ?? 0;
-      if (top === lastTop && left === lastLeft) return;
-      lastTop = top;
-      lastLeft = left;
+      const rect = anchor.getBoundingClientRect();
+      if (rect.top === start.top && rect.left === start.left) return;
       setOpen(false);
     }
     window.addEventListener("scroll", onScroll, true);
@@ -90,6 +95,7 @@ export function CellPopover({
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button
+          ref={triggerRef}
           type="button"
           aria-label={ariaLabel}
           className="block min-h-[22px] w-full rounded-sm text-left hover:outline hover:outline-1 hover:outline-offset-1 hover:outline-primary focus-visible:outline-2"

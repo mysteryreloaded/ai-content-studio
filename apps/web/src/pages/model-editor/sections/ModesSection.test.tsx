@@ -38,6 +38,67 @@ afterEach(() => {
 });
 
 describe("ModesSection", () => {
+  // One Mode with a single text Input, shared by the cell-popover scroll
+  // tests below. (Named `POP_…` to avoid shadowing the local `DETAIL_ONE_MODE`
+  // constants a couple of the other tests in this file declare.)
+  const POP_DETAIL = {
+    ...DETAIL,
+    modes: [
+      {
+        id: "mode-1",
+        sortOrder: 0,
+        name: "Mode 1",
+        description: "",
+        outputNodes: [
+          { nodeId: "2", classType: "SaveImage", title: null, kind: "image" },
+        ],
+        inputSettings: [],
+      },
+    ],
+    inputs: [
+      {
+        id: "prompt-input",
+        kind: "text",
+        group: "describe",
+        label: "Prompt",
+        help: "",
+        multiline: false,
+        maxLength: 200,
+        default: "",
+        bindings: [
+          {
+            nodeId: "1",
+            field: "image",
+            classType: "LoadImage",
+            title: null,
+          },
+        ],
+      },
+    ],
+  };
+
+  const mockPopDetail = () => {
+    mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1"))
+        return Response.json(POP_DETAIL);
+      if (call.method === "GET") return Response.json(NO_BACKENDS);
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+  };
+
+  // A DOMRect-like object; `CellPopover` only ever reads `top` and `left`.
+  const rectAt = (pos: { top: number; left: number }) =>
+    ({
+      top: pos.top,
+      left: pos.left,
+      x: pos.left,
+      y: pos.top,
+      width: 120,
+      height: 22,
+      right: pos.left + 120,
+      bottom: pos.top + 22,
+    }) as unknown as DOMRect;
+
   test("adds a Mode, picks an output node through + Output, and saves it", async () => {
     const calls = mockFetch((call) => {
       if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1"))
@@ -674,73 +735,89 @@ describe("ModesSection", () => {
     expect(view.queryByText("11111111-1111-1111-1111-111111111111")).toBeNull();
   });
 
-  test("cell popover closes on an outside scroll, but not on a scroll inside itself (issue #216)", async () => {
-    const DETAIL_ONE_MODE = {
-      ...DETAIL,
-      modes: [
-        {
-          id: "mode-1",
-          sortOrder: 0,
-          name: "Mode 1",
-          description: "",
-          outputNodes: [
-            { nodeId: "2", classType: "SaveImage", title: null, kind: "image" },
-          ],
-          inputSettings: [],
-        },
-      ],
-      inputs: [
-        {
-          id: "prompt-input",
-          kind: "text",
-          group: "describe",
-          label: "Prompt",
-          help: "",
-          multiline: false,
-          maxLength: 200,
-          default: "",
-          bindings: [
-            {
-              nodeId: "1",
-              field: "image",
-              classType: "LoadImage",
-              title: null,
-            },
-          ],
-        },
-      ],
-    };
+  // The popover tracks the trigger's viewport position: the editor is a
+  // fixed-height box whose grid and pane each have their own `overflow-auto`
+  // scroll containers that never move `document.scrollingElement`. These
+  // tests mock `getBoundingClientRect` so that, on open, the popover records a
+  // start position; moving `cell` then simulates a container having scrolled
+  // the cell out of place (while a constant `cell` simulates the zero-delta
+  // `scroll` Chromium fires when Radix's FocusScope focuses the popover).
+  // Each test opens the popover exactly once: re-opening the same Radix
+  // trigger after an Escape is unreliable under happy-dom.
 
-    mockFetch((call) => {
-      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1"))
-        return Response.json(DETAIL_ONE_MODE);
-      if (call.method === "GET") return Response.json(NO_BACKENDS);
-      throw new Error(`unexpected ${call.method} ${call.url}`);
-    });
-
+  test("cell popover closes on a scroll in the grid's own container that moves the cell (issue #216)", async () => {
+    mockPopDetail();
     const view = renderEditor();
     const { default: userEvent } = await import("@testing-library/user-event");
-
-    await userEvent.click(
-      await view.findByRole("button", { name: /^Prompt in Mode 1/ }),
+    const button = await view.findByRole("button", {
+      name: /^Prompt in Mode 1/,
+    });
+    let cell = { top: 100, left: 10 };
+    button.getBoundingClientRect = () => rectAt(cell);
+    await userEvent.click(button);
+    await view.findByText("Label in this Mode");
+    // The cell's nearest `div` ancestor is the grid's own scroll container
+    // (`ModeInputGrid`'s `overflow-auto`); scrolling it moves the cell without
+    // ever touching `document.scrollingElement`, so it must close.
+    const gridScrollContainer = button.closest("div") as HTMLElement;
+    cell = { top: 50, left: 10 };
+    fireEvent.scroll(gridScrollContainer);
+    await waitFor(() =>
+      expect(view.queryByText("Label in this Mode")).toBeNull(),
     );
-    const popoverContent = await view.findByText("Label in this Mode");
+  });
 
-    // A scroll that originates inside the popover's own content doesn't
-    // count as the page moving under it, so it stays open.
+  test("cell popover stays open on a same-position scroll, closing only once the cell actually moves (issue #216)", async () => {
+    mockPopDetail();
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+    const button = await view.findByRole("button", {
+      name: /^Prompt in Mode 1/,
+    });
+    // A constant rect: the scroll reads the same position recorded on open.
+    const cell = { top: 100, left: 10 };
+    button.getBoundingClientRect = () => rectAt(cell);
+    await userEvent.click(button);
+    const gridScrollContainer = button.closest("div") as HTMLElement;
+    fireEvent.scroll(gridScrollContainer);
+    expect(view.getByText("Label in this Mode")).toBeTruthy();
+  });
+
+  test("cell popover stays open on a scroll inside its own content (issue #216)", async () => {
+    mockPopDetail();
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+    const button = await view.findByRole("button", {
+      name: /^Prompt in Mode 1/,
+    });
+    await userEvent.click(button);
+    // A scroll originating inside the popover's own content isn't "the page
+    // moved under it", so it stays open.
+    const popoverContent = await view.findByText("Label in this Mode");
     fireEvent.scroll(popoverContent);
     expect(view.getByText("Label in this Mode")).toBeTruthy();
+  });
 
-    // Any other scroll (e.g. the grid's own scroll container, or the
-    // window) closes it — but only once the scroll position actually
-    // changed, not for a same-position `scroll` event (Chromium fires
-    // one of those itself when Radix moves focus into the popover on
-    // open, which must not close it right back up).
+  test("cell popover closes on a window scroll that moves the trigger (issue #216)", async () => {
+    mockPopDetail();
+    const view = renderEditor();
+    const { default: userEvent } = await import("@testing-library/user-event");
+    const button = await view.findByRole("button", {
+      name: /^Prompt in Mode 1/,
+    });
+    let cell = { top: 100, left: 10 };
+    button.getBoundingClientRect = () => rectAt(cell);
+    await userEvent.click(button);
+    await view.findByText("Label in this Mode");
+    // A whole-window scroll moves the trigger too, so it closes.
+    cell = { top: 60, left: 10 };
     document.documentElement.scrollTop = 50;
     fireEvent.scroll(window);
     await waitFor(() =>
       expect(view.queryByText("Label in this Mode")).toBeNull(),
     );
+    // Reset so the scroll position can't leak into other tests in this file.
+    document.documentElement.scrollTop = 0;
   });
 
   test("Apply to every Mode whose Path holds this Input's fields copies the cell to eligible Modes only", async () => {

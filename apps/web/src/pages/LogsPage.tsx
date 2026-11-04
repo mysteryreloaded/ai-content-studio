@@ -3,7 +3,7 @@
 // the URL so links from the Backends page, the Overview and a
 // Generation's detail open it filtered.
 
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { cn } from "cn";
 import { CircleAlert, Info, TriangleAlert, X } from "lucide-react";
 import { type FormEvent, useEffect, useState } from "react";
@@ -12,6 +12,7 @@ import { AdminPageHeader } from "../components/admin/AdminPageHeader.js";
 import { EmptyState } from "../components/admin/EmptyState.js";
 import { FilterBar } from "../components/admin/FilterBar.js";
 import { FormField } from "../components/admin/FormField.js";
+import { InfiniteList } from "../components/admin/InfiniteList.js";
 import { LoadError } from "../components/admin/LoadError.js";
 import { Button } from "../components/ui/button.js";
 import { Input } from "../components/ui/input.js";
@@ -42,12 +43,18 @@ interface LogEntry {
   userEmail: string | null;
   modelId: string | null;
   generationId: string | null;
+  /** Issue #211: the request the entry was written in, when written during one. */
+  requestId: string | null;
   createdAt: string;
 }
 
 interface LogsResponse {
   entries: LogEntry[];
+  hasMore: boolean;
 }
+
+/** Issue #211: keyset cursor — the last shown entry (null = first page). */
+type LogsPageParam = { createdAt: string; id: string } | null;
 
 interface AdminBackendOption {
   id: string;
@@ -71,6 +78,8 @@ interface FilterState {
   modelId: string;
   userId: string;
   generationId: string;
+  /** Issue #211: from a link (e.g. an Audit entry's request id); shown as a removable chip. */
+  requestId: string;
   from: string;
   to: string;
   q: string;
@@ -83,6 +92,7 @@ const BLANK_FILTERS: FilterState = {
   modelId: "",
   userId: "",
   generationId: "",
+  requestId: "",
   from: "",
   to: "",
   q: "",
@@ -138,6 +148,7 @@ function filtersFromParams(params: URLSearchParams): FilterState {
     modelId: params.get("modelId") ?? "",
     userId: params.get("userId") ?? "",
     generationId: params.get("generationId") ?? "",
+    requestId: params.get("requestId") ?? "",
     from: isoToLocalInputValue(params.get("from") ?? ""),
     to: isoToLocalInputValue(params.get("to") ?? ""),
     q: params.get("q") ?? "",
@@ -158,8 +169,6 @@ function queryParamsFrom(filters: FilterState): Record<string, string> {
   }
   return params;
 }
-
-const DEFAULT_LIMIT = 100;
 
 function EntryRow({ entry }: { entry: LogEntry }) {
   const [expanded, setExpanded] = useState(false);
@@ -191,6 +200,12 @@ function EntryRow({ entry }: { entry: LogEntry }) {
             </pre>
           ) : (
             <p className="text-muted-foreground">No details.</p>
+          )}
+          {/* Issue #211: the request the entry was written in, when it has one. */}
+          {entry.requestId && (
+            <p className="break-all font-mono text-[12.5px] text-muted-foreground">
+              request {entry.requestId}
+            </p>
           )}
           <div className="flex flex-wrap items-center gap-3">
             {entry.generationId && (
@@ -247,12 +262,45 @@ export function LogsPage() {
     setDraft(applied);
   }, [appliedKey]);
 
-  const { data, isPending, isError, refetch } = useQuery({
+  // Issue #211: load on scroll — the newest page is page one; older pages
+  // are fetched (keyset cursor over the last visible entry) as the bottom
+  // nears the viewport, or from the "Load older" fallback. Each applied
+  // filter set is its own query, so a filter change starts fresh.
+  const {
+    data,
+    isPending,
+    isError,
+    isFetchNextPageError,
+    isFetchingNextPage,
+    hasNextPage,
+    refetch,
+    fetchNextPage,
+  } = useInfiniteQuery({
     queryKey: ["admin-logs", appliedKey],
-    queryFn: () =>
+    initialPageParam: null as LogsPageParam,
+    queryFn: ({ pageParam, signal }) =>
       ok<LogsResponse>(
-        api.api.admin.logs.$get({ query: queryParamsFrom(applied) }),
+        api.api.admin.logs.$get(
+          {
+            query: {
+              ...queryParamsFrom(applied),
+              ...(pageParam
+                ? {
+                    beforeCreatedAt: pageParam.createdAt,
+                    beforeId: pageParam.id,
+                  }
+                : {}),
+            },
+          },
+          { init: { signal } },
+        ),
       ),
+    getNextPageParam: (lastPage) => {
+      if (!lastPage.hasMore || lastPage.entries.length === 0) return null;
+      const last = lastPage.entries[lastPage.entries.length - 1];
+      if (!last) return null;
+      return { createdAt: last.createdAt, id: last.id };
+    },
   });
 
   const { data: backendOptions } = useQuery({
@@ -296,7 +344,14 @@ export function LogsPage() {
     setSearchParams({});
   }
 
-  const entries = data?.entries ?? [];
+  // Issue #211: the request-id chip (set by a link, e.g. from an Audit
+  // entry) is removed on its own, keeping the other applied filters.
+  function removeRequestIdFilter() {
+    setDraft({ ...draft, requestId: "" });
+    setSearchParams(queryParamsFrom({ ...applied, requestId: "" }));
+  }
+
+  const entries = data ? data.pages.flatMap((page) => page.entries) : [];
   const sourceValue =
     draft.source === "backend" ? draft.backendId : draft.source || "any";
 
@@ -318,6 +373,22 @@ export function LogsPage() {
       />
 
       <form onSubmit={handleSubmit}>
+        {/* Issue #211: the request-id filter, set by a link, as a removable chip. */}
+        {applied.requestId && (
+          <div className="mb-3 flex flex-wrap items-center gap-2 text-[12.5px]">
+            <span className="text-muted-foreground">Request</span>
+            <span className="font-mono break-all">{applied.requestId}</span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Clear request id filter"
+              onClick={removeRequestIdFilter}
+            >
+              <X className="size-4" />
+            </Button>
+          </div>
+        )}
         <FilterBar onClear={handleClear} onApply={applyFilters}>
           <FormField label="Level" htmlFor="log-level-any">
             <ToggleGroup
@@ -485,7 +556,7 @@ export function LogsPage() {
         </FilterBar>
       </form>
 
-      {isError && (
+      {isError && !data && (
         <LoadError
           message="could not load Log entries"
           onRetry={() => refetch()}
@@ -506,10 +577,16 @@ export function LogsPage() {
         </div>
       )}
 
-      {entries.length === DEFAULT_LIMIT && (
-        <EmptyState>
-          Showing the latest 100 entries. Narrow the filters to see older ones.
-        </EmptyState>
+      {entries.length > 0 && (
+        <InfiniteList
+          hasMore={hasNextPage}
+          isLoading={isFetchingNextPage}
+          onLoadMore={() => void fetchNextPage()}
+          label="Load older"
+          error={
+            isFetchNextPageError ? "could not load older Log entries" : null
+          }
+        />
       )}
     </div>
   );

@@ -64,6 +64,8 @@ const REVISIONS = {
       workflowHash: "hash2",
       modeCount: 1,
       inputCount: 0,
+      author: null,
+      changed: null,
     },
     {
       revisionNumber: 1,
@@ -71,6 +73,8 @@ const REVISIONS = {
       workflowHash: "hash1",
       modeCount: 0,
       inputCount: 0,
+      author: null,
+      changed: null,
     },
   ],
 };
@@ -104,6 +108,67 @@ describe("RevisionsSection", () => {
     // revision 2's own hash ("hash2") differs from revision 1's ("hash1").
     expect(section.getByText("Workflow changed")).toBeTruthy();
     expect(section.getByText("1 Mode · 0 Inputs")).toBeTruthy();
+    // Both revisions pre-date issue #219 (no `author`/`changed`): author falls back to "—".
+    expect(section.getAllByText("—")).toHaveLength(2);
+  });
+
+  test("an author and changed parts read 'revision N · when · author · parts changed'; Restore and Created read their own text (issue #219)", async () => {
+    const revisionsWithChanges = {
+      revisions: [
+        {
+          revisionNumber: 3,
+          createdAt: "2026-01-03T00:00:00.000Z",
+          workflowHash: "hash2",
+          modeCount: 1,
+          inputCount: 0,
+          author: "Nenad",
+          changed: ["restored:1"],
+        },
+        {
+          revisionNumber: 2,
+          createdAt: "2026-01-02T00:00:00.000Z",
+          workflowHash: "hash2",
+          modeCount: 1,
+          inputCount: 0,
+          author: "Nenad",
+          changed: ["workflow", "modes"],
+        },
+        {
+          revisionNumber: 1,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          workflowHash: "hash1",
+          modeCount: 0,
+          inputCount: 0,
+          author: "Nenad",
+          changed: ["created"],
+        },
+      ],
+    };
+    const detailAtThree = {
+      ...MODE_DETAIL,
+      model: { ...MODE_DETAIL.model, currentRevision: 3 },
+    };
+
+    mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1")) {
+        return Response.json(detailAtThree);
+      }
+      if (call.method === "GET" && call.url.endsWith("/revisions")) {
+        return Response.json(revisionsWithChanges);
+      }
+      if (call.method === "GET") return Response.json(NO_BACKENDS);
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    await openSection(view, "Revisions");
+    const section = within(await revisionsSection(view));
+
+    expect(await section.findByText("revision 3")).toBeTruthy();
+    expect(section.getAllByText("Nenad")).toHaveLength(3);
+    expect(section.getByText("Restored revision 1")).toBeTruthy();
+    expect(section.getByText("Workflow, Modes changed")).toBeTruthy();
+    expect(section.getByText("Created")).toBeTruthy();
   });
 
   test("Restore posts the current version, and the current revision has no Restore button", async () => {

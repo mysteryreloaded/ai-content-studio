@@ -12,6 +12,8 @@ export type AuditActor =
       type: "admin";
       userId: string;
       email: string;
+      /** Issue #219: the acting Admin's display name, for `model_revisions.createdByName`. Optional so existing literal actors (mostly in tests) keep type-checking. */
+      name?: string;
       ip: string | null;
       userAgent: string | null;
       requestId: string;

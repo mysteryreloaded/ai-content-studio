@@ -15,6 +15,7 @@ export function adminActorFrom(c: Context<AppEnv>): AuditActor {
     type: "admin",
     userId: session.user.id,
     email: session.user.email,
+    name: session.user.name,
     ip: clientIp(c),
     userAgent: c.req.header("user-agent") ?? null,
     requestId: c.get("requestId"),

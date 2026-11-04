@@ -600,6 +600,79 @@ describe("Workflow re-upload and revisions/restore (issue #71)", () => {
     expect(restoreRes.status).toBe(404);
   });
 
+  test("a revision records its author and changed parts (issue #219): Restore reads 'restored:<n>', a Workflow re-upload reads 'workflow', and a revision made before this ticket reads null", async () => {
+    const { app } = await build();
+    const { db } = await testDb;
+    const headers = await adminHeaders();
+
+    const createRes = await app.request("/api/admin/models", {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({ name: "LTX", workflow: WORKFLOW_V1 }),
+    });
+    const { model } = (await createRes.json()) as {
+      model: { id: string; version: number };
+    };
+
+    const uploadRes = await app.request(
+      `/api/admin/models/${model.id}/workflow`,
+      {
+        method: "PUT",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({
+          version: model.version,
+          workflow: WORKFLOW_V2_BREAKS_MODE,
+        }),
+      },
+    );
+    const { record: afterUpload } = (await uploadRes.json()) as {
+      record: { version: number };
+    };
+
+    const restoreRes = await app.request(
+      `/api/admin/models/${model.id}/revisions/1/restore`,
+      {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ version: afterUpload.version }),
+      },
+    );
+    expect(restoreRes.status).toBe(200);
+
+    // A revision made before this ticket: inserted directly, with no
+    // `createdByUserId`/`createdByName`/`changed` set.
+    const [anyWorkflow] = await db.select().from(workflows).limit(1);
+    if (!anyWorkflow) throw new Error("expected a Workflow row");
+    await db.insert(modelRevisions).values({
+      modelId: model.id,
+      revisionNumber: 4,
+      workflowHash: anyWorkflow.hash,
+    });
+
+    const listRes = await app.request(
+      `/api/admin/models/${model.id}/revisions`,
+      { headers },
+    );
+    expect(listRes.status).toBe(200);
+    const { revisions } = (await listRes.json()) as {
+      revisions: {
+        revisionNumber: number;
+        author: string | null;
+        changed: string[] | null;
+      }[];
+    };
+    const byNumber = new Map(revisions.map((r) => [r.revisionNumber, r]));
+
+    expect(byNumber.get(1)?.author).toBe("admin");
+    expect(byNumber.get(1)?.changed).toEqual(["created"]);
+    expect(byNumber.get(2)?.author).toBe("admin");
+    expect(byNumber.get(2)?.changed).toEqual(["workflow"]);
+    expect(byNumber.get(3)?.author).toBe("admin");
+    expect(byNumber.get(3)?.changed).toEqual(["restored:1"]);
+    expect(byNumber.get(4)?.author).toBeNull();
+    expect(byNumber.get(4)?.changed).toBeNull();
+  });
+
   test("POST restore 404s an unknown revision number", async () => {
     const { app } = await build();
     const headers = await adminHeaders();

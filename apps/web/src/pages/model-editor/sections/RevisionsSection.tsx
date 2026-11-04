@@ -15,11 +15,32 @@ import type { ModelDetail, RevisionSummary } from "../types.js";
 import { Section } from "../ui/Section.js";
 import type { ModelEditor } from "../useModelEditor.js";
 
-/** "revision 7 · 22 Oct 21:57 · Workflow, Modes changed" (issue #259): the API's `RevisionSummary` only carries `workflowHash`/`modeCount`/`inputCount`, so the author and a real "Inputs changed" can't be shown yet — left out until the API provides them. */
+const CHANGED_PART_LABELS: Record<string, string> = {
+  workflow: "Workflow",
+  inputs: "Inputs",
+  modes: "Modes",
+  terms: "Terms",
+  details: "Details",
+};
+
+/**
+ * "Workflow, Modes changed", "Restored revision 4" or "Created" (issue
+ * #219), from the API's `changed`. A revision made before #219 has no
+ * `changed` (null): falls back to #217's own "Workflow changed",
+ * derived by comparing `workflowHash` with the previous revision.
+ */
 function changeSummary(
   revision: RevisionSummary,
   olderRevision: RevisionSummary | undefined,
 ): string | null {
+  const { changed } = revision;
+  if (changed) {
+    if (changed.length === 0) return null;
+    if (changed.length === 1 && changed[0] === "created") return "Created";
+    const restored = changed[0]?.match(/^restored:(.+)$/);
+    if (restored) return `Restored revision ${restored[1]}`;
+    return `${changed.map((part) => CHANGED_PART_LABELS[part] ?? part).join(", ")} changed`;
+  }
   if (!olderRevision) return null;
   return revision.workflowHash !== olderRevision.workflowHash
     ? "Workflow changed"
@@ -109,6 +130,10 @@ function RevisionRow({
           <span className="text-muted-foreground">·</span>
           <span className="text-muted-foreground">
             {formatWhen(revision.createdAt)}
+          </span>
+          <span className="text-muted-foreground">·</span>
+          <span className="text-muted-foreground">
+            {revision.author ?? "—"}
           </span>
           {change && (
             <>

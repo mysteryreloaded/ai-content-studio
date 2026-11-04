@@ -61,10 +61,12 @@ import {
   SlugTaken,
   StaleVersion,
   applyRebind,
+  remapInputBindings,
 } from "../models/repository.js";
 import type {
   ModeInput,
   ModeRecord,
+  ModelDraftInput,
   ModelExport,
   ModelRepository,
 } from "../models/repository.js";
@@ -249,6 +251,34 @@ const inputsSchema = z.object({
 const rebindEntrySchema = z.object({
   nodeId: z.string(),
   newNodeId: z.string(),
+});
+
+/**
+ * The header Save's one PUT (issue #218): the whole editor draft —
+ * Details, Terms, an optional re-uploaded Workflow, Inputs and Modes —
+ * reusing each section's own schema shape so the wire body matches
+ * what each section's own route already validates.
+ */
+const draftSchema = z.object({
+  version: versionSchema,
+  details: detailsSchema,
+  terms: modelTermsFieldsSchema,
+  workflow: z
+    .object({
+      json: z.unknown(),
+      rebind: z.array(rebindEntrySchema).optional(),
+    })
+    .optional(),
+  inputs: z.array(inputDefinitionSchema),
+  modes: z.array(
+    z.object({
+      name: z.string(),
+      description: z.string(),
+      outputNodeIds: z.array(z.string()),
+      inputSettings: z.array(modeInputSettingSchema).default([]),
+    }),
+  ),
+  disable: z.boolean(),
 });
 
 /** Issue #74: a Test runs the editor's own unsaved draft Mode and Inputs, so the body carries them whole rather than a saved revision's id. */
@@ -1131,6 +1161,124 @@ export function adminModelsRoute(
               );
               return c.json({ ...result, record });
             }
+            return c.json(result);
+          } catch (err) {
+            return handleError(c, err);
+          }
+        },
+      )
+      // Issue #218: the editor header's one Save, replacing the separate
+      // per-section PUTs it used to chain (#213) with one PUT that saves
+      // the whole draft as one revision and one audit entry.
+      .put(
+        "/:id/draft",
+        guard(routes, basePath, "put", "/:id/draft", "admin"),
+        requireUuidId,
+        validate("json", draftSchema, (c, reason) =>
+          onInvalidModelBody(
+            c,
+            reason,
+            { field: "version", error: "version is required" },
+            draftSchema,
+            true,
+          ),
+        ),
+        async (c) => {
+          const id = idParam(c);
+          if (!UUID_RE.test(id)) return c.json({ error: "not found" }, 404);
+
+          const { version, details, terms, workflow, inputs, modes, disable } =
+            c.req.valid("json");
+
+          const detail = await repository.get(id);
+          if (!detail) return c.json({ error: "not found" }, 404);
+
+          try {
+            const attached = await modelBackends.listForModel(id);
+            const specsByBackend = await Promise.all(
+              attached.map((backend) => backendsService.fieldSpecsFor(backend)),
+            );
+            const fieldSpecs = new Map<
+              string,
+              Record<string, ComfyFieldSpec>
+            >();
+            for (const specs of specsByBackend) {
+              if (!specs) continue;
+              for (const [classType, fields] of specs) {
+                fieldSpecs.set(classType, {
+                  ...fieldSpecs.get(classType),
+                  ...fields,
+                });
+              }
+            }
+
+            // Issue #49: an enabled Model with errors can only be saved
+            // by disabling it, checked against the whole proposed draft
+            // (a re-uploaded Workflow included) the same way the
+            // Modes/Inputs/Workflow routes each check their own section.
+            if (detail.model.state === "enabled" && !disable) {
+              let proposedWorkflow = detail.workflow;
+              if (workflow) {
+                const parsed = parseApiFormatWorkflow(workflow.json);
+                if (parsed.ok) proposedWorkflow = parsed.workflow;
+              }
+              const rebindMap = new Map(
+                (workflow?.rebind ?? []).map((r) => [r.nodeId, r.newNodeId]),
+              );
+              const proposedModes = modes.map((mode, index) => ({
+                id: String(index),
+                name: mode.name,
+                outputNodeIds: mode.outputNodeIds.map(
+                  (nodeId) => rebindMap.get(nodeId) ?? nodeId,
+                ),
+                inputSettings: mode.inputSettings,
+              })) satisfies CheckModelMode[];
+              const proposedInputs = remapInputBindings(
+                inputs as InputDefinition[],
+                rebindMap,
+                proposedWorkflow,
+              );
+
+              const objectInfo = toCheckModelBackends(
+                await buildObjectInfo(attached, backendsService),
+              );
+              const issues = checkModel(
+                {
+                  workflow: proposedWorkflow,
+                  inputs: proposedInputs,
+                  modes: proposedModes,
+                },
+                objectInfo,
+              );
+              if (hasBlockingErrors(issues)) {
+                return c.json(
+                  {
+                    error: "has errors; disable this Model to save it anyway",
+                    reasons: issues
+                      .filter((issue) => issue.severity === "error")
+                      .map((issue) => issue.message),
+                  },
+                  400,
+                );
+              }
+            }
+
+            const draft: ModelDraftInput = {
+              details,
+              terms,
+              ...(workflow ? { workflow } : {}),
+              inputs: inputs as InputDefinition[],
+              modes: modes as ModeInput[],
+              disable: disable === true,
+            };
+            const result = await repository.saveDraft(
+              id,
+              draft,
+              version,
+              adminActorFrom(c),
+              fieldSpecs,
+              maxUploadMb,
+            );
             return c.json(result);
           } catch (err) {
             return handleError(c, err);

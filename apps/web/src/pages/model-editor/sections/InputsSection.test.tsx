@@ -67,11 +67,8 @@ describe("InputsSection (issue #215)", () => {
         return Response.json(detail);
       }
       if (call.method === "GET") return respondGet(call.url);
-      if (call.method === "PUT" && call.url.endsWith("/inputs")) {
-        return Response.json({
-          record: { ...DETAIL.model, currentRevision: 2, version: 2 },
-          inputs: [],
-        });
+      if (call.method === "PUT" && call.url.endsWith("/draft")) {
+        return Response.json(detail);
       }
       throw new Error(`unexpected ${call.method} ${call.url}`);
     });
@@ -102,7 +99,7 @@ describe("InputsSection (issue #215)", () => {
     await userEvent.click(view.getByText("Save"));
 
     const saved = calls.find(
-      (c) => c.method === "PUT" && c.url.endsWith("/inputs"),
+      (c) => c.method === "PUT" && c.url.endsWith("/draft"),
     );
     expect(saved?.body?.inputs).toEqual([
       {
@@ -163,11 +160,8 @@ describe("InputsSection (issue #215)", () => {
         return Response.json(detail);
       }
       if (call.method === "GET") return respondGet(call.url);
-      if (call.method === "PUT" && call.url.endsWith("/inputs")) {
-        return Response.json({
-          record: { ...DETAIL.model, currentRevision: 2, version: 2 },
-          inputs: [],
-        });
+      if (call.method === "PUT" && call.url.endsWith("/draft")) {
+        return Response.json(detail);
       }
       throw new Error(`unexpected ${call.method} ${call.url}`);
     });
@@ -215,7 +209,7 @@ describe("InputsSection (issue #215)", () => {
     await userEvent.click(view.getByText("Save"));
 
     const saved = calls.find(
-      (c) => c.method === "PUT" && c.url.endsWith("/inputs"),
+      (c) => c.method === "PUT" && c.url.endsWith("/draft"),
     );
     expect(saved?.body?.inputs).toEqual([
       videoInput,
@@ -433,11 +427,8 @@ describe("InputsSection (issue #215)", () => {
         return Response.json(detail);
       }
       if (call.method === "GET") return respondGet(call.url);
-      if (call.method === "PUT" && call.url.endsWith("/inputs")) {
-        return Response.json({
-          record: { ...DETAIL.model, currentRevision: 2, version: 2 },
-          inputs: [],
-        });
+      if (call.method === "PUT" && call.url.endsWith("/draft")) {
+        return Response.json(detail);
       }
       throw new Error(`unexpected ${call.method} ${call.url}`);
     });
@@ -458,7 +449,7 @@ describe("InputsSection (issue #215)", () => {
     await userEvent.click(view.getByText("Save"));
 
     const saved = calls.find(
-      (c) => c.method === "PUT" && c.url.endsWith("/inputs"),
+      (c) => c.method === "PUT" && c.url.endsWith("/draft"),
     );
     const [input] = saved?.body?.inputs as [{ maxDurationMs: number }];
     expect(input.maxDurationMs).toBe(2500);
@@ -501,11 +492,8 @@ describe("InputsSection (issue #215)", () => {
         return Response.json(detail);
       }
       if (call.method === "GET") return respondGet(call.url);
-      if (call.method === "PUT" && call.url.endsWith("/inputs")) {
-        return Response.json({
-          record: { ...DETAIL.model, currentRevision: 2, version: 2 },
-          inputs: [],
-        });
+      if (call.method === "PUT" && call.url.endsWith("/draft")) {
+        return Response.json(detail);
       }
       throw new Error(`unexpected ${call.method} ${call.url}`);
     });
@@ -525,7 +513,7 @@ describe("InputsSection (issue #215)", () => {
     await userEvent.click(view.getByText("Save"));
 
     const saved = calls.find(
-      (c) => c.method === "PUT" && c.url.endsWith("/inputs"),
+      (c) => c.method === "PUT" && c.url.endsWith("/draft"),
     );
     const [input] = saved?.body?.inputs as [
       { options: { values: number[] }[] },

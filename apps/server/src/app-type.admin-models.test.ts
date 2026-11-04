@@ -53,6 +53,26 @@ async function typedCalls() {
     json: { version: 1 },
   });
 
+  // Draft save: PUT /:id/draft (issue #218) takes the whole editor
+  // draft — Details, Terms, an optional re-uploaded Workflow, Inputs
+  // and Modes — in one body.
+  await client.api.admin.models[":id"].draft.$put({
+    param: { id: "u" },
+    json: {
+      version: 1,
+      details: { name: "m", slug: "m", description: "", maxRunTimeMinutes: 30 },
+      terms: {
+        termsBody: "",
+        licenseUrl: "",
+        attribution: "",
+        askAgain: false,
+      },
+      inputs: [],
+      modes: [],
+      disable: false,
+    },
+  });
+
   // Wrong field types are type errors: the client knows each body's shape.
   await client.api.admin.models.$post({
     // @ts-expect-error `name` must be a string
@@ -77,6 +97,23 @@ async function typedCalls() {
     param: { id: "u" },
     // @ts-expect-error the body must be an object
     json: "not an object",
+  });
+  await client.api.admin.models[":id"].draft.$put({
+    param: { id: "u" },
+    json: {
+      version: 1,
+      details: { name: "m", slug: "m", description: "", maxRunTimeMinutes: 30 },
+      terms: {
+        termsBody: "",
+        licenseUrl: "",
+        attribution: "",
+        askAgain: false,
+      },
+      inputs: [],
+      modes: [],
+      // @ts-expect-error `disable` must be a boolean
+      disable: "yes",
+    },
   });
 }
 

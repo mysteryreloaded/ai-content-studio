@@ -192,6 +192,7 @@ describe("every route's access level is declared and enforced", () => {
       "PUT /api/admin/models/:id/inputs": 404,
       "PUT /api/admin/models/:id/terms": 404,
       "PUT /api/admin/models/:id/workflow": 404,
+      "PUT /api/admin/models/:id/draft": 404,
       "GET /api/admin/models/:id/revisions": 404,
       "POST /api/admin/models/:id/revisions/:number/restore": 404,
       "POST /api/admin/models/:id/enable": 404,

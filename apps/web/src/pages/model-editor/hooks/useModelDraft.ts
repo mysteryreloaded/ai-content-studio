@@ -11,16 +11,16 @@ import { ApiError, api, ok } from "../../../lib/api.js";
 import { zodResolver } from "../../../lib/form.js";
 import type { SectionId } from "../frame/sections.js";
 import type { DraftMode, ModelDetail, TermsForm } from "../types.js";
+import { useSaveDraftMutation } from "./useWorkflowSection.js";
 
 /**
  * The Details draft (react-hook-form + the shared zod schema) and the
- * one Save sequence (issue #213): Details, then Inputs, then Modes
- * (its `inputSettings` filtered to the Inputs that survived step 2),
- * then Terms, chaining each step's `version`/`revision` from a refetch
- * of the Model. Stops at the first refusal; the steps already saved
- * become clean.
+ * one Save (issue #218): Details, Terms, a re-uploaded Workflow (if
+ * any), Inputs and Modes, all in one `PUT …/draft` — replacing the
+ * chain of separate per-section PUTs this used to send (#213), each of
+ * which made its own revision.
  *
- * The Inputs/Modes/Terms drafts themselves still live in
+ * The Inputs/Modes/Terms/Workflow drafts themselves still live in
  * `useModelEditor` (their own sections' tickets own that markup), so
  * this hook takes them — and how to reset them — as arguments.
  */
@@ -34,6 +34,8 @@ export function useModelDraft({
   termsForm,
   termsDirty,
   askAgain,
+  pendingWorkflow,
+  rebindMap,
   resetInputsDraft,
   resetModesDraft,
   resetTermsForm,
@@ -48,6 +50,10 @@ export function useModelDraft({
   termsForm: TermsForm | null;
   termsDirty: boolean;
   askAgain: boolean;
+  /** A re-uploaded Workflow file, parsed client-side (issue #71), or `null` while none is picked. */
+  pendingWorkflow: unknown | null;
+  /** Issue #71's rebind picker: old node id -> the picked Workflow's node id it's repointed onto. */
+  rebindMap: Record<string, string>;
   resetInputsDraft: (inputs: InputDefinition[]) => void;
   resetModesDraft: (detail: ModelDetail) => void;
   resetTermsForm: (detail: ModelDetail) => void;
@@ -75,7 +81,11 @@ export function useModelDraft({
   });
 
   const detailsDirty = form.formState.isDirty;
-  const anyDraftDirty = detailsDirty || inputsDirty || modesDirty || termsDirty;
+  const workflowDirty = pendingWorkflow !== null;
+  const anyDraftDirty =
+    detailsDirty || inputsDirty || modesDirty || termsDirty || workflowDirty;
+
+  const saveDraftMutation = useSaveDraftMutation(id);
 
   function discard() {
     if (!detail) return;
@@ -103,9 +113,21 @@ export function useModelDraft({
     });
   }
 
+  /** The server's own refusal (issue #214: "Show a server refusal's own text if one still comes back"): `errors` is a `ValidationFailed`'s field/message list (e.g. the draft endpoint's own structural checks), `error` is every other refusal's plain text. */
   function messageFromApiError(err: unknown, fallback: string): string {
     if (err instanceof ApiError) {
-      const body = err.body as { error?: string } | null;
+      const body = err.body as {
+        error?: string;
+        errors?: { field: string; message: string }[];
+        reasons?: string[];
+      } | null;
+      const issues = body?.errors
+        ?.map((e) => `${e.field}: ${e.message}`)
+        .join(", ");
+      if (issues) return issues;
+      if (body?.reasons && body.reasons.length > 0) {
+        return body.reasons.join(", ");
+      }
       return body?.error ?? fallback;
     }
     return fallback;
@@ -119,139 +141,73 @@ export function useModelDraft({
   }
 
   /**
-   * Save: only the dirty parts, in order, chaining `version` from a
-   * refetch (issue #213). Issue #241 CEO review: Details' zod errors
-   * and the Terms license URL are checked (`form.trigger()`, which
-   * `getValues()` alone never ran) before anything is sent — an
-   * invalid value sends nothing and reports which section to open.
+   * Save: one `PUT …/draft` with the whole draft — Details, Terms, a
+   * re-uploaded Workflow (if any), Inputs and Modes — whatever changed
+   * (issue #218, replacing the old chain of per-section PUTs, #213,
+   * each of which made its own revision). Issue #241 CEO review's
+   * up-front checks still apply: Details' zod errors and the Terms
+   * license URL are checked (`form.trigger()`, which `getValues()`
+   * alone never ran) before anything is sent — an invalid value sends
+   * nothing and reports which section to open.
    */
   async function save(
     disable: boolean,
   ): Promise<{ ok: boolean; invalidSection?: SectionId }> {
     if (!id || !detail) return { ok: false };
+    const inputs = inputsDraft ?? [];
+    const modes = modesDraft ?? [];
+    const terms = termsForm ?? {
+      termsBody: "",
+      licenseUrl: "",
+      attribution: "",
+    };
     setSaving(true);
     setSaveError(null);
     setStaleSave(false);
-    let disableSent = !disable;
 
     try {
       const detailsValid = await form.trigger();
       if (!detailsValid) return { ok: false, invalidSection: "details" };
-      if (termsForm && !isValidModelLicenseUrl(termsForm.licenseUrl)) {
+      if (!isValidModelLicenseUrl(terms.licenseUrl)) {
         return { ok: false, invalidSection: "terms" };
       }
 
-      let current = detail;
+      const currentInputIds = new Set(inputs.map((input) => input.id));
+      const rebind = Object.entries(rebindMap).map(([nodeId, newNodeId]) => ({
+        nodeId,
+        newNodeId,
+      }));
 
-      if (detailsDirty) {
-        const values = form.getValues();
-        try {
-          current = await ok(
-            api.api.admin.models[":id"].$put({
-              param: { id },
-              json: { ...values, version: current.model.version },
-            }),
-          );
-          current = await refetchModel();
-          form.reset(values);
-        } catch (err) {
-          if (isStaleSaveError(err)) setStaleSave(true);
-          setSaveError(messageFromApiError(err, "save failed"));
-          return { ok: false };
-        }
+      try {
+        await saveDraftMutation.mutateAsync({
+          version: detail.model.version,
+          details: form.getValues(),
+          terms: { ...terms, askAgain },
+          ...(pendingWorkflow !== null
+            ? {
+                workflow: {
+                  json: pendingWorkflow,
+                  ...(rebind.length > 0 ? { rebind } : {}),
+                },
+              }
+            : {}),
+          inputs,
+          modes: modes.map(({ key, ...mode }) => ({
+            ...mode,
+            inputSettings: mode.inputSettings.filter((s) =>
+              currentInputIds.has(s.inputId),
+            ),
+          })),
+          disable,
+        });
+      } catch (err) {
+        if (isStaleSaveError(err)) setStaleSave(true);
+        setSaveError(messageFromApiError(err, "save failed"));
+        return { ok: false };
       }
 
-      if (inputsDirty && inputsDraft) {
-        try {
-          await ok(
-            api.api.admin.models[":id"].inputs.$put({
-              param: { id },
-              json: {
-                version: current.model.version,
-                inputs: inputsDraft,
-                ...(!disableSent ? { disable: true } : {}),
-              },
-            }),
-          );
-          disableSent = true;
-          current = await refetchModel();
-          resetInputsDraft(inputsDraft);
-        } catch (err) {
-          if (isStaleSaveError(err)) setStaleSave(true);
-          setSaveError(messageFromApiError(err, "save failed"));
-          return { ok: false };
-        }
-      }
-
-      if (modesDirty && modesDraft) {
-        const currentInputIds = new Set(
-          (current.inputs ?? []).map((input) => input.id),
-        );
-        try {
-          await ok(
-            api.api.admin.models[":id"].modes.$put({
-              param: { id },
-              json: {
-                version: current.model.version,
-                modes: modesDraft.map(({ key, ...mode }) => ({
-                  ...mode,
-                  inputSettings: mode.inputSettings.filter((s) =>
-                    currentInputIds.has(s.inputId),
-                  ),
-                })),
-                ...(!disableSent ? { disable: true } : {}),
-              },
-            }),
-          );
-          disableSent = true;
-          current = await refetchModel();
-          resetModesDraft(current);
-        } catch (err) {
-          if (isStaleSaveError(err)) setStaleSave(true);
-          setSaveError(messageFromApiError(err, "save failed"));
-          return { ok: false };
-        }
-      }
-
-      if (termsDirty && termsForm) {
-        try {
-          await ok(
-            api.api.admin.models[":id"].terms.$put({
-              param: { id },
-              json: {
-                revision: current.model.termsRevision,
-                ...termsForm,
-                askAgain,
-              },
-            }),
-          );
-          current = await refetchModel();
-          resetTermsForm(current);
-        } catch (err) {
-          if (isStaleSaveError(err)) setStaleSave(true);
-          setSaveError(messageFromApiError(err, "save failed"));
-          return { ok: false };
-        }
-      }
-
-      // Issue #241 CEO review: "Save and disable" with only Details
-      // and/or Terms dirty never runs Inputs/Modes, so `disable` was
-      // never sent — explicitly disable now with the latest version.
-      if (disable && !disableSent) {
-        try {
-          await ok(
-            api.api.admin.models[":id"].disable.$post({
-              param: { id },
-              json: { version: current.model.version },
-            }),
-          );
-          await refetchModel();
-        } catch (err) {
-          if (isStaleSaveError(err)) setStaleSave(true);
-          setSaveError(messageFromApiError(err, "save failed"));
-          return { ok: false };
-        }
-      }
+      const fresh = await refetchModel();
+      discardFor(fresh);
 
       return { ok: true };
     } finally {

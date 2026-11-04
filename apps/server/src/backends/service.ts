@@ -82,6 +82,23 @@ export class BackendsService {
     return this.nodeKnowledge.fieldSpecsFor(backend);
   }
 
+  /**
+   * `backend`'s cached node types only (issue #220), never fetching: an
+   * unattached Backend's "what it would miss" note must cost no extra
+   * ComfyUI calls, so it reads whatever the cache already has (warmed
+   * by some other Model's attachment) and nothing otherwise.
+   */
+  cachedNodeTypesFor(backend: BackendRecord): Set<string> | null {
+    return this.nodeKnowledge.cachedNodeTypesFor(backend.id);
+  }
+
+  /** `backend`'s cached field shapes only (issue #220); see `cachedNodeTypesFor`. */
+  cachedFieldSpecsFor(
+    backend: BackendRecord,
+  ): Map<string, Record<string, ComfyFieldSpec>> | null {
+    return this.nodeKnowledge.cachedFieldSpecsFor(backend.id);
+  }
+
   unreachableSince(backendId: string) {
     return this.monitor.unreachableSince(backendId);
   }

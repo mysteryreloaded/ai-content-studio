@@ -48,3 +48,32 @@ export function backendModeGaps(
   }
   return results;
 }
+
+export interface ModeGap {
+  mode: CheckModelMode;
+  missingNodeType: string;
+  pack: string | null;
+}
+
+/**
+ * Issue #220's "what it would miss" note for a Backend the Model isn't
+ * attached to: one line per Mode it couldn't run, with no severity —
+ * attaching it is still the Admin's call either way.
+ */
+export function otherBackendGaps(
+  model: CheckModelInput,
+  modes: readonly CheckModelMode[],
+  backend: CheckModelBackend,
+): ModeGap[] {
+  const results: ModeGap[] = [];
+  for (const mode of modes) {
+    const gap = modeBackendGaps(model, mode, [backend])[0];
+    if (!gap || gap.missingNodeType === null) continue;
+    results.push({
+      mode,
+      missingNodeType: gap.missingNodeType,
+      pack: gap.pack,
+    });
+  }
+  return results;
+}

@@ -41,6 +41,30 @@ export async function buildObjectInfo(
   );
 }
 
+/**
+ * `buildObjectInfo`'s JSON shape for Backends the Model isn't attached
+ * to (issue #220), read from the node-knowledge cache only: a Backend
+ * nobody has warmed the cache for comes back with the same "unknown"
+ * marker `buildObjectInfo` uses for an unreachable attached one.
+ */
+export function buildObjectInfoFromCache(
+  backends: readonly BackendRecord[],
+  backendsService: BackendsService,
+): ObjectInfoBackendJson[] {
+  return backends.map((backend) => {
+    const nodeTypes = backendsService.cachedNodeTypesFor(backend);
+    const fieldSpecs = backendsService.cachedFieldSpecsFor(backend);
+    return {
+      id: backend.id,
+      name: backend.name,
+      enabled: backend.enabled,
+      reachable: nodeTypes !== null,
+      nodeTypes: nodeTypes ? [...nodeTypes] : [],
+      fieldSpecs: fieldSpecs ? Object.fromEntries(fieldSpecs) : {},
+    };
+  });
+}
+
 /** `buildObjectInfo`'s JSON shape, turned back into `checkModel`'s `CheckModelBackend`s. */
 export function toCheckModelBackends(
   backends: readonly ObjectInfoBackendJson[],

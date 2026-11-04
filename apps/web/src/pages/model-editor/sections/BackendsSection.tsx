@@ -4,7 +4,8 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Button } from "../../../components/ui/button.js";
 import { Pill } from "../../../components/ui/pill.js";
-import { backendModeGaps } from "../helpers/backendGaps.js";
+import { backendModeGaps, otherBackendGaps } from "../helpers/backendGaps.js";
+import { toCheckModelBackends } from "../helpers/workflow.js";
 import type {
   AdminBackendSummary,
   BackendHealth,
@@ -69,6 +70,7 @@ export function BackendsSection({
     detach,
     detachError,
     attach,
+    othersObjectInfo,
   } = backends;
 
   const attached = attachedBackends ?? [];
@@ -188,29 +190,60 @@ export function BackendsSection({
           <p className="text-muted-foreground">No other Backends.</p>
         ) : (
           <div className="overflow-hidden rounded-xl border border-border bg-card">
-            {otherBackends.map((backend) => (
-              <div
-                key={backend.id}
-                className="flex items-start gap-2 border-b border-border px-2.5 py-1.5 last:border-b-0"
-              >
-                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-                  <span className="font-semibold">{backend.name}</span>
-                  <HealthPill health={backend.health} />
-                  {backend.health?.comfyuiVersion && (
-                    <span className="text-muted-foreground">
-                      ComfyUI {backend.health.comfyuiVersion}
-                    </span>
-                  )}
-                </div>
-                <Button
-                  type="button"
-                  disabled={attaching}
-                  onClick={() => void attach(backend.id)}
+            {otherBackends.map((backend) => {
+              const info = othersObjectInfo?.find(
+                (entry) => entry.id === backend.id,
+              );
+              const cb = info ? toCheckModelBackends([info])[0] : undefined;
+              const gaps = cb?.reachable
+                ? otherBackendGaps(model, checkModes, cb)
+                : [];
+              return (
+                <div
+                  key={backend.id}
+                  className="flex items-start gap-2 border-b border-border px-2.5 py-1.5 last:border-b-0"
                 >
-                  Attach
-                </Button>
-              </div>
-            ))}
+                  <div className="flex min-w-0 flex-1 flex-col gap-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-semibold">{backend.name}</span>
+                      <HealthPill health={backend.health} />
+                      {backend.health?.comfyuiVersion && (
+                        <span className="text-muted-foreground">
+                          ComfyUI {backend.health.comfyuiVersion}
+                        </span>
+                      )}
+                    </div>
+                    {!cb || !cb.reachable ? (
+                      <GapLine severity="warning">
+                        Unreachable: its nodes can't be checked.
+                      </GapLine>
+                    ) : gaps.length === 0 ? (
+                      <p className="text-muted-foreground">
+                        Runs all {checkModes.length} Mode
+                        {checkModes.length === 1 ? "" : "s"}
+                      </p>
+                    ) : (
+                      gaps.map((gap) => (
+                        <GapLine key={gap.mode.id} severity="warning">
+                          Can't run {gap.mode.name}: missing{" "}
+                          <code className="font-mono">
+                            {gap.missingNodeType}
+                          </code>{" "}
+                          (pack {gap.pack ?? "unknown"})
+                        </GapLine>
+                      ))
+                    )}
+                  </div>
+                  <Button
+                    type="button"
+                    disabled={attaching}
+                    onClick={() => void attach(backend.id)}
+                  >
+                    Attach
+                  </Button>
+                </div>
+              );
+            })}
           </div>
         )}
         {attachError && <p role="alert">{attachError}</p>}

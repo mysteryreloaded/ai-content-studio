@@ -15,7 +15,7 @@ import type {
   ModelIssue,
   Workflow,
 } from "@ai-content-studio/shared";
-import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useBlocker, useNavigate, useParams } from "react-router-dom";
 import { ApiError, api, ok } from "../../lib/api.js";
 import { useSession } from "../../useSession.js";
@@ -39,18 +39,16 @@ import {
   visibleBoundFieldsFor,
   workflowForMode,
 } from "./helpers/workflow.js";
+import { useBackendsSection } from "./hooks/useBackendsSection.js";
 import { useModelChecks } from "./hooks/useModelChecks.js";
 import { useModelDetail } from "./hooks/useModelDetail.js";
 import { useModelDraft } from "./hooks/useModelDraft.js";
 import { useRevisionsSection } from "./hooks/useRevisionsSection.js";
 import type {
-  AdminBackendSummary,
-  AttachedBackendEntry,
   BrokenNodeRef,
   DraftMode,
   ModelDetail,
   ModelNode,
-  ObjectInfoBackendJson,
   TermsForm,
 } from "./types.js";
 
@@ -69,24 +67,9 @@ export function useModelEditor() {
   const loadError = detailQuery.isError ? "could not load this Model" : null;
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [nodeFilter, setNodeFilter] = useState("");
-  const [attachedBackends, setAttachedBackends] = useState<
-    AttachedBackendEntry[] | null
-  >(null);
-  const [backendsLoadError, setBackendsLoadError] = useState<string | null>(
-    null,
-  );
-  const [allBackends, setAllBackends] = useState<AdminBackendSummary[] | null>(
-    null,
-  );
-  // null until the first successful load (issue #49 CEO review): checkModel
-  // treats an empty Backend list as an error, so staying null — rather than
-  // defaulting to [] — keeps the rail from flagging a healthy Model as
-  // backend-less while /object-info is still in flight or has failed.
-  const [objectInfo, setObjectInfo] = useState<ObjectInfoBackendJson[] | null>(
-    null,
-  );
-  const [attachBackendId, setAttachBackendId] = useState("");
-  const [attachError, setAttachError] = useState<string | null>(null);
+  // Issue #217: the Backends section's three loads plus attach/detach,
+  // as `useQuery`/`useMutation` via the typed `api` client.
+  const backends = useBackendsSection(id);
   const [modesDraft, setModesDraft] = useState<DraftMode[] | null>(null);
   const [editingModeIndex, setEditingModeIndex] = useState<number | null>(null);
   const [inputsDraft, setInputsDraft] = useState<InputDefinition[] | null>(
@@ -161,59 +144,6 @@ export function useModelEditor() {
   function load() {
     void detailQuery.refetch();
   }
-
-  function loadAttachedBackends() {
-    if (!id) return;
-    fetch(`/api/admin/models/${id}/backends`)
-      .then((res) => {
-        if (!res.ok) throw new Error(`unexpected status ${res.status}`);
-        return res.json() as Promise<{ backends: AttachedBackendEntry[] }>;
-      })
-      .then((body) => {
-        setAttachedBackends(body.backends);
-        setBackendsLoadError(null);
-      })
-      .catch(() => setBackendsLoadError("could not load Backends"));
-  }
-
-  /** `/object-info` (issue #49): each attached Backend's node knowledge, for the live rail. */
-  function loadObjectInfo() {
-    if (!id) return;
-    fetch(`/api/admin/models/${id}/object-info`)
-      .then((res) =>
-        res.ok
-          ? (res.json() as Promise<{ backends: ObjectInfoBackendJson[] }>)
-          : null,
-      )
-      .then((body) => {
-        if (body) setObjectInfo(body.backends);
-      })
-      .catch(() => {
-        /* the rail just runs without Backend-aware checks */
-      });
-  }
-
-  function loadAllBackends() {
-    fetch("/api/admin/backends")
-      .then((res) =>
-        res.ok
-          ? (res.json() as Promise<{ backends: AdminBackendSummary[] }>)
-          : null,
-      )
-      .then((body) => {
-        if (body) setAllBackends(body.backends);
-      })
-      .catch(() => {
-        /* the "attach" picker just stays empty */
-      });
-  }
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: reload only when the route's :id changes
-  useEffect(() => {
-    loadAttachedBackends();
-    loadAllBackends();
-    loadObjectInfo();
-  }, [id]);
 
   /** The agreed browser-side refusals (issue #214), run before a picked file ever becomes `pendingWorkflow`. */
   function refuseWorkflowFile(file: File, parsed: unknown): string | null {
@@ -320,36 +250,6 @@ export function useModelEditor() {
     await draft.reload();
     revisionsSection.invalidate();
     setRestoringRevision(null);
-  }
-
-  async function handleAttach(event: FormEvent) {
-    event.preventDefault();
-    if (!detail || !attachBackendId) return;
-    setAttachError(null);
-
-    const res = await fetch(`/api/admin/models/${detail.model.id}/backends`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ backendId: attachBackendId }),
-    });
-
-    if (!res.ok) {
-      setAttachError(await messageFrom(res, "could not attach this Backend"));
-      return;
-    }
-
-    setAttachBackendId("");
-    loadAttachedBackends();
-    loadObjectInfo();
-  }
-
-  async function handleDetach(backendId: string) {
-    if (!detail) return;
-    await fetch(`/api/admin/models/${detail.model.id}/backends/${backendId}`, {
-      method: "DELETE",
-    });
-    loadAttachedBackends();
-    loadObjectInfo();
   }
 
   /** "+ Mode" (issue #216): adds "Mode N" (N = count + 1) with no outputs, returning its key so the caller opens its sheet right away. */
@@ -630,8 +530,11 @@ export function useModelEditor() {
   // issue #49: checkModel runs live, client-side, against whatever's in
   // the drafts right now — the rail updates on every edit, before Save.
   const checkModelBackends = useMemo(
-    () => (objectInfo === null ? null : toCheckModelBackends(objectInfo)),
-    [objectInfo],
+    () =>
+      backends.objectInfo === null
+        ? null
+        : toCheckModelBackends(backends.objectInfo),
+    [backends.objectInfo],
   );
   const modelIssues: ModelIssue[] = useMemo(() => {
     if (!detail || !modesDraft || !inputsDraft || !checkModelBackends)
@@ -796,18 +699,7 @@ export function useModelEditor() {
     setDeleteError,
     nodeFilter,
     setNodeFilter,
-    attachedBackends,
-    setAttachedBackends,
-    backendsLoadError,
-    setBackendsLoadError,
-    allBackends,
-    setAllBackends,
-    objectInfo,
-    setObjectInfo,
-    attachBackendId,
-    setAttachBackendId,
-    attachError,
-    setAttachError,
+    backends,
     modesDraft,
     setModesDraft,
     editingModeIndex,
@@ -840,15 +732,10 @@ export function useModelEditor() {
     inputsHeadingRef,
     modesHeadingRef,
     load,
-    loadAttachedBackends,
-    loadObjectInfo,
-    loadAllBackends,
     loadRevisions: revisionsSection.invalidate,
     handlePickWorkflowFile,
     setRebind,
     handleRestoreRevision,
-    handleAttach,
-    handleDetach,
     addMode,
     removeMode,
     updateMode,

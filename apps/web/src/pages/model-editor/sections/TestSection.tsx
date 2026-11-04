@@ -36,11 +36,12 @@ export function TestSection({
   const {
     modesDraft,
     inputsDraft,
-    attachedBackends,
+    backends,
     checkModelBackends,
     modelIssues,
     maxUploadMb,
   } = editor;
+  const { attachedBackends } = backends;
   const modes = modesDraft ?? [];
   const inputs = inputsDraft ?? detail.inputs ?? [];
 

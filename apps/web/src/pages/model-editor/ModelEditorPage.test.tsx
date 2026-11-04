@@ -7,7 +7,6 @@ import {
   test,
 } from "bun:test";
 import {
-  type AttachedBackendEntry,
   DETAIL,
   cleanup,
   finishFile,
@@ -49,103 +48,10 @@ describe("ModelEditorPage", () => {
   // behaviour, not a section's own — moved to frame/EditorFrame.test.tsx
   // alongside the rest of the Save-sequence tests.
 
-  test("Backends section lists an attached Backend's missing node types, and attaches another one", async () => {
-    const BACKEND_A = { id: "b1", name: "GPU 1", baseUrl: "http://gpu1" };
-    const BACKEND_B = { id: "b2", name: "GPU 2", baseUrl: "http://gpu2" };
-    let attached: AttachedBackendEntry[] = [
-      {
-        backend: BACKEND_A,
-        reachable: true,
-        missingNodeTypes: ["SomeNode"],
-        note: null,
-      },
-    ];
-
-    const calls = mockFetch((call) => {
-      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1"))
-        return Response.json(DETAIL);
-      if (
-        call.method === "GET" &&
-        call.url.endsWith("/api/admin/models/m1/backends")
-      )
-        return Response.json({ backends: attached });
-      if (call.method === "GET" && call.url.endsWith("/api/admin/backends"))
-        return Response.json({ backends: [BACKEND_A, BACKEND_B] });
-      if (call.method === "POST" && call.url.includes("/backends")) {
-        attached = [
-          ...attached,
-          {
-            backend: BACKEND_B,
-            reachable: false,
-            missingNodeTypes: null,
-            note: "unreachable; can't check for missing node types",
-          },
-        ];
-        return new Response(null, { status: 204 });
-      }
-      throw new Error(`unexpected ${call.method} ${call.url}`);
-    });
-
-    const view = renderEditor();
-    await openSection(view, "Backends");
-
-    expect(await view.findByText("GPU 1")).toBeTruthy();
-    expect(view.getByText("SomeNode")).toBeTruthy();
-
-    const { default: userEvent } = await import("@testing-library/user-event");
-    await userEvent.selectOptions(
-      view.getByLabelText("Attach a Backend"),
-      "b2",
-    );
-    await userEvent.click(view.getByText("Attach"));
-
-    expect(
-      await view.findByText("unreachable; can't check for missing node types"),
-    ).toBeTruthy();
-    expect(
-      calls.some((c) => c.method === "POST" && c.body?.backendId === "b2"),
-    ).toBe(true);
-  });
-
-  test("detaching the only Backend empties the Backends section", async () => {
-    const BACKEND_A = { id: "b1", name: "GPU 1", baseUrl: "http://gpu1" };
-    let attached = [
-      {
-        backend: BACKEND_A,
-        reachable: true,
-        missingNodeTypes: [],
-        note: null,
-      },
-    ];
-
-    const calls = mockFetch((call) => {
-      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1"))
-        return Response.json(DETAIL);
-      if (
-        call.method === "GET" &&
-        call.url.endsWith("/api/admin/models/m1/backends")
-      )
-        return Response.json({ backends: attached });
-      if (call.method === "GET" && call.url.endsWith("/api/admin/backends"))
-        return Response.json({ backends: [BACKEND_A] });
-      if (call.method === "DELETE" && call.url.includes("/backends/")) {
-        attached = [];
-        return new Response(null, { status: 204 });
-      }
-      throw new Error(`unexpected ${call.method} ${call.url}`);
-    });
-
-    const view = renderEditor();
-    await openSection(view, "Backends");
-
-    expect(await view.findByText("GPU 1")).toBeTruthy();
-
-    const { default: userEvent } = await import("@testing-library/user-event");
-    await userEvent.click(view.getByText("Detach"));
-
-    expect(await view.findByText("No Backends attached.")).toBeTruthy();
-    expect(calls.some((c) => c.method === "DELETE")).toBe(true);
-  });
+  // Issue #217: the Backends section's own tests (attach, detach, health,
+  // "Runs all N Modes", the severity rule) moved to
+  // sections/BackendsSection.test.tsx, updated for the new "Runs
+  // on"/"Other Backends" layout.
 
   test("Enable shows the server's reasons when the Model isn't ready", async () => {
     mockFetch((call) => {

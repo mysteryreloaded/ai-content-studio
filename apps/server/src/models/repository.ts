@@ -498,6 +498,116 @@ export interface RevisionSummary {
   workflowHash: string;
   modeCount: number;
   inputCount: number;
+  /** Issue #219: the acting Admin's name as it was, or null on a revision made before this ticket. */
+  author: string | null;
+  /** Issue #219: the ordered parts this revision changed, or null on a revision made before this ticket. */
+  changed: string[] | null;
+}
+
+/** The fields {@link changedParts} compares between a revision and its predecessor (issue #219). */
+type ModeSignatureInput = Pick<
+  ModeRecord,
+  "name" | "description" | "outputNodes" | "inputSettings"
+>;
+
+interface ChangeSnapshot {
+  workflowHash: string;
+  inputs: InputDefinition[];
+  modes: ModeSignatureInput[];
+  name: string;
+  slug: string;
+  description: string;
+  maxRunTimeMinutes: number;
+  termsBody: string;
+  licenseUrl: string;
+  attribution: string;
+}
+
+function modeSignature(mode: ModeSignatureInput) {
+  return {
+    name: mode.name,
+    description: mode.description,
+    outputNodes: mode.outputNodes,
+    inputSettings: mode.inputSettings,
+  };
+}
+
+/**
+ * The ordered subset of `["workflow", "inputs", "modes", "terms",
+ * "details"]` that changed between two revisions (issue #219), compared
+ * the same way the agreed UI orders them. Workflow by hash; Inputs and
+ * Modes by their stored values (a Mode's `id`/`sortOrder` excluded, so
+ * reordering alone still counts as a change but a verbatim carry-over
+ * never spuriously does); Terms and Details by their Model fields.
+ */
+function changedParts(before: ChangeSnapshot, after: ChangeSnapshot): string[] {
+  const changed: string[] = [];
+  if (before.workflowHash !== after.workflowHash) changed.push("workflow");
+  if (!isDeepStrictEqual(before.inputs, after.inputs)) changed.push("inputs");
+  if (
+    !isDeepStrictEqual(
+      before.modes.map(modeSignature),
+      after.modes.map(modeSignature),
+    )
+  ) {
+    changed.push("modes");
+  }
+  if (
+    before.termsBody !== after.termsBody ||
+    before.licenseUrl !== after.licenseUrl ||
+    before.attribution !== after.attribution
+  ) {
+    changed.push("terms");
+  }
+  if (
+    before.name !== after.name ||
+    before.slug !== after.slug ||
+    before.description !== after.description ||
+    before.maxRunTimeMinutes !== after.maxRunTimeMinutes
+  ) {
+    changed.push("details");
+  }
+  return changed;
+}
+
+/** This revision's `createdByUserId`/`createdByName` from the acting Admin (issue #219); null for a non-admin actor. */
+function createdByFrom(actor: AuditActor): {
+  createdByUserId: string | null;
+  createdByName: string | null;
+} {
+  if (actor.type !== "admin")
+    return { createdByUserId: null, createdByName: null };
+  return { createdByUserId: actor.userId, createdByName: actor.name ?? null };
+}
+
+/** Builds a {@link ChangeSnapshot} from a Model row plus the Inputs/Modes/Workflow hash it's paired with. */
+function changeSnapshotFrom(
+  model: Pick<
+    ModelRow,
+    | "name"
+    | "slug"
+    | "description"
+    | "maxRunTimeMinutes"
+    | "termsBody"
+    | "licenseUrl"
+    | "attribution"
+  >,
+  workflowHash: string,
+  inputs: InputDefinition[],
+  modeRecords: ModeSignatureInput[],
+): ChangeSnapshot {
+  return {
+    workflowHash,
+    inputs,
+    modes: modeRecords,
+    name: model.name,
+    slug: model.slug,
+    description: model.description,
+    maxRunTimeMinutes: model.maxRunTimeMinutes,
+    termsBody: model.termsBody,
+    licenseUrl: model.licenseUrl,
+    attribution: model.attribution,
+  };
 }
 
 export interface RevisionDetail {
@@ -590,6 +700,8 @@ export class ModelRepository {
           modelId: row.id,
           revisionNumber: 1,
           workflowHash: hash,
+          ...createdByFrom(actor),
+          changed: ["created"],
         });
 
         await recordAuditEntry(tx, this.clock, {
@@ -933,6 +1045,8 @@ export class ModelRepository {
         workflowHash: row.workflowHash,
         modeCount: modeRows.length,
         inputCount: (row.inputs as InputDefinition[]).length,
+        author: row.createdByName ?? null,
+        changed: row.changed ?? null,
       });
     }
     return summaries;
@@ -1030,6 +1144,8 @@ export class ModelRepository {
           revisionNumber: newRevisionNumber,
           workflowHash: target.workflowHash,
           inputs: target.inputs,
+          ...createdByFrom(actor),
+          changed: [`restored:${revisionNumber}`],
         })
         .returning();
       if (!newRevision) throw new Error("insert returned no row");
@@ -1200,6 +1316,16 @@ export class ModelRepository {
           revisionNumber: newRevisionNumber,
           workflowHash: hash,
           inputs: newInputs,
+          ...createdByFrom(actor),
+          changed: changedParts(
+            changeSnapshotFrom(
+              before,
+              currentRevision.workflowHash,
+              currentInputs,
+              currentModes,
+            ),
+            changeSnapshotFrom(row, hash, newInputs, newModeInputs),
+          ),
         })
         .returning();
       if (!newRevision) throw new Error("insert returned no row");
@@ -1427,6 +1553,21 @@ export class ModelRepository {
           revisionNumber: newRevisionNumber,
           workflowHash: currentRevision.workflowHash,
           inputs: currentRevision.inputs,
+          ...createdByFrom(actor),
+          changed: changedParts(
+            changeSnapshotFrom(
+              before,
+              currentRevision.workflowHash,
+              currentInputs,
+              beforeModes,
+            ),
+            changeSnapshotFrom(
+              row,
+              currentRevision.workflowHash,
+              currentInputs,
+              resolved,
+            ),
+          ),
         })
         .returning();
       if (!newRevision) throw new Error("insert returned no row");
@@ -1574,6 +1715,11 @@ export class ModelRepository {
         .returning();
       if (!row) throw new StaleVersion();
 
+      const afterModes = currentModes.map((mode) => ({
+        ...mode,
+        inputSettings: reviseModeInputSettings(mode.inputSettings, input),
+      }));
+
       const [newRevision] = await tx
         .insert(modelRevisions)
         .values({
@@ -1581,19 +1727,34 @@ export class ModelRepository {
           revisionNumber: newRevisionNumber,
           workflowHash: currentRevision.workflowHash,
           inputs: input,
+          ...createdByFrom(actor),
+          changed: changedParts(
+            changeSnapshotFrom(
+              before,
+              currentRevision.workflowHash,
+              beforeInputs,
+              currentModes,
+            ),
+            changeSnapshotFrom(
+              row,
+              currentRevision.workflowHash,
+              input,
+              afterModes,
+            ),
+          ),
         })
         .returning();
       if (!newRevision) throw new Error("insert returned no row");
 
       if (currentModes.length > 0) {
         await tx.insert(modes).values(
-          currentModes.map((mode) => ({
+          afterModes.map((mode) => ({
             revisionId: newRevision.id,
             sortOrder: mode.sortOrder,
             name: mode.name,
             description: mode.description,
             outputNodes: mode.outputNodes,
-            inputSettings: reviseModeInputSettings(mode.inputSettings, input),
+            inputSettings: mode.inputSettings,
           })),
         );
       }
@@ -1939,6 +2100,16 @@ export class ModelRepository {
             revisionNumber: newRevisionNumber,
             workflowHash,
             inputs: finalInputs,
+            ...createdByFrom(actor),
+            changed: changedParts(
+              changeSnapshotFrom(
+                before,
+                currentRevision.workflowHash,
+                beforeInputs,
+                beforeModes,
+              ),
+              changeSnapshotFrom(row, workflowHash, finalInputs, finalModes),
+            ),
           })
           .returning();
         if (!newRevision) throw new Error("insert returned no row");
@@ -2250,6 +2421,8 @@ export class ModelRepository {
             revisionNumber: 1,
             workflowHash: hash,
             inputs: payload.inputs,
+            ...createdByFrom(actor),
+            changed: ["created"],
           })
           .returning();
         if (!newRevision) throw new Error("insert returned no row");

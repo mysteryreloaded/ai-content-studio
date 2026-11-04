@@ -225,6 +225,13 @@
       "when": 1793763148724,
       "tag": "0031_serious_eternals",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1793801742649,
+      "tag": "0032_lying_blizzard",
+      "breakpoints": true
     }
   ]
 }

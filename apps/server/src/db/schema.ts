@@ -411,6 +411,15 @@ export const models = pgTable(
  * of the three makes a new row with the next `revisionNumber`. `inputs`
  * is an ordered JSON array of `InputDefinition` (packages/shared); it
  * carries forward unchanged when only Modes (or the reverse) are saved.
+ *
+ * Issue #219: `createdByUserId`/`createdByName` record the acting Admin
+ * (name denormalized as it was at save time, so a later rename doesn't
+ * rewrite history); `changed` is the ordered subset of
+ * `["workflow", "inputs", "modes", "terms", "details"]` that this
+ * revision changed versus the previous one, or `["created"]` for a new
+ * Model/import, or `["restored:<n>"]` for a Restore. All three are null
+ * on a revision made before this ticket, and on a Test's own revision
+ * (never shown in the Revisions list).
  */
 export const modelRevisions = pgTable(
   "model_revisions",
@@ -424,6 +433,9 @@ export const modelRevisions = pgTable(
       .notNull()
       .references(() => workflows.hash),
     inputs: jsonb("inputs").notNull().default([]),
+    createdByUserId: uuid("created_by_user_id"),
+    createdByName: text("created_by_name"),
+    changed: text("changed").array(),
     /**
      * Issue #74: a Test's own revision, made of whatever's unsaved in the
      * editor right now. Never current (models.currentRevision never

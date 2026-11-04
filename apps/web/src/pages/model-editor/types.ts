@@ -117,6 +117,10 @@ export interface RevisionSummary {
   workflowHash: string;
   modeCount: number;
   inputCount: number;
+  /** Issue #219: the acting Admin's name as it was, or null on a revision made before this ticket. */
+  author: string | null;
+  /** Issue #219: the ordered parts this revision changed, or null on a revision made before this ticket. */
+  changed: string[] | null;
 }
 export interface TermsForm {
   termsBody: string;

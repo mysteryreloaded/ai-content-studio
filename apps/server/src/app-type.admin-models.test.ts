@@ -73,6 +73,18 @@ async function typedCalls() {
     },
   });
 
+  // Revisions list: GET /:id/revisions (issue #219) carries each row's
+  // author and changed parts, nullable on a revision made before #219.
+  const revisionsRes = await client.api.admin.models[":id"].revisions.$get({
+    param: { id: "u" },
+  });
+  const revisionsBody = await revisionsRes.json();
+  const revisionRow =
+    "revisions" in revisionsBody ? revisionsBody.revisions[0] : undefined;
+  const author: string | null | undefined = revisionRow?.author;
+  const changed: string[] | null | undefined = revisionRow?.changed;
+  void [author, changed];
+
   // Wrong field types are type errors: the client knows each body's shape.
   await client.api.admin.models.$post({
     // @ts-expect-error `name` must be a string

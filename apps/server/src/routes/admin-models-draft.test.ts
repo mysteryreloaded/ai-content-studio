@@ -58,6 +58,12 @@ const WORKFLOW = {
   "2": { class_type: "SaveImage", inputs: { images: ["1", 0] } },
 };
 
+/** Same nodes as {@link WORKFLOW} plus an unused extra node, so its hash differs (issue #219's "Workflow re-upload" test). */
+const WORKFLOW_REUPLOAD = {
+  ...WORKFLOW,
+  "3": { class_type: "CLIPTextEncode", inputs: { text: "unused" } },
+};
+
 const PROMPT_INPUT = {
   id: "11111111-1111-1111-1111-111111111111",
   kind: "text",
@@ -285,6 +291,103 @@ describe("PUT /api/admin/models/:id/draft", () => {
       errors: Array<{ field: string; message: string }>;
     };
     expect(error.errors.some((e) => e.field === "inputs.0")).toBe(true);
+  });
+
+  test("a revision records its author (issue #219), and a Modes-only Save reads changed: ['modes']", async () => {
+    const { app } = await build();
+    const headers = await adminHeaders();
+    const model = await createModel(app, headers);
+
+    const baselineRes = await app.request(
+      `/api/admin/models/${model.id}/draft`,
+      {
+        method: "PUT",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify(draftBodyFor(model)),
+      },
+    );
+    expect(baselineRes.status).toBe(200);
+    const baseline = (await baselineRes.json()) as {
+      model: { version: number };
+    };
+
+    const body = draftBodyFor({ ...model, version: baseline.model.version });
+    body.modes = [
+      {
+        name: "Default",
+        description: "edited",
+        outputNodeIds: ["2"],
+        inputSettings: [],
+      },
+    ];
+
+    const res = await app.request(`/api/admin/models/${model.id}/draft`, {
+      method: "PUT",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    expect(res.status).toBe(200);
+
+    const listRes = await app.request(
+      `/api/admin/models/${model.id}/revisions`,
+      {
+        headers,
+      },
+    );
+    const { revisions } = (await listRes.json()) as {
+      revisions: {
+        revisionNumber: number;
+        author: string | null;
+        changed: string[] | null;
+      }[];
+    };
+    const latest = revisions.find((r) => r.revisionNumber === 3);
+    expect(latest?.author).toBe("admin");
+    expect(latest?.changed).toEqual(["modes"]);
+  });
+
+  test("a Workflow re-upload plus an edited Input reads changed: ['workflow', 'inputs']", async () => {
+    const { app } = await build();
+    const headers = await adminHeaders();
+    const model = await createModel(app, headers);
+
+    const baselineRes = await app.request(
+      `/api/admin/models/${model.id}/draft`,
+      {
+        method: "PUT",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify(draftBodyFor(model)),
+      },
+    );
+    expect(baselineRes.status).toBe(200);
+    const baseline = (await baselineRes.json()) as {
+      model: { version: number };
+    };
+
+    const body = {
+      ...draftBodyFor({ ...model, version: baseline.model.version }),
+      workflow: { json: WORKFLOW_REUPLOAD },
+      inputs: [{ ...PROMPT_INPUT, label: "Prompt 2" }],
+    };
+
+    const res = await app.request(`/api/admin/models/${model.id}/draft`, {
+      method: "PUT",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    expect(res.status).toBe(200);
+
+    const listRes = await app.request(
+      `/api/admin/models/${model.id}/revisions`,
+      {
+        headers,
+      },
+    );
+    const { revisions } = (await listRes.json()) as {
+      revisions: { revisionNumber: number; changed: string[] | null }[];
+    };
+    const latest = revisions.find((r) => r.revisionNumber === 3);
+    expect(latest?.changed).toEqual(["workflow", "inputs"]);
   });
 });
 

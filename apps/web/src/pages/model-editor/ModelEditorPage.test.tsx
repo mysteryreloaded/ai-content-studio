@@ -8,10 +8,8 @@ import {
 } from "bun:test";
 import {
   DETAIL,
-  NO_BACKENDS,
   cleanup,
   finishFile,
-  fireEvent,
   mockFetch,
   openSection,
   prepareConfirmAndEventSource,
@@ -103,165 +101,9 @@ describe("ModelEditorPage", () => {
     expect(calls.some((c) => c.url.endsWith("/enable"))).toBe(false);
   });
 
-  const MODE_DETAIL = {
-    ...DETAIL,
-    model: { ...DETAIL.model, currentRevision: 2, version: 1 },
-    workflow: {
-      "1": { class_type: "LoadImage", inputs: {} },
-      "2": { class_type: "SaveImage", inputs: { images: ["1", 0] } },
-    },
-    nodes: [
-      { id: "1", classType: "LoadImage", title: null },
-      { id: "2", classType: "SaveImage", title: null },
-    ],
-    modes: [
-      {
-        id: "mode-1",
-        sortOrder: 0,
-        name: "Default",
-        description: "",
-        outputNodes: [
-          { nodeId: "2", classType: "SaveImage", title: null, kind: "image" },
-        ],
-        inputSettings: [],
-      },
-    ],
-    inputs: [],
-  };
-
-  const REVISIONS = {
-    revisions: [
-      {
-        revisionNumber: 2,
-        createdAt: "2026-01-02T00:00:00.000Z",
-        workflowHash: "hash2",
-        modeCount: 1,
-        inputCount: 0,
-      },
-      {
-        revisionNumber: 1,
-        createdAt: "2026-01-01T00:00:00.000Z",
-        workflowHash: "hash1",
-        modeCount: 0,
-        inputCount: 0,
-      },
-    ],
-  };
-
-  function respondGetWithRevisions(url: string): Response {
-    if (url.endsWith("/api/admin/models/m1")) return Response.json(MODE_DETAIL);
-    if (url.endsWith("/revisions")) return Response.json(REVISIONS);
-    return Response.json(NO_BACKENDS);
-  }
-
-  test("Revisions lists every revision and Restore posts the current version", async () => {
-    const calls = mockFetch((call) => {
-      if (call.method === "GET") return respondGetWithRevisions(call.url);
-      if (call.method === "POST" && call.url.endsWith("/revisions/1/restore")) {
-        return Response.json({
-          record: { ...MODE_DETAIL.model, currentRevision: 3, version: 2 },
-          modes: [],
-          inputs: [],
-        });
-      }
-      throw new Error(`unexpected ${call.method} ${call.url}`);
-    });
-
-    const view = renderEditor();
-    const { default: userEvent } = await import("@testing-library/user-event");
-    await openSection(view, "Revisions");
-
-    await view.findByText("2 (current)");
-
-    const restoreButtons = await view.findAllByText("Restore");
-    expect(restoreButtons).toHaveLength(2);
-    // Row order is newest first; revision 1's row is the second one, and
-    // revision 2 (current)'s own Restore button stays disabled.
-    await userEvent.click(restoreButtons[1] as HTMLElement);
-
-    const restored = calls.find(
-      (c) => c.method === "POST" && c.url.endsWith("/revisions/1/restore"),
-    );
-    expect(restored?.body).toEqual({ version: 1 });
-  });
-
-  test("Restore shows the server's reasons on an enabled Model with errors, and 'Restore and disable' sends disable:true", async () => {
-    const enabledDetail = {
-      ...MODE_DETAIL,
-      model: { ...MODE_DETAIL.model, state: "enabled" as const },
-    };
-
-    const calls = mockFetch((call) => {
-      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1")) {
-        return Response.json(enabledDetail);
-      }
-      if (call.method === "GET") return respondGetWithRevisions(call.url);
-      if (call.method === "POST" && call.url.endsWith("/revisions/1/restore")) {
-        const body = call.body as { disable?: boolean };
-        if (!body.disable) {
-          return Response.json(
-            {
-              error:
-                "has errors; restore and disable this Model to save it anyway",
-              reasons: ["needs at least one attached Backend"],
-            },
-            { status: 400 },
-          );
-        }
-        return Response.json({
-          record: { ...enabledDetail.model, state: "disabled", version: 2 },
-          modes: [],
-          inputs: [],
-        });
-      }
-      throw new Error(`unexpected ${call.method} ${call.url}`);
-    });
-
-    const view = renderEditor();
-    await openSection(view, "Revisions");
-
-    await view.findByText("2 (current)");
-    const restoreButtons = await view.findAllByText("Restore");
-    // fireEvent, not userEvent: these buttons' own click handlers
-    // synchronously disable/replace them (restoringRevision, then the
-    // Restore-and-disable row), and userEvent's multi-step pointer
-    // dispatch doesn't cope with its target changing mid-sequence.
-    fireEvent.click(restoreButtons[1] as HTMLElement);
-
-    expect(
-      await view.findByText(
-        "has errors; restore and disable this Model to save it anyway",
-      ),
-    ).toBeTruthy();
-
-    const disableButton = await view.findByText("Restore and disable");
-    fireEvent.click(disableButton);
-
-    await waitFor(() => {
-      const disabledCall = calls.filter(
-        (c) => c.method === "POST" && c.url.endsWith("/revisions/1/restore"),
-      )[1];
-      expect(disabledCall?.body).toEqual({ version: 1, disable: true });
-    });
-  });
-
-  test("Restore stays disabled while another section is dirty (issue #71 CEO review)", async () => {
-    mockFetch((call) => {
-      if (call.method === "GET") return respondGetWithRevisions(call.url);
-      throw new Error(`unexpected ${call.method} ${call.url}`);
-    });
-
-    const view = renderEditor();
-    const { default: userEvent } = await import("@testing-library/user-event");
-
-    await openSection(view, "Revisions");
-    await view.findByText("2 (current)");
-
-    await openSection(view, "Details");
-    await userEvent.type(await view.findByLabelText("URL slug"), "x");
-
-    await openSection(view, "Revisions");
-    const restoreButtons = await view.findAllByText("Restore");
-    expect((restoreButtons[1] as HTMLButtonElement).disabled).toBe(true);
-  });
+  // Issue #259: the Revisions section's own tests (every revision listed
+  // newest first with the "current" pill and "Workflow changed", the
+  // confirm dialog, "Discard and restore" while dirty, and "Restore and
+  // disable" after the server's refusal) moved to
+  // sections/RevisionsSection.test.tsx.
 });

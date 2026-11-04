@@ -809,6 +809,11 @@ describe("Model editor frame (issue #213)", () => {
     ) as HTMLButtonElement;
     await userEvent.click(restoreButton);
 
+    const dialog = await view.findByRole("dialog");
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Restore" }),
+    );
+
     await view.findByText("Saved · revision 1");
 
     await openSection(view, "Modes");

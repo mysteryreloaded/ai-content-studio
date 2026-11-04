@@ -16,7 +16,8 @@ interface InputFieldProps {
  * One Input's field (issue #194): `Field` composed with its control. A
  * blank, optional Input shows the Workflow's own value as its
  * placeholder (issue #46). Used directly for text/number/seed/select
- * Inputs; the Model editor's `TestPanel` also renders this unchanged.
+ * Inputs; the Model editor's Test section (via `UserFormPreview`) also
+ * renders this unchanged.
  */
 export function InputField({ input, value, onChange, issue }: InputFieldProps) {
   const placeholder =

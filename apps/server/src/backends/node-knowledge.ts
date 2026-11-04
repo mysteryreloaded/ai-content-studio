@@ -156,4 +156,22 @@ export class NodeKnowledge {
     const entry = await this.entryFor(backend);
     return entry?.fieldSpecsByClassType ?? null;
   }
+
+  /**
+   * `backendId`'s cached node types, read from the cache only (issue
+   * #220: listing a Model's unattached Backends must cost no extra
+   * ComfyUI calls). `null` when nothing fresh is cached.
+   */
+  cachedNodeTypesFor(backendId: string): Set<string> | null {
+    const entry = this.cache.get(backendId);
+    return this.isFresh(entry) ? entry.nodeTypes : null;
+  }
+
+  /** `backendId`'s cached field shapes, read from the cache only (issue #220). */
+  cachedFieldSpecsFor(
+    backendId: string,
+  ): Map<string, Record<string, ComfyFieldSpec>> | null {
+    const entry = this.cache.get(backendId);
+    return this.isFresh(entry) ? entry.fieldSpecsByClassType : null;
+  }
 }

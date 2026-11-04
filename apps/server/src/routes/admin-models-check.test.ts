@@ -303,6 +303,175 @@ describe("checkModel's save gate and object-info route (issue #49)", () => {
     }
   });
 
+  test("GET /:id/object-info returns others for every enabled, unattached Backend, from the cache only (issue #220)", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    try {
+      const { app, backendsService } = await build();
+      const { model, headers } = await buildEnabledModel(app, fake.url);
+
+      // A second Backend, briefly attached to `model` to warm its
+      // node-knowledge cache, then detached: detaching a Backend from a
+      // Model doesn't drop its cache, only deleting the Backend does.
+      const otherBackendRes = await app.request("/api/admin/backends", {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "Other",
+          baseUrl: fake.url,
+          auth: "none",
+        }),
+      });
+      const otherBackend = (await otherBackendRes.json()) as { id: string };
+      await app.request(`/api/admin/models/${model.id}/backends`, {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ backendId: otherBackend.id }),
+      });
+      clock.advance(30_000);
+      // Two watched Backends' polls now race their real fetches; give
+      // them more real time than `flushMicrotasks`'s 20ms so neither
+      // finishes writing its health log after this test's db is gone.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      await app.request(`/api/admin/models/${model.id}/object-info`, {
+        headers,
+      });
+      await app.request(
+        `/api/admin/models/${model.id}/backends/${otherBackend.id}`,
+        { method: "DELETE", headers },
+      );
+
+      // A disabled Backend, also unattached to `model`: never shows up
+      // in `others` even though enabled, unattached ones do.
+      const disabledBackendRes = await app.request("/api/admin/backends", {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "Disabled",
+          baseUrl: fake.url,
+          auth: "none",
+        }),
+      });
+      const disabledBackend = (await disabledBackendRes.json()) as {
+        id: string;
+        version: number;
+      };
+      const disableRes = await app.request(
+        `/api/admin/backends/${disabledBackend.id}/enabled`,
+        {
+          method: "PATCH",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({
+            enabled: false,
+            version: disabledBackend.version,
+          }),
+        },
+      );
+      expect(disableRes.status).toBe(200);
+
+      const res = await app.request(
+        `/api/admin/models/${model.id}/object-info`,
+        { headers },
+      );
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        others: Array<{
+          id: string;
+          name: string;
+          reachable: boolean;
+          nodeTypes: string[];
+        }>;
+      };
+
+      const other = body.others.find((b) => b.id === otherBackend.id);
+      expect(other).toBeDefined();
+      expect(other?.reachable).toBe(true);
+      expect(other?.nodeTypes).toContain("KSampler");
+
+      expect(body.others.some((b) => b.id === disabledBackend.id)).toBe(false);
+
+      backendsService.stop();
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("GET /:id/object-info reports an unattached Backend as unreachable once its warm cache's Backend goes down (CEO review of issue #220)", async () => {
+    const fake = startFakeComfyUi({ port: 0 });
+    let stopped = false;
+    try {
+      const { app, backendsService } = await build();
+      const { model, headers } = await buildEnabledModel(app, fake.url);
+
+      // A second Backend, briefly attached to `model` to warm its
+      // node-knowledge cache, then detached, same as the test above.
+      const otherBackendRes = await app.request("/api/admin/backends", {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "Other",
+          baseUrl: fake.url,
+          auth: "none",
+        }),
+      });
+      const otherBackend = (await otherBackendRes.json()) as { id: string };
+      await app.request(`/api/admin/models/${model.id}/backends`, {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ backendId: otherBackend.id }),
+      });
+      clock.advance(30_000);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      await app.request(`/api/admin/models/${model.id}/object-info`, {
+        headers,
+      });
+      await app.request(
+        `/api/admin/models/${model.id}/backends/${otherBackend.id}`,
+        { method: "DELETE", headers },
+      );
+
+      const warmRes = await app.request(
+        `/api/admin/models/${model.id}/object-info`,
+        { headers },
+      );
+      const warmBody = (await warmRes.json()) as {
+        others: Array<{ id: string; reachable: boolean; nodeTypes: string[] }>;
+      };
+      expect(
+        warmBody.others.find((b) => b.id === otherBackend.id)?.reachable,
+      ).toBe(true);
+
+      // Now take the Backend down: 3 consecutive failed polls (the
+      // monitor's failure threshold) mark it unreachable, but its
+      // node-knowledge cache stays warm — `cachedNodeTypesFor` must not
+      // hand that stale cache back as if it were still live knowledge.
+      // A closed real port refuses the connection outright, so this
+      // doesn't need a second `fake.stop()` in the `finally` below.
+      fake.stop();
+      stopped = true;
+      for (let i = 0; i < 3; i++) {
+        clock.advance(30_000);
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+
+      const res = await app.request(
+        `/api/admin/models/${model.id}/object-info`,
+        { headers },
+      );
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        others: Array<{ id: string; reachable: boolean; nodeTypes: string[] }>;
+      };
+      const other = body.others.find((b) => b.id === otherBackend.id);
+      expect(other).toBeDefined();
+      expect(other?.reachable).toBe(false);
+      expect(other?.nodeTypes).toEqual([]);
+
+      backendsService.stop();
+    } finally {
+      if (!stopped) fake.stop();
+    }
+  });
+
   test("PUT /:id/modes 400s when saving the enabled Model would leave it with errors", async () => {
     const fake = startFakeComfyUi({ port: 0 });
     try {

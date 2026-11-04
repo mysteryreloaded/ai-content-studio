@@ -99,6 +99,28 @@ async function waitReachable(alice: Client, backendId: string): Promise<void> {
   }
 }
 
+/** Waits for the health monitor's "became unreachable" verdict (the Spare GPU's; issue #211's newest-Log-entry ordering). */
+async function waitUnreachable(
+  alice: Client,
+  backendId: string,
+): Promise<void> {
+  const deadline = Date.now() + 120_000;
+  for (;;) {
+    const list = await alice.json<{
+      backends: { id: string; health: { reachability: string } }[];
+    }>("GET", "/api/admin/backends");
+    const reachability = list.backends.find((b) => b.id === backendId)?.health
+      .reachability;
+    if (reachability === "unreachable") return;
+    if (Date.now() > deadline) {
+      throw new Error(
+        `shots: backend ${backendId} never became unreachable (last: ${reachability})`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+}
+
 const UUID = () => crypto.randomUUID();
 
 interface Binding {
@@ -964,6 +986,32 @@ export async function seedShots(
         text: "Scheduled maintenance on Sunday from 22:00 to 23:00.",
       },
     });
+  }
+
+  // The Spare GPU never answers (nothing listens on its port), so the
+  // health monitor's "became unreachable" verdict (written outside a
+  // request, so its entry carries no request id) lands late in the
+  // seed. Wait for it before step 10's in-request entry, or the newest
+  // Log entry would lack a request id and the expanded-Log screenshot
+  // (issue #211) would have nothing to show.
+  if (spareBackend) await waitUnreachable(alice, spareBackend.id);
+
+  // 10. A rejected prompt. The newest Log entry (the one the expanded-
+  // Log screenshot shows, issue #211) must have been written inside a
+  // request so it carries that request's id; the monitor/dispatcher
+  // entries below it were written outside one. No Generation is created,
+  // so nothing earlier in the seed is affected.
+  try {
+    await sam.api("POST", "/api/models/seed-video/generations", {
+      json: {
+        modeId: modeId("Text to video"),
+        revision: videoRevision,
+        count: 1,
+        values: { [videoInputs.prompt.id]: "A short bloodbath in the park." },
+      },
+    });
+  } catch {
+    // Expected: 400 invalid/blocked_word (the word seeded in step 1).
   }
 
   return {

@@ -89,6 +89,9 @@ export async function createApp(deps: AppDeps) {
     c.set("requestId", requestId);
     const start = deps.clock.now().getTime();
     await next();
+    // Issue #211: make the request id observable on the response too, so
+    // an entry written during this request can be looked up by it.
+    c.header("X-Request-Id", requestId);
     deps.logger.info("request", {
       request_id: requestId,
       method: c.req.method,
@@ -144,7 +147,15 @@ export async function createApp(deps: AppDeps) {
 
   app.onError(async (err, c) => {
     const session = c.get("session");
-    await logUnhandledError(logWriter, deps.logger, session?.user.id, err);
+    // Issue #211: the 500's own Log entry carries this request's id, so
+    // the Logs page can be filtered to it from an Audit entry's link.
+    await logUnhandledError(
+      logWriter,
+      deps.logger,
+      session?.user.id,
+      err,
+      c.get("requestId"),
+    );
     return c.json({ error: "internal error" }, 500);
   });
 

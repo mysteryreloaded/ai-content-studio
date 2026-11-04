@@ -45,6 +45,19 @@ describe("logUnhandledError", () => {
     expect(entries[0]?.userId).toBe("user-1");
   });
 
+  test("carries the request's id, when the 500 happened inside one (issue #211)", async () => {
+    const { writer, entries } = recordingWriter();
+    await logUnhandledError(
+      writer,
+      silentLogger(),
+      undefined,
+      new Error("kaboom"),
+      "req-42",
+    );
+
+    expect(entries[0]?.requestId).toBe("req-42");
+  });
+
   test("never throws when the writer itself fails, and falls back to the stdout logger", async () => {
     const lines: string[] = [];
     const logger: Logger = {

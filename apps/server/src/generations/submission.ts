@@ -148,6 +148,8 @@ export interface SubmitGenerationParams {
   values: Record<string, unknown>;
   /** How many Generations to create, 1-4; forced to 1 when the Mode's Path holds no bound Seed Input (issue #47). */
   count?: number;
+  /** Issue #211: the request this submit happens in; the Log entry a refused prompt leaves carries it. */
+  requestId?: string;
 }
 
 export interface SubmissionDeps {
@@ -550,6 +552,7 @@ export async function submitGeneration(
         details: word,
         userId: params.userId,
         modelId: detail.model.id,
+        requestId: params.requestId,
       });
       throw new BlockedWordSubmitted(input.id);
     }

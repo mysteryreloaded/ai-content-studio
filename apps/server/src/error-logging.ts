@@ -10,6 +10,8 @@ export async function logUnhandledError(
   logger: Logger,
   userId: string | undefined,
   err: unknown,
+  /** Issue #211: the request the 500 happened in; its Log entry carries it. */
+  requestId?: string,
 ): Promise<void> {
   const message = err instanceof Error ? err.message : "unhandled error";
   const details = err instanceof Error ? err.stack : undefined;
@@ -21,6 +23,7 @@ export async function logUnhandledError(
       message,
       details,
       userId,
+      requestId,
     });
   } catch (logErr) {
     logger.error("failed to write unhandled-error Log entry", {

@@ -181,6 +181,7 @@ export function requireAccess(access: AccessLevel): Handler<AppEnv> {
             source: "app",
             message: `non-Admin called an admin route: ${c.req.method} ${c.req.path}`,
             userId: session.user.id,
+            requestId: c.get("requestId"),
           });
         } catch {
           // best-effort: the 403 below still answers either way

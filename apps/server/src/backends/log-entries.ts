@@ -18,6 +18,8 @@ export interface LogEntryInput {
   userId?: string;
   modelId?: string;
   generationId?: string;
+  /** Issue #211: set from the request context when the entry is written during a request. */
+  requestId?: string;
 }
 
 const MAX_DETAILS_LENGTH = 4000;
@@ -43,6 +45,7 @@ export function createLogEntryWriter(
       const details = entry.details?.slice(0, MAX_DETAILS_LENGTH);
 
       logger[STDOUT_LEVEL[entry.level]](entry.message, {
+        request_id: entry.requestId,
         backend_id: entry.backendId,
         details,
       });
@@ -56,6 +59,7 @@ export function createLogEntryWriter(
         userId: entry.userId ?? null,
         modelId: entry.modelId ?? null,
         generationId: entry.generationId ?? null,
+        requestId: entry.requestId ?? null,
         createdAt,
       });
     },

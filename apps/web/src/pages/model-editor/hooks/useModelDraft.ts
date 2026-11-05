@@ -49,6 +49,7 @@ export function useModelDraft({
   modesDirty: boolean;
   termsForm: TermsForm | null;
   termsDirty: boolean;
+  /** Issue #264: what goes out in the draft PUT — the tick, but only while the terms text still differs from the saved text. */
   askAgain: boolean;
   /** A re-uploaded Workflow file, parsed client-side (issue #71), or `null` while none is picked. */
   pendingWorkflow: unknown | null;

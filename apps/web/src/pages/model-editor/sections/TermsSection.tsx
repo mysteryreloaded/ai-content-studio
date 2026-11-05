@@ -7,6 +7,7 @@ import { MarkdownEditor } from "../../../components/admin/MarkdownEditor.js";
 import { Checkbox } from "../../../components/ui/checkbox.js";
 import { Input } from "../../../components/ui/input.js";
 import { Label } from "../../../components/ui/label.js";
+import { sameTermsText } from "../helpers/drafts.js";
 import type { ModelDetail } from "../types.js";
 import { Section } from "../ui/Section.js";
 import type { ModelEditor } from "../useModelEditor.js";
@@ -22,11 +23,15 @@ export function TermsSection({
   if (!termsForm) return null;
 
   const licenseUrlInvalid = !isValidModelLicenseUrl(termsForm.licenseUrl);
+  // Issue #264: both compared trimmed, the same way the server does, so
+  // a text that only differs in surrounding whitespace is unchanged —
+  // the ask-again box (and the first-time note) must not appear for it.
   const firstTimeTerms =
-    detail.model.termsBody === "" && termsForm.termsBody !== "";
+    sameTermsText(detail.model.termsBody, "") &&
+    !sameTermsText(termsForm.termsBody, "");
   const existingTermsChanged =
-    detail.model.termsBody !== "" &&
-    detail.model.termsBody !== termsForm.termsBody;
+    !sameTermsText(detail.model.termsBody, "") &&
+    !sameTermsText(detail.model.termsBody, termsForm.termsBody);
 
   return (
     <Section

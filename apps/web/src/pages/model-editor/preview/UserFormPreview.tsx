@@ -22,8 +22,9 @@ import type { DraftMode } from "../types.js";
  * render of a Mode's Workbench form, built from the real Input controls
  * in `components/inputs/`. `interactive` lets #217 reuse this unchanged
  * as the Test form; the Test section (#259) also controls `values` and
- * the upload props itself (its own values/uploads outlive this
- * component, surviving a leave-and-return), hides the always-disabled
+ * the upload props itself — those live in the page's `useTestSection`
+ * (issue #266), so they outlive this component and survive a
+ * leave-and-return to another section —, hides the always-disabled
  * "Generate" button (`hideSubmit`) and drops the Count picker, since a
  * Test is always exactly one Generation (`hideCountPicker`).
  */

@@ -27,11 +27,14 @@ export function TestResultPanel({
   progress,
   cancelling,
   onCancel,
+  cancelError,
 }: {
   run: TestRun;
   progress: GenerationProgressData | undefined;
   cancelling: boolean;
   onCancel: () => void;
+  /** Issue #266: a refused Cancel's own text (the server's `error`, or the fallback), shown here, next to the panel's Cancel button. */
+  cancelError?: string | null;
 }) {
   const unfinished = TEST_UNFINISHED_STATES.has(run.state);
   const showsBar =
@@ -69,6 +72,12 @@ export function TestResultPanel({
           </Link>
         </Button>
       </div>
+
+      {cancelError && (
+        <p role="alert" className="text-err">
+          {cancelError}
+        </p>
+      )}
 
       {showsBar && (
         <div className="relative h-6 w-full overflow-hidden rounded-md bg-media">

@@ -761,6 +761,16 @@ describe("TestSection", () => {
             },
           });
         }
+        // The Run test's own POST (a queued g1, the same shape the Cancel
+        // fixtures below return; `generation` is declared further down
+        // this block and hoists): for a test that submits after the
+        // form's own state changed (issue #266's CEO review).
+        if (call.method === "POST" && call.url.endsWith("/m1/test")) {
+          return Response.json(
+            { generation: generation("queued") },
+            { status: 201 },
+          );
+        }
         return null;
       });
     }
@@ -1015,6 +1025,99 @@ describe("TestSection", () => {
       await waitFor(() => {
         expect(view.getAllByText("Queued")).toHaveLength(3);
         expect(view.queryByText("This test has already finished.")).toBeNull();
+      });
+    });
+
+    test("a value typed while its Input was shown, then Hidden in the Modes grid, is no longer sent on Run: the POST's values has no key for it (issue #266 CEO review)", async () => {
+      const calls = mockFormServer();
+
+      const view = renderEditor();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+      await openSection(view, "Test");
+
+      // Fill the form the way a user would: type the Steps value and pick
+      // the 2s clip. The kept form (page-level, issue #266) now holds the
+      // typed value and the clip's completed Upload id.
+      await userEvent.type(await view.findByLabelText("Steps"), "7");
+      await userEvent.upload(
+        await view.findByLabelText("Clip"),
+        new File(["MP4!"], "clip.mp4", { type: "video/mp4" }),
+      );
+      await view.findByText("clip.mp4");
+
+      // While the editor stays open, the Admin hides the clip in the
+      // Mode's own grid: the kept state still holds the old value and the
+      // Upload id, but the Mode's form no longer shows that Input, so the
+      // server's strict values schema must never see a key for it.
+      await openSection(view, "Modes");
+      await userEvent.click(
+        await view.findByRole("button", {
+          name: "Clip in Default: Optional",
+        }),
+      );
+      await userEvent.click(view.getByRole("radio", { name: "Hidden" }));
+      await userEvent.keyboard("{Escape}");
+
+      // Back in the Test section the form no longer shows the clip…
+      await openSection(view, "Test");
+      expect(view.queryByText("clip.mp4")).toBeNull();
+
+      // …and the Run test POST's values has no key for it: only the
+      // picked Mode's current form Inputs' values are sent, and the typed
+      // Steps value — the form still shows that one — is still sent.
+      await userEvent.click(
+        view.getByRole("button", { name: /Run test Generation/ }),
+      );
+      const sent = calls.find(
+        (c) => c.method === "POST" && c.url.endsWith("/m1/test"),
+      );
+      await waitFor(() => {
+        expect(sent?.body?.values).toEqual({ [STEPS_INPUT_ID]: 7 });
+      });
+      expect(
+        (sent?.body?.values as Record<string, unknown> | undefined)?.[
+          CLIP_INPUT_ID
+        ],
+      ).toBeUndefined();
+    });
+
+    test("the picked Mode deleted while the section was away falls back to the first Mode, not a blank select (issue #266 CEO review)", async () => {
+      mockFormServer({
+        ...FORM_DETAIL,
+        modes: [
+          MODE_DETAIL.modes[0],
+          { ...MODE_DETAIL.modes[0], id: "mode-2", name: "Alt" },
+        ],
+      });
+
+      const view = renderEditor();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+      await openSection(view, "Test");
+
+      // Pick the second Mode…
+      await userEvent.click(view.getByRole("combobox", { name: "Mode" }));
+      await userEvent.click(view.getByRole("option", { name: "Alt" }));
+      expect(
+        view.getByRole("combobox", { name: "Mode" }).textContent,
+      ).toContain("Alt");
+
+      // …then delete it from the Modes section, while the Test form's
+      // state stays kept at the page level.
+      await openSection(view, "Modes");
+      await userEvent.click(view.getByRole("button", { name: "Alt" }));
+      await userEvent.click(view.getByRole("button", { name: "Delete Mode" }));
+
+      // Back in the Test section the kept pick matches no item anymore:
+      // the select falls back to the first Mode instead of sitting blank.
+      await openSection(view, "Test");
+      await waitFor(() => {
+        expect(
+          view.getByRole("combobox", { name: "Mode" }).textContent,
+        ).toContain("Default");
       });
     });
   });

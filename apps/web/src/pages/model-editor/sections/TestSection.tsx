@@ -45,12 +45,20 @@ export function TestSection({
   const inputs = inputsDraft ?? detail.inputs ?? [];
 
   // Issue #259: a fresh editor session starts on the first Mode.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: a one-shot default, not a reset on every Modes edit
+  // CEO review on #266: the kept pick can go stale too — the picked Mode
+  // deleted while the section was away (its key matches no item) leaves
+  // the select blank: fall back to the first Mode instead. The guard
+  // (a pick still in the list never reselects) keeps this a fallback,
+  // not a reset on every Modes edit; only the key set is a dep, since a
+  // Mode's name or outputs can change without the list of Modes doing so.
+  const modeKeys = modes.map((m) => m.key).join(",");
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a one-shot default / stale-pick fallback, not a reset on every Modes edit
   useEffect(() => {
-    if (test.modeKey === null && modes.length > 0) {
-      test.selectMode(modes[0]?.key as string);
-    }
-  }, [modes.length]);
+    if (modes.length === 0) return;
+    if (test.modeKey !== null && modes.some((m) => m.key === test.modeKey))
+      return;
+    test.selectMode(modes[0]?.key as string);
+  }, [modeKeys]);
 
   const mode = modes.find((m) => m.key === test.modeKey) ?? null;
 

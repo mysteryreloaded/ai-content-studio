@@ -6,6 +6,7 @@ import {
   expect,
   test,
 } from "bun:test";
+import { drainMacrotasks } from "../../../test/render.js";
 import {
   DETAIL,
   cleanup,
@@ -15,6 +16,7 @@ import {
   prepareConfirmAndEventSource,
   renderEditor,
   restoreConfirm,
+  waitFor,
 } from "../testing/harness.js";
 
 afterEach(() => {
@@ -50,6 +52,25 @@ const MODE_DETAIL = {
   ],
   inputs: [],
 };
+
+/**
+ * Issue #265, the floor's rule that no Promise in the app may be left
+ * unhandled. Collects every `unhandledRejection` raised while the returned
+ * `stop` is in place, so a test can assert none happened.
+ */
+function captureUnhandledRejections() {
+  const rejections: unknown[] = [];
+  const listener = (reason: unknown) => {
+    rejections.push(reason);
+  };
+  process.on("unhandledRejection", listener);
+  return {
+    rejections,
+    stop() {
+      process.off("unhandledRejection", listener);
+    },
+  };
+}
 
 describe("BackendsSection", () => {
   test("Backend rows show health, version and Runs all N Modes", async () => {
@@ -328,5 +349,167 @@ describe("BackendsSection", () => {
       await view.findByText("No Backends yet. Attach one below."),
     ).toBeTruthy();
     expect(calls.some((c) => c.method === "DELETE")).toBe(true);
+  });
+
+  test("a refused Attach (409) shows the server's error with no unhandled rejection (issue #265)", async () => {
+    const BACKEND_B = { id: "b2", name: "GPU 2", baseUrl: "http://gpu2" };
+    const SERVER_ERROR = "GPU 2 is already attached to this Model";
+    mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1")) {
+        return Response.json(MODE_DETAIL);
+      }
+      if (
+        call.method === "GET" &&
+        call.url.endsWith("/api/admin/models/m1/backends")
+      ) {
+        return Response.json({ backends: [] });
+      }
+      if (call.method === "GET" && call.url.endsWith("/api/admin/backends")) {
+        return Response.json({
+          backends: [
+            {
+              ...BACKEND_B,
+              enabled: true,
+              health: {
+                reachability: "unknown",
+                comfyuiVersion: null,
+                credentialsError: false,
+              },
+            },
+          ],
+        });
+      }
+      if (call.method === "GET") return Response.json({ backends: [] });
+      if (call.method === "POST" && call.url.includes("/backends")) {
+        return Response.json({ error: SERVER_ERROR }, { status: 409 });
+      }
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    await openSection(view, "Backends");
+    expect(await view.findByText("GPU 2")).toBeTruthy();
+
+    const unhandled = captureUnhandledRejections();
+    try {
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+      await userEvent.click(view.getByRole("button", { name: "Attach" }));
+
+      const alert = await view.findByRole("alert");
+      expect(alert.textContent).toBe(SERVER_ERROR);
+      // A stray rejection from a fire-and-forget `mutateAsync` would surface
+      // on a later turn; the fix must leave none behind.
+      await drainMacrotasks();
+      expect(unhandled.rejections).toEqual([]);
+    } finally {
+      unhandled.stop();
+    }
+  });
+
+  test("a refused Detach (409) shows the server's error with no unhandled rejection (issue #265)", async () => {
+    const BACKEND = { id: "b1", name: "GPU 1", baseUrl: "http://gpu1" };
+    const SERVER_ERROR = "GPU 1 is running a Generation";
+    mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1")) {
+        return Response.json(MODE_DETAIL);
+      }
+      if (
+        call.method === "GET" &&
+        call.url.endsWith("/api/admin/models/m1/backends")
+      ) {
+        return Response.json({
+          backends: [
+            {
+              backend: BACKEND,
+              reachable: true,
+              missingNodeTypes: [],
+              note: null,
+            },
+          ],
+        });
+      }
+      if (call.method === "GET") return Response.json({ backends: [] });
+      if (call.method === "DELETE" && call.url.includes("/backends/")) {
+        return Response.json({ error: SERVER_ERROR }, { status: 409 });
+      }
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    await openSection(view, "Backends");
+    expect(await view.findByText("GPU 1")).toBeTruthy();
+
+    const unhandled = captureUnhandledRejections();
+    try {
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+      await userEvent.click(view.getByText("Detach"));
+
+      const alert = await view.findByRole("alert");
+      expect(alert.textContent).toBe(SERVER_ERROR);
+      await drainMacrotasks();
+      expect(unhandled.rejections).toEqual([]);
+    } finally {
+      unhandled.stop();
+    }
+  });
+
+  test("a new Attach attempt clears the previous error (issue #265)", async () => {
+    const BACKEND_B = { id: "b2", name: "GPU 2", baseUrl: "http://gpu2" };
+    const FIRST_ERROR = "first attempt failed";
+    const SECOND_ERROR = "second attempt failed";
+    let attempts = 0;
+    mockFetch((call) => {
+      if (call.method === "GET" && call.url.endsWith("/api/admin/models/m1")) {
+        return Response.json(MODE_DETAIL);
+      }
+      if (
+        call.method === "GET" &&
+        call.url.endsWith("/api/admin/models/m1/backends")
+      ) {
+        return Response.json({ backends: [] });
+      }
+      if (call.method === "GET" && call.url.endsWith("/api/admin/backends")) {
+        return Response.json({
+          backends: [
+            {
+              ...BACKEND_B,
+              enabled: true,
+              health: {
+                reachability: "unknown",
+                comfyuiVersion: null,
+                credentialsError: false,
+              },
+            },
+          ],
+        });
+      }
+      if (call.method === "GET") return Response.json({ backends: [] });
+      if (call.method === "POST" && call.url.includes("/backends")) {
+        attempts += 1;
+        return Response.json(
+          { error: attempts === 1 ? FIRST_ERROR : SECOND_ERROR },
+          { status: 409 },
+        );
+      }
+      throw new Error(`unexpected ${call.method} ${call.url}`);
+    });
+
+    const view = renderEditor();
+    await openSection(view, "Backends");
+
+    const { default: userEvent } = await import("@testing-library/user-event");
+    const attachButton = () => view.getByRole("button", { name: "Attach" });
+
+    await userEvent.click(attachButton());
+    expect(await view.findByText(FIRST_ERROR)).toBeTruthy();
+
+    // A second attempt replaces the first error (it is cleared, not stacked).
+    await userEvent.click(attachButton());
+    await view.findByText(SECOND_ERROR);
+    expect(view.queryByText(FIRST_ERROR)).toBeNull();
   });
 });

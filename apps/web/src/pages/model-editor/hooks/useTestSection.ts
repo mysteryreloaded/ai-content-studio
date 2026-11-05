@@ -4,14 +4,34 @@
 // editor shows its live state on return), one upload per Input mirroring
 // the Workbench's own `startUpload`/trim-then-submit sequence (CEO
 // review on #74), and the `/test` submission itself as a `useMutation`.
+//
+// Issue #266: called from `ModelEditorPage`, not from the Test section,
+// so the form's state — the picked Mode, its values, the Backend pick,
+// the uploads and the trim ranges — stays alive for the whole editor
+// session, surviving a section leave-and-return (a new Mode pick still
+// resets it, and an in-flight Upload is only aborted when the editor
+// itself closes — otherwise it finishes into the kept form).
+//
+// CEO review on #266: the kept state can go stale against the draft —
+// a value typed while its Input was still shown, then Hidden/Fixed in
+// the Modes grid or deleted from the Inputs section — so the `/test`
+// submit sends only the picked Mode's current form Inputs' values (and
+// their Upload/trim ids): the same relevantInputs + resolveModeInputs
+// list the server runs over the same draft, or its strict values
+// schema would refuse a key the form no longer shows.
 
+import {
+  relevantInputs,
+  resolveModeInputs,
+  visibleModeBoundFields,
+} from "@ai-content-studio/shared";
 import type {
   AudioUploadInputDefinition,
   InputDefinition,
   VideoUploadInputDefinition,
 } from "@ai-content-studio/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { GenerationProgress } from "../../../components/generations/types.js";
 import { issueFor } from "../../../components/inputs/issueFor.js";
 import type {
@@ -28,6 +48,7 @@ import {
 } from "../../../lib/chunkedUpload.js";
 import { useEventStream } from "../../../lib/sse.js";
 import { sortedTestRuns } from "../helpers/testRuns.js";
+import { workflowForMode } from "../helpers/workflow.js";
 import type { DraftMode, ModelDetail, TestRun } from "../types.js";
 
 /** The server's several error-body shapes for `/test`'s refusals (issue #74), flattened into one reason list. */
@@ -50,7 +71,16 @@ function testErrorReasons(err: unknown): string[] {
   return [err instanceof Error ? err.message : "test failed"];
 }
 
-/** The Test submit payload (mirrors WorkbenchPage's own `valuesPayload`): blank values are left out, a number/seed is parsed, not sent as the raw typed string. */
+/** The server's own refusal text for a failed Cancel (issue #266): the response body's `error`, or the fallback when there isn't one. */
+function cancelErrorFromApiError(err: unknown, fallback: string): string {
+  if (err instanceof ApiError) {
+    const body = err.body as { error?: string } | null;
+    return body?.error ?? fallback;
+  }
+  return fallback;
+}
+
+/** The Test submit payload (mirrors WorkbenchPage's own `valuesPayload`, but filtered to the passed Inputs' own ids: the kept form's `values` can hold a value whose Input is no longer in the picked Mode's form, and the server's strict schema would refuse it, issue #266's CEO review). Blank values are left out; a number/seed is parsed, not sent as the raw typed string. */
 function testValuesPayload(
   inputs: InputDefinition[],
   values: Record<string, string>,
@@ -60,15 +90,16 @@ function testValuesPayload(
   for (const [id, raw] of Object.entries(values)) {
     if (raw === "") continue;
     const input = byId.get(id);
+    if (!input) continue;
     payload[id] =
-      input?.kind === "number" || input?.kind === "seed" ? Number(raw) : raw;
+      input.kind === "number" || input.kind === "seed" ? Number(raw) : raw;
   }
   return payload;
 }
 
 export function useTestSection(
   id: string | undefined,
-  detail: ModelDetail,
+  detail: ModelDetail | undefined,
   maxUploadMb: number | null,
 ) {
   const queryClient = useQueryClient();
@@ -139,6 +170,27 @@ export function useTestSection(
     new Map<string, { promise: Promise<void>; controller: AbortController }>(),
   );
   const [cancellingIds, setCancellingIds] = useState<Set<string>>(new Set());
+  // Issue #266: a refused Cancel's own text (its `error`, or the
+  // fallback), tied to the run it belongs to (its `generationId`) so a
+  // later Run test (a new run) doesn't show a stale alert; cleared by
+  // the next Cancel attempt and by `resetForm`.
+  const [cancelError, setCancelError] = useState<{
+    generationId: string;
+    message: string;
+  } | null>(null);
+
+  // The hook is page-level now (issue #266), so "unmount" means the
+  // whole editor closing: abort an in-flight Upload then (it would
+  // otherwise keep chunking into a form no one can see), while a
+  // section leave-and-return leaves it alone and it finishes into the
+  // kept form.
+  useEffect(() => {
+    return () => {
+      for (const running of runningUploadsRef.current.values()) {
+        running.controller.abort();
+      }
+    };
+  }, []);
 
   function resetForm() {
     for (const running of runningUploadsRef.current.values()) {
@@ -150,6 +202,7 @@ export function useTestSection(
     setTrimRangeByInputId({});
     setBackendId("");
     setError(null);
+    setCancelError(null);
   }
 
   /** The Mode select's `onChange` (issue #259): picking a different Mode resets its draft values, uploads and Backend pick, same as the old per-Mode toggle did. */
@@ -165,6 +218,11 @@ export function useTestSection(
     file: File,
     needsPlayableVideo = false,
   ) {
+    // The section only ever renders with a loaded `detail` (issue
+    // #266's page-level call); the guard keeps an upload from starting
+    // without one.
+    const modelId = detail?.model.id;
+    if (!modelId) return;
     runningUploadsRef.current.get(input.id)?.controller.abort();
     runningUploadsRef.current.delete(input.id);
     setValues((v) => ({ ...v, [input.id]: "" }));
@@ -205,7 +263,7 @@ export function useTestSection(
           },
         }));
         return uploadResumable(file, httpUploadApi(), {
-          hint: { modelId: detail.model.id, inputId: input.id },
+          hint: { modelId, inputId: input.id },
           signal: controller.signal,
           onProgress: (progress) => {
             if (controller.signal.aborted) return;
@@ -295,6 +353,32 @@ export function useTestSection(
       mode: DraftMode;
       inputs: InputDefinition[];
     }) => {
+      // Same guard as `onPick`'s: the button can't actually be reached
+      // without a loaded `detail`, but the page-level hook (issue
+      // #266) exists before the Model's own load settles.
+      if (!detail) throw new Error("this Model's detail is still loading");
+      // CEO review on #266: the kept form's state can go stale against
+      // the draft — a value typed while its Input was still shown, then
+      // Hidden/Fixed in the Modes grid or deleted from the Inputs
+      // section, is still in the kept `values`. The server's strict
+      // values schema (buildInputValuesSchema, test-submission.ts)
+      // refuses a key the form no longer shows, so only the picked
+      // Mode's current form Inputs' values — and their Upload/trim
+      // ids — are sent: the same relevantInputs + resolveModeInputs
+      // list the server itself runs over this same draft.
+      const workflow = workflowForMode(mode, inputs, detail.workflow);
+      const unresolvable = visibleModeBoundFields(
+        mode.inputSettings ?? [],
+        inputs,
+      );
+      const relevant =
+        mode.outputNodeIds.length === 0
+          ? []
+          : relevantInputs(inputs, workflow, mode.outputNodeIds, unresolvable);
+      const { formInputs } = resolveModeInputs(
+        relevant,
+        mode.inputSettings ?? [],
+      );
       // Issue #74 CEO review: Generate's own wait-for-Uploads-then-trim
       // steps (WorkbenchPage's handleGenerate), so a Test on a Mode with
       // a trimmable Video/Audio Input submits the trimmed range, not
@@ -305,7 +389,10 @@ export function useTestSection(
       }
 
       let currentValues = values;
-      const mediaInputs = inputs.filter(
+      // Only the picked Mode's current form Uploads are media Inputs
+      // here: an Upload's id (and its trim range) is only a value the
+      // server accepts while the Mode's form still shows that Input.
+      const mediaInputs = formInputs.filter(
         (
           input,
         ): input is VideoUploadInputDefinition | AudioUploadInputDefinition =>
@@ -375,7 +462,7 @@ export function useTestSection(
               ),
             },
             inputs,
-            values: testValuesPayload(inputs, currentValues),
+            values: testValuesPayload(formInputs, currentValues),
             backendId: backendId || null,
           },
         }),
@@ -399,6 +486,12 @@ export function useTestSection(
   }
 
   async function cancel(generationId: string) {
+    // Issue #266: a refused Cancel (e.g. a 409 "already finished") must
+    // not reject out of here (the caller `void`s it — the old
+    // try/finally left that as an unhandled rejection): catch it and
+    // keep the server's own `error` to show next to the result panel.
+    // The `finally` below still re-enables the Cancel button either way.
+    setCancelError(null);
     setCancellingIds((current) => new Set(current).add(generationId));
     try {
       await ok(
@@ -406,6 +499,11 @@ export function useTestSection(
           param: { id: generationId },
         }),
       );
+    } catch (err) {
+      setCancelError({
+        generationId,
+        message: cancelErrorFromApiError(err, "Could not cancel this test"),
+      });
     } finally {
       setCancellingIds((current) => {
         const next = new Set(current);
@@ -435,6 +533,7 @@ export function useTestSection(
     handleSubmit,
     cancel,
     cancellingIds,
+    cancelError,
   };
 }
 

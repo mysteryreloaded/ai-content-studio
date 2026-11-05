@@ -11,6 +11,7 @@ import { ChecksRail } from "./frame/ChecksRail.js";
 import { EditorHeader } from "./frame/EditorHeader.js";
 import { SECTIONS } from "./frame/sections.js";
 import { useEditorNavigation } from "./hooks/useEditorNavigation.js";
+import { useTestSection } from "./hooks/useTestSection.js";
 import { BackendsSection } from "./sections/BackendsSection.js";
 import { DetailsSection } from "./sections/DetailsSection.js";
 import { InputsSection } from "./sections/InputsSection.js";
@@ -24,11 +25,20 @@ import { useModelEditor } from "./useModelEditor.js";
 
 export function ModelEditorPage() {
   const editor = useModelEditor();
-  const { loadError, detail, issuesBySection, blocker } = editor;
+  const { loadError, detail, issuesBySection, blocker, maxUploadMb } = editor;
   const nav = useEditorNavigation({
     modelId: detail?.model.id,
     hasInputs: detail ? (detail.inputs ?? []).length > 0 : null,
   });
+  // Issue #266: the Test form's state (the picked Mode, its values, the
+  // Backend pick, the uploads, the trim ranges) is owned by the page,
+  // not by the section, so it stays alive for the whole editor session
+  // and survives a section leave-and-return.
+  const test = useTestSection(
+    detail?.model.id,
+    detail ?? undefined,
+    maxUploadMb ?? null,
+  );
 
   if (loadError) return <p role="alert">{loadError}</p>;
   if (!detail) return <p>Loading…</p>;
@@ -80,7 +90,7 @@ export function ModelEditorPage() {
               <TermsSection editor={editor} detail={detail} />
             )}
             {nav.section === "test" && (
-              <TestSection editor={editor} detail={detail} />
+              <TestSection editor={editor} detail={detail} test={test} />
             )}
             {nav.section === "revisions" && (
               <RevisionsSection editor={editor} detail={detail} />

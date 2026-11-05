@@ -65,6 +65,10 @@ export function sameTerms(a: TermsForm, b: TermsForm): boolean {
     a.attribution === b.attribution
   );
 }
+/** Issue #264: the same trim the server applies before it compares and saves a terms body, so text that differs only in surrounding whitespace is not a real change. */
+export function sameTermsText(a: string, b: string): boolean {
+  return a.trim() === b.trim();
+}
 /** The message for a failed save: field errors, then the server's own `error` (a stale version, a taken name/slug, ...), else a fallback. */
 export async function messageFrom(
   res: Response,

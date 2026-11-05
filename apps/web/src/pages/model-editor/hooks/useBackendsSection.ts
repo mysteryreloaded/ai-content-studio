@@ -90,8 +90,13 @@ export function useBackendsSection(id: string | undefined) {
     allBackends: allBackendsQuery.data?.backends ?? null,
     objectInfo: objectInfoQuery.data?.backends ?? null,
     othersObjectInfo: objectInfoQuery.data?.others ?? null,
-    attach: (backendId: string) => attachMutation.mutateAsync(backendId),
-    detach: (backendId: string) => detachMutation.mutateAsync(backendId),
+    // `mutate`, not `mutateAsync` (issue #265): the buttons fire-and-forget.
+    // `mutateAsync` hands back the attempt's Promise raw, so a 4xx would
+    // reject it unhandled ("Uncaught (in promise)"); `useMutation`'s
+    // `mutate` already handles that Promise (`.catch(noop)`), so a failure
+    // lands only in the mutation's state — the error the alert reads.
+    attach: (backendId: string) => attachMutation.mutate(backendId),
+    detach: (backendId: string) => detachMutation.mutate(backendId),
     attaching: attachMutation.isPending,
     attachError: attachMutation.isError
       ? messageFromApiError(

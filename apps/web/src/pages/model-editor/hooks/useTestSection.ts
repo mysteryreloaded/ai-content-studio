@@ -156,9 +156,13 @@ export function useTestSection(
   );
   const [cancellingIds, setCancellingIds] = useState<Set<string>>(new Set());
   // Issue #266: a refused Cancel's own text (its `error`, or the
-  // fallback), shown next to the result panel; cleared by the next
-  // Cancel attempt and by `resetForm`.
-  const [cancelError, setCancelError] = useState<string | null>(null);
+  // fallback), tied to the run it belongs to (its `generationId`) so a
+  // later Run test (a new run) doesn't show a stale alert; cleared by
+  // the next Cancel attempt and by `resetForm`.
+  const [cancelError, setCancelError] = useState<{
+    generationId: string;
+    message: string;
+  } | null>(null);
 
   // The hook is page-level now (issue #266), so "unmount" means the
   // whole editor closing: abort an in-flight Upload then (it would
@@ -456,9 +460,10 @@ export function useTestSection(
         }),
       );
     } catch (err) {
-      setCancelError(
-        cancelErrorFromApiError(err, "Could not cancel this test"),
-      );
+      setCancelError({
+        generationId,
+        message: cancelErrorFromApiError(err, "Could not cancel this test"),
+      });
     } finally {
       setCancellingIds((current) => {
         const next = new Set(current);

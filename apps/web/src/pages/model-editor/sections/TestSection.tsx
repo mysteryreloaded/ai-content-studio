@@ -220,7 +220,14 @@ export function TestSection({
           progress={test.progressById.get(latestRun.id)}
           cancelling={test.cancellingIds.has(latestRun.id)}
           onCancel={() => void test.cancel(latestRun.id)}
-          cancelError={test.cancelError}
+          // Issue #266: the error is tied to the run it belongs to, so a
+          // later Run test (a new run) doesn't show a stale alert under
+          // it — only the latest run's own refused Cancel shows.
+          cancelError={
+            test.cancelError?.generationId === latestRun.id
+              ? test.cancelError.message
+              : null
+          }
         />
       )}
 

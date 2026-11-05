@@ -936,5 +936,86 @@ describe("TestSection", () => {
       }
       expect(unhandled).toEqual([]);
     });
+
+    test("a refused Cancel's alert is tied to its run: a later Run test (a new run) shows no stale alert", async () => {
+      // Two queued runs with strictly increasing `submittedAt`, so the
+      // second (g2) sorts to the front and becomes the panel's own run.
+      const t1 = "2026-01-01T00:00:00.000Z";
+      const t2 = "2026-01-01T00:00:01.000Z";
+      const run = (id: string, submittedAt: string) => ({
+        id,
+        modelId: "m1",
+        modelSlug: "ltx-2-5",
+        modelName: "LTX 2.5",
+        modeId: "mode-1",
+        modeName: "Default",
+        submissionId: "sub1",
+        state: "queued",
+        tries: 0,
+        error: null,
+        submittedAt,
+        startedAt: null,
+        endedAt: null,
+        assets: [],
+        removedAt: null,
+        isTest: true,
+      });
+
+      const testPosts: unknown[] = [];
+      mockBackendsAndTests((call) => {
+        if (call.method === "POST" && call.url.endsWith("/m1/test")) {
+          testPosts.push(call);
+          // The first Run returns g1; a later Run returns g2 (a later run).
+          return Response.json(
+            {
+              generation:
+                testPosts.length === 1 ? run("g1", t1) : run("g2", t2),
+            },
+            { status: 201 },
+          );
+        }
+        if (
+          call.method === "POST" &&
+          call.url.endsWith("/generations/g1/cancel")
+        ) {
+          return Response.json(
+            { error: "This test has already finished." },
+            { status: 409 },
+          );
+        }
+        return null;
+      });
+
+      const view = renderEditor();
+      const { default: userEvent } = await import(
+        "@testing-library/user-event"
+      );
+      await openSection(view, "Test");
+
+      // First run: g1 (queued). Both the inline result panel and "Last 5
+      // tests" show its pill, hence the two matches.
+      await userEvent.click(
+        await view.findByRole("button", { name: /Run test Generation/ }),
+      );
+      expect(await view.findAllByText("Queued")).toHaveLength(2);
+
+      // g1 is unfinished, so Cancel shows. Its refused 409 shows the
+      // server's own error next to the panel.
+      await userEvent.click(view.getByRole("button", { name: "Cancel" }));
+      const alert = await view.findByText("This test has already finished.");
+      expect(alert.closest("[role='alert']")).toBeTruthy();
+
+      // A later Run test returns g2 (a later run). The panel now shows
+      // g2, and the stale g1 alert must not follow it: it's tied to g1,
+      // not to the latest run. The inline panel shows only g2 and "Last
+      // 5 tests" shows both, hence the three matches; the alert is gone.
+      await userEvent.click(
+        view.getByRole("button", { name: /Run test Generation/ }),
+      );
+      await waitFor(() => {
+        expect(view.getAllByText("Queued")).toHaveLength(3);
+        expect(view.queryByText("This test has already finished.")).toBeNull();
+      });
+    });
   });
 });

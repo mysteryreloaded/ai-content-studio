@@ -172,7 +172,7 @@ export function BackendsSection({
                   <Button
                     type="button"
                     variant="secondary"
-                    onClick={() => void detach(entry.backend.id)}
+                    onClick={() => detach(entry.backend.id)}
                   >
                     Detach
                   </Button>
@@ -237,7 +237,7 @@ export function BackendsSection({
                   <Button
                     type="button"
                     disabled={attaching}
-                    onClick={() => void attach(backend.id)}
+                    onClick={() => attach(backend.id)}
                   >
                     Attach
                   </Button>

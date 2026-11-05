@@ -26,6 +26,7 @@ import {
   sameInputs,
   sameModes,
   sameTerms,
+  sameTermsText,
   termsFrom,
 } from "./helpers/drafts.js";
 import { newInputOfKind } from "./helpers/newInputs.js";
@@ -500,10 +501,22 @@ export function useModelEditor() {
     detail && inputsDraft && !sameInputs(detail.inputs, inputsDraft),
   );
 
+  // Issue #264: the "ask everyone to accept again" tick only counts
+  // (dirty, and what Save sends) while the terms text still differs
+  // from the saved text — the same trim the server applies before it
+  // decides, so ticking it and then reverting the text to what was
+  // saved can't make `termsVersion` bump (the Site terms form's
+  // `isChanged` gate sends `askAgain: false` the same way).
+  const askAgainCounts =
+    askAgain &&
+    detail !== null &&
+    termsForm !== null &&
+    !sameTermsText(termsForm.termsBody, detail.model.termsBody);
+
   const termsDirty = Boolean(
     detail &&
       termsForm &&
-      (!sameTerms(termsFrom(detail), termsForm) || askAgain),
+      (!sameTerms(termsFrom(detail), termsForm) || askAgainCounts),
   );
 
   const termsPreviewHtml = termsForm ? renderMarkdown(termsForm.termsBody) : "";
@@ -522,7 +535,9 @@ export function useModelEditor() {
     modesDirty,
     termsForm,
     termsDirty,
-    askAgain,
+    // Issue #264: what the draft PUT actually sends for `askAgain` —
+    // the tick, but only while the text has really changed.
+    askAgain: askAgainCounts,
     pendingWorkflow,
     rebindMap,
     resetInputsDraft: setInputsDraft,

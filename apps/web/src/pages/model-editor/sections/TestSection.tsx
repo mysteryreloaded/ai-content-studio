@@ -18,7 +18,7 @@ import {
   SelectValue,
 } from "../../../components/ui/select.js";
 import { workflowForMode } from "../helpers/workflow.js";
-import { useTestSection } from "../hooks/useTestSection.js";
+import type { TestSectionData } from "../hooks/useTestSection.js";
 import { UserFormPreview } from "../preview/UserFormPreview.js";
 import { RecentTests } from "../test/RecentTests.js";
 import { TestResultPanel } from "../test/TestResultPanel.js";
@@ -29,23 +29,20 @@ import type { ModelEditor } from "../useModelEditor.js";
 export function TestSection({
   editor,
   detail,
+  // Issue #266: the section's data comes from the page's own
+  // `useTestSection` call, so the form's state survives a section
+  // switch (and the section's own remount) for the editor's lifetime.
+  test,
 }: {
   editor: ModelEditor;
   detail: ModelDetail;
+  test: TestSectionData;
 }) {
-  const {
-    modesDraft,
-    inputsDraft,
-    backends,
-    checkModelBackends,
-    modelIssues,
-    maxUploadMb,
-  } = editor;
+  const { modesDraft, inputsDraft, backends, checkModelBackends, modelIssues } =
+    editor;
   const { attachedBackends } = backends;
   const modes = modesDraft ?? [];
   const inputs = inputsDraft ?? detail.inputs ?? [];
-
-  const test = useTestSection(detail.model.id, detail, maxUploadMb ?? null);
 
   // Issue #259: a fresh editor session starts on the first Mode.
   // biome-ignore lint/correctness/useExhaustiveDependencies: a one-shot default, not a reset on every Modes edit
@@ -223,6 +220,7 @@ export function TestSection({
           progress={test.progressById.get(latestRun.id)}
           cancelling={test.cancellingIds.has(latestRun.id)}
           onCancel={() => void test.cancel(latestRun.id)}
+          cancelError={test.cancelError}
         />
       )}
 
